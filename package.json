@@ -1,6 +1,6 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Simple Signal K chart provider for local MBTiles and directory-based charts with download management",
   "main": "src/index.js",
   "scripts": {
@@ -8,19 +8,13 @@
   },
   "license": "MIT",
   "keywords": [
-    "signalk",
     "signalk-node-server-plugin",
     "signalk-webapp",
-    "nautic",
-    "chart",
-    "mbtiles",
-    "tms",
-    "chart-management",
-    "download-manager"
+    "signalk-category-chart-plotters",
+    "signalk-category-utility"
   ],
   "author": {
-    "name": "Dirk Wahrheit",
-    "email": "dirkwa@users.noreply.github.com"
+    "name": "Dirk Wahrheit"
   },
   "dependencies": {
     "@mapbox/mbtiles": "^0.12.1",
@@ -34,6 +28,12 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dirkwa/signalk-charts-provider-simple"
+  },
+  "bugs": {
+    "url": "https://github.com/dirkwa/signalk-charts-provider-simple/issues"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "signalk": {
     "appIcon": "assets/charts_logo.png",

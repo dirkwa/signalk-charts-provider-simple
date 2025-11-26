@@ -5,7 +5,7 @@
 - Github publishing
 
 ### Changes:
-- Package cathegories optimized
+- Package categories optimized
 
 ## [1.0.2] 2025-01-26
 - Github publishing test
