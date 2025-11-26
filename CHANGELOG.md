@@ -1,4 +1,6 @@
 # Changelog
+## [1.0.1] 2025-01-26
+- Github publishing test
 
 ## [1.0.0] 2025-01-26
 - Initial release
