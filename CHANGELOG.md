@@ -1,12 +1,15 @@
 # Changelog
 
+## [1.0.6] 2025-01-27
+### Changes:
+- Plugin description
+
 ## [1.0.5] 2025-01-27
 ### Fixes:
 - Github publishing - remove npm test
 - Github publisihing - Firx workflow
 ### Changes:
 - Typo in README.md
-
 
 ## [1.0.0] 2025-01-26
 - Initial release

@@ -1,7 +1,7 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "1.0.5",
-  "description": "Simple Signal K chart provider for local MBTiles and directory-based charts with download management",
+  "version": "1.0.6",
+  "description": "Simple Signal K chart provider for local MBTiles with web and download management",
   "main": "src/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
