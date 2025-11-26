@@ -37,20 +37,20 @@
     gap: 12px;
     align-items: center;
     overflow-x: auto;
-    min-width: 0; /* Allow shrinking below content size */
-    /* Enable momentum scrolling on iOS */
+    min-width: 0;
     -webkit-overflow-scrolling: touch;
     /* Hide scrollbar but keep functionality */
-    scrollbar-width: thin;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
 }
 
 .toolbar-right::-webkit-scrollbar {
-    height: 4px;
+    display: none; /* Chrome, Safari, Opera */
 }
 
-.toolbar-right::-webkit-scrollbar-thumb {
-    background: var(--border-color);
-    border-radius: 2px;
+/* Prevent view toggle buttons from scaling on hover (causes clipping in toolbar) */
+.toolbar-right .btn-icon:hover:not(:disabled) {
+    transform: none;
 }
 
 .btn-sm {

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.8] 2025-01-27
+### Fixes
+- A newly generated folder in Chart Manager was not available in the Download area
+
+### Changes
+- No Scrolling for Chart Manager top buttons, breaks the design
+- CSS optimized between mobile and desktop
+
+## [1.0.7] 2025-01-27
+### Changes:
+- to avoid conflicts use defaultChartsPath as charts-simple
+
 ## [1.0.6] 2025-01-27
 ### Changes:
 - Plugin description

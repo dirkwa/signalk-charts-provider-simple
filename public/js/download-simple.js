@@ -1,5 +1,10 @@
 // Simple download interface for charts from direct URLs
 
+// Tab activation handler - refreshes folder list when switching to this tab
+window.handleDownloadTabActive = function() {
+  loadFoldersForDownload();
+}
+
 // Initialize the download interface
 function initDownloadInterface() {
   const output = document.getElementById('chartLockerOutput');

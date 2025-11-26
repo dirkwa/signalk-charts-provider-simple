@@ -37,5 +37,7 @@ window.openTab = function(evt, tabName) {
         window.handleChartLockerTabActive();
     } else if (tabName === 'manage') {
         window.handleManageTabActive();
+    } else if (tabName === 'download') {
+        window.handleDownloadTabActive();
     }
 }
