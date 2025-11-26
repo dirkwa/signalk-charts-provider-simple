@@ -21,7 +21,7 @@ module.exports = (app) => {
 
   let urlBase = '';
   const configBasePath = app.config.configPath;
-  const defaultChartsPath = path.join(configBasePath, '/charts');
+  const defaultChartsPath = path.join(configBasePath, '/charts-simple');
   const serverMajorVersion = app.config.version
     ? parseInt(app.config.version.split('.')[0])
     : '1';

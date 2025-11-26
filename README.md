@@ -30,7 +30,7 @@ npm install signalk-charts-provider-simple
 ## Configuration
 
 1. Navigate to **Server → Plugin Config → Charts Provider Simple**
-2. Set your chart directory path (defaults to `~/.signalk/charts`)
+2. Set your chart directory path (defaults to `~/.signalk/charts-simple`)
 3. Enable the plugin
 4. Restart Signal K server
 
