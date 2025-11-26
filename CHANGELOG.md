@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.5] 2025-01-27
+### Fixes:
+- Github publishing - remove npm test
+
+### Changes:
+- Typo in README.md
+
 ## [1.0.4] 2025-01-27
 ### Fixes:
 - Github publishing
