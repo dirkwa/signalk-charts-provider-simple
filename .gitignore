@@ -1,0 +1,8 @@
+# Node modules
+node_modules/
+
+# IDE files
+.vscode/
+
+# testbuilds
+*.tgz
