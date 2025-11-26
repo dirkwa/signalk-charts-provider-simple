@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.4] 2025-01-27
+### Fixes:
+- Github publishing
+
 ## [1.0.3] 2025-01-27
 ### Fixes:
 - Github publishing
@@ -20,6 +24,6 @@
 - Download queue management
 - Manual Upload
 - Folder organization with drag-and-drop
-- Root folder and subfolder will be abailable for charts
-- Abillity to disable certain charts (requires server reload)
+- Root folder and subfolder will be available for charts
+- Ability to disable certain charts (requires server reload)
 - Rename chart (requires server reload)
