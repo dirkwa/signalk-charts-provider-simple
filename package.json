@@ -1,6 +1,6 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Simple Signal K chart provider for local MBTiles and directory-based charts with download management",
   "main": "src/index.js",
   "scripts": {
