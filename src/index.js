@@ -72,6 +72,27 @@ module.exports = (app) => {
     const configPath = app.config.configPath;
     initChartState(configPath);
 
+    // Listen for download completion events and emit delta notifications
+    downloadManager.removeAllListeners('job-completed'); // Remove old listeners on restart
+    downloadManager.on('job-completed', async (job) => {
+      app.debug(`Download job completed: ${job.id}, extracted files: ${job.extractedFiles.join(', ')}`);
+
+      // Reload chart providers to include downloaded charts
+      await refreshChartProviders();
+
+      // Emit delta for each extracted chart
+      for (const fileName of job.extractedFiles) {
+        const chartId = fileName.replace(/\.mbtiles$/, '');
+
+        // If chart is enabled and in chartProviders, emit its data
+        if (chartProviders[chartId]) {
+          const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+          emitChartDelta(chartId, chartData);
+          app.debug(`Delta emitted for downloaded chart: ${chartId}`);
+        }
+      }
+    });
+
     app.debug(`Start chart provider. Chart path: ${chartPath}`);
 
     // Do not register routes if plugin has been started once already
@@ -342,9 +363,20 @@ module.exports = (app) => {
 
         if (fs.existsSync(fullPath)) {
           await fs.promises.unlink(fullPath);
+
+          // Reload chart providers and emit delta
+          await refreshChartProviders();
+          const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+          emitChartDelta(chartId, null);
+
           res.status(200).send('Chart deleted successfully');
         } else {
           // File might not exist yet if it was being downloaded
+          // Still emit delta in case it was previously registered
+          await refreshChartProviders();
+          const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+          emitChartDelta(chartId, null);
+
           res.status(200).send('Chart deletion processed');
         }
       } catch (error) {
@@ -439,9 +471,25 @@ module.exports = (app) => {
       try {
         setChartEnabled(chartPathParam, enabled);
 
-        // After changing state, we need to reload charts for it to take effect in the v2 API
-        // Signal to restart the plugin or reload charts
         app.debug(`Chart ${chartPathParam} set to ${enabled ? 'enabled' : 'disabled'}`);
+
+        // Reload chart providers to update v1/v2 API
+        await refreshChartProviders();
+
+        // Emit delta notification for toggle operation
+        if (enabled) {
+          // Chart was enabled - emit full chart data
+          if (chartProviders[chartPathParam.replace(/\.mbtiles$/, '')]) {
+            const chart = chartProviders[chartPathParam.replace(/\.mbtiles$/, '')];
+            const chartData = sanitizeProvider(chart, serverMajorVersion);
+            emitChartDelta(chart.identifier, chartData);
+          }
+        } else {
+          // Chart was disabled - emit null to remove from stream
+          // Use the filename (without extension) as identifier
+          const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+          emitChartDelta(chartId, null);
+        }
 
         res.status(200).json({ success: true, message: `Chart ${enabled ? 'enabled' : 'disabled'}` });
       } catch (error) {
@@ -502,6 +550,20 @@ module.exports = (app) => {
         // Move the file
         await fs.promises.rename(sourcePath, targetPath);
         app.debug(`Moved chart from ${sourcePath} to ${targetPath}`);
+
+        // Reload chart providers and emit deltas for move operation
+        await refreshChartProviders();
+
+        // Emit delta notifications
+        // Note: Move doesn't change the chart identifier (just the filename), but we still
+        // need to notify that the old resource is gone and new one exists
+        const chartId = path.basename(chartPath).replace(/\.mbtiles$/, '');
+
+        // If chart is in chartProviders (enabled), emit its data
+        if (chartProviders[chartId]) {
+          const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+          emitChartDelta(chartId, chartData);
+        }
 
         res.status(200).json({ success: true, message: 'Chart moved successfully' });
       } catch (error) {
@@ -564,6 +626,20 @@ module.exports = (app) => {
         // Rename the file
         await fs.promises.rename(sourcePath, targetPath);
         app.debug(`Renamed chart from ${sourcePath} to ${targetPath}`);
+
+        // Reload chart providers and emit delta notifications for rename operation
+        await refreshChartProviders();
+
+        // Emit deltas: delete old name, add new name
+        const oldChartId = path.basename(chartPath).replace(/\.mbtiles$/, '');
+        const newChartId = path.basename(targetPath).replace(/\.mbtiles$/, '');
+
+        emitChartDelta(oldChartId, null);
+
+        if (chartProviders[newChartId]) {
+          const chartData = sanitizeProvider(chartProviders[newChartId], serverMajorVersion);
+          emitChartDelta(newChartId, chartData);
+        }
 
         res.status(200).json({ success: true, message: 'Chart renamed successfully' });
       } catch (error) {
@@ -632,6 +708,20 @@ module.exports = (app) => {
             await Promise.all(writePromises);
 
             if (uploadedFiles.length > 0) {
+              // Reload chart providers to include new uploads
+              await refreshChartProviders();
+
+              // Emit delta notifications for uploaded charts
+              for (const filename of uploadedFiles) {
+                const chartId = filename.replace(/\.mbtiles$/, '');
+
+                // If chart is enabled and in chartProviders, emit its data
+                if (chartProviders[chartId]) {
+                  const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+                  emitChartDelta(chartId, chartData);
+                }
+              }
+
               res.status(200).json({
                 success: true,
                 message: `${uploadedFiles.length} file(s) uploaded successfully`,
@@ -710,6 +800,53 @@ module.exports = (app) => {
       });
     } catch (error) {
       app.debug('Failed Provider Registration!');
+    }
+  };
+
+  /**
+   * Reload chart providers to pick up changes from disk
+   * This ensures v1/v2 API endpoints serve current data
+   */
+  const refreshChartProviders = async () => {
+    try {
+      const chartPath = props.chartPath || defaultChartsPath;
+      const charts = await findCharts(chartPath);
+
+      // Filter out disabled charts
+      chartProviders = _.pickBy(charts, (chart) => {
+        const relativePath = path.relative(chartPath, chart._filePath || '');
+        return isChartEnabled(relativePath);
+      });
+
+      app.debug(`Chart providers refreshed: ${_.keys(chartProviders).length} enabled charts`);
+    } catch (error) {
+      app.error(`Failed to refresh chart providers: ${error.message}`);
+    }
+  };
+
+  /**
+   * Emit delta notification for chart resource changes
+   * Following SignalK Server's built-in resource provider pattern
+   * @param {string} chartId - Chart identifier (relative path without extension)
+   * @param {object|null} chartValue - Chart data object, or null for deletions
+   */
+  const emitChartDelta = (chartId, chartValue) => {
+    try {
+      app.handleMessage(
+        'signalk-charts-provider-simple',
+        {
+          updates: [{
+            values: [{
+              path: `resources.charts.${chartId}`,
+              value: chartValue
+            }]
+          }]
+        },
+        serverMajorVersion
+      );
+      app.debug(`Delta emitted for chart: ${chartId}`);
+    } catch (error) {
+      app.error(`Failed to emit delta for chart ${chartId}: ${error.message}`);
     }
   };
 

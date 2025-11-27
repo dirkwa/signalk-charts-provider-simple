@@ -1163,7 +1163,6 @@ function showToggleNotification(chartName, enabled) {
                 <div class="notification-text">
                     <div class="notification-title">${enabled ? 'Chart Enabled' : 'Chart Disabled'}</div>
                     <div class="notification-message">${chartName}</div>
-                    <div class="notification-restart">${window.getIcon('warning')} Please restart SignalK server for changes to take effect</div>
                 </div>
             </div>
         </div>
@@ -1232,7 +1231,6 @@ function showRenameNotification(oldName, newName) {
                 <div class="notification-text">
                     <div class="notification-title">Chart Renamed</div>
                     <div class="notification-message">${oldName} → ${newName}</div>
-                    <div class="notification-restart">${window.getIcon('warning')} Please restart SignalK server for changes to take effect</div>
                 </div>
             </div>
         </div>
@@ -1267,7 +1265,6 @@ function showUploadNotification(fileCount) {
                 <div class="notification-text">
                     <div class="notification-title">Upload Complete</div>
                     <div class="notification-message">${fileCount} chart${fileCount !== 1 ? 's' : ''} uploaded successfully</div>
-                    <div class="notification-restart">${window.getIcon('warning')} Please restart SignalK server to load the new charts</div>
                 </div>
             </div>
         </div>

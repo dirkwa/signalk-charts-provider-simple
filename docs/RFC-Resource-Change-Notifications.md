@@ -1,9 +1,15 @@
-# RFC: Real-Time Resource Change Notifications
+# RFC: Resource Provider Delta Notification Best Practice
 
-**Status:** Proposal
+**Status:** Implemented (Reference Implementation Available)
+**Type:** Documentation / Best Practice
 **Author:** SignalK Charts Provider Simple Plugin
-**Date:** 2025-01-28
+**Date:** 2025-01-28 (Updated: 2025-11-28)
 **Issue:** [To be created]
+**Reference Implementation:** `signalk-charts-provider-simple` v1.2.0+
+
+## Summary
+
+This RFC documents the **proven pattern** where resource providers emit delta messages when resources change. The SignalK Server's built-in resource provider already does this for standard API operations, and this plugin now provides a complete working reference implementation showing how custom provider endpoints should follow the same pattern.
 
 ## API Version Clarification
 
@@ -49,19 +55,72 @@ SignalK already has all the infrastructure needed for real-time updates:
 - ✅ Resources already defined in specification (`schemas/groups/resources.json`)
 - ✅ "resources" context supported in delta messages
 - ✅ Course API and Autopilot API demonstrate resource-like push updates
+- ✅ **Built-in resource provider already emits deltas** when resources change via `/signalk/v2/api/resources` endpoints
 
-**What's Missing:** A standard pattern for resource providers to publish change notifications.
+### What's Already Working
+
+The SignalK Server's built-in resource provider (`src/api/resources/index.ts`) **already implements delta notifications**:
+
+**When resources are created/updated via POST/PUT:**
+```typescript
+// Line 767-775, 856-864
+server.handleMessage(
+  provider as string,
+  this.buildDeltaMsg(req.params.resourceType, id, req.body),
+  SKVersion.v2
+)
+```
+
+**When resources are deleted via DELETE:**
+```typescript
+// Line 919-927
+server.handleMessage(
+  provider as string,
+  this.buildDeltaMsg(req.params.resourceType, req.params.resourceId, null),
+  SKVersion.v2
+)
+```
+
+**Delta format (`buildDeltaMsg`, line 958-975):**
+```typescript
+{
+  updates: [{
+    values: [{
+      path: `resources.${resType}.${resid}`,
+      value: resValue  // or null for deletions
+    }]
+  }]
+}
+```
+
+### What's Missing (Solved by Reference Implementation)
+
+**The problem:** Most resource provider plugins (like charts, routes) **don't use the v2 API for modifications**. They implement their own custom endpoints (upload, download, delete, rename, move) that directly modify files without going through the standard API, so **deltas are never emitted**.
+
+**Example - Before this RFC:**
+- `POST /signalk/chart-tiles/upload` - Custom endpoint, NO delta ❌
+- `DELETE /signalk/chart-tiles/local-charts/:path` - Custom endpoint, NO delta ❌
+- `POST /signalk/chart-tiles/move-chart` - Custom endpoint, NO delta ❌
+- `POST /signalk/chart-tiles/rename-chart` - Custom endpoint, NO delta ❌
+
+**The gap:** Custom provider endpoints bypass the standard API → no automatic delta notifications.
+
+**Now - Reference Implementation (This Plugin):**
+- ✅ All custom endpoints now emit deltas using `app.handleMessage()`
+- ✅ Chart providers refreshed after each operation
+- ✅ Clients receive real-time updates without server restart
+- ✅ Works with Freeboard SK, WilhelmSK, and other WebSocket-enabled clients
 
 ## Proposed Solution
 
-Extend the existing SignalK delta infrastructure to support resource change notifications using the **already-established subscription and delta message patterns**.
+**Resource providers must emit deltas when resources change via custom endpoints**, following the same pattern the built-in provider already uses for standard API operations.
 
 ### Key Principles
 
-1. **Use existing infrastructure** - No new protocols, leverage WebSocket deltas
+1. **Use existing infrastructure** - Built-in provider already demonstrates the pattern
 2. **Backwards compatible** - Opt-in for providers and clients
-3. **Minimal spec changes** - Formalize existing capabilities
-4. **Follow proven patterns** - Based on Course API, Autopilot API, Notifications
+3. **No spec changes needed** - Infrastructure already exists
+4. **Follow proven pattern** - Match built-in provider's `handleMessage()` calls
 
 ### Technical Design
 
@@ -181,6 +240,139 @@ app.handleMessage('charts-provider', {
 - `updated` - Existing resource modified
 - `deleted` - Resource removed (value must be null)
 
+## Reference Implementation
+
+The `signalk-charts-provider-simple` plugin provides a complete working implementation of this pattern. Here's how it works:
+
+### 1. Helper Function for Delta Emission
+
+```javascript
+const emitChartDelta = (chartId, chartValue) => {
+  try {
+    app.handleMessage(
+      'signalk-charts-provider-simple',
+      {
+        updates: [{
+          values: [{
+            path: `resources.charts.${chartId}`,
+            value: chartValue  // null for deletions
+          }]
+        }]
+      },
+      serverMajorVersion  // 1 or 2
+    );
+    app.debug(`Delta emitted for chart: ${chartId}`);
+  } catch (error) {
+    app.error(`Failed to emit delta for chart ${chartId}: ${error.message}`);
+  }
+};
+```
+
+### 2. Refresh Function to Update API State
+
+**Critical:** Plugins must refresh their in-memory resource list after changes so REST API endpoints return current data:
+
+```javascript
+const refreshChartProviders = async () => {
+  try {
+    const charts = await findCharts(chartPath);
+
+    // Filter out disabled charts
+    chartProviders = _.pickBy(charts, (chart) => {
+      const relativePath = path.relative(chartPath, chart._filePath || '');
+      return isChartEnabled(relativePath);
+    });
+
+    app.debug(`Chart providers refreshed: ${_.keys(chartProviders).length} enabled charts`);
+  } catch (error) {
+    app.error(`Failed to refresh chart providers: ${error.message}`);
+  }
+};
+```
+
+### 3. Emit Deltas on All Operations
+
+**Upload:**
+```javascript
+app.post('/upload', async (req, res) => {
+  // ... upload file ...
+
+  await refreshChartProviders();  // Refresh in-memory list
+
+  if (chartProviders[chartId]) {
+    const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+    emitChartDelta(chartId, chartData);
+  }
+
+  res.json({ success: true });
+});
+```
+
+**Delete:**
+```javascript
+app.delete('/charts/:id', async (req, res) => {
+  await fs.promises.unlink(chartPath);
+
+  await refreshChartProviders();  // Refresh in-memory list
+
+  const chartId = path.basename(chartPath).replace(/\.mbtiles$/, '');
+  emitChartDelta(chartId, null);  // null = deletion
+
+  res.send('Chart deleted successfully');
+});
+```
+
+**Toggle (Enable/Disable):**
+```javascript
+app.post('/charts/:id/toggle', async (req, res) => {
+  setChartEnabled(chartPath, enabled);
+
+  await refreshChartProviders();  // Refresh in-memory list
+
+  if (enabled && chartProviders[chartId]) {
+    const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+    emitChartDelta(chartId, chartData);
+  } else {
+    emitChartDelta(chartId, null);  // Disabled = removed from stream
+  }
+
+  res.json({ success: true });
+});
+```
+
+**Download Completion (Event-Based):**
+```javascript
+downloadManager.on('job-completed', async (job) => {
+  await refreshChartProviders();  // Refresh in-memory list
+
+  for (const fileName of job.extractedFiles) {
+    const chartId = fileName.replace(/\.mbtiles$/, '');
+
+    if (chartProviders[chartId]) {
+      const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+      emitChartDelta(chartId, chartData);
+    }
+  }
+});
+```
+
+### 4. Results
+
+With this implementation:
+- ✅ Charts appear in Freeboard SK **instantly** after upload (no restart)
+- ✅ Disabled charts **disappear immediately** from all clients
+- ✅ Downloaded charts **auto-appear** when extraction completes
+- ✅ Renamed/moved charts **update in real-time** across all connected devices
+- ✅ REST API (`/signalk/v2/api/resources/charts`) returns current state
+- ✅ WebSocket stream (`/signalk/v1/stream`) pushes live updates
+
+### Key Lessons Learned
+
+1. **Must refresh in-memory state** - Delta notifications alone aren't enough; plugins must also update their internal resource list so REST API endpoints return current data
+2. **Use simple identifiers** - Chart IDs should be just the filename (not full path) to match how resources are keyed
+3. **Emit null for deletions** - Clients interpret `value: null` as resource removal
+4. **Fire-and-forget is OK** - No need to wait for delta emission; let it happen asynchronously
+
 ### Supported Resource Types
 
 All existing resource types benefit from this pattern:
@@ -270,23 +462,17 @@ Alarms and alerts already use delta messages for instant delivery:
 
 ## Implementation Plan
 
-### Phase 1: Specification (1-2 weeks)
-1. Create RFC issue on `signalk/specification` repository
-2. Community discussion and refinement
-3. Update schemas:
-   - `schemas/groups/resources.json` - Add operation metadata field
-   - `schemas/definitions.json` - Define operation enum
-4. Add documentation: `mdbook/src/resources_notifications.md`
-5. Add test data: `test/data/delta-valid/resource-notifications.json`
-6. Submit PR for review
+### Phase 1: Documentation (1 week)
+**SignalK Server already supports this!** No spec or server changes needed.
 
-### Phase 2: Server Support (2-4 weeks)
-SignalK Server already supports this! No core changes needed - providers can use `app.handleMessage()` today.
+Required documentation updates:
+1. **Server Plugin API docs** - Document that providers should emit deltas via `app.handleMessage()` when resources change
+2. **Best practices guide** - Show example of emitting deltas from custom endpoints
+3. **Update Resources API docs** - Clarify that subscriptions to `resources.*.*` will receive change notifications
 
 Optional enhancements:
-1. Helper method: `app.emitResourceChange(type, id, value, operation)`
-2. Documentation in Server Plugin API
-3. Reference implementation in example plugin
+1. Helper method: `app.emitResourceChange(type, id, value)` for convenience
+2. Reference implementation in example plugin
 
 ### Phase 3: Provider Adoption (Gradual)
 Resource providers update at their own pace:
