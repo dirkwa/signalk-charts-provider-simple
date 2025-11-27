@@ -5,7 +5,7 @@
 - Real-time delta notifications to all chart operations in the plugin, following the exact pattern used by SignalK Server's built-in resource provider, so server reloads not needed anymore.
 
 ### Changed:
-- [RFC-Ressource-Change](https://github.com/dirkwa/signalk-charts-provider-simple/blob/main/docs/RFC-Resource-Change-Notifications.md) changed to [RFC: Resource Provider Delta Notification Best Practice](https://github.com/dirkwa/signalk-charts-provider-simple/blob/main/docs/RFC-Resource-Change-Notifications.md) - thanks Adrian!
+- "RFC-Ressource-Change" changed to [RFC: Resource Provider Delta Notification Best Practice](https://github.com/dirkwa/signalk-charts-provider-simple/blob/main/docs/RFC-Resource-Change-Notifications.md) - thanks Adrian!
 - Unnessecary server reload notifications removed
 
 ## [1.1.1] 2025-01-28
