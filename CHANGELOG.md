@@ -1,4 +1,7 @@
 # Changelog
+## [1.1.1] 2025-01-28
+### New:
+- [RFC-Ressource-Change](https://github.com/dirkwa/signalk-charts-provider-simple/blob/main/docs/RFC-Resource-Change-Notifications.md) added to discuss with the community if we can make chart changes instant.
 
 ## [1.1.0] 2025-01-28
 ### New:
