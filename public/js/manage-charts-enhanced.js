@@ -175,6 +175,9 @@ function renderChartsUI() {
     html += `<input type="file" id="chartUploadInput" accept=".mbtiles" multiple style="display: none;" onchange="handleFileUpload(event)">`;
 
     manageOutput.innerHTML = html;
+
+    // Initialize touch drag and drop after rendering
+    initTouchDragDrop();
 }
 
 function renderChartCard(chart) {
@@ -193,7 +196,7 @@ function renderChartCard(chart) {
 
     if (viewMode === 'grid') {
         return `
-            <div class="chart-card ${chart.enabled ? '' : 'disabled'} ${chart.downloading ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${chart.relativePath}')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${chart.folder}')">
+            <div class="chart-card ${chart.enabled ? '' : 'disabled'} ${chart.downloading ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${chart.relativePath}')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${chart.folder}')" data-chart-path="${chart.relativePath}">
                 <div class="chart-card-header">
                     <div class="chart-status">
                         <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" onclick="toggleChart('${chart.relativePath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
@@ -233,7 +236,7 @@ function renderChartCard(chart) {
     } else {
         // List view
         return `
-            <div class="chart-list-item ${chart.enabled ? '' : 'disabled'} ${chart.downloading ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${chart.relativePath}')">
+            <div class="chart-list-item ${chart.enabled ? '' : 'disabled'} ${chart.downloading ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${chart.relativePath}')" data-chart-path="${chart.relativePath}">
                 <div class="chart-list-status">
                     <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" onclick="toggleChart('${chart.relativePath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
                         ${chart.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
@@ -548,6 +551,173 @@ window.handleDropOnFolder = async function(event, targetFolder) {
     // No duplicate, proceed with move
     await performChartMove(draggedChartPath, targetFolder);
     draggedChartPath = null;
+}
+
+// Touch drag and drop support for mobile devices (iOS Safari)
+let touchDragElement = null;
+let touchDragChartPath = null;
+let touchStartY = 0;
+let touchStartX = 0;
+let isDragging = false;
+let dragThreshold = 15; // pixels to move before initiating drag
+let touchStartTime = 0;
+let longPressTimer = null;
+let longPressTriggered = false;
+let touchHandlersInitialized = false;
+
+// Initialize touch event listeners with event delegation
+function initTouchDragDrop() {
+    if (touchHandlersInitialized) return; // Prevent duplicate initialization
+
+    const chartsContainer = document.getElementById('manageOutput');
+    if (!chartsContainer) return;
+
+    touchHandlersInitialized = true;
+
+    chartsContainer.addEventListener('touchstart', function(event) {
+        // Only initiate drag from chart cards/items, not buttons
+        const target = event.target;
+        if (target.tagName === 'BUTTON' || target.closest('button') ||
+            target.tagName === 'INPUT' || target.closest('input')) {
+            return; // Let buttons and inputs work normally
+        }
+
+        const chartCard = target.closest('.chart-card, .chart-list-item');
+        if (!chartCard) return;
+
+        const chartPath = chartCard.getAttribute('data-chart-path');
+        if (!chartPath) return;
+
+        const touch = event.touches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+        touchStartTime = Date.now();
+        touchDragChartPath = chartPath;
+        touchDragElement = chartCard;
+        isDragging = false;
+        longPressTriggered = false;
+
+        // Start long-press timer for immediate visual feedback
+        longPressTimer = setTimeout(() => {
+            longPressTriggered = true;
+            if (touchDragElement) {
+                touchDragElement.style.opacity = '0.6';
+                touchDragElement.style.transform = 'scale(0.98)';
+                // Add a visual indicator that drag is ready
+                touchDragElement.style.boxShadow = '0 8px 16px rgba(0,0,0,0.3)';
+            }
+        }, 300); // 300ms long press
+    }, { passive: false });
+
+    chartsContainer.addEventListener('touchmove', function(event) {
+        if (!touchDragChartPath) return;
+
+        const touch = event.touches[0];
+        const deltaX = Math.abs(touch.clientX - touchStartX);
+        const deltaY = Math.abs(touch.clientY - touchStartY);
+
+        // Cancel long press if moved too much before it triggered
+        if (!longPressTriggered && (deltaX > dragThreshold || deltaY > dragThreshold)) {
+            clearTimeout(longPressTimer);
+            touchDragChartPath = null;
+            touchDragElement = null;
+            return;
+        }
+
+        // If long press was triggered, prevent all default behavior
+        if (longPressTriggered) {
+            event.preventDefault(); // Always prevent scrolling after long press
+            event.stopPropagation();
+
+            // Check if user has moved enough to start dragging (after long press)
+            if (!isDragging && (deltaX > dragThreshold || deltaY > dragThreshold)) {
+                isDragging = true;
+            }
+
+            // Highlight folder under touch point (even before drag threshold)
+            const elementUnderTouch = document.elementFromPoint(touch.clientX, touch.clientY);
+            document.querySelectorAll('.folder-btn').forEach(btn => {
+                btn.classList.remove('drag-over');
+            });
+
+            if (elementUnderTouch && elementUnderTouch.classList.contains('folder-btn')) {
+                elementUnderTouch.classList.add('drag-over');
+            }
+        }
+    }, { passive: false });
+
+    chartsContainer.addEventListener('touchend', async function(event) {
+        clearTimeout(longPressTimer);
+
+        if (!touchDragChartPath) return;
+
+        // Reset styles
+        if (touchDragElement) {
+            touchDragElement.style.opacity = '1';
+            touchDragElement.style.transform = 'scale(1)';
+            touchDragElement.style.boxShadow = '';
+        }
+
+        if (isDragging && longPressTriggered) {
+            const touch = event.changedTouches[0];
+            const elementUnderTouch = document.elementFromPoint(touch.clientX, touch.clientY);
+
+            // Remove drag-over highlighting
+            document.querySelectorAll('.folder-btn').forEach(btn => {
+                btn.classList.remove('drag-over');
+            });
+
+            // Check if dropped on a folder button
+            if (elementUnderTouch && elementUnderTouch.classList.contains('folder-btn')) {
+                // Extract folder from button onclick attribute
+                const onclickAttr = elementUnderTouch.getAttribute('onclick');
+                const folderMatch = onclickAttr.match(/selectFolder\('([^']*)'\)/);
+
+                if (folderMatch) {
+                    const targetFolder = folderMatch[1];
+                    const chart = chartsData.find(c => c.relativePath === touchDragChartPath);
+
+                    if (chart && chart.folder !== targetFolder) {
+                        // Check for duplicates
+                        const targetFolderCharts = chartsData.filter(c => c.folder === targetFolder);
+                        const duplicate = targetFolderCharts.find(c => c.name === chart.name);
+
+                        if (duplicate) {
+                            showDuplicateWarning({
+                                duplicates: [chart.name + '.mbtiles'],
+                                folderName: targetFolder,
+                                onConfirm: async () => {
+                                    await performChartMove(touchDragChartPath, targetFolder);
+                                },
+                                onCancel: () => {}
+                            });
+                        } else {
+                            await performChartMove(touchDragChartPath, targetFolder);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Reset state
+        touchDragChartPath = null;
+        touchDragElement = null;
+        isDragging = false;
+        longPressTriggered = false;
+    }, { passive: true });
+
+    chartsContainer.addEventListener('touchcancel', function() {
+        clearTimeout(longPressTimer);
+        if (touchDragElement) {
+            touchDragElement.style.opacity = '1';
+            touchDragElement.style.transform = 'scale(1)';
+            touchDragElement.style.boxShadow = '';
+        }
+        touchDragChartPath = null;
+        touchDragElement = null;
+        isDragging = false;
+        longPressTriggered = false;
+    }, { passive: true });
 }
 
 // Extracted move logic to be reusable

@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.1.0] 2025-01-28
+### New:
+- Press and hold, than drag and drop charts to folder on touch and mobile devices - tested win11 & iOS 26
+
 ## [1.0.8] 2025-01-27
 ### Fixes
 - A newly generated folder in Chart Manager was not available in the Download area

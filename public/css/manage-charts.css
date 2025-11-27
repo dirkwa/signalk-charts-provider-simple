@@ -164,6 +164,13 @@
     transition: box-shadow var(--md-sys-motion-duration-short2) var(--md-sys-motion-easing-standard),
                 transform var(--md-sys-motion-duration-short2) var(--md-sys-motion-easing-standard);
     cursor: grab;
+    touch-action: pan-y; /* Allow vertical scrolling but enable custom horizontal gestures */
+    /* Prevent text selection on mobile */
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none; /* Disable iOS callout menu */
 }
 
 .chart-card:active {
@@ -292,6 +299,14 @@
     transition: all 0.2s ease;
     /* Touch-friendly height */
     min-height: 72px;
+    touch-action: pan-y; /* Allow vertical scrolling but enable custom horizontal gestures */
+    cursor: grab;
+    /* Prevent text selection on mobile */
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none; /* Disable iOS callout menu */
 }
 
 .chart-list-item:hover {
