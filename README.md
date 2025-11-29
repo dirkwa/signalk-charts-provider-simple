@@ -48,6 +48,7 @@ The interface provides two main tabs:
 
 1. **Manage Charts**:
    - View all charts in your library
+   - View detailed chart information (metadata, bounds, zoom levels, tile count, etc.)
    - Enable/disable charts
    - Organize charts into folders
    - Upload new chart files

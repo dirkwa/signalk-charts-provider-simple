@@ -648,6 +648,81 @@ module.exports = (app) => {
       }
     });
 
+    // Get chart metadata (MBTiles only)
+    app.get(`${chartTilesPath}/chart-metadata/:chartPath`, async (req, res) => {
+      const chartPathParam = decodeURIComponent(req.params.chartPath);
+
+      try {
+        const basePath = props.chartPath || defaultChartsPath;
+        const fullPath = path.join(basePath, chartPathParam);
+
+        // Security check: ensure the path is within the base chart directory
+        const normalizedFullPath = path.normalize(fullPath);
+        const normalizedBasePath = path.normalize(basePath);
+        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+          return res.status(403).send('Access denied: Invalid path');
+        }
+
+        // Check if file exists
+        if (!fs.existsSync(fullPath)) {
+          return res.status(404).send('Chart not found');
+        }
+
+        // Only support .mbtiles files
+        if (!fullPath.endsWith('.mbtiles')) {
+          return res.status(400).send('Metadata only available for MBTiles charts');
+        }
+
+        // Read metadata from SQLite database
+        const sqlite3 = require('sqlite3').verbose();
+        const db = new sqlite3.Database(fullPath, sqlite3.OPEN_READONLY, (err) => {
+          if (err) {
+            console.error('Error opening database:', err);
+            return res.status(500).send('Error reading chart metadata');
+          }
+        });
+
+        db.all('SELECT name, value FROM metadata', [], (err, rows) => {
+          if (err) {
+            db.close();
+            console.error('Error querying metadata:', err);
+            return res.status(500).send('Error reading chart metadata');
+          }
+
+          // Convert rows to object
+          const metadata = {};
+          rows.forEach(row => {
+            metadata[row.name] = row.value;
+          });
+
+          // Try to get tile count - different MBTiles files use different table names
+          // Try 'map' first (standard), then 'tiles' (alternative)
+          db.get('SELECT COUNT(*) as count FROM map', [], (err, countRow) => {
+            if (err) {
+              // Try alternative table name
+              db.get('SELECT COUNT(*) as count FROM tiles', [], (err2, countRow2) => {
+                db.close();
+
+                if (!err2 && countRow2) {
+                  metadata.tileCount = countRow2.count;
+                }
+                // If both fail, silently omit tile count - some MBTiles formats don't have this
+                return res.json(metadata);
+              });
+            } else {
+              db.close();
+              metadata.tileCount = countRow.count;
+              res.json(metadata);
+            }
+          });
+        });
+
+      } catch (error) {
+        console.error('Error fetching chart metadata:', error);
+        res.status(500).send('Error fetching chart metadata');
+      }
+    });
+
     // Upload chart file
     app.post(`${chartTilesPath}/upload`, async (req, res) => {
       try {

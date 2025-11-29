@@ -1432,3 +1432,91 @@
     color: var(--accent-primary);
     font-weight: 500;
 }
+
+/* Info Button */
+.btn-info {
+    background: rgba(0, 212, 255, 0.1);
+    color: var(--accent-primary);
+    border: 1px solid var(--accent-primary);
+}
+
+.btn-info::before {
+    background: var(--accent-primary);
+}
+
+.btn-info:hover:not(:disabled)::before {
+    opacity: 0.08;
+}
+
+.btn-info:active:not(:disabled)::before {
+    opacity: 0.12;
+}
+
+.btn-info svg {
+    fill: var(--accent-primary);
+}
+
+/* Chart Info Modal */
+.chart-info-modal {
+    max-width: 600px;
+    max-height: 80vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.chart-info-modal .delete-modal-body {
+    overflow-y: auto;
+    max-height: calc(80vh - 200px);
+    margin-bottom: 0;
+    padding-bottom: 16px;
+}
+
+.chart-info-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.chart-info-row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 16px;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    align-items: start;
+}
+
+.chart-info-label {
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.chart-info-value {
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    word-break: break-word;
+}
+
+/* Responsive adjustments for mobile */
+@media (max-width: 768px) {
+    .chart-info-modal {
+        max-width: 95%;
+        max-height: 90vh;
+    }
+
+    .chart-info-row {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .chart-info-label {
+        font-size: 0.85rem;
+    }
+
+    .chart-info-value {
+        font-size: 0.9rem;
+    }
+}
