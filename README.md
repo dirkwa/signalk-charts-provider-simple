@@ -47,13 +47,14 @@ http://[your-server]:3000/plugins/signalk-charts-provider-simple/
 The interface provides two main tabs:
 
 1. **Manage Charts**:
-   - View all charts in your library
-   - View detailed chart information (metadata, bounds, zoom levels, tile count, etc.)
+   - View all charts in your library with chart names displayed from MBTiles metadata
+   - View chart metadata (name, description, bounds, zoom levels, tile count, etc.)
+   - Edit chart names directly in MBTiles files (personal use only)
    - Enable/disable charts
    - Organize charts into folders
    - Upload new chart files
    - Delete unwanted charts
-   - Rename charts
+   - Rename chart files
 
 2. **Download from URL**:
    - Download charts directly from any URL
@@ -73,6 +74,18 @@ The plugin supports this chart formats:
 Charts provided by this plugin work with:
 - [Freeboard SK](https://www.npmjs.com/package/@signalk/freeboard-sk)
 - [OpenCPN](https://opencpn.org/)
+
+## Legal Notice
+
+### Chart Metadata Editing
+
+This plugin includes a feature to edit chart metadata (chart names) in MBTiles files. **This feature is intended for personal use only.**
+
+**Important:**
+- The Signal K community is **not responsible** for any illegal use of this feature
+- Modified charts are automatically marked with "USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY" in the description field
+- **Do not distribute** modified charts - this may violate copyright laws
+- Use this feature responsibly and only for organizing your personal chart library
 
 ## Acknowledgments
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.4.0] 2025-11-30
+### New:
+- Chart Metadata Editor - Edit chart names directly in MBTiles files
+  - "Info" button renamed to "Meta" for clarity
+  - Click "Edit" in metadata modal to modify chart name
+  - Legal warning displayed before editing
+  - Auto-updates description to "USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY"
+  - Personal use only - helps identify charts for navigation vs distribution
+  - Real-time delta updates to Freeboard SK after metadata changes
+- Chart Name Display - MBTiles chart names now shown in detail view
+  - Automatically reads chart name from MBTiles metadata
+  - Displayed in accent color between Size and Folder
+  - Fast single-query per chart (no performance impact)
+  - Updates automatically when chart name is edited
+
+### Important:
+- This feature is for personal use only
+- Modified charts should not be distributed
+- Signal K community is not responsible for any illegal use of this feature
+
 ## [1.3.0] 2025-11-30
 ### New:
 - Chart Info button - View detailed MBTiles metadata directly in the Chart Manager

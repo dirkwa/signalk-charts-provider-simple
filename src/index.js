@@ -648,6 +648,92 @@ module.exports = (app) => {
       }
     });
 
+    // Update chart metadata (MBTiles only)
+    app.put(`${chartTilesPath}/chart-metadata/:chartPath`, async (req, res) => {
+      const chartPathParam = decodeURIComponent(req.params.chartPath);
+      const { name } = req.body;
+
+      if (!name || typeof name !== 'string') {
+        return res.status(400).send('Chart name is required');
+      }
+
+      try {
+        const basePath = props.chartPath || defaultChartsPath;
+        const fullPath = path.join(basePath, chartPathParam);
+
+        // Security check
+        const normalizedFullPath = path.normalize(fullPath);
+        const normalizedBasePath = path.normalize(basePath);
+        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+          return res.status(403).send('Access denied: Invalid path');
+        }
+
+        // Check if file exists
+        if (!fs.existsSync(fullPath)) {
+          return res.status(404).send('Chart not found');
+        }
+
+        // Only support .mbtiles files
+        if (!fullPath.endsWith('.mbtiles')) {
+          return res.status(400).send('Metadata editing only available for MBTiles charts');
+        }
+
+        // Update metadata in SQLite database
+        const sqlite3 = require('sqlite3').verbose();
+        const db = new sqlite3.Database(fullPath, (err) => {
+          if (err) {
+            console.error('Error opening database:', err);
+            return res.status(500).send('Error opening chart database');
+          }
+        });
+
+        // Update name and description
+        const description = 'USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY';
+
+        db.serialize(() => {
+          db.run('UPDATE metadata SET value = ? WHERE name = ?', [name, 'name'], (err) => {
+            if (err) {
+              db.close();
+              console.error('Error updating chart name:', err);
+              return res.status(500).send('Error updating chart name');
+            }
+
+            // Update description with warning
+            db.run('UPDATE metadata SET value = ? WHERE name = ?', [description, 'description'], async (err) => {
+              db.close();
+
+              if (err) {
+                console.error('Error updating description:', err);
+                return res.status(500).send('Error updating description');
+              }
+
+              app.debug(`Chart metadata updated: ${chartPathParam} - New name: ${name}`);
+
+              // Reload chart providers and emit delta notification
+              try {
+                await refreshChartProviders();
+
+                const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+                if (chartProviders[chartId]) {
+                  const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+                  emitChartDelta(chartId, chartData);
+                  app.debug(`Delta emitted for metadata update: ${chartId}`);
+                }
+              } catch (refreshErr) {
+                app.error(`Error refreshing charts after metadata update: ${refreshErr.message}`);
+              }
+
+              res.json({ success: true, message: 'Chart metadata updated successfully' });
+            });
+          });
+        });
+
+      } catch (error) {
+        console.error('Error updating chart metadata:', error);
+        res.status(500).send('Error updating chart metadata');
+      }
+    });
+
     // Get chart metadata (MBTiles only)
     app.get(`${chartTilesPath}/chart-metadata/:chartPath`, async (req, res) => {
       const chartPathParam = decodeURIComponent(req.params.chartPath);

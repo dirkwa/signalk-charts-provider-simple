@@ -210,6 +210,12 @@ function renderChartCard(chart) {
                         <span class="meta-label">${window.getIcon('size')} Size:</span>
                         <span class="meta-value">${displaySize}</span>
                     </div>
+                    ${chart.chartName ? `
+                    <div class="chart-meta-row">
+                        <span class="meta-label">📊 Chart:</span>
+                        <span class="meta-value" style="font-weight: 500; color: var(--accent-primary);">${chart.chartName}</span>
+                    </div>
+                    ` : ''}
                     <div class="chart-meta-row">
                         <span class="meta-label">${window.getIcon('folder')} Folder:</span>
                         <span class="meta-value">${folderDisplay}</span>
@@ -224,8 +230,8 @@ function renderChartCard(chart) {
                     </div>
                 </div>
                 <div class="chart-card-footer">
-                    <button class="btn btn-sm btn-info" onclick="showChartInfo('${chart.relativePath}')" title="View chart information">
-                        Info
+                    <button class="btn btn-sm btn-info" onclick="showChartInfo('${chart.relativePath}')" title="View chart metadata">
+                        Meta
                     </button>
                     <button class="btn btn-sm btn-secondary" onclick="showRenameDialog('${chart.relativePath}', '${chart.name}', '${chart.folder}')" title="Rename chart">
                         Rename
@@ -255,8 +261,8 @@ function renderChartCard(chart) {
                     </div>
                 </div>
                 <div class="chart-list-actions">
-                    <button class="btn btn-sm btn-info" onclick="showChartInfo('${chart.relativePath}')" title="View chart information">
-                        Info
+                    <button class="btn btn-sm btn-info" onclick="showChartInfo('${chart.relativePath}')" title="View chart metadata">
+                        Meta
                     </button>
                     <button class="btn btn-sm btn-secondary" onclick="showRenameDialog('${chart.relativePath}', '${chart.name}', '${chart.folder}')" title="Rename chart">
                         Rename
@@ -1296,8 +1302,15 @@ function showUploadNotification(fileCount) {
 }
 
 // Chart info modal
+let currentChartPath = null;
+let currentMetadata = null;
+let isEditMode = false;
+
 window.showChartInfo = async function(chartPath) {
     try {
+        currentChartPath = chartPath;
+        isEditMode = false;
+
         const response = await fetch(`/signalk/chart-tiles/chart-metadata/${encodeURIComponent(chartPath)}`);
 
         if (!response.ok) {
@@ -1307,93 +1320,199 @@ window.showChartInfo = async function(chartPath) {
         }
 
         const metadata = await response.json();
+        currentMetadata = metadata;
 
-        // Format the metadata nicely
-        const formatValue = (key, value) => {
-            if (value === null || value === undefined || value === '') {
-                return '<span style="color: var(--text-secondary); font-style: italic;">Not specified</span>';
-            }
-
-            switch(key) {
-                case 'bounds':
-                    // Format: [minLon, minLat, maxLon, maxLat]
-                    try {
-                        const bounds = typeof value === 'string' ? value.split(',').map(v => parseFloat(v.trim())) : value;
-                        return `
-                            <div style="font-family: monospace; font-size: 0.9em;">
-                                SW: ${bounds[0].toFixed(4)}°, ${bounds[1].toFixed(4)}°<br>
-                                NE: ${bounds[2].toFixed(4)}°, ${bounds[3].toFixed(4)}°
-                            </div>
-                        `;
-                    } catch {
-                        return value;
-                    }
-                case 'tileCount':
-                    return parseInt(value).toLocaleString();
-                case 'minzoom':
-                case 'maxzoom':
-                    return `Level ${value}`;
-                case 'legend':
-                    return '<span style="color: var(--text-secondary); font-style: italic;">Available (not displayed)</span>';
-                default:
-                    return value;
-            }
-        };
-
-        // Build metadata rows
-        const metadataRows = [
-            { label: 'Chart Name', key: 'name' },
-            { label: 'Description', key: 'description' },
-            { label: 'Version', key: 'version' },
-            { label: 'Type', key: 'type' },
-            { label: 'Format', key: 'format' },
-            { label: 'Bounds', key: 'bounds' },
-            { label: 'Min Zoom', key: 'minzoom' },
-            { label: 'Max Zoom', key: 'maxzoom' },
-            { label: 'Center', key: 'center' },
-            { label: 'Tile Count', key: 'tileCount' },
-            { label: 'Attribution', key: 'attribution' },
-            { label: 'Credits', key: 'credits' },
-            { label: 'Tags', key: 'tags' },
-            { label: 'Legend', key: 'legend' }
-        ];
-
-        const metadataHTML = metadataRows
-            .filter(row => metadata[row.key] !== undefined)
-            .map(row => `
-                <div class="chart-info-row">
-                    <div class="chart-info-label">${row.label}:</div>
-                    <div class="chart-info-value">${formatValue(row.key, metadata[row.key])}</div>
-                </div>
-            `).join('');
-
-        const infoIcon = window.getIcon('info', true);
-
-        const modalHTML = `
-            <div class="delete-modal-overlay" id="chartInfoModal" onclick="closeChartInfoModal(event)">
-                <div class="delete-modal chart-info-modal" onclick="event.stopPropagation()">
-                    <div class="delete-modal-header">
-                        <div class="delete-modal-icon" style="color: var(--accent-primary);">${infoIcon}</div>
-                        <h3>Chart Information</h3>
-                    </div>
-                    <div class="delete-modal-body">
-                        <div class="chart-info-container">
-                            ${metadataHTML}
-                        </div>
-                    </div>
-                    <div class="delete-modal-actions">
-                        <button class="btn btn-primary" onclick="closeChartInfoModal()">Close</button>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        renderMetadataModal(metadata);
 
     } catch (error) {
         console.error('Error fetching chart info:', error);
         showErrorNotification('Error loading chart information: ' + error.message);
     }
+}
+
+function renderMetadataModal(metadata) {
+    const formatValue = (key, value, isEditable = false) => {
+        if (value === null || value === undefined || value === '') {
+            return '<span style="color: var(--text-secondary); font-style: italic;">Not specified</span>';
+        }
+
+        // In edit mode, make Chart Name editable
+        if (isEditMode && isEditable && key === 'name') {
+            return `<input type="text" id="editChartName" class="text-input" value="${value}" style="width: 100%; padding: 8px;" />`;
+        }
+
+        switch(key) {
+            case 'bounds':
+                try {
+                    const bounds = typeof value === 'string' ? value.split(',').map(v => parseFloat(v.trim())) : value;
+                    return `
+                        <div style="font-family: monospace; font-size: 0.9em;">
+                            SW: ${bounds[0].toFixed(4)}°, ${bounds[1].toFixed(4)}°<br>
+                            NE: ${bounds[2].toFixed(4)}°, ${bounds[3].toFixed(4)}°
+                        </div>
+                    `;
+                } catch {
+                    return value;
+                }
+            case 'tileCount':
+                return parseInt(value).toLocaleString();
+            case 'minzoom':
+            case 'maxzoom':
+                return `Level ${value}`;
+            case 'legend':
+                return '<span style="color: var(--text-secondary); font-style: italic;">Available (not displayed)</span>';
+            default:
+                return value;
+        }
+    };
+
+    const metadataRows = [
+        { label: 'Chart Name', key: 'name', editable: true },
+        { label: 'Description', key: 'description' },
+        { label: 'Version', key: 'version' },
+        { label: 'Type', key: 'type' },
+        { label: 'Format', key: 'format' },
+        { label: 'Bounds', key: 'bounds' },
+        { label: 'Min Zoom', key: 'minzoom' },
+        { label: 'Max Zoom', key: 'maxzoom' },
+        { label: 'Center', key: 'center' },
+        { label: 'Tile Count', key: 'tileCount' },
+        { label: 'Attribution', key: 'attribution' },
+        { label: 'Credits', key: 'credits' },
+        { label: 'Tags', key: 'tags' },
+        { label: 'Legend', key: 'legend' }
+    ];
+
+    const metadataHTML = metadataRows
+        .filter(row => metadata[row.key] !== undefined)
+        .map(row => `
+            <div class="chart-info-row">
+                <div class="chart-info-label">${row.label}:</div>
+                <div class="chart-info-value">${formatValue(row.key, metadata[row.key], row.editable)}</div>
+            </div>
+        `).join('');
+
+    const infoIcon = window.getIcon('info', true);
+
+    // Warning message for edit mode
+    const warningHTML = isEditMode ? `
+        <div class="delete-modal-warning" style="margin-bottom: 16px;">
+            ${window.getIcon('warning')} <strong>Legal Notice:</strong> You are about to modify chart metadata. The Signal K community is not responsible for any illegal use of this feature. Charts must only be modified for personal use. Distribution of modified charts may violate copyright laws.
+        </div>
+    ` : '';
+
+    const modalHTML = `
+        <div class="delete-modal-overlay" id="chartInfoModal" onclick="closeChartInfoModal(event)">
+            <div class="delete-modal chart-info-modal" onclick="event.stopPropagation()">
+                <div class="delete-modal-header">
+                    <div class="delete-modal-icon" style="color: var(--accent-primary);">${infoIcon}</div>
+                    <h3>Chart Metadata ${isEditMode ? '(Edit Mode)' : ''}</h3>
+                </div>
+                <div class="delete-modal-body">
+                    ${warningHTML}
+                    <div class="chart-info-container">
+                        ${metadataHTML}
+                    </div>
+                </div>
+                <div class="delete-modal-actions">
+                    ${isEditMode ?
+                        '<button class="btn btn-secondary" onclick="cancelEditMetadata()">Cancel</button><button class="btn btn-primary" onclick="saveChartMetadata()">Save</button>' :
+                        '<button class="btn btn-secondary" onclick="editChartMetadata()">Edit</button><button class="btn btn-primary" onclick="closeChartInfoModal()">Close</button>'
+                    }
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Remove existing modal if present
+    const existingModal = document.getElementById('chartInfoModal');
+    if (existingModal) {
+        existingModal.remove();
+    }
+
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+
+window.editChartMetadata = function() {
+    isEditMode = true;
+    renderMetadataModal(currentMetadata);
+}
+
+window.cancelEditMetadata = function() {
+    isEditMode = false;
+    renderMetadataModal(currentMetadata);
+}
+
+window.saveChartMetadata = async function() {
+    const newChartName = document.getElementById('editChartName')?.value.trim();
+
+    if (!newChartName) {
+        showErrorNotification('Chart name cannot be empty');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/signalk/chart-tiles/chart-metadata/${encodeURIComponent(currentChartPath)}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                name: newChartName
+            })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            showErrorNotification(`Failed to save metadata: ${errorText}`);
+            return;
+        }
+
+        // Update current metadata
+        currentMetadata.name = newChartName;
+        currentMetadata.description = 'USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY';
+
+        // Close edit mode and show success
+        isEditMode = false;
+        renderMetadataModal(currentMetadata);
+
+        showSuccessNotification('Chart metadata updated successfully');
+
+    } catch (error) {
+        console.error('Error saving chart metadata:', error);
+        showErrorNotification('Error saving chart metadata: ' + error.message);
+    }
+}
+
+function showSuccessNotification(message) {
+    const notificationHTML = `
+        <div class="notification-toast" id="successNotification">
+            <div class="notification-content">
+                <div class="notification-icon success">
+                    ${window.getIcon('checkmark')}
+                </div>
+                <div class="notification-text">
+                    <div class="notification-title">Success</div>
+                    <div class="notification-message">${message}</div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const existing = document.getElementById('successNotification');
+    if (existing) {
+        existing.remove();
+    }
+
+    document.body.insertAdjacentHTML('beforeend', notificationHTML);
+
+    setTimeout(() => {
+        const notification = document.getElementById('successNotification');
+        if (notification) {
+            notification.classList.add('fade-out');
+            setTimeout(() => notification.remove(), 300);
+        }
+    }, 5000);
 }
 
 window.closeChartInfoModal = function(event) {
