@@ -4,31 +4,22 @@ const path = require('path');
 /**
  * Get chart name from MBTiles metadata
  * @param {string} filePath - Path to .mbtiles file
- * @returns {Promise<string|null>} Chart name or null
+ * @returns {string|null} Chart name or null
  */
-async function getChartName(filePath) {
-  return new Promise((resolve) => {
-    try {
-      const sqlite3 = require('sqlite3').verbose();
-      const db = new sqlite3.Database(filePath, sqlite3.OPEN_READONLY, (err) => {
-        if (err) {
-          resolve(null);
-          return;
-        }
-      });
+function getChartName(filePath) {
+  try {
+    const Database = require('better-sqlite3');
+    const db = new Database(filePath, { readonly: true });
 
-      db.get("SELECT value FROM metadata WHERE name = 'name'", [], (err, row) => {
-        db.close();
-        if (err || !row) {
-          resolve(null);
-        } else {
-          resolve(row.value);
-        }
-      });
-    } catch (err) {
-      resolve(null);
+    try {
+      const row = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get();
+      return row ? row.value : null;
+    } finally {
+      db.close();
     }
-  });
+  } catch (err) {
+    return null;
+  }
 }
 
 /**
@@ -62,13 +53,8 @@ async function scanChartsRecursively(basePath, currentPath = basePath) {
       const relativePath = path.relative(basePath, fullPath);
       const folder = path.dirname(relativePath) || '/';
 
-      // Try to read chart name from MBTiles metadata (fast query)
-      let chartName = null;
-      try {
-        chartName = await getChartName(fullPath);
-      } catch (err) {
-        // Silently fail - chart name is optional
-      }
+      // Read chart name from MBTiles metadata (fast synchronous query)
+      const chartName = getChartName(fullPath);
 
       charts.push({
         name: entry.name,

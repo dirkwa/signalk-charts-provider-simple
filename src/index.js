@@ -678,56 +678,33 @@ module.exports = (app) => {
           return res.status(400).send('Metadata editing only available for MBTiles charts');
         }
 
-        // Update metadata in SQLite database
-        const sqlite3 = require('sqlite3').verbose();
-        const db = new sqlite3.Database(fullPath, (err) => {
-          if (err) {
-            console.error('Error opening database:', err);
-            return res.status(500).send('Error opening chart database');
-          }
-        });
+        // Update metadata in SQLite database using better-sqlite3
+        const Database = require('better-sqlite3');
+        const db = new Database(fullPath);
 
-        // Update name and description
-        const description = 'USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY';
+        try {
+          // Update name and description
+          const description = 'USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY';
 
-        db.serialize(() => {
-          db.run('UPDATE metadata SET value = ? WHERE name = ?', [name, 'name'], (err) => {
-            if (err) {
-              db.close();
-              console.error('Error updating chart name:', err);
-              return res.status(500).send('Error updating chart name');
-            }
+          db.prepare('UPDATE metadata SET value = ? WHERE name = ?').run(name, 'name');
+          db.prepare('UPDATE metadata SET value = ? WHERE name = ?').run(description, 'description');
 
-            // Update description with warning
-            db.run('UPDATE metadata SET value = ? WHERE name = ?', [description, 'description'], async (err) => {
-              db.close();
+          app.debug(`Chart metadata updated: ${chartPathParam} - New name: ${name}`);
+        } finally {
+          db.close();
+        }
 
-              if (err) {
-                console.error('Error updating description:', err);
-                return res.status(500).send('Error updating description');
-              }
+        // Reload chart providers and emit delta notification
+        await refreshChartProviders();
 
-              app.debug(`Chart metadata updated: ${chartPathParam} - New name: ${name}`);
+        const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+        if (chartProviders[chartId]) {
+          const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+          emitChartDelta(chartId, chartData);
+          app.debug(`Delta emitted for metadata update: ${chartId}`);
+        }
 
-              // Reload chart providers and emit delta notification
-              try {
-                await refreshChartProviders();
-
-                const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
-                if (chartProviders[chartId]) {
-                  const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
-                  emitChartDelta(chartId, chartData);
-                  app.debug(`Delta emitted for metadata update: ${chartId}`);
-                }
-              } catch (refreshErr) {
-                app.error(`Error refreshing charts after metadata update: ${refreshErr.message}`);
-              }
-
-              res.json({ success: true, message: 'Chart metadata updated successfully' });
-            });
-          });
-        });
-
+        res.json({ success: true, message: 'Chart metadata updated successfully' });
       } catch (error) {
         console.error('Error updating chart metadata:', error);
         res.status(500).send('Error updating chart metadata');
@@ -735,7 +712,7 @@ module.exports = (app) => {
     });
 
     // Get chart metadata (MBTiles only)
-    app.get(`${chartTilesPath}/chart-metadata/:chartPath`, async (req, res) => {
+    app.get(`${chartTilesPath}/chart-metadata/:chartPath`, (req, res) => {
       const chartPathParam = decodeURIComponent(req.params.chartPath);
 
       try {
@@ -759,21 +736,13 @@ module.exports = (app) => {
           return res.status(400).send('Metadata only available for MBTiles charts');
         }
 
-        // Read metadata from SQLite database
-        const sqlite3 = require('sqlite3').verbose();
-        const db = new sqlite3.Database(fullPath, sqlite3.OPEN_READONLY, (err) => {
-          if (err) {
-            console.error('Error opening database:', err);
-            return res.status(500).send('Error reading chart metadata');
-          }
-        });
+        // Read metadata from SQLite database using better-sqlite3
+        const Database = require('better-sqlite3');
+        const db = new Database(fullPath, { readonly: true });
 
-        db.all('SELECT name, value FROM metadata', [], (err, rows) => {
-          if (err) {
-            db.close();
-            console.error('Error querying metadata:', err);
-            return res.status(500).send('Error reading chart metadata');
-          }
+        try {
+          // Get all metadata
+          const rows = db.prepare('SELECT name, value FROM metadata').all();
 
           // Convert rows to object
           const metadata = {};
@@ -783,26 +752,23 @@ module.exports = (app) => {
 
           // Try to get tile count - different MBTiles files use different table names
           // Try 'map' first (standard), then 'tiles' (alternative)
-          db.get('SELECT COUNT(*) as count FROM map', [], (err, countRow) => {
-            if (err) {
-              // Try alternative table name
-              db.get('SELECT COUNT(*) as count FROM tiles', [], (err2, countRow2) => {
-                db.close();
-
-                if (!err2 && countRow2) {
-                  metadata.tileCount = countRow2.count;
-                }
-                // If both fail, silently omit tile count - some MBTiles formats don't have this
-                return res.json(metadata);
-              });
-            } else {
-              db.close();
+          try {
+            const countRow = db.prepare('SELECT COUNT(*) as count FROM map').get();
+            metadata.tileCount = countRow.count;
+          } catch (err) {
+            // Try alternative table name
+            try {
+              const countRow = db.prepare('SELECT COUNT(*) as count FROM tiles').get();
               metadata.tileCount = countRow.count;
-              res.json(metadata);
+            } catch (err2) {
+              // If both fail, silently omit tile count - some MBTiles formats don't have this
             }
-          });
-        });
+          }
 
+          res.json(metadata);
+        } finally {
+          db.close();
+        }
       } catch (error) {
         console.error('Error fetching chart metadata:', error);
         res.status(500).send('Error fetching chart metadata');

@@ -7,6 +7,7 @@ let basePath = '';
 let selectedFolder = null; // null means show all folders
 let viewMode = 'grid'; // 'grid' or 'list'
 let refreshInterval = null; // Auto-refresh timer for downloading charts
+let isUploadInProgress = false; // Track upload state to prevent UI refresh during upload
 
 window.handleManageTabActive = function() {
     loadCharts();
@@ -65,6 +66,11 @@ function setupAutoRefresh() {
 }
 
 function renderChartsUI() {
+    // Skip re-rendering if an upload is in progress (prevents upload overlay from being removed)
+    if (isUploadInProgress) {
+        return;
+    }
+
     const manageOutput = document.getElementById('manageOutput');
 
     if (chartsData.length === 0) {
@@ -416,6 +422,9 @@ window.handleFileUpload = async function(event) {
 
 // Extracted upload logic to be reusable
 function performUpload(formData, validFileCount, files) {
+    // Set flag to prevent UI refresh during upload
+    isUploadInProgress = true;
+
     const manageOutput = document.getElementById('manageOutput');
 
     const fileList = Array.from(files)
@@ -465,6 +474,9 @@ function performUpload(formData, validFileCount, files) {
     });
 
     xhr.addEventListener('load', () => {
+        // Reset upload flag before refreshing UI
+        isUploadInProgress = false;
+
         if (xhr.status === 200) {
             // Refresh the charts list immediately
             loadCharts();
@@ -478,6 +490,9 @@ function performUpload(formData, validFileCount, files) {
     });
 
     xhr.addEventListener('error', () => {
+        // Reset upload flag before refreshing UI
+        isUploadInProgress = false;
+
         console.error('Error uploading files');
         loadCharts();
         showErrorNotification('Error uploading files. Please try again.');

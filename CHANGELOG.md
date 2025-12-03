@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.0] 2025-12-04
+### Changed:
+- Switched from `sqlite3` to `better-sqlite3` for improved performance and simpler synchronous API
+- Node.js 22 LTS recommended (prebuilt binaries available)
+
+### Fixed:
+- Upload progress overlay no longer disappears when a download completes in the background
+
+### Notes:
+- For Node.js 24+, manual installation of build tools may be required as prebuilt binaries are not yet available
+
 ## [1.4.0] 2025-11-30
 ### New:
 - Chart Metadata Editor - Edit chart names directly in MBTiles files

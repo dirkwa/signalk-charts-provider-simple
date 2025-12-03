@@ -87,6 +87,11 @@ This plugin includes a feature to edit chart metadata (chart names) in MBTiles f
 - **Do not distribute** modified charts - this may violate copyright laws
 - Use this feature responsibly and only for organizing your personal chart library
 
+## Requirements
+
+- **Node.js 22 LTS** (recommended) - prebuilt binaries available for all platforms
+- Node.js 24+: May require manual installation of build tools (Visual Studio Build Tools on Windows, build-essential on Linux)
+
 ## Acknowledgments
 
 Inspired by [Signal K Charts Plugin](https://github.com/SignalK/charts-plugin) by Mikko Vesikkala.

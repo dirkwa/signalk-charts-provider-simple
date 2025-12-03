@@ -1,6 +1,6 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Simple Signal K chart provider for local MBTiles with web and download management",
   "main": "src/index.js",
   "scripts": {
@@ -22,7 +22,7 @@
     "bluebird": "^3.5.1",
     "busboy": "^1.6.0",
     "lodash": "^4.17.11",
-    "sqlite3": "^5.1.7",
+    "better-sqlite3": "^11.6.0",
     "unzipper": "^0.12.3",
     "xml2js": "^0.6.2"
   },
