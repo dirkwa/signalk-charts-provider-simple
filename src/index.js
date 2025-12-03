@@ -6,7 +6,9 @@ const { scanChartsRecursively, scanAllFolders } = require('./utils/file-scanner'
 const { initChartState, isChartEnabled, setChartEnabled } = require('./utils/chart-state');
 const { downloadManager } = require('./utils/download-manager');
 
-const chartTilesPath = '/signalk/chart-tiles';
+// Routes are now scoped under /plugins/signalk-charts-provider-simple/ via registerWithRouter
+const PLUGIN_ID = 'signalk-charts-provider-simple';
+const chartTilesPath = `/plugins/${PLUGIN_ID}`;
 const apiRoutePrefix = {
   1: '/signalk/v1/api/resources',
   2: '/signalk/v2/api/resources'
@@ -14,7 +16,6 @@ const apiRoutePrefix = {
 
 module.exports = (app) => {
   let chartProviders = {};
-  let pluginStarted = false;
   let props = {
     chartPath: ''
   };
@@ -44,7 +45,7 @@ module.exports = (app) => {
   const CONFIG_UISCHEMA = {};
 
   const plugin = {
-    id: 'signalk-charts-provider-simple',
+    id: PLUGIN_ID,
     name: 'Charts Provider Simple',
     schema: () => CONFIG_SCHEMA,
     uiSchema: () => CONFIG_UISCHEMA,
@@ -53,6 +54,9 @@ module.exports = (app) => {
     },
     stop: () => {
       app.setPluginStatus('stopped');
+    },
+    registerWithRouter: (router) => {
+      registerRoutes(router);
     }
   };
 
@@ -77,6 +81,14 @@ module.exports = (app) => {
     downloadManager.on('job-completed', async (job) => {
       app.debug(`Download job completed: ${job.id}, extracted files: ${job.extractedFiles.join(', ')}`);
 
+      // Enable newly downloaded charts (in case they were previously disabled)
+      for (const fileName of job.extractedFiles) {
+        // Calculate relative path from chart base path
+        const relativePath = path.relative(chartPath, path.join(job.targetDir, fileName));
+        setChartEnabled(relativePath, true);
+        app.debug(`Enabled downloaded chart: ${relativePath}`);
+      }
+
       // Reload chart providers to include downloaded charts
       await refreshChartProviders();
 
@@ -86,7 +98,8 @@ module.exports = (app) => {
 
         // If chart is enabled and in chartProviders, emit its data
         if (chartProviders[chartId]) {
-          const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+          // Always use version 2 format for deltas
+          const chartData = sanitizeProvider(chartProviders[chartId], 2);
           emitChartDelta(chartId, chartData);
           app.debug(`Delta emitted for downloaded chart: ${chartId}`);
         }
@@ -94,10 +107,6 @@ module.exports = (app) => {
     });
 
     app.debug(`Start chart provider. Chart path: ${chartPath}`);
-
-    // Do not register routes if plugin has been started once already
-    pluginStarted === false && registerRoutes();
-    pluginStarted = true;
 
     // v2 routes - register as Resource Provider, this needs to be always on startup
     if (serverMajorVersion === 2) {
@@ -131,11 +140,12 @@ module.exports = (app) => {
       });
   };
 
-  const registerRoutes = () => {
-    app.debug('** Registering API paths **');
+  const registerRoutes = (router) => {
+    app.debug('** Registering API paths via registerWithRouter **');
 
-    app.get(
-      `${chartTilesPath}/:identifier/:z([0-9]*)/:x([0-9]*)/:y([0-9]*)`,
+    // Tile serving route - path is relative to /plugins/signalk-charts-provider-simple/
+    router.get(
+      '/:identifier/:z([0-9]*)/:x([0-9]*)/:y([0-9]*)',
       async (req, res) => {
         const { identifier, z, x, y } = req.params;
         const ix = parseInt(x);
@@ -161,7 +171,7 @@ module.exports = (app) => {
 
 
     // Download from URL - create download job
-    app.post(`${chartTilesPath}/download-chart-locker`, async (req, res) => {
+    router.post('/download-chart-locker', async (req, res) => {
       const busboy = require('busboy');
       const bb = busboy({ headers: req.headers });
 
@@ -212,7 +222,7 @@ module.exports = (app) => {
     });
 
     // Get download job status
-    app.get(`${chartTilesPath}/download-job/:jobId`, (req, res) => {
+    router.get('/download-job/:jobId', (req, res) => {
       const jobId = req.params.jobId;
       const job = downloadManager.getJob(jobId);
 
@@ -224,13 +234,13 @@ module.exports = (app) => {
     });
 
     // Get all download jobs
-    app.get(`${chartTilesPath}/download-jobs`, (req, res) => {
+    router.get('/download-jobs', (req, res) => {
       const jobs = downloadManager.getAllJobs();
       res.json(jobs);
     });
 
     // Cancel a download job
-    app.post(`${chartTilesPath}/cancel-download/:jobId`, (req, res) => {
+    router.post('/cancel-download/:jobId', (req, res) => {
       const { jobId } = req.params;
 
       if (!jobId) {
@@ -247,7 +257,7 @@ module.exports = (app) => {
       }
     });
 
-    app.get(`${chartTilesPath}/download`, (req, res) => {
+    router.get('/download', (req, res) => {
       const url = req.query.url;
       if (!url) {
         return res.status(400).send('url parameter is required');
@@ -279,7 +289,7 @@ module.exports = (app) => {
       });
     });
 
-    app.get(`${chartTilesPath}/local-charts`, async (req, res) => {
+    router.get('/local-charts', async (req, res) => {
       try {
         const chartPath = props.chartPath || defaultChartsPath;
         const charts = await scanChartsRecursively(chartPath);
@@ -338,7 +348,7 @@ module.exports = (app) => {
       }
     });
 
-    app.delete(`${chartTilesPath}/local-charts/:chartPath`, async (req, res) => {
+    router.delete('/local-charts/:chartPath', async (req, res) => {
       const chartPathParam = decodeURIComponent(req.params.chartPath);
       try {
         const basePath = props.chartPath || defaultChartsPath;
@@ -386,7 +396,7 @@ module.exports = (app) => {
     });
 
     // Create folder endpoint
-    app.post(`${chartTilesPath}/folders`, async (req, res) => {
+    router.post('/folders', async (req, res) => {
       const { folderPath } = req.body;
 
       app.debug(`Create folder request - folderPath: ${folderPath}`);
@@ -421,7 +431,7 @@ module.exports = (app) => {
     });
 
     // Delete folder endpoint
-    app.delete(`${chartTilesPath}/folders/:folderPath`, async (req, res) => {
+    router.delete('/folders/:folderPath', async (req, res) => {
       const folderPathParam = decodeURIComponent(req.params.folderPath);
 
       try {
@@ -460,7 +470,7 @@ module.exports = (app) => {
     });
 
     // Toggle chart enabled state
-    app.post(`${chartTilesPath}/charts/:chartPath/toggle`, async (req, res) => {
+    router.post('/charts/:chartPath/toggle', async (req, res) => {
       const chartPathParam = decodeURIComponent(req.params.chartPath);
       const { enabled } = req.body;
 
@@ -476,19 +486,25 @@ module.exports = (app) => {
         // Reload chart providers to update v1/v2 API
         await refreshChartProviders();
 
+        // Chart identifier is just the filename without extension (not the full relative path)
+        const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+
         // Emit delta notification for toggle operation
         if (enabled) {
           // Chart was enabled - emit full chart data
-          if (chartProviders[chartPathParam.replace(/\.mbtiles$/, '')]) {
-            const chart = chartProviders[chartPathParam.replace(/\.mbtiles$/, '')];
-            const chartData = sanitizeProvider(chart, serverMajorVersion);
-            emitChartDelta(chart.identifier, chartData);
+          if (chartProviders[chartId]) {
+            const chart = chartProviders[chartId];
+            // Always use version 2 format for deltas (v2 clients expect v2 data structure)
+            const chartData = sanitizeProvider(chart, 2);
+            emitChartDelta(chartId, chartData);
+            app.debug(`Delta emitted for enabled chart: ${chartId}`);
+          } else {
+            app.debug(`Chart ${chartId} not found in providers after enabling`);
           }
         } else {
           // Chart was disabled - emit null to remove from stream
-          // Use the filename (without extension) as identifier
-          const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
           emitChartDelta(chartId, null);
+          app.debug(`Delta emitted for disabled chart: ${chartId}`);
         }
 
         res.status(200).json({ success: true, message: `Chart ${enabled ? 'enabled' : 'disabled'}` });
@@ -499,7 +515,7 @@ module.exports = (app) => {
     });
 
     // Move chart to different folder
-    app.post(`${chartTilesPath}/move-chart`, async (req, res) => {
+    router.post('/move-chart', async (req, res) => {
       const { chartPath, targetFolder } = req.body;
 
       app.debug(`Move chart request: chartPath=${chartPath}, targetFolder=${targetFolder}`);
@@ -561,7 +577,8 @@ module.exports = (app) => {
 
         // If chart is in chartProviders (enabled), emit its data
         if (chartProviders[chartId]) {
-          const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+          // Always use version 2 format for deltas
+          const chartData = sanitizeProvider(chartProviders[chartId], 2);
           emitChartDelta(chartId, chartData);
         }
 
@@ -573,7 +590,7 @@ module.exports = (app) => {
     });
 
     // Rename chart
-    app.post(`${chartTilesPath}/rename-chart`, async (req, res) => {
+    router.post('/rename-chart', async (req, res) => {
       const { chartPath, newName } = req.body;
 
       app.debug(`Rename chart request: chartPath=${chartPath}, newName=${newName}`);
@@ -637,7 +654,8 @@ module.exports = (app) => {
         emitChartDelta(oldChartId, null);
 
         if (chartProviders[newChartId]) {
-          const chartData = sanitizeProvider(chartProviders[newChartId], serverMajorVersion);
+          // Always use version 2 format for deltas
+          const chartData = sanitizeProvider(chartProviders[newChartId], 2);
           emitChartDelta(newChartId, chartData);
         }
 
@@ -649,7 +667,7 @@ module.exports = (app) => {
     });
 
     // Update chart metadata (MBTiles only)
-    app.put(`${chartTilesPath}/chart-metadata/:chartPath`, async (req, res) => {
+    router.put('/chart-metadata/:chartPath', async (req, res) => {
       const chartPathParam = decodeURIComponent(req.params.chartPath);
       const { name } = req.body;
 
@@ -699,7 +717,8 @@ module.exports = (app) => {
 
         const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
         if (chartProviders[chartId]) {
-          const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+          // Always use version 2 format for deltas
+          const chartData = sanitizeProvider(chartProviders[chartId], 2);
           emitChartDelta(chartId, chartData);
           app.debug(`Delta emitted for metadata update: ${chartId}`);
         }
@@ -712,7 +731,7 @@ module.exports = (app) => {
     });
 
     // Get chart metadata (MBTiles only)
-    app.get(`${chartTilesPath}/chart-metadata/:chartPath`, (req, res) => {
+    router.get('/chart-metadata/:chartPath', (req, res) => {
       const chartPathParam = decodeURIComponent(req.params.chartPath);
 
       try {
@@ -776,7 +795,7 @@ module.exports = (app) => {
     });
 
     // Upload chart file
-    app.post(`${chartTilesPath}/upload`, async (req, res) => {
+    router.post('/upload', async (req, res) => {
       try {
         const busboy = require('busboy');
         const bb = busboy({ headers: req.headers });
@@ -835,6 +854,17 @@ module.exports = (app) => {
             await Promise.all(writePromises);
 
             if (uploadedFiles.length > 0) {
+              // Enable uploaded charts (in case they were previously disabled)
+              for (const filename of uploadedFiles) {
+                // Calculate relative path from chart base path
+                const uploadDir = (targetFolder && targetFolder !== '/')
+                  ? path.join(basePath, targetFolder)
+                  : basePath;
+                const relativePath = path.relative(basePath, path.join(uploadDir, filename));
+                setChartEnabled(relativePath, true);
+                app.debug(`Enabled uploaded chart: ${relativePath}`);
+              }
+
               // Reload chart providers to include new uploads
               await refreshChartProviders();
 
@@ -844,7 +874,8 @@ module.exports = (app) => {
 
                 // If chart is enabled and in chartProviders, emit its data
                 if (chartProviders[chartId]) {
-                  const chartData = sanitizeProvider(chartProviders[chartId], serverMajorVersion);
+                  // Always use version 2 format for deltas
+                  const chartData = sanitizeProvider(chartProviders[chartId], 2);
                   emitChartDelta(chartId, chartData);
                 }
               }
@@ -969,9 +1000,9 @@ module.exports = (app) => {
             }]
           }]
         },
-        serverMajorVersion
+        2 // Always use v2 for resource deltas - resources should not be in full model cache
       );
-      app.debug(`Delta emitted for chart: ${chartId}`);
+      app.debug(`Delta emitted for chart: ${chartId}, value: ${chartValue ? 'data' : 'null'}`);
     } catch (error) {
       app.error(`Failed to emit delta for chart ${chartId}: ${error.message}`);
     }

@@ -1,5 +1,8 @@
 // Simple download interface for charts from direct URLs
 
+// API base path - routes are scoped under the plugin path via registerWithRouter
+const DOWNLOAD_API_BASE = '/plugins/signalk-charts-provider-simple';
+
 // Tab activation handler - refreshes folder list when switching to this tab
 window.handleDownloadTabActive = function() {
   loadFoldersForDownload();
@@ -67,7 +70,7 @@ function initDownloadInterface() {
 // Load available folders
 async function loadFoldersForDownload() {
   try {
-    const response = await fetch('/signalk/chart-tiles/local-charts');
+    const response = await fetch(`${DOWNLOAD_API_BASE}/local-charts`);
     const data = await response.json();
 
     const folderSelect = document.getElementById('downloadFolder');
@@ -116,7 +119,7 @@ async function startDownload() {
     formData.append('url', url);
     formData.append('targetFolder', folder);
 
-    const response = await fetch('/signalk/chart-tiles/download-chart-locker', {
+    const response = await fetch(`${DOWNLOAD_API_BASE}/download-chart-locker`, {
       method: 'POST',
       body: formData
     });
@@ -143,7 +146,7 @@ async function startDownload() {
 // Load and display active downloads
 async function loadActiveDownloads() {
   try {
-    const response = await fetch('/signalk/chart-tiles/download-jobs');
+    const response = await fetch(`${DOWNLOAD_API_BASE}/download-jobs`);
     const jobs = await response.json();
 
     const container = document.getElementById('activeDownloads');
@@ -237,7 +240,7 @@ function renderDownloadJob(job) {
 // Cancel a download job
 async function cancelDownload(jobId) {
   try {
-    const response = await fetch(`/signalk/chart-tiles/cancel-download/${jobId}`, {
+    const response = await fetch(`${DOWNLOAD_API_BASE}/cancel-download/${jobId}`, {
       method: 'POST'
     });
 

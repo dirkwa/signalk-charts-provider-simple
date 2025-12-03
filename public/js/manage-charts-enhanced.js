@@ -1,5 +1,8 @@
 // Enhanced Manage Charts functionality with folders, dates, enable/disable, drag-drop, upload
 
+// API base path - routes are scoped under the plugin path via registerWithRouter
+const API_BASE = '/plugins/signalk-charts-provider-simple';
+
 // State management
 let chartsData = [];
 let foldersData = [];
@@ -22,7 +25,7 @@ async function loadCharts(silent = false) {
     }
 
     try {
-        const response = await fetch('/signalk/chart-tiles/local-charts');
+        const response = await fetch(`${API_BASE}/local-charts`);
         const data = await response.json();
 
         chartsData = data.charts || [];
@@ -299,7 +302,7 @@ window.toggleChart = async function(relativePath) {
     const newEnabledState = !chart.enabled;
 
     try {
-        const response = await fetch(`/signalk/chart-tiles/charts/${encodeURIComponent(relativePath)}/toggle`, {
+        const response = await fetch(`${API_BASE}/charts/${encodeURIComponent(relativePath)}/toggle`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -329,7 +332,7 @@ window.deleteChart = function(relativePath, name) {
         name: name,
         onConfirm: async () => {
             try {
-                const response = await fetch(`/signalk/chart-tiles/local-charts/${encodeURIComponent(relativePath)}`, {
+                const response = await fetch(`${API_BASE}/local-charts/${encodeURIComponent(relativePath)}`, {
                     method: 'DELETE'
                 });
 
@@ -498,7 +501,7 @@ function performUpload(formData, validFileCount, files) {
         showErrorNotification('Error uploading files. Please try again.');
     });
 
-    xhr.open('POST', '/signalk/chart-tiles/upload');
+    xhr.open('POST', `${API_BASE}/upload`);
     xhr.send(formData);
 }
 
@@ -750,7 +753,7 @@ function initTouchDragDrop() {
 // Extracted move logic to be reusable
 async function performChartMove(chartPath, targetFolder) {
     try {
-        const response = await fetch('/signalk/chart-tiles/move-chart', {
+        const response = await fetch(`${API_BASE}/move-chart`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -855,7 +858,7 @@ async function createFolder(folderName) {
         const requestBody = { folderPath: folderName };
         console.log('Request body:', requestBody);
 
-        const response = await fetch('/signalk/chart-tiles/folders', {
+        const response = await fetch(`${API_BASE}/folders`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -989,7 +992,7 @@ window.confirmRename = async function() {
 
     // Perform the rename
     try {
-        const response = await fetch('/signalk/chart-tiles/rename-chart', {
+        const response = await fetch(`${API_BASE}/rename-chart`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -1025,7 +1028,7 @@ window.deleteFolder = function(folder) {
         hasCharts: folderHasCharts,
         onConfirm: async () => {
             try {
-                const response = await fetch(`/signalk/chart-tiles/folders/${encodeURIComponent(folder)}`, {
+                const response = await fetch(`${API_BASE}/folders/${encodeURIComponent(folder)}`, {
                     method: 'DELETE'
                 });
 
@@ -1326,7 +1329,7 @@ window.showChartInfo = async function(chartPath) {
         currentChartPath = chartPath;
         isEditMode = false;
 
-        const response = await fetch(`/signalk/chart-tiles/chart-metadata/${encodeURIComponent(chartPath)}`);
+        const response = await fetch(`${API_BASE}/chart-metadata/${encodeURIComponent(chartPath)}`);
 
         if (!response.ok) {
             const errorText = await response.text();
@@ -1467,7 +1470,7 @@ window.saveChartMetadata = async function() {
     }
 
     try {
-        const response = await fetch(`/signalk/chart-tiles/chart-metadata/${encodeURIComponent(currentChartPath)}`, {
+        const response = await fetch(`${API_BASE}/chart-metadata/${encodeURIComponent(currentChartPath)}`, {
             method: 'PUT',
             headers: {
                 'Content-Type': 'application/json'

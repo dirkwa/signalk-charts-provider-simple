@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.5.1] 2025-12-04
+### Changed:
+- Migrated to `registerWithRouter` pattern for route registration ([#1](https://github.com/dirkwa/signalk-charts-provider-simple/issues/1))
+  - Routes now properly scoped under `/plugins/signalk-charts-provider-simple/`
+  - Avoids potential name clashes with official Signal K handlers and other plugins
+  - Tile URLs updated accordingly in Resources API responses
+
+### Fixed:
+- Real-time delta notifications now work correctly for enable/disable chart toggle
+  - Fixed chart identifier lookup for charts in subfolders
+  - Delta data now always uses v2 format for proper client compatibility
+- Downloaded and uploaded charts are now automatically enabled
+  - Previously disabled charts are re-enabled when re-downloaded or re-uploaded
+
+### Notes:
+- This is a breaking change for any external tools directly accessing the old `/signalk/chart-tiles/` paths
+- Chart consumers (Freeboard SK, etc.) will automatically use the new paths via the Resources API
+
 ## [1.5.0] 2025-12-04
 ### Changed:
 - Switched from `sqlite3` to `better-sqlite3` for improved performance and simpler synchronous API
