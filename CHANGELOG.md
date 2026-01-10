@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.2] 2026-01-11
+### Fixed:
+- Installation fails on systems with Python 3.12+ due to removed `distutils` module
+  - Updated `better-sqlite3` from v11 to v12 which uses a compatible `node-gyp`
+  - Fixes "ModuleNotFoundError: No module named 'distutils'" during npm install
+
 ## [1.5.1] 2025-12-04
 ### Changed:
 - Migrated to `registerWithRouter` pattern for route registration ([#1](https://github.com/dirkwa/signalk-charts-provider-simple/issues/1))
