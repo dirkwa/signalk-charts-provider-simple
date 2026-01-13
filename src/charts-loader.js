@@ -35,9 +35,7 @@ function findCharts(chartBaseDir) {
       )
     )
     .catch((err) => {
-      console.error(
-        `Error reading charts directory ${chartBaseDir}:${err.message}`
-      );
+      console.error(`Error reading charts directory ${chartBaseDir}:${err.message}`);
     });
 }
 
@@ -70,16 +68,15 @@ function findChartsRecursive(currentDir) {
           }
 
           // Check if this directory is itself a chart (TMS/XYZ format)
-          return directoryToMapInfo(filePath, file.name)
-            .then((chartInfo) => {
-              if (chartInfo) {
-                // This is a chart directory - return it without recursing
-                return [chartInfo];
-              } else {
-                // Not a chart directory - recurse into it to find charts
-                return findChartsRecursive(filePath);
-              }
-            });
+          return directoryToMapInfo(filePath, file.name).then((chartInfo) => {
+            if (chartInfo) {
+              // This is a chart directory - return it without recursing
+              return [chartInfo];
+            } else {
+              // Not a chart directory - recurse into it to find charts
+              return findChartsRecursive(filePath);
+            }
+          });
         } else {
           // Ignore other file types
           return Promise.resolve([]);
@@ -138,17 +135,13 @@ function openMbtilesFile(file, filename) {
         // Signal K v1 API format
         v1: {
           tilemapUrl: `~tilePath~/${identifier}/{z}/{x}/{y}`,
-          chartLayers: metadata.vector_layers
-            ? parseVectorLayers(metadata.vector_layers)
-            : []
+          chartLayers: metadata.vector_layers ? parseVectorLayers(metadata.vector_layers) : []
         },
 
         // Signal K v2 API format
         v2: {
           url: `~tilePath~/${identifier}/{z}/{x}/{y}`,
-          layers: metadata.vector_layers
-            ? parseVectorLayers(metadata.vector_layers)
-            : []
+          layers: metadata.vector_layers ? parseVectorLayers(metadata.vector_layers) : []
         }
       };
       return data;
@@ -247,46 +240,43 @@ function directoryToMapInfo(file, identifier) {
  * @returns {Promise<Object>} Chart metadata object
  */
 function parseTilemapResource(tilemapResource) {
-  return (
-    fs
-      .readFile(tilemapResource)
-      .then(bluebird.promisify(xml2js.parseString))
-      .then((parsed) => {
-        const result = parsed.TileMap;
-        const name = _.get(result, 'Title.0');
-        const format = _.get(result, 'TileFormat.0.$.extension'); // e.g., 'png'
-        const scale = _.get(result, 'Metadata.0.$.scale');
-        const bbox = _.get(result, 'BoundingBox.0.$');
+  return fs
+    .readFile(tilemapResource)
+    .then(bluebird.promisify(xml2js.parseString))
+    .then((parsed) => {
+      const result = parsed.TileMap;
+      const name = _.get(result, 'Title.0');
+      const format = _.get(result, 'TileFormat.0.$.extension'); // e.g., 'png'
+      const scale = _.get(result, 'Metadata.0.$.scale');
+      const bbox = _.get(result, 'BoundingBox.0.$');
 
-        // Extract available zoom levels
-        const zoomLevels = _.map(
-          _.get(result, 'TileSets.0.TileSet') || [],
-          (set) => parseInt(_.get(set, '$.href'))
-        );
+      // Extract available zoom levels
+      const zoomLevels = _.map(_.get(result, 'TileSets.0.TileSet') || [], (set) =>
+        parseInt(_.get(set, '$.href'))
+      );
 
-        const res = {
-          _flipY: true, // TMS uses bottom-left origin, need to flip Y coordinate
-          name,
-          description: name,
-          bounds: bbox
-            ? [
-                parseFloat(bbox.minx),
-                parseFloat(bbox.miny),
-                parseFloat(bbox.maxx),
-                parseFloat(bbox.maxy)
-              ]
-            : undefined,
-          minzoom: !_.isEmpty(zoomLevels) ? _.min(zoomLevels) : undefined,
-          maxzoom: !_.isEmpty(zoomLevels) ? _.max(zoomLevels) : undefined,
-          format,
-          type: 'tilelayer',
-          scale: parseInt(scale) || 250000, // Default to 1:250,000 if not specified
-          identifier: '', // Will be set by caller
-          _filePath: ''   // Will be set by caller
-        };
-        return res;
-      })
-  );
+      const res = {
+        _flipY: true, // TMS uses bottom-left origin, need to flip Y coordinate
+        name,
+        description: name,
+        bounds: bbox
+          ? [
+              parseFloat(bbox.minx),
+              parseFloat(bbox.miny),
+              parseFloat(bbox.maxx),
+              parseFloat(bbox.maxy)
+            ]
+          : undefined,
+        minzoom: !_.isEmpty(zoomLevels) ? _.min(zoomLevels) : undefined,
+        maxzoom: !_.isEmpty(zoomLevels) ? _.max(zoomLevels) : undefined,
+        format,
+        type: 'tilelayer',
+        scale: parseInt(scale) || 250000, // Default to 1:250,000 if not specified
+        identifier: '', // Will be set by caller
+        _filePath: '' // Will be set by caller
+      };
+      return res;
+    });
 }
 
 /**
@@ -330,7 +320,7 @@ function parseMetadataJson(metadataJson) {
         type: metadata.type || 'tilelayer',
         scale: parseInt(metadata.scale) || 250000,
         identifier: '', // Will be set by caller
-        _filePath: ''   // Will be set by caller
+        _filePath: '' // Will be set by caller
       };
       return res;
     });

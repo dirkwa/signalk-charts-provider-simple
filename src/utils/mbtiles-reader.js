@@ -64,7 +64,7 @@ class MBTilesReader {
             if (parsed.vector_layers) {
               metadata.vector_layers = parsed.vector_layers;
             }
-          } catch (e) {
+          } catch (_e) {
             // Ignore JSON parse errors
           }
           break;
@@ -72,7 +72,7 @@ class MBTilesReader {
           // Vector layers can also be stored directly
           try {
             metadata.vector_layers = JSON.parse(value);
-          } catch (e) {
+          } catch (_e) {
             // Ignore JSON parse errors
           }
           break;
@@ -102,9 +102,11 @@ class MBTilesReader {
     // Convert from XYZ (web) to TMS: tmsY = (2^z - 1) - xyzY
     const tmsY = (1 << z) - 1 - y;
 
-    const row = this.db.prepare(
-      'SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
-    ).get(z, x, tmsY);
+    const row = this.db
+      .prepare(
+        'SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
+      )
+      .get(z, x, tmsY);
 
     if (!row || !row.tile_data) {
       return null;

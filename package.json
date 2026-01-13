@@ -4,8 +4,12 @@
   "description": "Simple Signal K chart provider for local MBTiles with web and download management",
   "main": "src/index.js",
   "scripts": {
-    "test": "node --test test/**/*.test.js",
-    "test:fixtures": "node test/fixtures/create-test-mbtiles.js"
+    "test": "node --test --test-force-exit test/**/*.test.js",
+    "test:fixtures": "node test/fixtures/create-test-mbtiles.js",
+    "lint": "eslint src test",
+    "lint:fix": "eslint src test --fix",
+    "format": "prettier --write 'src/**/*.js' 'test/**/*.js'",
+    "format:check": "prettier --check 'src/**/*.js' 'test/**/*.js'"
   },
   "license": "MIT",
   "keywords": [
@@ -34,7 +38,7 @@
     "url": "https://github.com/dirkwa/signalk-charts-provider-simple/issues"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "signalk": {
     "appIcon": "assets/charts_logo.png",
@@ -52,5 +56,11 @@
       "description": "Simple Signal K chart provider for local MBTiles with web and download management",
       "location": "/plugins/signalk-charts-provider-simple/"
     }
+  },
+  "devDependencies": {
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.4",
+    "prettier": "^3.7.4"
   }
 }

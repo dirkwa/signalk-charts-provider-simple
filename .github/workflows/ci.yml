@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Run linter
+        run: npm run lint
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+
+    strategy:
+      matrix:
+        node-version: [22, 24]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Create test fixtures
+        run: npm run test:fixtures
+
+      - name: Run tests
+        run: npm test

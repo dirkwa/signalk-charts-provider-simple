@@ -23,12 +23,9 @@ module.exports = (app) => {
   let urlBase = '';
   const configBasePath = app.config.configPath;
   const defaultChartsPath = path.join(configBasePath, '/charts-simple');
-  const serverMajorVersion = app.config.version
-    ? parseInt(app.config.version.split('.')[0])
-    : '1';
+  const serverMajorVersion = app.config.version ? parseInt(app.config.version.split('.')[0]) : '1';
   ensureDirectoryExists(defaultChartsPath);
 
-  
   const CONFIG_SCHEMA = {
     title: 'Charts Provider Simple',
     type: 'object',
@@ -79,7 +76,9 @@ module.exports = (app) => {
     // Listen for download completion events and emit delta notifications
     downloadManager.removeAllListeners('job-completed'); // Remove old listeners on restart
     downloadManager.on('job-completed', async (job) => {
-      app.debug(`Download job completed: ${job.id}, extracted files: ${job.extractedFiles.join(', ')}`);
+      app.debug(
+        `Download job completed: ${job.id}, extracted files: ${job.extractedFiles.join(', ')}`
+      );
 
       // Enable newly downloaded charts (in case they were previously disabled)
       for (const fileName of job.extractedFiles) {
@@ -144,31 +143,25 @@ module.exports = (app) => {
     app.debug('** Registering API paths via registerWithRouter **');
 
     // Tile serving route - path is relative to /plugins/signalk-charts-provider-simple/
-    router.get(
-      '/:identifier/:z([0-9]*)/:x([0-9]*)/:y([0-9]*)',
-      async (req, res) => {
-        const { identifier, z, x, y } = req.params;
-        const ix = parseInt(x);
-        const iy = parseInt(y);
-        const iz = parseInt(z);
-        const provider = chartProviders[identifier];
-        if (!provider) {
-          return res.sendStatus(404);
-        }
-        switch (provider._fileFormat) {
-          case 'directory':
-            return serveTileFromFilesystem(res, provider, iz, ix, iy);
-          case 'mbtiles':
-            return serveTileFromMbtiles(res, provider, iz, ix, iy);
-          default:
-            console.log(
-              `Unknown chart provider fileformat ${provider._fileFormat}`
-            );
-            res.status(500).send();
-        }
+    router.get('/:identifier/:z([0-9]*)/:x([0-9]*)/:y([0-9]*)', async (req, res) => {
+      const { identifier, z, x, y } = req.params;
+      const ix = parseInt(x);
+      const iy = parseInt(y);
+      const iz = parseInt(z);
+      const provider = chartProviders[identifier];
+      if (!provider) {
+        return res.sendStatus(404);
       }
-    );
-
+      switch (provider._fileFormat) {
+        case 'directory':
+          return serveTileFromFilesystem(res, provider, iz, ix, iy);
+        case 'mbtiles':
+          return serveTileFromMbtiles(res, provider, iz, ix, iy);
+        default:
+          console.log(`Unknown chart provider fileformat ${provider._fileFormat}`);
+          res.status(500).send();
+      }
+    });
 
     // Download from URL - create download job
     router.post('/download-chart-locker', async (req, res) => {
@@ -180,9 +173,15 @@ module.exports = (app) => {
       let chartName = '';
 
       bb.on('field', (name, value) => {
-        if (name === 'url') downloadUrl = value;
-        if (name === 'targetFolder') targetFolder = value;
-        if (name === 'chartName') chartName = value;
+        if (name === 'url') {
+          downloadUrl = value;
+        }
+        if (name === 'targetFolder') {
+          targetFolder = value;
+        }
+        if (name === 'chartName') {
+          chartName = value;
+        }
       });
 
       bb.on('finish', async () => {
@@ -191,9 +190,8 @@ module.exports = (app) => {
           console.log(`Target folder: ${targetFolder}`);
 
           // Determine target directory
-          const targetDir = targetFolder === '/'
-            ? props.chartPath
-            : path.join(props.chartPath, targetFolder);
+          const targetDir =
+            targetFolder === '/' ? props.chartPath : path.join(props.chartPath, targetFolder);
 
           // Ensure target directory exists
           if (!fs.existsSync(targetDir)) {
@@ -208,7 +206,6 @@ module.exports = (app) => {
             jobId: jobId,
             message: 'Download job created'
           });
-
         } catch (error) {
           console.error('Error creating download job:', error);
           res.status(500).json({
@@ -264,29 +261,35 @@ module.exports = (app) => {
       }
 
       const https = require('https');
-      https.get(url, (response) => {
-        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-          return res.redirect(response.headers.location);
-        }
-        if (response.statusCode !== 200) {
-          return res.status(response.statusCode).send(`Failed to download file from ${url}`);
-        }
-        const disposition = response.headers['content-disposition'];
-        let filename = 'download.zip';
-        if (disposition && disposition.indexOf('attachment') !== -1) {
+      https
+        .get(url, (response) => {
+          if (
+            response.statusCode >= 300 &&
+            response.statusCode < 400 &&
+            response.headers.location
+          ) {
+            return res.redirect(response.headers.location);
+          }
+          if (response.statusCode !== 200) {
+            return res.status(response.statusCode).send(`Failed to download file from ${url}`);
+          }
+          const disposition = response.headers['content-disposition'];
+          let filename = 'download.zip';
+          if (disposition && disposition.indexOf('attachment') !== -1) {
             const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
             const matches = filenameRegex.exec(disposition);
-            if (matches != null && matches[1]) {
-                filename = matches[1].replace(/['"]/g, '');
+            if (matches !== null && matches[1]) {
+              filename = matches[1].replace(/['"]/g, '');
             }
-        }
-        res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
-        res.setHeader('Content-Type', response.headers['content-type']);
-        response.pipe(res);
-      }).on('error', (err) => {
-        console.error(`Error downloading file from ${url}`, err);
-        res.status(500).send('Error downloading file');
-      });
+          }
+          res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+          res.setHeader('Content-Type', response.headers['content-type']);
+          response.pipe(res);
+        })
+        .on('error', (err) => {
+          console.error(`Error downloading file from ${url}`, err);
+          res.status(500).send('Error downloading file');
+        });
     });
 
     router.get('/local-charts', async (req, res) => {
@@ -303,17 +306,21 @@ module.exports = (app) => {
         foldersSet.add('/');
 
         // Add folders from charts
-        charts.forEach(chart => {
+        charts.forEach((chart) => {
           foldersSet.add(chart.folder);
         });
 
         // Add all scanned folders (these are actual subdirectories)
-        allFolders.forEach(folder => foldersSet.add(folder));
+        allFolders.forEach((folder) => foldersSet.add(folder));
 
         // Convert to array and sort (root first, then alphabetically)
         const folders = Array.from(foldersSet).sort((a, b) => {
-          if (a === '/') return -1;
-          if (b === '/') return 1;
+          if (a === '/') {
+            return -1;
+          }
+          if (b === '/') {
+            return 1;
+          }
           return a.localeCompare(b);
         });
 
@@ -321,17 +328,17 @@ module.exports = (app) => {
         const activeJobs = downloadManager.getActiveJobs();
         const downloadingFiles = new Set();
 
-        activeJobs.forEach(job => {
+        activeJobs.forEach((job) => {
           if (job.status === 'downloading' || job.status === 'extracting') {
             // Add all target files (these are added as soon as writing starts)
             if (job.targetFiles && job.targetFiles.length > 0) {
-              job.targetFiles.forEach(file => downloadingFiles.add(file));
+              job.targetFiles.forEach((file) => downloadingFiles.add(file));
             }
           }
         });
 
         // Apply enabled state and downloading status from chart-state and download manager
-        const chartsWithState = charts.map(chart => ({
+        const chartsWithState = charts.map((chart) => ({
           ...chart,
           enabled: isChartEnabled(chart.relativePath),
           downloading: downloadingFiles.has(chart.name)
@@ -366,7 +373,7 @@ module.exports = (app) => {
 
         // Cancel any active downloads for this file
         const activeJobs = downloadManager.findJobsByTargetFile(fileName);
-        activeJobs.forEach(job => {
+        activeJobs.forEach((job) => {
           app.debug(`Cancelling download job ${job.id} for file: ${fileName}`);
           downloadManager.cancelJob(job.id);
         });
@@ -507,7 +514,9 @@ module.exports = (app) => {
           app.debug(`Delta emitted for disabled chart: ${chartId}`);
         }
 
-        res.status(200).json({ success: true, message: `Chart ${enabled ? 'enabled' : 'disabled'}` });
+        res
+          .status(200)
+          .json({ success: true, message: `Chart ${enabled ? 'enabled' : 'disabled'}` });
       } catch (error) {
         console.error('Error toggling chart state:', error);
         res.status(500).send('Error toggling chart state');
@@ -546,7 +555,10 @@ module.exports = (app) => {
         const normalizedTarget = path.normalize(targetPath);
         const normalizedBase = path.normalize(basePath);
 
-        if (!normalizedSource.startsWith(normalizedBase) || !normalizedTarget.startsWith(normalizedBase)) {
+        if (
+          !normalizedSource.startsWith(normalizedBase) ||
+          !normalizedTarget.startsWith(normalizedBase)
+        ) {
           return res.status(403).send('Access denied: Invalid path');
         }
 
@@ -606,7 +618,11 @@ module.exports = (app) => {
 
       // Check for invalid characters
       const nameWithoutExt = newName.replace(/\.mbtiles$/, '');
-      if (nameWithoutExt.includes('..') || nameWithoutExt.includes('/') || nameWithoutExt.includes('\\')) {
+      if (
+        nameWithoutExt.includes('..') ||
+        nameWithoutExt.includes('/') ||
+        nameWithoutExt.includes('\\')
+      ) {
         return res.status(400).send('Invalid chart name');
       }
 
@@ -625,7 +641,10 @@ module.exports = (app) => {
         const normalizedTarget = path.normalize(targetPath);
         const normalizedBase = path.normalize(basePath);
 
-        if (!normalizedSource.startsWith(normalizedBase) || !normalizedTarget.startsWith(normalizedBase)) {
+        if (
+          !normalizedSource.startsWith(normalizedBase) ||
+          !normalizedTarget.startsWith(normalizedBase)
+        ) {
           return res.status(403).send('Access denied: Invalid path');
         }
 
@@ -705,7 +724,10 @@ module.exports = (app) => {
           const description = 'USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY';
 
           db.prepare('UPDATE metadata SET value = ? WHERE name = ?').run(name, 'name');
-          db.prepare('UPDATE metadata SET value = ? WHERE name = ?').run(description, 'description');
+          db.prepare('UPDATE metadata SET value = ? WHERE name = ?').run(
+            description,
+            'description'
+          );
 
           app.debug(`Chart metadata updated: ${chartPathParam} - New name: ${name}`);
         } finally {
@@ -765,7 +787,7 @@ module.exports = (app) => {
 
           // Convert rows to object
           const metadata = {};
-          rows.forEach(row => {
+          rows.forEach((row) => {
             metadata[row.name] = row.value;
           });
 
@@ -774,12 +796,12 @@ module.exports = (app) => {
           try {
             const countRow = db.prepare('SELECT COUNT(*) as count FROM map').get();
             metadata.tileCount = countRow.count;
-          } catch (err) {
+          } catch (_err) {
             // Try alternative table name
             try {
               const countRow = db.prepare('SELECT COUNT(*) as count FROM tiles').get();
               metadata.tileCount = countRow.count;
-            } catch (err2) {
+            } catch (_err2) {
               // If both fail, silently omit tile count - some MBTiles formats don't have this
             }
           }
@@ -857,9 +879,10 @@ module.exports = (app) => {
               // Enable uploaded charts (in case they were previously disabled)
               for (const filename of uploadedFiles) {
                 // Calculate relative path from chart base path
-                const uploadDir = (targetFolder && targetFolder !== '/')
-                  ? path.join(basePath, targetFolder)
-                  : basePath;
+                const uploadDir =
+                  targetFolder && targetFolder !== '/'
+                    ? path.join(basePath, targetFolder)
+                    : basePath;
                 const relativePath = path.relative(basePath, path.join(uploadDir, filename));
                 setChartEnabled(relativePath, true);
                 app.debug(`Enabled uploaded chart: ${relativePath}`);
@@ -903,23 +926,18 @@ module.exports = (app) => {
 
     app.debug('** Registering v1 API paths **');
 
-    app.get(
-      apiRoutePrefix[1] + '/charts/:identifier',
-      (req, res) => {
-        const { identifier } = req.params;
-        const provider = chartProviders[identifier];
-        if (provider) {
-          return res.json(sanitizeProvider(provider));
-        } else {
-          return res.status(404).send('Not found');
-        }
+    app.get(apiRoutePrefix[1] + '/charts/:identifier', (req, res) => {
+      const { identifier } = req.params;
+      const provider = chartProviders[identifier];
+      if (provider) {
+        return res.json(sanitizeProvider(provider));
+      } else {
+        return res.status(404).send('Not found');
       }
-    );
+    });
 
     app.get(apiRoutePrefix[1] + '/charts', (req, res) => {
-      const sanitized = _.mapValues(chartProviders, (provider) =>
-        sanitizeProvider(provider)
-      );
+      const sanitized = _.mapValues(chartProviders, (provider) => sanitizeProvider(provider));
       res.json(sanitized);
     });
   };
@@ -934,9 +952,7 @@ module.exports = (app) => {
           listResources: (params) => {
             app.debug(`** listResources() ${params}`);
             return Promise.resolve(
-              _.mapValues(chartProviders, (provider) =>
-                sanitizeProvider(provider, 2)
-              )
+              _.mapValues(chartProviders, (provider) => sanitizeProvider(provider, 2))
             );
           },
           getResource: (id) => {
@@ -956,7 +972,7 @@ module.exports = (app) => {
           }
         }
       });
-    } catch (error) {
+    } catch (_error) {
       app.debug('Failed Provider Registration!');
     }
   };
@@ -993,12 +1009,16 @@ module.exports = (app) => {
       app.handleMessage(
         'signalk-charts-provider-simple',
         {
-          updates: [{
-            values: [{
-              path: `resources.charts.${chartId}`,
-              value: chartValue
-            }]
-          }]
+          updates: [
+            {
+              values: [
+                {
+                  path: `resources.charts.${chartId}`,
+                  value: chartValue
+                }
+              ]
+            }
+          ]
         },
         2 // Always use v2 for resource deltas - resources should not be in full model cache
       );
@@ -1017,7 +1037,6 @@ const responseHttpOptions = {
   }
 };
 
-
 const sanitizeProvider = (provider, version = 1) => {
   let v;
   if (version === 1) {
@@ -1027,14 +1046,7 @@ const sanitizeProvider = (provider, version = 1) => {
     v = _.merge({}, provider.v2);
     v.url = v.url ? v.url.replace('~tilePath~', chartTilesPath) : '';
   }
-  provider = _.omit(provider, [
-    '_filePath',
-    '_fileFormat',
-    '_mbtilesHandle',
-    '_flipY',
-    'v1',
-    'v2'
-  ]);
+  provider = _.omit(provider, ['_filePath', '_fileFormat', '_mbtilesHandle', '_flipY', 'v1', 'v2']);
   return _.merge(provider, v);
 };
 
@@ -1044,13 +1056,7 @@ const ensureDirectoryExists = (path) => {
   }
 };
 
-const serveTileFromFilesystem = (
-  res,
-  provider,
-  z,
-  x,
-  y
-) => {
+const serveTileFromFilesystem = (res, provider, z, x, y) => {
   const { format, _flipY, _filePath } = provider;
   const flippedY = Math.pow(2, z) - 1 - y;
   const file = _filePath
@@ -1065,13 +1071,7 @@ const serveTileFromFilesystem = (
   });
 };
 
-const serveTileFromMbtiles = (
-  res,
-  provider,
-  z,
-  x,
-  y
-) => {
+const serveTileFromMbtiles = (res, provider, z, x, y) => {
   try {
     const result = provider._mbtilesHandle.getTile(z, x, y);
 
@@ -1086,10 +1086,7 @@ const serveTileFromMbtiles = (
       res.end(result.data);
     }
   } catch (err) {
-    console.error(
-      `Error fetching tile ${provider.identifier}/${z}/${x}/${y}:`,
-      err
-    );
+    console.error(`Error fetching tile ${provider.identifier}/${z}/${x}/${y}:`, err);
     res.sendStatus(500);
   }
 };

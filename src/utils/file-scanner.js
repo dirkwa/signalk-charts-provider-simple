@@ -17,7 +17,7 @@ function getChartName(filePath) {
     } finally {
       db.close();
     }
-  } catch (err) {
+  } catch (_err) {
     return null;
   }
 }
