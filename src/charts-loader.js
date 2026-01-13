@@ -10,7 +10,7 @@
 
 const bluebird = require('bluebird');
 const path = require('path');
-const MBTiles = require('@mapbox/mbtiles');
+const { open: openMbtiles } = require('./utils/mbtiles-reader');
 const xml2js = require('xml2js');
 const { promises: fs } = require('fs');
 const _ = require('lodash');
@@ -104,70 +104,59 @@ function findChartsRecursive(currentDir) {
  * @returns {Promise<Object|null>} Chart metadata object or null if invalid
  */
 function openMbtilesFile(file, filename) {
-  return (
-    new Promise((resolve, reject) => {
-      new MBTiles(file, (err, mbtiles) => {
-        if (err) {
-          return reject(err);
-        }
-        mbtiles.getInfo((err, metadata) => {
-          if (err) {
-            return reject(err);
-          }
-          return resolve({ mbtiles, metadata });
-        });
-      });
-    })
-      .then((res) => {
-        // Validate metadata - must have bounds
-        if (_.isEmpty(res.metadata) || res.metadata.bounds === undefined) {
-          return null;
-        }
+  return openMbtiles(file)
+    .then((reader) => {
+      const metadata = reader.getInfo();
 
-        const identifier = filename.replace(/\.mbtiles$/i, '');
-
-        // Build chart metadata object
-        const data = {
-          // Internal properties (prefixed with _)
-          _fileFormat: 'mbtiles',
-          _filePath: file,
-          _mbtilesHandle: res.mbtiles,
-          _flipY: false, // MBTiles uses XYZ scheme (no Y-flip needed)
-
-          // Chart metadata
-          identifier,
-          name: res.metadata.name || res.metadata.id,
-          description: res.metadata.description,
-          bounds: res.metadata.bounds, // [minLon, minLat, maxLon, maxLat]
-          minzoom: res.metadata.minzoom,
-          maxzoom: res.metadata.maxzoom,
-          format: res.metadata.format, // 'png', 'jpg', 'pbf', etc.
-          type: 'tilelayer',
-          scale: parseInt(res.metadata.scale) || 250000,
-
-          // Signal K v1 API format
-          v1: {
-            tilemapUrl: `~tilePath~/${identifier}/{z}/{x}/{y}`,
-            chartLayers: res.metadata.vector_layers
-              ? parseVectorLayers(res.metadata.vector_layers)
-              : []
-          },
-
-          // Signal K v2 API format
-          v2: {
-            url: `~tilePath~/${identifier}/{z}/{x}/{y}`,
-            layers: res.metadata.vector_layers
-              ? parseVectorLayers(res.metadata.vector_layers)
-              : []
-          }
-        };
-        return data;
-      })
-      .catch((e) => {
-        console.error(`Error loading chart ${file}`, e.message);
+      // Validate metadata - must have bounds
+      if (_.isEmpty(metadata) || metadata.bounds === undefined) {
+        reader.close();
         return null;
-      })
-  );
+      }
+
+      const identifier = filename.replace(/\.mbtiles$/i, '');
+
+      // Build chart metadata object
+      const data = {
+        // Internal properties (prefixed with _)
+        _fileFormat: 'mbtiles',
+        _filePath: file,
+        _mbtilesHandle: reader,
+        _flipY: false, // Our reader handles Y-flip internally
+
+        // Chart metadata
+        identifier,
+        name: metadata.name || metadata.id,
+        description: metadata.description,
+        bounds: metadata.bounds, // [minLon, minLat, maxLon, maxLat]
+        minzoom: metadata.minzoom,
+        maxzoom: metadata.maxzoom,
+        format: metadata.format, // 'png', 'jpg', 'pbf', etc.
+        type: 'tilelayer',
+        scale: parseInt(metadata.scale) || 250000,
+
+        // Signal K v1 API format
+        v1: {
+          tilemapUrl: `~tilePath~/${identifier}/{z}/{x}/{y}`,
+          chartLayers: metadata.vector_layers
+            ? parseVectorLayers(metadata.vector_layers)
+            : []
+        },
+
+        // Signal K v2 API format
+        v2: {
+          url: `~tilePath~/${identifier}/{z}/{x}/{y}`,
+          layers: metadata.vector_layers
+            ? parseVectorLayers(metadata.vector_layers)
+            : []
+        }
+      };
+      return data;
+    })
+    .catch((e) => {
+      console.error(`Error loading chart ${file}`, e.message);
+      return null;
+    });
 }
 
 /**

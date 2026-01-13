@@ -1072,24 +1072,24 @@ const serveTileFromMbtiles = (
   x,
   y
 ) => {
-  provider._mbtilesHandle.getTile(
-    z,
-    x,
-    y,
-    (err, tile, headers) => {
-      if (err && err.message && err.message === 'Tile does not exist') {
-        res.sendStatus(404);
-      } else if (err) {
-        console.error(
-          `Error fetching tile ${provider.identifier}/${z}/${x}/${y}:`,
-          err
-        );
-        res.sendStatus(500);
-      } else {
-        headers['Cache-Control'] = responseHttpOptions.headers['Cache-Control'];
-        res.writeHead(200, headers);
-        res.end(tile);
-      }
+  try {
+    const result = provider._mbtilesHandle.getTile(z, x, y);
+
+    if (!result) {
+      res.sendStatus(404);
+    } else {
+      const headers = {
+        ...result.headers,
+        'Cache-Control': responseHttpOptions.headers['Cache-Control']
+      };
+      res.writeHead(200, headers);
+      res.end(result.data);
     }
-  );
+  } catch (err) {
+    console.error(
+      `Error fetching tile ${provider.identifier}/${z}/${x}/${y}:`,
+      err
+    );
+    res.sendStatus(500);
+  }
 };
