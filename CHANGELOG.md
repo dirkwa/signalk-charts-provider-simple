@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.6.0] 2026-01-14
+### Changed:
+- Replaced `@mapbox/mbtiles` with custom `better-sqlite3` implementation
+  - Fixes "Could not locate the bindings file" error on Node.js 22 and 24
+  - No more dependency on problematic `sqlite3` native module
+  - Synchronous tile serving for better performance
+
+### Added:
+- ESLint and Prettier for code quality
+  - ESLint 9 with flat config
+  - Prettier for consistent code formatting
+  - npm scripts: `lint`, `lint:fix`, `format`, `format:check`
+- Comprehensive test suite using Node.js built-in test runner
+  - 17 unit tests for MBTiles reader
+  - 8 integration tests for plugin, charts loader, and tile serving
+- GitHub Actions CI workflow
+  - Runs linting and formatting checks
+  - Tests on Node.js 22 and 24
+
+### Notes:
+- Node.js 22+ now fully supported with prebuilt `better-sqlite3` binaries
+- Node.js 24 support confirmed working
+
 ## [1.5.2] 2026-01-11
 ### Fixed:
 - Installation fails on systems with Python 3.12+ due to removed `distutils` module
