@@ -1,0 +1,17 @@
+# Temporary — testing the new SignalK Plugin CI reusable workflow
+# from dirkwa/signalk-server PR #2400
+# Remove this file once the PR is merged and use the caller example instead
+
+name: Test SignalK Plugin CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    uses: dirkwa/signalk-server/.github/workflows/plugin-ci.yml@feat-ci-for-plugins
+    with:
+      enable-armv7: true
+      enable-signalk-integration: true
