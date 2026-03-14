@@ -70,7 +70,7 @@ describe('MBTilesReader', () => {
       // MBTiles stores as TMS (row 0), we request as XYZ (y 0)
       const result = reader.getTile(0, 0, 0);
       assert.ok(result, 'Result should not be null');
-      assert.ok(Buffer.isBuffer(result.data), 'data should be a Buffer');
+      assert.ok(result.data instanceof Uint8Array, 'data should be a Uint8Array');
       assert.ok(result.headers, 'headers should exist');
     });
 
@@ -132,7 +132,7 @@ describe('open()', () => {
   it('should reject for non-existent file', async () => {
     await assert.rejects(
       open('/non/existent/file.mbtiles'),
-      /SQLITE_CANTOPEN|no such file|directory does not exist/i
+      /SQLITE_CANTOPEN|no such file|directory does not exist|unable to open database/i
     );
   });
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0] 2026-03-14
+### Changed:
+- Replaced `better-sqlite3` with Node.js built-in `node:sqlite` module
+  - No more native C++ addon — eliminates `node-gyp`, `prebuild-install`, and all related build issues
+  - Zero install-time compilation or binary downloads
+  - Requires Node.js >= 22.5.0
+
 ## [1.6.0] 2026-01-14
 ### Changed:
 - Replaced `@mapbox/mbtiles` with custom `better-sqlite3` implementation

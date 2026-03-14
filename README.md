@@ -89,8 +89,7 @@ This plugin includes a feature to edit chart metadata (chart names) in MBTiles f
 
 ## Requirements
 
-- **Node.js 22 LTS** (recommended) - prebuilt binaries available for all platforms
-- Node.js 24+: May require manual installation of build tools (Visual Studio Build Tools on Windows, build-essential on Linux)
+- **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
 
 ## Acknowledgments
 

@@ -158,7 +158,7 @@ describe('Tile Serving', () => {
     // Get a tile that exists (zoom 0, x 0, y 0)
     const result = chart._mbtilesHandle.getTile(0, 0, 0);
     assert.ok(result, 'Tile should be returned');
-    assert.ok(Buffer.isBuffer(result.data), 'Tile data should be a buffer');
+    assert.ok(result.data instanceof Uint8Array, 'Tile data should be a Uint8Array');
     assert.strictEqual(result.headers['Content-Type'], 'image/png');
   });
 

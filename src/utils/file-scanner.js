@@ -8,8 +8,8 @@ const path = require('path');
  */
 function getChartName(filePath) {
   try {
-    const Database = require('better-sqlite3');
-    const db = new Database(filePath, { readonly: true });
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(filePath, { readOnly: true });
 
     try {
       const row = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get();

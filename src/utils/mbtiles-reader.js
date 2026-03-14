@@ -1,15 +1,14 @@
 /**
  * MBTiles Reader Module
  *
- * A lightweight MBTiles reader using better-sqlite3 to replace @mapbox/mbtiles.
- * This avoids native module compatibility issues across Node.js versions.
+ * A lightweight MBTiles reader using the built-in node:sqlite module.
  *
  * MBTiles is a SQLite database containing:
  * - metadata table: key-value pairs describing the tileset
  * - tiles table: tile data indexed by zoom/column/row (TMS scheme)
  */
 
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 
 /**
  * MBTiles reader class
@@ -22,7 +21,7 @@ class MBTilesReader {
    */
   constructor(filePath) {
     this.filePath = filePath;
-    this.db = new Database(filePath, { readonly: true });
+    this.db = new DatabaseSync(filePath, { readOnly: true });
     this._metadata = null;
   }
 

@@ -3,7 +3,7 @@
  * Run with: node test/fixtures/create-test-mbtiles.js
  */
 
-const Database = require('better-sqlite3');
+const { DatabaseSync } = require('node:sqlite');
 const path = require('path');
 const fs = require('fs');
 
@@ -14,7 +14,7 @@ if (fs.existsSync(outputPath)) {
   fs.unlinkSync(outputPath);
 }
 
-const db = new Database(outputPath);
+const db = new DatabaseSync(outputPath);
 
 // Create MBTiles schema
 db.exec(`

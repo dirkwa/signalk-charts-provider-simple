@@ -715,9 +715,9 @@ module.exports = (app) => {
           return res.status(400).send('Metadata editing only available for MBTiles charts');
         }
 
-        // Update metadata in SQLite database using better-sqlite3
-        const Database = require('better-sqlite3');
-        const db = new Database(fullPath);
+        // Update metadata in SQLite database
+        const { DatabaseSync } = require('node:sqlite');
+        const db = new DatabaseSync(fullPath);
 
         try {
           // Update name and description
@@ -777,9 +777,9 @@ module.exports = (app) => {
           return res.status(400).send('Metadata only available for MBTiles charts');
         }
 
-        // Read metadata from SQLite database using better-sqlite3
-        const Database = require('better-sqlite3');
-        const db = new Database(fullPath, { readonly: true });
+        // Read metadata from SQLite database
+        const { DatabaseSync } = require('node:sqlite');
+        const db = new DatabaseSync(fullPath, { readOnly: true });
 
         try {
           // Get all metadata
