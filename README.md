@@ -90,6 +90,7 @@ This plugin includes a feature to edit chart metadata (chart names) in MBTiles f
 ## Requirements
 
 - **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
+- **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
 
 ## Acknowledgments
 

@@ -13,5 +13,5 @@ jobs:
   test:
     uses: dirkwa/signalk-server/.github/workflows/plugin-ci.yml@feat-ci-for-plugins
     with:
-      enable-armv7: true
+      enable-armv7: false
       enable-signalk-integration: true
