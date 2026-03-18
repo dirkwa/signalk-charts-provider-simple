@@ -1046,7 +1046,13 @@ module.exports = (app) => {
       if (!progress) {
         return res.json({ log: [], status: null });
       }
-      res.json({ log: progress.log || [], status: progress.status, message: progress.message });
+      const tail = parseInt(req.query.tail) || 100;
+      const log = progress.log || [];
+      res.json({
+        log: log.slice(-tail),
+        status: progress.status,
+        message: progress.message
+      });
     });
 
     // Return charts with available updates
@@ -1095,6 +1101,137 @@ module.exports = (app) => {
         console.error('Error fetching catalog:', error);
         res.status(500).json({ error: 'Failed to fetch catalog' });
       }
+    });
+
+    // Upload and convert a ZIP file containing S-57 ENC or BSB RNC charts
+    router.post('/convert-upload', async (req, res) => {
+      const busboy = require('busboy');
+      const bb = busboy({ headers: req.headers, limits: { fileSize: 500 * 1024 * 1024 } });
+      const chartPath = props.chartPath || defaultChartsPath;
+      let convType = '';
+      let minzoom = 9;
+      let maxzoom = 16;
+
+      const tmpDir = path.join(app.getDataDirPath(), `convert-upload-${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+
+      let uploadedFile = null;
+      let uploadedFileName = '';
+
+      bb.on('field', (name, value) => {
+        if (name === 'type') {
+          convType = value;
+        }
+        if (name === 'minzoom') {
+          minzoom = parseInt(value) || 9;
+        }
+        if (name === 'maxzoom') {
+          maxzoom = parseInt(value) || 16;
+        }
+      });
+
+      bb.on('file', (_fieldname, file, info) => {
+        const { filename } = info;
+        if (!filename.endsWith('.zip')) {
+          file.resume();
+          return;
+        }
+        uploadedFileName = filename;
+        uploadedFile = path.join(tmpDir, filename);
+        const ws = fs.createWriteStream(uploadedFile);
+        file.pipe(ws);
+      });
+
+      bb.on('finish', async () => {
+        if (!uploadedFile || !fs.existsSync(uploadedFile)) {
+          cleanupDir(tmpDir);
+          return res.status(400).json({ success: false, error: 'No ZIP file uploaded' });
+        }
+
+        if (!convType || !['s57', 'rnc'].includes(convType)) {
+          cleanupDir(tmpDir);
+          return res.status(400).json({ success: false, error: 'Invalid conversion type' });
+        }
+
+        const podmanStatus = await checkPodman();
+        if (!podmanStatus.available) {
+          cleanupDir(tmpDir);
+          return res.status(400).json({ success: false, error: 'Podman is not available' });
+        }
+
+        const MAX_CONCURRENT = 2;
+        if (getConvertingCount() >= MAX_CONCURRENT) {
+          cleanupDir(tmpDir);
+          return res.status(429).json({
+            success: false,
+            error: `Too many conversions running (max ${MAX_CONCURRENT}). Please wait.`
+          });
+        }
+
+        const chartNumber = path.basename(uploadedFileName, '.zip').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+        // Respond immediately, conversion runs in background
+        res.json({ success: true, chartNumber, message: 'Conversion started' });
+
+        setConvertingState(chartNumber, true);
+
+        try {
+          if (convType === 's57') {
+            const catalogCode = 'CUSTOM';
+            const s57SubDir = path.join(chartPath, 'S-57', `${catalogCode}-${chartNumber}`);
+            fs.mkdirSync(s57SubDir, { recursive: true });
+
+            const result = await processS57Zip(
+              uploadedFile,
+              s57SubDir,
+              chartNumber,
+              (status, message) => {
+                app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
+              },
+              { minzoom, maxzoom }
+            );
+
+            await refreshChartProviders();
+            for (const chartDir of result.chartDirs) {
+              if (chartProviders[chartDir]) {
+                const chartData = sanitizeProvider(chartProviders[chartDir], 2);
+                emitChartDelta(chartDir, chartData);
+              }
+            }
+            app.debug(`Convert complete: ${chartNumber} → ${result.chartDirs.length} chart(s)`);
+          } else if (convType === 'rnc') {
+            const result = await processRncZip(
+              uploadedFile,
+              chartPath,
+              chartNumber,
+              (status, message) => {
+                app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
+              }
+            );
+
+            for (const mbtilesFile of result.mbtilesFiles) {
+              const relativePath = path.relative(chartPath, path.join(chartPath, mbtilesFile));
+              setChartEnabled(relativePath, true);
+            }
+            await refreshChartProviders();
+            for (const mbtilesFile of result.mbtilesFiles) {
+              const chartId = mbtilesFile.replace(/\.mbtiles$/, '');
+              if (chartProviders[chartId]) {
+                const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                emitChartDelta(chartId, chartData);
+              }
+            }
+            app.debug(`Convert complete: ${chartNumber} → ${result.mbtilesFiles.join(', ')}`);
+          }
+        } catch (error) {
+          app.error(`Convert failed for ${chartNumber}: ${error.message}`);
+        } finally {
+          setConvertingState(chartNumber, false);
+          cleanupDir(tmpDir);
+        }
+      });
+
+      req.pipe(bb);
     });
 
     // Initiate download of a catalog chart
@@ -1645,7 +1782,7 @@ const serveTileFromFilesystem = (res, provider, z, x, y) => {
           const entries = fs.readdirSync(_filePath, { withFileTypes: true });
           const dirs = entries.filter((e) => e.isDirectory());
 
-          // First pass: try overview cells only
+          // First pass: try overview cells (have LNDARE — complete rendering)
           if (overviewCells) {
             for (const entry of dirs) {
               if (!overviewCells.includes(entry.name)) {
@@ -1662,17 +1799,15 @@ const serveTileFromFilesystem = (res, provider, z, x, y) => {
             }
           }
 
-          // Fallback: try any cell (for non-grouped or legacy charts)
-          if (!overviewCells) {
-            for (const entry of dirs) {
-              const cellTile = path.join(_filePath, entry.name, tilePath);
-              if (fs.existsSync(cellTile)) {
-                return res.sendFile(cellTile, httpOptions, (err2) => {
-                  if (err2) {
-                    res.sendStatus(404);
-                  }
-                });
-              }
+          // Second pass: try any cell (detail cells as fallback, or non-grouped charts)
+          for (const entry of dirs) {
+            const cellTile = path.join(_filePath, entry.name, tilePath);
+            if (fs.existsSync(cellTile)) {
+              return res.sendFile(cellTile, httpOptions, (err2) => {
+                if (err2) {
+                  res.sendStatus(404);
+                }
+              });
             }
           }
         } catch (_e) {

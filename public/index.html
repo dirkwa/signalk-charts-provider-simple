@@ -28,6 +28,12 @@
                 </svg>
                 Download from URL
             </button>
+            <button class="tab" onclick="openTab(event, 'convert')">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="margin-right: 8px;">
+                    <path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/>
+                </svg>
+                Convert
+            </button>
             <button class="tab" onclick="openTab(event, 'catalog')" id="catalogTabBtn">
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="margin-right: 8px;">
                     <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/>
@@ -51,6 +57,10 @@
             </div>
         </div>
 
+        <div id="convert" class="tab-content">
+            <div id="convertOutput"></div>
+        </div>
+
         <div id="catalog" class="tab-content">
             <div id="catalogOutput">
                 <div class="empty-state">
@@ -64,6 +74,7 @@
         <script src="js/tabs.js"></script>
         <script src="js/manage-charts-enhanced.js"></script>
         <script src="js/download-simple.js"></script>
+        <script src="js/chart-convert.js"></script>
         <script src="js/chart-catalog.js"></script>
         <script type="module" src="index.js"></script>
     </div>

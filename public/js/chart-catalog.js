@@ -31,6 +31,13 @@ async function initCatalogTab() {
 
   output.innerHTML = `
     <div class="catalog-container">
+      <div class="catalog-source-note">
+        Chart data sourced from
+        <a href="https://chartcatalogs.github.io/" target="_blank" rel="noopener">chartcatalogs.github.io</a>
+        &mdash; a community-maintained catalog. Download links may be outdated or unavailable.
+        If a download fails, please report it to the
+        <a href="https://github.com/chartcatalogs/catalogs/issues" target="_blank" rel="noopener">catalog issue tracker</a>.
+      </div>
       <div id="catalogPodmanWarning"></div>
       <div id="catalogFilterBar"></div>
       <div id="catalogList">
@@ -38,11 +45,6 @@ async function initCatalogTab() {
           <div class="spinner"></div>
           <div>Loading catalog registry...</div>
         </div>
-      </div>
-      <div class="catalog-source-link">
-        Source:
-        <a href="https://chartcatalogs.github.io/" target="_blank" rel="noopener">chartcatalogs.github.io</a>
-        &mdash; Community-maintained nautical chart catalogs
       </div>
     </div>
   `;
@@ -431,6 +433,9 @@ async function pollCatalogDownloads() {
             textEl.textContent = 'Extracting...';
           } else if (job.progress > 0) {
             textEl.textContent = `Downloading ${job.progress}%`;
+          } else if (job.downloadedBytes > 0) {
+            const mb = (job.downloadedBytes / (1024 * 1024)).toFixed(1);
+            textEl.textContent = `Downloading ${mb} MB...`;
           } else {
             textEl.textContent = 'Downloading...';
           }

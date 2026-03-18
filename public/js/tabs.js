@@ -39,6 +39,8 @@ window.openTab = function(evt, tabName) {
         window.handleManageTabActive();
     } else if (tabName === 'download') {
         window.handleDownloadTabActive();
+    } else if (tabName === 'convert') {
+        window.handleConvertTabActive();
     } else if (tabName === 'catalog') {
         window.handleCatalogTabActive();
     }

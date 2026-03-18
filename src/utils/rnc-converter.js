@@ -7,7 +7,7 @@ const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
 
 // In-memory progress tracking: chartNumber -> { status, message, log }
 const conversionProgress = {};
-const MAX_LOG_LINES = 200;
+const MAX_LOG_LINES = 100;
 
 let debug = () => {};
 

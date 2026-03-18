@@ -5,9 +5,19 @@ const unzipper = require('unzipper');
 
 const S57_TILER_IMAGE = 'docker.io/wdantuma/s57-tiler:latest';
 
+// ISO 8211 CATALOG.031 header (248 bytes) and record template (136 bytes)
+// Used to generate synthetic catalogs for ENC ZIPs that lack one.
+// Filename field is at offset 57-69 in the record template (12 chars).
+const CATALOG_HEADER_B64 =
+  'MDAyNDgzTEUxIDA5MDAwNTIgISAzMjA0MDAwMDAzMDAwMDAwMTA0NDMwQ0FURDEyMjc0HjAwMDA7JiAgIENBVEFMT0cuMDMxHzAwMDFDQVREHjA1MDA7JiAgIElTTyA4MjExIFJlY29yZCBJZGVudGlmaWVyHx8oSSg1KSkeMTYwMDsmICAgQ2F0YWxvZ3VlIERpcmVjdG9yeSBGaWVsZB9SQ05NIVJDSUQhRklMRSFMRklMIVZPTE0hSU1QTCFTTEFUIVdMT04hTkxBVCFFTE9OIUNSQ1MhQ09NVB8oQSgyKSxJKDEwKSwzQSxBKDMpLDRSLDJBKR4=';
+const CATALOG_RECORD_B64 =
+  'MDAxMzYgRCAgICAgMDAwMzkgICAyMTA0MDAwMTA2MENBVEQ5MTYeMDAwMDEeQ0QwMDAwMDAwMDAxMlc3RDE4NzAuMDAwHx9WMDFYMDEfQklONDguMTExNjMxMR8xNi45NTA5ODk3HzQ4LjIyNzkxOTUfMTcuMDY2NDEyOR9FNUMzRkM0Qh8fHg==';
+const CATALOG_FNAME_OFFSET = 57;
+const CATALOG_FNAME_LEN = 12;
+
 // In-memory progress tracking: chartNumber -> { status, message, map, zoom, percent, log }
 const conversionProgress = {};
-const MAX_LOG_LINES = 200;
+const MAX_LOG_LINES = 100;
 
 let debug = () => {};
 
@@ -70,29 +80,103 @@ function pullS57TilerImage() {
  * Extract a ZIP file to a target directory
  * Returns array of extracted file paths
  */
-function extractZip(zipPath, targetDir) {
-  return new Promise((resolve, reject) => {
-    const extractedFiles = [];
+/**
+ * Generate a synthetic CATALOG.031 for ENC directories that lack one.
+ * s57-tiler requires CATALOG.031 to discover .000 files.
+ */
+function generateCatalog031(encDir) {
+  const catalogPath = path.join(encDir, 'CATALOG.031');
 
-    fs.createReadStream(zipPath)
-      .pipe(unzipper.Parse())
-      .on('entry', (entry) => {
-        const fileName = entry.path;
-        const type = entry.type;
-
-        if (type === 'File') {
-          const targetPath = path.join(targetDir, path.basename(fileName));
-          extractedFiles.push(targetPath);
-
-          const writeStream = fs.createWriteStream(targetPath);
-          entry.pipe(writeStream);
-        } else {
-          entry.autodrain();
+  // Check if one already exists (search recursively)
+  const findCatalog = (dir) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.toUpperCase() === 'CATALOG.031') {
+        return path.join(dir, entry.name);
+      }
+      if (entry.isDirectory()) {
+        const found = findCatalog(path.join(dir, entry.name));
+        if (found) {
+          return found;
         }
-      })
-      .on('finish', () => resolve(extractedFiles))
-      .on('error', reject);
-  });
+      }
+    }
+    return null;
+  };
+
+  if (findCatalog(encDir)) {
+    debug('CATALOG.031 found in extraction');
+    return;
+  }
+
+  // Find all .000 files recursively
+  const encFiles = [];
+  const findEnc = (dir) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        findEnc(path.join(dir, entry.name));
+      } else if (entry.name.endsWith('.000')) {
+        encFiles.push(entry.name);
+      }
+    }
+  };
+  findEnc(encDir);
+
+  if (encFiles.length === 0) {
+    debug('No .000 files found — cannot generate CATALOG.031');
+    return;
+  }
+
+  const header = Buffer.from(CATALOG_HEADER_B64, 'base64');
+  const recordTemplate = Buffer.from(CATALOG_RECORD_B64, 'base64');
+
+  const records = [];
+  for (let i = 0; i < encFiles.length; i++) {
+    const rec = Buffer.from(recordTemplate);
+
+    // Update sequence number (5 digits after first 0x1e)
+    const seqPos = rec.indexOf(0x1e) + 1;
+    rec.write(String(i + 1).padStart(5, '0'), seqPos, 5, 'latin1');
+
+    // Update RCID (10 digits after 'CD')
+    const cdPos = rec.indexOf(Buffer.from('CD')) + 2;
+    rec.write(String(i + 1).padStart(10, '0'), cdPos, 10, 'latin1');
+
+    // Replace filename (pad/truncate to 12 chars)
+    const fname = encFiles[i].slice(0, CATALOG_FNAME_LEN).padEnd(CATALOG_FNAME_LEN);
+    rec.write(fname, CATALOG_FNAME_OFFSET, CATALOG_FNAME_LEN, 'latin1');
+
+    records.push(rec);
+  }
+
+  fs.writeFileSync(catalogPath, Buffer.concat([header, ...records]));
+  debug(`Generated CATALOG.031 with ${encFiles.length} entries`);
+}
+
+async function extractZip(zipPath, targetDir) {
+  // Extract preserving directory structure — s57-tiler scans recursively for CATALOG.031
+  await fs
+    .createReadStream(zipPath)
+    .pipe(unzipper.Extract({ path: targetDir }))
+    .promise();
+
+  // Count extracted files
+  const allFiles = [];
+  const scan = (dir) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        scan(fullPath);
+      } else {
+        allFiles.push(fullPath);
+      }
+    }
+  };
+  scan(targetDir);
+
+  return allFiles;
 }
 
 /**
@@ -292,6 +376,9 @@ async function processS57Zip(zipPath, chartsDir, chartNumber, onStatus, options 
       throw new Error('No files found in ZIP archive');
     }
 
+    // Step 3b: Generate CATALOG.031 if missing (some ENC ZIPs ship without one)
+    generateCatalog031(tmpDir);
+
     // Step 4: Convert
     statusFn('converting', 'Converting S-57 to vector tiles...');
     const result = await convertS57ToTiles(tmpDir, chartsDir, chartNumber, options);
@@ -308,12 +395,28 @@ async function processS57Zip(zipPath, chartsDir, chartNumber, onStatus, options 
     createMergedMetadata(chartsDir, result.chartDirs, chartNumber);
 
     statusFn('completed', `Converted ${result.chartDirs.length} chart(s) successfully`);
-    return result;
-  } finally {
-    // Clean up progress tracking
+
+    // Clean up progress on success
     if (chartNumber) {
       delete conversionProgress[chartNumber];
     }
+
+    return result;
+  } catch (err) {
+    // Keep error in progress so frontend can display it
+    if (chartNumber) {
+      conversionProgress[chartNumber] = {
+        status: 'failed',
+        message: err.message || 'Conversion failed',
+        log: conversionProgress[chartNumber] ? conversionProgress[chartNumber].log || [] : []
+      };
+      // Auto-clean after 5 minutes
+      setTimeout(() => {
+        delete conversionProgress[chartNumber];
+      }, 300000);
+    }
+    throw err;
+  } finally {
     // Clean up temp dir
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
