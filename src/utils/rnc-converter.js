@@ -55,29 +55,27 @@ function pullGdalImage() {
  * Extract a ZIP file to a target directory
  * Returns array of extracted file paths
  */
-function extractZip(zipPath, targetDir) {
-  return new Promise((resolve, reject) => {
-    const extractedFiles = [];
+async function extractZip(zipPath, targetDir) {
+  // Extract preserving directory structure, then collect all files
+  await fs
+    .createReadStream(zipPath)
+    .pipe(unzipper.Extract({ path: targetDir }))
+    .promise();
 
-    fs.createReadStream(zipPath)
-      .pipe(unzipper.Parse())
-      .on('entry', (entry) => {
-        const fileName = entry.path;
-        const type = entry.type;
-
-        if (type === 'File') {
-          const targetPath = path.join(targetDir, path.basename(fileName));
-          extractedFiles.push(targetPath);
-
-          const writeStream = fs.createWriteStream(targetPath);
-          entry.pipe(writeStream);
-        } else {
-          entry.autodrain();
-        }
-      })
-      .on('finish', () => resolve(extractedFiles))
-      .on('error', reject);
-  });
+  const allFiles = [];
+  const scan = (dir) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        scan(fullPath);
+      } else {
+        allFiles.push(fullPath);
+      }
+    }
+  };
+  scan(targetDir);
+  return allFiles;
 }
 
 /**
@@ -265,7 +263,14 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
       conversionProgress[chartNumber].status = 'extracting';
       conversionProgress[chartNumber].message = 'Extracting BSB files...';
     }
-    const extracted = await extractZip(zipPath, tmpDir);
+    let extracted;
+    try {
+      extracted = await extractZip(zipPath, tmpDir);
+    } catch (zipErr) {
+      throw new Error(
+        `Downloaded file is not a valid ZIP archive (${zipErr.message}). The server may have returned an error page instead.`
+      );
+    }
     debug(`Extracted ${extracted.length} files from ZIP`);
 
     if (extracted.length === 0) {
@@ -316,12 +321,27 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
     }
 
     statusFn('completed', `Converted ${mbtilesFiles.length} chart(s) to MBTiles`);
-    return { mbtilesFiles };
-  } finally {
-    // Clean up progress tracking
+
+    // Clean up progress on success
     if (chartNumber) {
       delete conversionProgress[chartNumber];
     }
+
+    return { mbtilesFiles };
+  } catch (err) {
+    // Keep error in progress so frontend can display it
+    if (chartNumber) {
+      conversionProgress[chartNumber] = {
+        status: 'failed',
+        message: err.message || 'Conversion failed',
+        log: conversionProgress[chartNumber] ? conversionProgress[chartNumber].log || [] : []
+      };
+      setTimeout(() => {
+        delete conversionProgress[chartNumber];
+      }, 300000);
+    }
+    throw err;
+  } finally {
     // Clean up temp dir
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });

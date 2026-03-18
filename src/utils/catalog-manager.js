@@ -4,144 +4,33 @@ const path = require('path');
 const xml2js = require('xml2js');
 
 const CATALOG_BASE_URL = 'https://raw.githubusercontent.com/chartcatalogs/catalogs/master/';
+const CATALOG_GITHUB_API = 'https://api.github.com/repos/chartcatalogs/catalogs/contents/';
 
-const CATALOG_REGISTRY = [
-  {
-    file: 'NOAA_MBTiles_Catalog.xml',
-    label: 'NOAA Vector Charts (MBTiles)',
-    category: 'mbtiles'
-  },
-  {
-    file: 'GSHHG_Catalog.xml',
-    label: 'World Basemap Polygons (GSHHG)',
-    category: 'general'
-  },
-  {
-    file: 'PILOT_Catalog.xml',
-    label: 'World Pilot Charts',
-    category: 'general'
-  },
-  {
-    file: 'OSMSHP_Catalog.xml',
-    label: 'OpenStreetMap Shapefiles',
-    category: 'general'
-  },
-  {
-    file: 'ACE_BUOY_Catalog.xml',
-    label: 'ACE Buoy Charts',
-    category: 'general'
-  },
-  {
-    file: 'AR_RNC_Catalog.xml',
-    label: 'Argentina Raster Charts',
-    category: 'rnc'
-  },
-  {
-    file: 'BR_RNC_Catalog.xml',
-    label: 'Brazil Raster Charts',
-    category: 'rnc'
-  },
-  {
-    file: 'NZ_RNC_Catalog.xml',
-    label: 'New Zealand Raster Charts',
-    category: 'rnc'
-  },
-  {
-    file: 'PE_RNC_Catalog.xml',
-    label: 'Peru Raster Charts',
-    category: 'rnc'
-  },
-  {
-    file: 'SCS_ENC_Catalog.xml',
-    label: 'South China Sea ENC',
-    category: 'rnc'
-  },
-  {
-    file: 'AT_IENC_Catalog.xml',
-    label: 'Austria Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'BE_IENC_Catalog.xml',
-    label: 'Belgium Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'BG_IENC_Catalog.xml',
-    label: 'Bulgaria Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'BR_IENC_Catalog.xml',
-    label: 'Brazil Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'CH_IENC_Catalog.xml',
-    label: 'Switzerland Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'CZ_IENC_Catalog.xml',
-    label: 'Czech Republic Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'DE_IENC_Catalog.xml',
-    label: 'Germany Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'EURIS_IENC_Catalog.xml',
-    label: 'European RIS Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'FR_IENC_Catalog.xml',
-    label: 'France Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'FR_IENC_RHONE_Catalog.xml',
-    label: 'France Rhone Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'HR_IENC_Catalog.xml',
-    label: 'Croatia Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'HU_IENC_Catalog.xml',
-    label: 'Hungary Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'NL_IENC_Catalog.xml',
-    label: 'Netherlands Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'PL_IENC_Catalog.xml',
-    label: 'Poland Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'RO_IENC_Catalog.xml',
-    label: 'Romania Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'RS_IENC_Catalog.xml',
-    label: 'Serbia Inland ENC',
-    category: 'ienc'
-  },
-  {
-    file: 'SK_IENC_Catalog.xml',
-    label: 'Slovakia Inland ENC',
-    category: 'ienc'
-  }
-];
+// Country code to name mapping for auto-labeling
+const COUNTRY_CODES = {
+  AR: 'Argentina',
+  AT: 'Austria',
+  BE: 'Belgium',
+  BG: 'Bulgaria',
+  BR: 'Brazil',
+  CH: 'Switzerland',
+  CZ: 'Czech Republic',
+  DE: 'Germany',
+  FR: 'France',
+  HR: 'Croatia',
+  HU: 'Hungary',
+  NL: 'Netherlands',
+  NZ: 'New Zealand',
+  PE: 'Peru',
+  PL: 'Poland',
+  RO: 'Romania',
+  RS: 'Serbia',
+  SK: 'Slovakia',
+  SCS: 'South China Sea'
+};
+
+// Dynamic catalog registry — fetched from GitHub, cached to disk
+let catalogRegistry = [];
 
 const CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 
@@ -163,6 +52,144 @@ function initCatalogManager(dataDirPath, debugFn) {
   }
 
   loadInstalls();
+  loadRegistryCache();
+
+  // Fetch fresh registry in background (don't block startup)
+  fetchCatalogRegistry().catch((err) => {
+    debug(`Failed to fetch catalog registry: ${err.message}`);
+  });
+}
+
+/**
+ * Derive category from catalog filename
+ */
+function deriveCategory(filename) {
+  if (filename.includes('MBTiles')) {
+    return 'mbtiles';
+  }
+  if (filename.includes('_IENC_') || filename.includes('_ENC_')) {
+    return 'ienc';
+  }
+  if (filename.includes('_RNC_')) {
+    return 'rnc';
+  }
+  return 'general';
+}
+
+/**
+ * Derive human-readable label from catalog filename
+ */
+function deriveLabel(filename) {
+  const base = filename.replace('_Catalog.xml', '');
+
+  // Special cases
+  if (base === 'NOAA_MBTiles') {
+    return 'NOAA Vector Charts (MBTiles)';
+  }
+  if (base === 'GSHHG') {
+    return 'World Basemap Polygons (GSHHG)';
+  }
+  if (base === 'PILOT') {
+    return 'World Pilot Charts';
+  }
+  if (base === 'OSMSHP') {
+    return 'OpenStreetMap Shapefiles';
+  }
+  if (base === 'ACE_BUOY') {
+    return 'ACE Buoy Charts';
+  }
+  if (base === 'EURIS_IENC') {
+    return 'European RIS Inland ENC';
+  }
+
+  // Pattern: CC_TYPE or CC_TYPE_EXTRA (e.g., FR_IENC_RHONE)
+  const parts = base.split('_');
+  const code = parts[0];
+  const country = COUNTRY_CODES[code] || code;
+  const type = parts.slice(1).join(' ');
+
+  if (type.includes('IENC')) {
+    return `${country} Inland ENC`;
+  }
+  if (type.includes('ENC')) {
+    return `${country} ENC`;
+  }
+  if (type.includes('RNC')) {
+    return `${country} Raster Charts`;
+  }
+  if (type.includes('RHONE')) {
+    return `${country} Rhone Inland ENC`;
+  }
+
+  return `${country} ${type}`;
+}
+
+/**
+ * Fetch the catalog registry from GitHub API
+ */
+function fetchCatalogRegistry() {
+  return new Promise((resolve, reject) => {
+    https
+      .get(
+        CATALOG_GITHUB_API,
+        { headers: { 'User-Agent': 'signalk-charts-provider-simple' } },
+        (response) => {
+          if (response.statusCode !== 200) {
+            response.resume();
+            reject(new Error(`GitHub API returned ${response.statusCode}`));
+            return;
+          }
+
+          let data = '';
+          response.on('data', (chunk) => {
+            data += chunk;
+          });
+
+          response.on('end', () => {
+            try {
+              const files = JSON.parse(data);
+              const xmlFiles = files
+                .filter((f) => f.name.endsWith('_Catalog.xml'))
+                .map((f) => ({
+                  file: f.name,
+                  label: deriveLabel(f.name),
+                  category: deriveCategory(f.name)
+                }));
+
+              if (xmlFiles.length > 0) {
+                catalogRegistry = xmlFiles;
+                saveRegistryCache();
+                debug(`Catalog registry: ${xmlFiles.length} catalogs from GitHub`);
+              }
+              resolve(xmlFiles);
+            } catch (err) {
+              reject(err);
+            }
+          });
+        }
+      )
+      .on('error', reject);
+  });
+}
+
+function loadRegistryCache() {
+  const cachePath = path.join(cacheDir, '_registry.json');
+  try {
+    if (fs.existsSync(cachePath)) {
+      catalogRegistry = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+    }
+  } catch (_e) {
+    // ignore
+  }
+}
+
+function saveRegistryCache() {
+  const cachePath = path.join(cacheDir, '_registry.json');
+  try {
+    fs.writeFileSync(cachePath, JSON.stringify(catalogRegistry, null, 2), 'utf-8');
+  } catch (_e) {
+    // ignore
+  }
 }
 
 function loadInstalls() {
@@ -186,7 +213,7 @@ function saveInstalls() {
 }
 
 function getCatalogRegistry() {
-  return CATALOG_REGISTRY.map((entry) => {
+  return catalogRegistry.map((entry) => {
     const cached = readCacheFile(entry.file);
     return {
       ...entry,
@@ -296,7 +323,7 @@ function getCachedCatalog(catalogFile) {
 
 function fetchCatalog(catalogFile) {
   // Validate that catalogFile is in the registry
-  const registryEntry = CATALOG_REGISTRY.find((r) => r.file === catalogFile);
+  const registryEntry = catalogRegistry.find((r) => r.file === catalogFile);
   if (!registryEntry) {
     return Promise.reject(new Error(`Unknown catalog: ${catalogFile}`));
   }
@@ -509,5 +536,5 @@ module.exports = {
   getConvertingCount,
   checkForUpdates,
   getCatalogsWithInstalledCharts,
-  CATALOG_REGISTRY
+  fetchCatalogRegistry
 };

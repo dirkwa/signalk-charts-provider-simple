@@ -117,23 +117,25 @@ function findEncFiles(dir) {
  * This is much faster than spawning a container per layer.
  */
 function exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber) {
-  // Build a shell script that processes all files and layers
+  // Build a shell script that finds and processes all .000 files and their layers
   const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
   const multiFile = encFiles.length > 1;
 
-  // Shell script: for each .000 file, get layers, export each to GeoJSON
+  // Shell script: find all .000 files recursively, export each layer to GeoJSON
   const script = `
 set -e
-cd /input
-for enc in ${encFiles.map((f) => path.basename(f)).join(' ')}; do
+enc_files=$(find /input -name '*.000' -type f)
+count=$(echo "$enc_files" | wc -l)
+i=0
+for enc in $enc_files; do
+  i=$((i + 1))
   name=$(basename "$enc" .000)
-  echo "PROGRESS: Processing $name"
-  layers=$(ogrinfo -so "/input/$enc" 2>/dev/null | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  echo "PROGRESS: Processing $name ($i/$count)"
+  layers=$(ogrinfo -so "$enc" 2>/dev/null | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
   for layer in $layers; do
     case "$layer" in ${skipLayers.join('|')}) continue ;; esac
-    suffix="${multiFile ? '${name}' : ''}"
     outname="${multiFile ? '${layer}_${name}' : '${layer}'}"
-    ogr2ogr -f GeoJSON "/output/$outname.geojson" "/input/$enc" "$layer" 2>/dev/null || true
+    ogr2ogr -f GeoJSON "/output/$outname.geojson" "$enc" "$layer" 2>/dev/null || true
   done
 done
 echo "PROGRESS: Export complete"
@@ -346,7 +348,14 @@ async function processS57Zip(zipPath, chartsDir, chartNumber, onStatus, options 
     // Step 3: Extract ZIP
     statusFn('extracting', 'Extracting ENC files...');
     setProgress(chartNumber, 'extracting', 'Extracting ENC files...');
-    const extracted = await extractZip(zipPath, encDir);
+    let extracted;
+    try {
+      extracted = await extractZip(zipPath, encDir);
+    } catch (zipErr) {
+      throw new Error(
+        `Downloaded file is not a valid ZIP archive (${zipErr.message}). The server may have returned an error page instead.`
+      );
+    }
     debug(`Extracted ${extracted.length} files from ZIP`);
 
     if (extracted.length === 0) {

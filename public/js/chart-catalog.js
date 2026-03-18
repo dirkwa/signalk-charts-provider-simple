@@ -71,12 +71,19 @@ async function loadCatalogRegistry() {
     catalogInstalled = data.installed || {};
     catalogConverting = data.converting || {};
     renderFilterBar();
-    renderCatalogList();
+    if (catalogRegistry.length === 0) {
+      const listEl = document.getElementById('catalogList');
+      if (listEl) {
+        listEl.innerHTML = `<div class="catalog-error">No catalogs available. The catalog index could not be fetched — you may be offline. Previously cached catalogs will appear after reconnecting.</div>`;
+      }
+    } else {
+      renderCatalogList();
+    }
   } catch (error) {
     console.error('Failed to load catalog registry:', error);
     const listEl = document.getElementById('catalogList');
     if (listEl) {
-      listEl.innerHTML = `<div class="catalog-error">Failed to load catalog registry. Please try again later.</div>`;
+      listEl.innerHTML = `<div class="catalog-error">Failed to load catalog registry. You may be offline.</div>`;
     }
   }
 }
@@ -423,7 +430,20 @@ async function pollCatalogDownloads() {
         renderCatalogList();
       } else if (job.status === 'failed') {
         delete catalogDownloadJobs[chartNumber];
-        renderCatalogList();
+        // Show error inline briefly before re-rendering
+        if (progressEl) {
+          const textEl = progressEl.querySelector('span');
+          const fillEl = progressEl.querySelector('.progress-fill');
+          if (fillEl) fillEl.style.display = 'none';
+          if (textEl) {
+            textEl.textContent = job.error || 'Download failed';
+            textEl.style.color = 'var(--md-sys-color-error, #ef4444)';
+          }
+        }
+        // Re-render after 5 seconds so user sees the error
+        setTimeout(() => {
+          renderCatalogList();
+        }, 5000);
       } else if (progressEl) {
         const fillEl = progressEl.querySelector('.progress-fill');
         const textEl = progressEl.querySelector('span');

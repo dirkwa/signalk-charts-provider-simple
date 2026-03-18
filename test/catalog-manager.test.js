@@ -16,7 +16,7 @@ const {
   checkForUpdates,
   getCatalogsWithInstalledCharts,
   getCachedCatalog,
-  CATALOG_REGISTRY
+  fetchCatalogRegistry: _fetchCatalogRegistry
 } = require('../src/utils/catalog-manager');
 
 const TEST_DATA_DIR = path.join(__dirname, 'fixtures', 'catalog-test-data');
@@ -38,53 +38,16 @@ describe('CatalogManager', () => {
   });
 
   describe('getCatalogRegistry()', () => {
-    it('should return 27 catalog entries', () => {
+    it('should return an array (may be empty before GitHub fetch)', () => {
       const registry = getCatalogRegistry();
-      assert.strictEqual(registry.length, 27);
+      assert.ok(Array.isArray(registry));
     });
 
-    it('should have required fields on each entry', () => {
-      const registry = getCatalogRegistry();
-      for (const entry of registry) {
-        assert.ok(entry.file, 'entry should have file');
-        assert.ok(entry.label, 'entry should have label');
-        assert.ok(entry.category, 'entry should have category');
-        assert.ok(
-          ['mbtiles', 'general', 'rnc', 'ienc'].includes(entry.category),
-          `invalid category: ${entry.category}`
-        );
-      }
-    });
-
-    it('should have exactly one mbtiles catalog', () => {
-      const registry = getCatalogRegistry();
-      const mbtiles = registry.filter((r) => r.category === 'mbtiles');
-      assert.strictEqual(mbtiles.length, 1);
-      assert.strictEqual(mbtiles[0].file, 'NOAA_MBTiles_Catalog.xml');
-    });
-
-    it('should include chartCount and cachedAt fields', () => {
+    it('should include chartCount and cachedAt fields on entries', () => {
       const registry = getCatalogRegistry();
       for (const entry of registry) {
         assert.ok('chartCount' in entry, 'entry should have chartCount');
         assert.ok('cachedAt' in entry, 'entry should have cachedAt');
-      }
-    });
-  });
-
-  describe('CATALOG_REGISTRY', () => {
-    it('should have unique file names', () => {
-      const files = CATALOG_REGISTRY.map((r) => r.file);
-      const unique = new Set(files);
-      assert.strictEqual(unique.size, files.length, 'duplicate file names found');
-    });
-
-    it('all files should end with _Catalog.xml', () => {
-      for (const entry of CATALOG_REGISTRY) {
-        assert.ok(
-          entry.file.endsWith('_Catalog.xml'),
-          `${entry.file} should end with _Catalog.xml`
-        );
       }
     });
   });
