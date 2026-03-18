@@ -310,8 +310,20 @@ function renderChartList(catalogFile) {
           ? `<span class="format-badge unsupported">Podman required</span>`
           : '';
 
+        const zoomHtml = needsConversion && s57PodmanAvailable ? `
+          <span class="catalog-zoom-label">Zoom</span>
+          <select class="catalog-zoom-select" id="catalog-minzoom-${escapeId(chart.number)}">
+            ${[6,7,8,9,10,11,12].map((z) => `<option value="${z}" ${z === 9 ? 'selected' : ''}>${z}</option>`).join('')}
+          </select>
+          <span class="catalog-zoom-dash">-</span>
+          <select class="catalog-zoom-select" id="catalog-maxzoom-${escapeId(chart.number)}">
+            ${[12,13,14,15,16,17,18].map((z) => `<option value="${z}" ${z === 16 ? 'selected' : ''}>${z}</option>`).join('')}
+          </select>
+        ` : '';
+
         actionHtml = `
           ${podmanHint}
+          ${zoomHtml}
           <select class="catalog-folder-select" id="catalog-folder-${escapeId(chart.number)}">
             ${catalogFolders.map((f) => `<option value="${escapeAttr(f)}">${escapeHtml(f)}</option>`).join('')}
           </select>
@@ -342,6 +354,11 @@ window.downloadCatalogChart = async function (chartNumber, catalogFile, url, zip
   const folderSelect = document.getElementById(`catalog-folder-${escapeId(chartNumber)}`);
   const targetFolder = folderSelect ? folderSelect.value : '/';
 
+  const minzoomSelect = document.getElementById(`catalog-minzoom-${escapeId(chartNumber)}`);
+  const maxzoomSelect = document.getElementById(`catalog-maxzoom-${escapeId(chartNumber)}`);
+  const minzoom = minzoomSelect ? parseInt(minzoomSelect.value) : undefined;
+  const maxzoom = maxzoomSelect ? parseInt(maxzoomSelect.value) : undefined;
+
   try {
     const response = await fetch(`${CATALOG_API_BASE}/catalog/download`, {
       method: 'POST',
@@ -351,7 +368,9 @@ window.downloadCatalogChart = async function (chartNumber, catalogFile, url, zip
         chartNumber,
         catalogFile,
         zipfileDatetime,
-        targetFolder
+        targetFolder,
+        minzoom,
+        maxzoom
       })
     });
 

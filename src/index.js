@@ -1099,7 +1099,8 @@ module.exports = (app) => {
 
     // Initiate download of a catalog chart
     router.post('/catalog/download', (req, res) => {
-      const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder } = req.body;
+      const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder, minzoom, maxzoom } =
+        req.body;
 
       if (!url || !chartNumber || !catalogFile) {
         return res.status(400).json({
@@ -1191,7 +1192,8 @@ module.exports = (app) => {
                 chartNumber,
                 (status, message) => {
                   app.debug(`S-57 [${chartNumber}] ${status}: ${message}`);
-                }
+                },
+                { minzoom, maxzoom }
               );
 
               // Conversion done — mark as no longer converting
@@ -1562,6 +1564,11 @@ const pbfResponseHttpOptions = {
   }
 };
 
+// Empty PBF tile — a valid zero-byte protobuf message.
+// Returned instead of 404 for S-57 grouped charts so Freeboard-SK
+// renders transparent instead of black for missing tile areas.
+const EMPTY_PBF = Buffer.alloc(0);
+
 const sanitizeProvider = (provider, version = 1) => {
   let v;
   if (version === 1) {
@@ -1620,38 +1627,62 @@ const serveTileFromFilesystem = (res, provider, z, x, y) => {
   res.sendFile(file, httpOptions, (err) => {
     if (err && err.code === 'ENOENT') {
       // For S-57 grouped charts: tiles are in cell subdirectories, not at the group level.
-      // Multiple cells may have the same tile (overview vs detail). Serve the largest
-      // (most detailed) version to avoid gaps from incomplete overview tiles.
+      // Only serve from overview cells (listed in metadata._s57OverviewCells) to avoid
+      // black rectangles from depth-only detail cells that lack land polygons.
+      // Falls back to any cell if no overview cell list exists.
       if (_filePath && format === 'pbf') {
         try {
+          let overviewCells = null;
+          try {
+            const meta = JSON.parse(
+              fs.readFileSync(path.join(_filePath, 'metadata.json'), 'utf-8')
+            );
+            overviewCells = meta._s57OverviewCells || null;
+          } catch (_metaErr) {
+            // no metadata or parse error
+          }
+
           const entries = fs.readdirSync(_filePath, { withFileTypes: true });
-          let bestTile = null;
-          let bestSize = 0;
-          for (const entry of entries) {
-            if (!entry.isDirectory()) {
-              continue;
-            }
-            const cellTile = path.join(_filePath, entry.name, tilePath);
-            try {
-              const stat = fs.statSync(cellTile);
-              if (stat.size > bestSize) {
-                bestSize = stat.size;
-                bestTile = cellTile;
+          const dirs = entries.filter((e) => e.isDirectory());
+
+          // First pass: try overview cells only
+          if (overviewCells) {
+            for (const entry of dirs) {
+              if (!overviewCells.includes(entry.name)) {
+                continue;
               }
-            } catch (_statErr) {
-              // tile doesn't exist in this cell
+              const cellTile = path.join(_filePath, entry.name, tilePath);
+              if (fs.existsSync(cellTile)) {
+                return res.sendFile(cellTile, httpOptions, (err2) => {
+                  if (err2) {
+                    res.sendStatus(404);
+                  }
+                });
+              }
             }
           }
-          if (bestTile) {
-            return res.sendFile(bestTile, httpOptions, (err2) => {
-              if (err2) {
-                res.sendStatus(404);
+
+          // Fallback: try any cell (for non-grouped or legacy charts)
+          if (!overviewCells) {
+            for (const entry of dirs) {
+              const cellTile = path.join(_filePath, entry.name, tilePath);
+              if (fs.existsSync(cellTile)) {
+                return res.sendFile(cellTile, httpOptions, (err2) => {
+                  if (err2) {
+                    res.sendStatus(404);
+                  }
+                });
               }
-            });
+            }
           }
         } catch (_e) {
-          // fall through to 404
+          // fall through
         }
+        // For PBF grouped charts, return empty tile instead of 404
+        // so Freeboard-SK renders transparent instead of black
+        res.writeHead(200, pbfResponseHttpOptions.headers);
+        res.end(EMPTY_PBF);
+        return;
       }
       res.sendStatus(404);
     } else if (err) {

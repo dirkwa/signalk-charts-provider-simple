@@ -238,7 +238,7 @@ function convertS57ToTiles(encDir, outputDir, chartNumber, options = {}) {
  * @param {function} onStatus - Status callback: (status, message) => void
  * @returns {Promise<{chartDirs: string[]}>} Chart directories created
  */
-async function processS57Zip(zipPath, chartsDir, chartNumber, onStatus) {
+async function processS57Zip(zipPath, chartsDir, chartNumber, onStatus, options = {}) {
   const statusFn = onStatus || (() => {});
 
   // Create temp dir for extracted ENC files
@@ -294,7 +294,7 @@ async function processS57Zip(zipPath, chartsDir, chartNumber, onStatus) {
 
     // Step 4: Convert
     statusFn('converting', 'Converting S-57 to vector tiles...');
-    const result = await convertS57ToTiles(tmpDir, chartsDir, chartNumber);
+    const result = await convertS57ToTiles(tmpDir, chartsDir, chartNumber, options);
 
     if (result.chartDirs.length === 0) {
       throw new Error(
@@ -332,6 +332,38 @@ async function processS57Zip(zipPath, chartsDir, chartNumber, onStatus) {
  * @param {string[]} chartDirs - e.g., ['2W7D1870', '2W7D1880', ...]
  * @param {string} chartNumber - e.g., '269'
  */
+/**
+ * Check if a cell's tiles contain LNDARE (land area) — indicating an overview cell.
+ * Reads a sample tile and checks layer names in the MVT protobuf.
+ */
+function cellHasLandLayer(cellDir) {
+  // Find a tile at the highest available zoom
+  const zooms = fs
+    .readdirSync(cellDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && /^\d+$/.test(e.name))
+    .map((e) => parseInt(e.name))
+    .sort((a, b) => b - a);
+
+  for (const z of zooms) {
+    const zDir = path.join(cellDir, String(z));
+    const xDirs = fs.readdirSync(zDir, { withFileTypes: true }).filter((e) => e.isDirectory());
+    for (const xDir of xDirs) {
+      const tiles = fs.readdirSync(path.join(zDir, xDir.name)).filter((f) => f.endsWith('.pbf'));
+      if (tiles.length > 0) {
+        const tilePath = path.join(zDir, xDir.name, tiles[0]);
+        try {
+          const data = fs.readFileSync(tilePath);
+          // Quick scan: check if "LNDARE" appears in the raw protobuf bytes
+          return data.includes(Buffer.from('LNDARE'));
+        } catch (_e) {
+          continue;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function createMergedMetadata(groupDir, chartDirs, chartNumber) {
   let minLon = Infinity;
   let minLat = Infinity;
@@ -340,6 +372,7 @@ function createMergedMetadata(groupDir, chartDirs, chartNumber) {
   let minZoom = Infinity;
   let maxZoom = -Infinity;
   let cellCount = 0;
+  const overviewCells = [];
 
   for (const dir of chartDirs) {
     const metaPath = path.join(groupDir, dir, 'metadata.json');
@@ -358,6 +391,12 @@ function createMergedMetadata(groupDir, chartDirs, chartNumber) {
         maxZoom = Math.max(maxZoom, meta.maxzoom);
       }
       cellCount++;
+
+      // Detect overview cells (contain LNDARE land polygons)
+      const cellDir = path.join(groupDir, dir);
+      if (cellHasLandLayer(cellDir)) {
+        overviewCells.push(dir);
+      }
     } catch (_e) {
       // skip unreadable cells
     }
@@ -367,21 +406,26 @@ function createMergedMetadata(groupDir, chartDirs, chartNumber) {
     return;
   }
 
+  debug(
+    `Cell classification: ${overviewCells.length} overview, ${cellCount - overviewCells.length} detail-only`
+  );
+
   const merged = {
     id: chartNumber || path.basename(groupDir),
     name: `S-57 ${chartNumber || path.basename(groupDir)} (${cellCount} cells)`,
-    description: `Merged from ${cellCount} ENC cells`,
+    description: `Merged from ${cellCount} ENC cells (${overviewCells.length} with land coverage)`,
     type: 'S-57',
     format: 'pbf',
     minzoom: minZoom === Infinity ? 9 : minZoom,
-    maxzoom: maxZoom === -Infinity ? 14 : maxZoom,
+    maxzoom: maxZoom === -Infinity ? 16 : maxZoom,
     bounds: [
       minLon === Infinity ? 0 : minLon,
       minLat === Infinity ? 0 : minLat,
       maxLon === -Infinity ? 0 : maxLon,
       maxLat === -Infinity ? 0 : maxLat
     ],
-    _s57Cells: chartDirs
+    _s57Cells: chartDirs,
+    _s57OverviewCells: overviewCells.length > 0 ? overviewCells : null
   };
 
   const mergedPath = path.join(groupDir, 'metadata.json');
