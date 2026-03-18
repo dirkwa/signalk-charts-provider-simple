@@ -44,7 +44,7 @@ Access the plugin's web interface through your Signal K server:
 http://[your-server]:3000/plugins/signalk-charts-provider-simple/
 ```
 
-The interface provides two main tabs:
+The interface provides three tabs:
 
 1. **Manage Charts**:
    - View all charts in your library with chart names displayed from MBTiles metadata
@@ -61,13 +61,20 @@ The interface provides two main tabs:
    - Supports `.mbtiles` files and `.zip` archives
    - Automatic extraction of MBTiles from ZIP files
    - Download queue with progress tracking
-   - Simple, clean interface without complex chart browsing
+
+3. **Chart Catalog**:
+   - Browse 27 chart catalogs from [chartcatalogs.github.io](https://chartcatalogs.github.io/)
+   - One-click download for MBTiles charts (e.g., NOAA vector charts)
+   - Download and convert IENC (S-57 ENC) charts to vector tiles via [s57-tiler](https://github.com/wdantuma/s57-tiler) (requires Podman)
+   - Automatic update notifications when newer chart versions are available
+   - Converted S-57 charts are rendered natively in Freeboard-SK with S-52 symbology
 
 ### Chart Formats
 
-The plugin supports this chart formats:
+The plugin supports these chart formats:
 
-- **MBTiles** (`.mbtiles`): SQLite-based map tile format
+- **MBTiles** (`.mbtiles`): SQLite-based map tile format (raster and vector)
+- **S-57 ENC** (via catalog): Converted to PBF vector tiles using s57-tiler in Podman
 
 ### Compatible Chart Plotters
 
@@ -91,6 +98,20 @@ This plugin includes a feature to edit chart metadata (chart names) in MBTiles f
 
 - **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
 - **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
+
+### Optional: Podman (for IENC/S-57 charts)
+
+To download and convert IENC (S-57 ENC) charts from the Chart Catalog, [Podman](https://podman.io/) must be installed. The plugin uses the [s57-tiler](https://github.com/wdantuma/s57-tiler) container to convert S-57 files to vector tiles.
+
+```bash
+# Debian / Ubuntu / Raspberry Pi OS
+sudo apt install podman
+
+# Fedora / RHEL
+sudo dnf install podman
+```
+
+The s57-tiler container image is pulled automatically on first use. MBTiles charts work without Podman.
 
 ## Acknowledgments
 

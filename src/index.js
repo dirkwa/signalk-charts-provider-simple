@@ -5,6 +5,33 @@ const { findCharts } = require('./charts-loader');
 const { scanChartsRecursively, scanAllFolders } = require('./utils/file-scanner');
 const { initChartState, isChartEnabled, setChartEnabled } = require('./utils/chart-state');
 const { downloadManager } = require('./utils/download-manager');
+const {
+  initCatalogManager,
+  getCatalogRegistry,
+  fetchCatalog,
+  getCachedCatalog,
+  classifyUrl,
+  trackInstall,
+  removeInstall,
+  getInstalledCatalogCharts,
+  setConvertingState,
+  getConvertingCharts,
+  checkForUpdates,
+  getCatalogsWithInstalledCharts
+} = require('./utils/catalog-manager');
+const {
+  initS57Converter,
+  checkPodman,
+  processS57Zip,
+  getAllConversionProgress: getAllS57Progress,
+  getConversionProgress: getS57Progress
+} = require('./utils/s57-converter');
+const {
+  initRncConverter,
+  processRncZip,
+  getAllConversionProgress: getAllRncProgress,
+  getConversionProgress: getRncProgress
+} = require('./utils/rnc-converter');
 
 // Routes are now scoped under /plugins/signalk-charts-provider-simple/ via registerWithRouter
 const PLUGIN_ID = 'signalk-charts-provider-simple';
@@ -21,6 +48,7 @@ module.exports = (app) => {
   };
 
   let urlBase = '';
+  let catalogUpdateInterval = null;
   const configBasePath = app.config.configPath;
   const defaultChartsPath = path.join(configBasePath, '/charts-simple');
   const serverMajorVersion = app.config.version ? parseInt(app.config.version.split('.')[0]) : '1';
@@ -50,6 +78,10 @@ module.exports = (app) => {
       return doStartup(settings); // return required for tests
     },
     stop: () => {
+      if (catalogUpdateInterval) {
+        clearInterval(catalogUpdateInterval);
+        catalogUpdateInterval = null;
+      }
       app.setPluginStatus('stopped');
     },
     registerWithRouter: (router) => {
@@ -72,6 +104,17 @@ module.exports = (app) => {
     // Initialize chart state management
     const configPath = app.config.configPath;
     initChartState(configPath);
+
+    // Initialize catalog manager for chart catalog browsing and update checking
+    const dataDir = app.getDataDirPath();
+    initCatalogManager(dataDir, app.debug);
+
+    // Initialize converters (Podman-based)
+    initS57Converter(app.debug);
+    initRncConverter(app.debug);
+
+    // Start periodic catalog update checking (non-blocking)
+    startCatalogUpdateChecker();
 
     // Listen for download completion events and emit delta notifications
     downloadManager.removeAllListeners('job-completed'); // Remove old listeners on restart
@@ -379,12 +422,27 @@ module.exports = (app) => {
         });
 
         if (fs.existsSync(fullPath)) {
-          await fs.promises.unlink(fullPath);
+          const stat = await fs.promises.stat(fullPath);
+          if (stat.isDirectory()) {
+            await fs.promises.rm(fullPath, { recursive: true, force: true });
+            // Clean up empty parent directories (e.g., S-57/ after deleting S-57/AT-269/)
+            cleanupEmptyParents(fullPath, basePath);
+          } else {
+            await fs.promises.unlink(fullPath);
+          }
 
           // Reload chart providers and emit delta
           await refreshChartProviders();
           const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
           emitChartDelta(chartId, null);
+
+          // Remove catalog install tracking — try both the full ID (AT-269)
+          // and the chart number portion (269) since catalogs track by number
+          removeInstall(chartId);
+          const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
+          if (chartNumberPart !== chartId) {
+            removeInstall(chartNumberPart);
+          }
 
           res.status(200).send('Chart deleted successfully');
         } else {
@@ -393,6 +451,13 @@ module.exports = (app) => {
           await refreshChartProviders();
           const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
           emitChartDelta(chartId, null);
+
+          // Remove catalog install tracking
+          removeInstall(chartId);
+          const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
+          if (chartNumberPart !== chartId) {
+            removeInstall(chartNumberPart);
+          }
 
           res.status(200).send('Chart deletion processed');
         }
@@ -924,6 +989,363 @@ module.exports = (app) => {
       }
     });
 
+    // ---- Chart Catalog API routes ----
+
+    // Return the 27-catalog registry with cached metadata
+    router.get('/catalog-registry', (req, res) => {
+      try {
+        const registry = getCatalogRegistry();
+        const installed = getInstalledCatalogCharts();
+        const convertingCharts = getConvertingCharts();
+        res.json({ registry, installed, converting: convertingCharts });
+      } catch (error) {
+        console.error('Error fetching catalog registry:', error);
+        res.status(500).json({ error: 'Failed to fetch catalog registry' });
+      }
+    });
+
+    // Check Podman availability and all conversion progress (S-57 + RNC)
+    router.get('/catalog-s57-status', async (req, res) => {
+      try {
+        const podman = await checkPodman();
+        res.json({
+          podmanAvailable: podman.available,
+          podmanVersion: podman.version,
+          conversions: { ...getAllS57Progress(), ...getAllRncProgress() }
+        });
+      } catch (_error) {
+        res.json({ podmanAvailable: false, podmanVersion: null, conversions: {} });
+      }
+    });
+
+    // Get conversion log for a specific chart (S-57 or RNC)
+    router.get('/catalog-s57-log/:chartNumber', (req, res) => {
+      const progress =
+        getS57Progress(req.params.chartNumber) || getRncProgress(req.params.chartNumber);
+      if (!progress) {
+        return res.json({ log: [], status: null });
+      }
+      res.json({ log: progress.log || [], status: progress.status, message: progress.message });
+    });
+
+    // Return charts with available updates
+    router.get('/catalog-updates', (req, res) => {
+      try {
+        const updates = checkForUpdates();
+        res.json(updates);
+      } catch (error) {
+        console.error('Error checking catalog updates:', error);
+        res.status(500).json({ error: 'Failed to check for updates' });
+      }
+    });
+
+    // Fetch and return a specific catalog's charts
+    router.get('/catalog/:catalogFile', async (req, res) => {
+      try {
+        const catalogFile = req.params.catalogFile;
+        const data = await fetchCatalog(catalogFile);
+        if (!data) {
+          return res.status(404).json({ error: 'Catalog not found or unavailable' });
+        }
+
+        // Augment each chart with URL classification and install status
+        const installed = getInstalledCatalogCharts();
+        const registryEntry = getCatalogRegistry().find((r) => r.file === catalogFile);
+        const catalogCategory = registryEntry ? registryEntry.category : '';
+        const augmentedCharts = data.charts.map((chart) => ({
+          ...chart,
+          urlClassification: classifyUrl(chart.zipfile_location, catalogCategory),
+          installed: !!installed[chart.number],
+          installedDate: installed[chart.number]
+            ? installed[chart.number].zipfile_datetime_iso8601
+            : null
+        }));
+
+        res.json({
+          ...data,
+          charts: augmentedCharts
+        });
+      } catch (error) {
+        // Fall back to cache
+        const cached = getCachedCatalog(req.params.catalogFile);
+        if (cached) {
+          return res.json(cached);
+        }
+        console.error('Error fetching catalog:', error);
+        res.status(500).json({ error: 'Failed to fetch catalog' });
+      }
+    });
+
+    // Initiate download of a catalog chart
+    router.post('/catalog/download', (req, res) => {
+      const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder } = req.body;
+
+      if (!url || !chartNumber || !catalogFile) {
+        return res.status(400).json({
+          success: false,
+          error: 'url, chartNumber, and catalogFile are required'
+        });
+      }
+
+      // Validate URL is supported (pass catalog category for ZIP classification)
+      const registryEntry = getCatalogRegistry().find((r) => r.file === catalogFile);
+      const catalogCategory = registryEntry ? registryEntry.category : '';
+      const classification = classifyUrl(url, catalogCategory);
+      if (!classification.supported) {
+        return res.status(400).json({
+          success: false,
+          error: `Unsupported format: ${classification.label}`
+        });
+      }
+
+      try {
+        const chartPath = props.chartPath || defaultChartsPath;
+        const targetDir =
+          !targetFolder || targetFolder === '/' ? chartPath : path.join(chartPath, targetFolder);
+
+        // Ensure target directory exists
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+
+        if (classification.format === 's57-zip') {
+          // S-57 ENC pipeline: download ZIP → convert via Podman s57-tiler
+          // Output goes to S-57/{catalogCode}-{chartNumber}/ subfolder
+          const catalogCode = catalogFile.replace(/_.*$/, ''); // AT_IENC_Catalog.xml → AT
+          const s57SubDir = path.join(chartPath, 'S-57', `${catalogCode}-${chartNumber}`);
+          fs.mkdirSync(s57SubDir, { recursive: true });
+
+          // Download ZIP to a temp location (not the charts dir)
+          const tmpDownloadDir = path.join(app.getDataDirPath(), `s57-download-${Date.now()}`);
+          fs.mkdirSync(tmpDownloadDir, { recursive: true });
+
+          const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, {
+            saveRaw: true
+          });
+
+          // Track as "converting" — not yet installed
+          trackInstall(chartNumber, catalogFile, zipfileDatetime || '', url);
+          setConvertingState(chartNumber, true);
+
+          // When ZIP download completes, run S-57 conversion
+          const s57Listener = async (job) => {
+            if (job.id !== jobId) {
+              return;
+            }
+            downloadManager.removeListener('job-completed', s57Listener);
+            downloadManager.removeListener('job-failed', s57FailListener);
+
+            // Find the downloaded ZIP file
+            const zipFileName =
+              (job.extractedFiles && job.extractedFiles[0]) ||
+              (job.targetFiles && job.targetFiles[0]);
+            const zipPath = zipFileName ? path.join(tmpDownloadDir, zipFileName) : null;
+
+            if (!zipPath || !fs.existsSync(zipPath)) {
+              app.debug(`S-57: no ZIP file found after download for ${chartNumber}`);
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+              return;
+            }
+
+            app.debug(`Starting S-57 conversion for ${chartNumber}: ${zipPath} → ${s57SubDir}`);
+
+            try {
+              const result = await processS57Zip(
+                zipPath,
+                s57SubDir,
+                chartNumber,
+                (status, message) => {
+                  app.debug(`S-57 [${chartNumber}] ${status}: ${message}`);
+                }
+              );
+
+              // Conversion done — mark as no longer converting
+              setConvertingState(chartNumber, false);
+
+              // Clean up temp download dir
+              cleanupDir(tmpDownloadDir);
+
+              // Reload chart providers to pick up the new vector tile charts
+              await refreshChartProviders();
+
+              // Emit deltas for each new chart directory
+              for (const chartDir of result.chartDirs) {
+                if (chartProviders[chartDir]) {
+                  const chartData = sanitizeProvider(chartProviders[chartDir], 2);
+                  emitChartDelta(chartDir, chartData);
+                }
+              }
+
+              app.debug(
+                `S-57 conversion complete for ${chartNumber}: ${result.chartDirs.length} chart(s) in S-57/${catalogCode}-${chartNumber}/`
+              );
+            } catch (convError) {
+              app.error(`S-57 conversion failed for ${chartNumber}: ${convError.message}`);
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+            }
+          };
+
+          const s57FailListener = (job) => {
+            if (job.id !== jobId) {
+              return;
+            }
+            downloadManager.removeListener('job-completed', s57Listener);
+            downloadManager.removeListener('job-failed', s57FailListener);
+            removeInstall(chartNumber);
+            setConvertingState(chartNumber, false);
+            cleanupDir(tmpDownloadDir);
+          };
+
+          downloadManager.on('job-completed', s57Listener);
+          downloadManager.on('job-failed', s57FailListener);
+
+          app.debug(
+            `S-57 catalog download started: ${chartNumber} from ${catalogFile}, job: ${jobId}`
+          );
+
+          res.json({
+            success: true,
+            jobId,
+            message: 'S-57 download and conversion job created'
+          });
+        } else if (classification.format === 'rnc-zip') {
+          // RNC (BSB raster) pipeline: download ZIP → convert via Podman GDAL → MBTiles
+          const tmpDownloadDir = path.join(app.getDataDirPath(), `rnc-download-${Date.now()}`);
+          fs.mkdirSync(tmpDownloadDir, { recursive: true });
+
+          const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, {
+            saveRaw: true
+          });
+
+          trackInstall(chartNumber, catalogFile, zipfileDatetime || '', url);
+          setConvertingState(chartNumber, true);
+
+          const rncListener = async (job) => {
+            if (job.id !== jobId) {
+              return;
+            }
+            downloadManager.removeListener('job-completed', rncListener);
+            downloadManager.removeListener('job-failed', rncFailListener);
+
+            const zipFileName =
+              (job.extractedFiles && job.extractedFiles[0]) ||
+              (job.targetFiles && job.targetFiles[0]);
+            const zipPath = zipFileName ? path.join(tmpDownloadDir, zipFileName) : null;
+
+            if (!zipPath || !fs.existsSync(zipPath)) {
+              app.debug(`RNC: no file found after download for ${chartNumber}`);
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+              return;
+            }
+
+            app.debug(`Starting RNC conversion for ${chartNumber}: ${zipPath}`);
+
+            try {
+              const result = await processRncZip(
+                zipPath,
+                targetDir,
+                chartNumber,
+                (status, message) => {
+                  app.debug(`RNC [${chartNumber}] ${status}: ${message}`);
+                }
+              );
+
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+
+              // Reload chart providers and enable new charts
+              for (const mbtilesFile of result.mbtilesFiles) {
+                const relativePath = path.relative(chartPath, path.join(targetDir, mbtilesFile));
+                setChartEnabled(relativePath, true);
+              }
+
+              await refreshChartProviders();
+
+              for (const mbtilesFile of result.mbtilesFiles) {
+                const chartId = mbtilesFile.replace(/\.mbtiles$/, '');
+                if (chartProviders[chartId]) {
+                  const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                  emitChartDelta(chartId, chartData);
+                }
+              }
+
+              app.debug(
+                `RNC conversion complete for ${chartNumber}: ${result.mbtilesFiles.join(', ')}`
+              );
+            } catch (convError) {
+              app.error(`RNC conversion failed for ${chartNumber}: ${convError.message}`);
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+            }
+          };
+
+          const rncFailListener = (job) => {
+            if (job.id !== jobId) {
+              return;
+            }
+            downloadManager.removeListener('job-completed', rncListener);
+            downloadManager.removeListener('job-failed', rncFailListener);
+            removeInstall(chartNumber);
+            setConvertingState(chartNumber, false);
+            cleanupDir(tmpDownloadDir);
+          };
+
+          downloadManager.on('job-completed', rncListener);
+          downloadManager.on('job-failed', rncFailListener);
+
+          app.debug(
+            `RNC catalog download started: ${chartNumber} from ${catalogFile}, job: ${jobId}`
+          );
+
+          res.json({
+            success: true,
+            jobId,
+            message: 'RNC download and conversion job created'
+          });
+        } else {
+          // Standard MBTiles / ZIP-with-MBTiles download
+          const jobId = downloadManager.createJob(url, targetDir, chartNumber);
+
+          trackInstall(chartNumber, catalogFile, zipfileDatetime || '', url);
+
+          // Remove tracking if the download fails or produces no .mbtiles
+          const cleanupListener = (job) => {
+            if (job.id === jobId) {
+              if (!job.extractedFiles || job.extractedFiles.length === 0) {
+                removeInstall(chartNumber);
+                app.debug(`Removed catalog tracking for ${chartNumber}: no .mbtiles extracted`);
+              }
+              downloadManager.removeListener('job-failed', cleanupListener);
+              downloadManager.removeListener('job-completed', cleanupListener);
+            }
+          };
+          downloadManager.on('job-failed', cleanupListener);
+          downloadManager.on('job-completed', cleanupListener);
+
+          app.debug(`Catalog download started: ${chartNumber} from ${catalogFile}, job: ${jobId}`);
+
+          res.json({
+            success: true,
+            jobId,
+            message: 'Download job created from catalog'
+          });
+        }
+      } catch (error) {
+        console.error('Error creating catalog download job:', error);
+        res.status(500).json({
+          success: false,
+          error: error.message || 'Failed to create download job'
+        });
+      }
+    });
+
     app.debug('** Registering v1 API paths **');
 
     app.get(apiRoutePrefix[1] + '/charts/:identifier', (req, res) => {
@@ -999,6 +1421,69 @@ module.exports = (app) => {
   };
 
   /**
+   * Start periodic checking for catalog chart updates.
+   * Runs an initial check after 10s delay, then every 24 hours.
+   */
+  const startCatalogUpdateChecker = () => {
+    const doCheck = async () => {
+      try {
+        const catalogsToCheck = getCatalogsWithInstalledCharts();
+        if (catalogsToCheck.length === 0) {
+          return;
+        }
+
+        app.debug(`Checking ${catalogsToCheck.length} catalog(s) for chart updates`);
+
+        for (const catalogFile of catalogsToCheck) {
+          await fetchCatalog(catalogFile);
+        }
+
+        const updates = checkForUpdates();
+        if (updates.length > 0) {
+          app.debug(`Found ${updates.length} chart update(s) available from catalog`);
+          emitCatalogUpdateNotification(updates);
+        }
+      } catch (error) {
+        app.debug(`Catalog update check failed: ${error.message}`);
+      }
+    };
+
+    // Initial check after 10 second delay (don't block startup)
+    setTimeout(doCheck, 10000);
+
+    // Then check every 24 hours
+    catalogUpdateInterval = setInterval(doCheck, 24 * 60 * 60 * 1000);
+  };
+
+  /**
+   * Emit a Signal K notification delta when catalog chart updates are available
+   */
+  const emitCatalogUpdateNotification = (updates) => {
+    try {
+      const chartNames = updates.map((u) => u.title || u.chartNumber).join(', ');
+      app.handleMessage('signalk-charts-provider-simple', {
+        updates: [
+          {
+            values: [
+              {
+                path: 'notifications.plugins.signalk-charts-provider-simple.chartCatalogUpdate',
+                value: {
+                  state: 'warn',
+                  method: ['visual'],
+                  message: `${updates.length} chart update${updates.length !== 1 ? 's' : ''} available from Chart Catalog: ${chartNames}`
+                }
+              }
+            ]
+          }
+        ]
+      });
+      app.debug(`Catalog update notification emitted for ${updates.length} chart(s)`);
+    } catch (error) {
+      app.error(`Failed to emit catalog update notification: ${error.message}`);
+    }
+  };
+
+  /**
    * Emit delta notification for chart resource changes
    * Following SignalK Server's built-in resource provider pattern
    * @param {string} chartId - Chart identifier (relative path without extension)
@@ -1037,6 +1522,13 @@ const responseHttpOptions = {
   }
 };
 
+const pbfResponseHttpOptions = {
+  headers: {
+    'Cache-Control': 'public, max-age=7776000',
+    'Content-Type': 'application/x-protobuf'
+  }
+};
+
 const sanitizeProvider = (provider, version = 1) => {
   let v;
   if (version === 1) {
@@ -1056,14 +1548,78 @@ const ensureDirectoryExists = (path) => {
   }
 };
 
+const cleanupEmptyParents = (deletedPath, stopAt) => {
+  try {
+    let parent = path.dirname(deletedPath);
+    const normalizedStop = path.normalize(stopAt);
+    while (path.normalize(parent) !== normalizedStop) {
+      const contents = fs.readdirSync(parent);
+      if (contents.length === 0) {
+        fs.rmdirSync(parent);
+        parent = path.dirname(parent);
+      } else {
+        break;
+      }
+    }
+  } catch (_e) {
+    // ignore
+  }
+};
+
+const cleanupDir = (dirPath) => {
+  try {
+    if (fs.existsSync(dirPath)) {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    }
+  } catch (_e) {
+    // ignore cleanup errors
+  }
+};
+
 const serveTileFromFilesystem = (res, provider, z, x, y) => {
   const { format, _flipY, _filePath } = provider;
   const flippedY = Math.pow(2, z) - 1 - y;
-  const file = _filePath
-    ? path.resolve(_filePath, `${z}/${x}/${_flipY ? flippedY : y}.${format}`)
-    : '';
-  res.sendFile(file, responseHttpOptions, (err) => {
+  const tileY = _flipY ? flippedY : y;
+  const tilePath = `${z}/${x}/${tileY}.${format}`;
+  const file = _filePath ? path.resolve(_filePath, tilePath) : '';
+  const httpOptions = format === 'pbf' ? pbfResponseHttpOptions : responseHttpOptions;
+
+  res.sendFile(file, httpOptions, (err) => {
     if (err && err.code === 'ENOENT') {
+      // For S-57 grouped charts: tiles are in cell subdirectories, not at the group level.
+      // Multiple cells may have the same tile (overview vs detail). Serve the largest
+      // (most detailed) version to avoid gaps from incomplete overview tiles.
+      if (_filePath && format === 'pbf') {
+        try {
+          const entries = fs.readdirSync(_filePath, { withFileTypes: true });
+          let bestTile = null;
+          let bestSize = 0;
+          for (const entry of entries) {
+            if (!entry.isDirectory()) {
+              continue;
+            }
+            const cellTile = path.join(_filePath, entry.name, tilePath);
+            try {
+              const stat = fs.statSync(cellTile);
+              if (stat.size > bestSize) {
+                bestSize = stat.size;
+                bestTile = cellTile;
+              }
+            } catch (_statErr) {
+              // tile doesn't exist in this cell
+            }
+          }
+          if (bestTile) {
+            return res.sendFile(bestTile, httpOptions, (err2) => {
+              if (err2) {
+                res.sendStatus(404);
+              }
+            });
+          }
+        } catch (_e) {
+          // fall through to 404
+        }
+      }
       res.sendStatus(404);
     } else if (err) {
       throw err;

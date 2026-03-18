@@ -45,6 +45,34 @@ async function scanChartsRecursively(basePath, currentPath = basePath) {
       if (entry.name.startsWith('.') || entry.name === 'node_modules') {
         continue;
       }
+
+      // Check if this is a chart directory (contains metadata.json)
+      if (isChartDirectory(fullPath)) {
+        const metadata = readChartMetadata(fullPath);
+        if (metadata) {
+          const relativePath = path.relative(basePath, fullPath);
+          const folder = path.dirname(relativePath) || '/';
+          const stats = await fs.promises.stat(fullPath);
+
+          charts.push({
+            name: entry.name,
+            chartName: metadata.name || entry.name,
+            size: null, // directory-based charts don't have a single file size
+            path: fullPath,
+            relativePath: relativePath,
+            folder: folder === '.' ? '/' : folder,
+            dateCreated: stats.birthtimeMs,
+            dateModified: stats.mtimeMs,
+            enabled: true,
+            format: metadata.format || 'pbf',
+            type: metadata.type || 'tilelayer',
+            isDirectory: true
+          });
+        }
+        // Don't recurse into chart directories
+        continue;
+      }
+
       // Recursively scan subdirectory
       const subCharts = await scanChartsRecursively(basePath, fullPath);
       charts.push(...subCharts);
@@ -89,7 +117,38 @@ function getUniqueFolders(charts) {
 }
 
 /**
- * Scan all subdirectories (including empty ones)
+ * Check if a directory is a chart directory (contains metadata.json or tilemapresource.xml)
+ * These are directory-based charts (XYZ/TMS/S-57) and should not be recursed into.
+ * @param {string} dirPath - Directory path to check
+ * @returns {boolean}
+ */
+function isChartDirectory(dirPath) {
+  return (
+    fs.existsSync(path.join(dirPath, 'metadata.json')) ||
+    fs.existsSync(path.join(dirPath, 'tilemapresource.xml'))
+  );
+}
+
+/**
+ * Read metadata.json from a chart directory
+ * @param {string} dirPath - Directory path containing metadata.json
+ * @returns {object|null} Parsed metadata or null
+ */
+function readChartMetadata(dirPath) {
+  try {
+    const metadataPath = path.join(dirPath, 'metadata.json');
+    if (fs.existsSync(metadataPath)) {
+      return JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
+    }
+  } catch (_e) {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * Scan all subdirectories (including empty ones), skipping chart directories
+ * and their tile tree subdirectories.
  * @param {string} basePath - The base chart directory
  * @param {string} currentPath - The current directory being scanned (for recursion)
  * @returns {Promise<Array<string>>} Array of all folder paths (relative to basePath)
@@ -112,6 +171,12 @@ async function scanAllFolders(basePath, currentPath = basePath) {
 
       const fullPath = path.join(currentPath, entry.name);
       const relativePath = path.relative(basePath, fullPath);
+
+      // Skip chart directories (contain metadata.json / tilemapresource.xml)
+      // These are directory-based charts — don't show their z/x/y tile tree as folders
+      if (isChartDirectory(fullPath)) {
+        continue;
+      }
 
       // Add this folder
       folders.push(relativePath || '/');

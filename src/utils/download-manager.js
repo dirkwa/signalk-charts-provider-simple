@@ -13,7 +13,7 @@ class DownloadManager extends EventEmitter {
     this.maxConcurrent = 3;
   }
 
-  createJob(url, targetDir, chartName) {
+  createJob(url, targetDir, chartName, options = {}) {
     const id = `dl_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     const job = {
@@ -21,6 +21,7 @@ class DownloadManager extends EventEmitter {
       url,
       targetDir,
       chartName,
+      saveRaw: options.saveRaw || false, // Save file as-is, skip ZIP extraction
       status: 'queued',
       progress: 0,
       downloadedBytes: 0,
@@ -138,8 +139,8 @@ class DownloadManager extends EventEmitter {
             this.emit('job-updated', job);
           });
 
-          // Check if it's a zip file
-          if (contentType.includes('zip') || job.url.endsWith('.zip')) {
+          // Check if it's a zip file (unless saveRaw is set)
+          if (!job.saveRaw && (contentType.includes('zip') || job.url.endsWith('.zip'))) {
             console.log(`[${job.id}] Processing as ZIP file...`);
             job.status = 'extracting';
             this.emit('job-updated', job);
@@ -208,12 +209,20 @@ class DownloadManager extends EventEmitter {
                 reject(error);
               });
           } else {
-            // Direct .mbtiles file
-            console.log(`[${job.id}] Processing as direct .mbtiles file...`);
+            // Direct file download
+            console.log(`[${job.id}] Processing as direct file (saveRaw: ${!!job.saveRaw})...`);
 
             // Use custom chart name if provided, otherwise use filename from URL
             let fileName;
-            if (job.chartName && job.chartName.trim()) {
+            if (job.saveRaw) {
+              // Save with original filename from URL, preserving extension
+              fileName = path.basename(job.url).split('?')[0];
+              if (job.chartName && job.chartName.trim()) {
+                // Use chartName but preserve the URL's extension
+                const ext = path.extname(fileName) || '.zip';
+                fileName = job.chartName.trim() + ext;
+              }
+            } else if (job.chartName && job.chartName.trim()) {
               fileName = job.chartName.trim();
               // Ensure .mbtiles extension
               if (!fileName.endsWith('.mbtiles')) {

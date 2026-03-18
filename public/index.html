@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="css/material-theme.css" />
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="css/manage-charts.css" />
+    <link rel="stylesheet" href="css/chart-catalog.css" />
     <title>Signal K Charts Manager</title>
 </head>
 
@@ -27,6 +28,13 @@
                 </svg>
                 Download from URL
             </button>
+            <button class="tab" onclick="openTab(event, 'catalog')" id="catalogTabBtn">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="margin-right: 8px;">
+                    <path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/>
+                </svg>
+                Chart Catalog
+                <span id="catalogBadge" class="catalog-tab-badge" style="display: none;"></span>
+            </button>
         </div>
 
         <div id="manage" class="tab-content active">
@@ -43,10 +51,20 @@
             </div>
         </div>
 
+        <div id="catalog" class="tab-content">
+            <div id="catalogOutput">
+                <div class="empty-state">
+                    <div class="empty-state-icon">Loading...</div>
+                    <div class="empty-state-text">Loading catalogs...</div>
+                </div>
+            </div>
+        </div>
+
         <script src="js/emoji-utils.js"></script>
         <script src="js/tabs.js"></script>
         <script src="js/manage-charts-enhanced.js"></script>
         <script src="js/download-simple.js"></script>
+        <script src="js/chart-catalog.js"></script>
         <script type="module" src="index.js"></script>
     </div>
 </body>

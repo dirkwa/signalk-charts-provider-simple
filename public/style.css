@@ -339,29 +339,7 @@ tbody tr:last-child td {
     border-bottom: none;
 }
 
-/* Progress Bar */
-.progress-bar {
-    width: 160px;
-    height: 20px;
-    background: var(--bg-secondary);
-    border-radius: 10px;
-    overflow: hidden;
-    display: inline-block;
-    vertical-align: middle;
-    margin-right: 10px;
-    border: 1px solid var(--border-color);
-}
-
-.progress-fill {
-    display: inline-block;
-    width: 0%;
-    height: 100%;
-    box-sizing: border-box;
-    background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
-    transition: width 300ms ease;
-    box-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
-}
-
+/* Progress Bar (legacy - kept for backward compat) */
 .percent {
     font-size: 13px;
     color: var(--text-primary);

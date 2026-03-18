@@ -190,9 +190,15 @@ function renderChartsUI() {
 }
 
 function renderChartCard(chart) {
-    const sizeInMB = (chart.size / (1024 * 1024)).toFixed(2);
-    const sizeInGB = (chart.size / (1024 * 1024 * 1024)).toFixed(2);
-    const displaySize = sizeInGB >= 1 ? `${sizeInGB} GB` : `${sizeInMB} MB`;
+    const isDir = chart.isDirectory;
+    let displaySize;
+    if (chart.size) {
+        const sizeInMB = (chart.size / (1024 * 1024)).toFixed(2);
+        const sizeInGB = (chart.size / (1024 * 1024 * 1024)).toFixed(2);
+        displaySize = sizeInGB >= 1 ? `${sizeInGB} GB` : `${sizeInMB} MB`;
+    } else {
+        displaySize = null;
+    }
 
     const dateCreated = new Date(chart.dateCreated).toLocaleDateString();
     const dateModified = new Date(chart.dateModified).toLocaleDateString();
@@ -201,6 +207,10 @@ function renderChartCard(chart) {
 
     const downloadingBadge = chart.downloading
         ? `<span class="downloading-badge"><span class="spinner-small"></span> Downloading</span>`
+        : '';
+
+    const typeBadge = isDir
+        ? `<span class="chart-type-badge enc">${(chart.type || 'S-57').toUpperCase()}</span>`
         : '';
 
     if (viewMode === 'grid') {
@@ -215,10 +225,12 @@ function renderChartCard(chart) {
                     <h4>${chart.name} ${downloadingBadge}</h4>
                 </div>
                 <div class="chart-card-body">
+                    ${displaySize ? `
                     <div class="chart-meta-row">
                         <span class="meta-label">${window.getIcon('size')} Size:</span>
                         <span class="meta-value">${displaySize}</span>
                     </div>
+                    ` : ''}
                     ${chart.chartName ? `
                     <div class="chart-meta-row">
                         <span class="meta-label">📊 Chart:</span>
@@ -239,12 +251,13 @@ function renderChartCard(chart) {
                     </div>
                 </div>
                 <div class="chart-card-footer">
-                    <button class="btn btn-sm btn-info" onclick="showChartInfo('${chart.relativePath}')" title="View chart metadata">
+                    ${typeBadge}
+                    ${!isDir ? `<button class="btn btn-sm btn-info" onclick="showChartInfo('${chart.relativePath}')" title="View chart metadata">
                         Meta
                     </button>
                     <button class="btn btn-sm btn-secondary" onclick="showRenameDialog('${chart.relativePath}', '${chart.name}', '${chart.folder}')" title="Rename chart">
                         Rename
-                    </button>
+                    </button>` : ''}
                     <button class="btn btn-sm btn-danger" onclick="deleteChart('${chart.relativePath}', '${chart.name}')">
                         Delete
                     </button>
@@ -263,19 +276,20 @@ function renderChartCard(chart) {
                 <div class="chart-list-info">
                     <div class="chart-list-name">${chart.name} ${downloadingBadge}</div>
                     <div class="chart-list-meta">
-                        <span>${displaySize}</span>
+                        ${displaySize ? `<span>${displaySize}</span>` : ''}
                         <span>${folderDisplay}</span>
                         <span>${dateCreated}</span>
                         <span>${dateModified}</span>
                     </div>
                 </div>
                 <div class="chart-list-actions">
-                    <button class="btn btn-sm btn-info" onclick="showChartInfo('${chart.relativePath}')" title="View chart metadata">
+                    ${typeBadge}
+                    ${!isDir ? `<button class="btn btn-sm btn-info" onclick="showChartInfo('${chart.relativePath}')" title="View chart metadata">
                         Meta
                     </button>
                     <button class="btn btn-sm btn-secondary" onclick="showRenameDialog('${chart.relativePath}', '${chart.name}', '${chart.folder}')" title="Rename chart">
                         Rename
-                    </button>
+                    </button>` : ''}
                     <button class="btn btn-sm btn-danger" onclick="deleteChart('${chart.relativePath}', '${chart.name}')">
                         Delete
                     </button>
