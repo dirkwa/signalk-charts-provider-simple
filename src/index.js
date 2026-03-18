@@ -1177,13 +1177,9 @@ module.exports = (app) => {
 
         try {
           if (convType === 's57') {
-            const catalogCode = 'CUSTOM';
-            const s57SubDir = path.join(chartPath, 'S-57', `${catalogCode}-${chartNumber}`);
-            fs.mkdirSync(s57SubDir, { recursive: true });
-
             const result = await processS57Zip(
               uploadedFile,
-              s57SubDir,
+              chartPath,
               chartNumber,
               (status, message) => {
                 app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
@@ -1191,14 +1187,15 @@ module.exports = (app) => {
               { minzoom, maxzoom }
             );
 
+            const relativePath = path.relative(chartPath, path.join(chartPath, result.mbtilesFile));
+            setChartEnabled(relativePath, true);
             await refreshChartProviders();
-            for (const chartDir of result.chartDirs) {
-              if (chartProviders[chartDir]) {
-                const chartData = sanitizeProvider(chartProviders[chartDir], 2);
-                emitChartDelta(chartDir, chartData);
-              }
+            const chartId = result.mbtilesFile.replace(/\.mbtiles$/, '');
+            if (chartProviders[chartId]) {
+              const chartData = sanitizeProvider(chartProviders[chartId], 2);
+              emitChartDelta(chartId, chartData);
             }
-            app.debug(`Convert complete: ${chartNumber} → ${result.chartDirs.length} chart(s)`);
+            app.debug(`Convert complete: ${chartNumber} → ${result.mbtilesFile}`);
           } else if (convType === 'rnc') {
             const result = await processRncZip(
               uploadedFile,
@@ -1280,13 +1277,7 @@ module.exports = (app) => {
         }
 
         if (classification.format === 's57-zip') {
-          // S-57 ENC pipeline: download ZIP → convert via Podman s57-tiler
-          // Output goes to S-57/{catalogCode}-{chartNumber}/ subfolder
-          const catalogCode = catalogFile.replace(/_.*$/, ''); // AT_IENC_Catalog.xml → AT
-          const s57SubDir = path.join(chartPath, 'S-57', `${catalogCode}-${chartNumber}`);
-          fs.mkdirSync(s57SubDir, { recursive: true });
-
-          // Download ZIP to a temp location (not the charts dir)
+          // S-57 ENC pipeline: download ZIP → ogr2ogr → tippecanoe → single MBTiles
           const tmpDownloadDir = path.join(app.getDataDirPath(), `s57-download-${Date.now()}`);
           fs.mkdirSync(tmpDownloadDir, { recursive: true });
 
@@ -1294,11 +1285,9 @@ module.exports = (app) => {
             saveRaw: true
           });
 
-          // Track as "converting" — not yet installed
           trackInstall(chartNumber, catalogFile, zipfileDatetime || '', url);
           setConvertingState(chartNumber, true);
 
-          // When ZIP download completes, run S-57 conversion
           const s57Listener = async (job) => {
             if (job.id !== jobId) {
               return;
@@ -1306,7 +1295,6 @@ module.exports = (app) => {
             downloadManager.removeListener('job-completed', s57Listener);
             downloadManager.removeListener('job-failed', s57FailListener);
 
-            // Find the downloaded ZIP file
             const zipFileName =
               (job.extractedFiles && job.extractedFiles[0]) ||
               (job.targetFiles && job.targetFiles[0]);
@@ -1320,12 +1308,10 @@ module.exports = (app) => {
               return;
             }
 
-            app.debug(`Starting S-57 conversion for ${chartNumber}: ${zipPath} → ${s57SubDir}`);
-
             try {
               const result = await processS57Zip(
                 zipPath,
-                s57SubDir,
+                targetDir,
                 chartNumber,
                 (status, message) => {
                   app.debug(`S-57 [${chartNumber}] ${status}: ${message}`);
@@ -1333,26 +1319,24 @@ module.exports = (app) => {
                 { minzoom, maxzoom }
               );
 
-              // Conversion done — mark as no longer converting
               setConvertingState(chartNumber, false);
-
-              // Clean up temp download dir
               cleanupDir(tmpDownloadDir);
 
-              // Reload chart providers to pick up the new vector tile charts
+              // Enable the new MBTiles chart
+              const relativePath = path.relative(
+                chartPath,
+                path.join(targetDir, result.mbtilesFile)
+              );
+              setChartEnabled(relativePath, true);
               await refreshChartProviders();
 
-              // Emit deltas for each new chart directory
-              for (const chartDir of result.chartDirs) {
-                if (chartProviders[chartDir]) {
-                  const chartData = sanitizeProvider(chartProviders[chartDir], 2);
-                  emitChartDelta(chartDir, chartData);
-                }
+              const chartId = result.mbtilesFile.replace(/\.mbtiles$/, '');
+              if (chartProviders[chartId]) {
+                const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                emitChartDelta(chartId, chartData);
               }
 
-              app.debug(
-                `S-57 conversion complete for ${chartNumber}: ${result.chartDirs.length} chart(s) in S-57/${catalogCode}-${chartNumber}/`
-              );
+              app.debug(`S-57 conversion complete: ${result.mbtilesFile}`);
             } catch (convError) {
               app.error(`S-57 conversion failed for ${chartNumber}: ${convError.message}`);
               removeInstall(chartNumber);
@@ -1694,18 +1678,6 @@ const responseHttpOptions = {
   }
 };
 
-const pbfResponseHttpOptions = {
-  headers: {
-    'Cache-Control': 'public, max-age=7776000',
-    'Content-Type': 'application/x-protobuf'
-  }
-};
-
-// Empty PBF tile — a valid zero-byte protobuf message.
-// Returned instead of 404 for S-57 grouped charts so Freeboard-SK
-// renders transparent instead of black for missing tile areas.
-const EMPTY_PBF = Buffer.alloc(0);
-
 const sanitizeProvider = (provider, version = 1) => {
   let v;
   if (version === 1) {
@@ -1756,69 +1728,11 @@ const cleanupDir = (dirPath) => {
 const serveTileFromFilesystem = (res, provider, z, x, y) => {
   const { format, _flipY, _filePath } = provider;
   const flippedY = Math.pow(2, z) - 1 - y;
-  const tileY = _flipY ? flippedY : y;
-  const tilePath = `${z}/${x}/${tileY}.${format}`;
-  const file = _filePath ? path.resolve(_filePath, tilePath) : '';
-  const httpOptions = format === 'pbf' ? pbfResponseHttpOptions : responseHttpOptions;
-
-  res.sendFile(file, httpOptions, (err) => {
+  const file = _filePath
+    ? path.resolve(_filePath, `${z}/${x}/${_flipY ? flippedY : y}.${format}`)
+    : '';
+  res.sendFile(file, responseHttpOptions, (err) => {
     if (err && err.code === 'ENOENT') {
-      // For S-57 grouped charts: tiles are in cell subdirectories, not at the group level.
-      // Only serve from overview cells (listed in metadata._s57OverviewCells) to avoid
-      // black rectangles from depth-only detail cells that lack land polygons.
-      // Falls back to any cell if no overview cell list exists.
-      if (_filePath && format === 'pbf') {
-        try {
-          let overviewCells = null;
-          try {
-            const meta = JSON.parse(
-              fs.readFileSync(path.join(_filePath, 'metadata.json'), 'utf-8')
-            );
-            overviewCells = meta._s57OverviewCells || null;
-          } catch (_metaErr) {
-            // no metadata or parse error
-          }
-
-          const entries = fs.readdirSync(_filePath, { withFileTypes: true });
-          const dirs = entries.filter((e) => e.isDirectory());
-
-          // First pass: try overview cells (have LNDARE — complete rendering)
-          if (overviewCells) {
-            for (const entry of dirs) {
-              if (!overviewCells.includes(entry.name)) {
-                continue;
-              }
-              const cellTile = path.join(_filePath, entry.name, tilePath);
-              if (fs.existsSync(cellTile)) {
-                return res.sendFile(cellTile, httpOptions, (err2) => {
-                  if (err2) {
-                    res.sendStatus(404);
-                  }
-                });
-              }
-            }
-          }
-
-          // Second pass: try any cell (detail cells as fallback, or non-grouped charts)
-          for (const entry of dirs) {
-            const cellTile = path.join(_filePath, entry.name, tilePath);
-            if (fs.existsSync(cellTile)) {
-              return res.sendFile(cellTile, httpOptions, (err2) => {
-                if (err2) {
-                  res.sendStatus(404);
-                }
-              });
-            }
-          }
-        } catch (_e) {
-          // fall through
-        }
-        // For PBF grouped charts, return empty tile instead of 404
-        // so Freeboard-SK renders transparent instead of black
-        res.writeHead(200, pbfResponseHttpOptions.headers);
-        res.end(EMPTY_PBF);
-        return;
-      }
       res.sendStatus(404);
     } else if (err) {
       throw err;

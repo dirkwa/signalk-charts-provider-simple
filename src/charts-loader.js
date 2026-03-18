@@ -129,7 +129,7 @@ function openMbtilesFile(file, filename) {
         minzoom: metadata.minzoom,
         maxzoom: metadata.maxzoom,
         format: metadata.format, // 'png', 'jpg', 'pbf', etc.
-        type: 'tilelayer',
+        type: metadata.type || 'tilelayer',
         scale: parseInt(metadata.scale) || 250000,
 
         // Signal K v1 API format

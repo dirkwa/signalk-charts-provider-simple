@@ -3,19 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const unzipper = require('unzipper');
 
-const S57_TILER_IMAGE = 'docker.io/wdantuma/s57-tiler:latest';
+const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
+const TIPPECANOE_IMAGE = 'docker.io/klokantech/tippecanoe';
 
-// ISO 8211 CATALOG.031 header (248 bytes) and record template (136 bytes)
-// Used to generate synthetic catalogs for ENC ZIPs that lack one.
-// Filename field is at offset 57-69 in the record template (12 chars).
-const CATALOG_HEADER_B64 =
-  'MDAyNDgzTEUxIDA5MDAwNTIgISAzMjA0MDAwMDAzMDAwMDAwMTA0NDMwQ0FURDEyMjc0HjAwMDA7JiAgIENBVEFMT0cuMDMxHzAwMDFDQVREHjA1MDA7JiAgIElTTyA4MjExIFJlY29yZCBJZGVudGlmaWVyHx8oSSg1KSkeMTYwMDsmICAgQ2F0YWxvZ3VlIERpcmVjdG9yeSBGaWVsZB9SQ05NIVJDSUQhRklMRSFMRklMIVZPTE0hSU1QTCFTTEFUIVdMT04hTkxBVCFFTE9OIUNSQ1MhQ09NVB8oQSgyKSxJKDEwKSwzQSxBKDMpLDRSLDJBKR4=';
-const CATALOG_RECORD_B64 =
-  'MDAxMzYgRCAgICAgMDAwMzkgICAyMTA0MDAwMTA2MENBVEQ5MTYeMDAwMDEeQ0QwMDAwMDAwMDAxMlc3RDE4NzAuMDAwHx9WMDFYMDEfQklONDguMTExNjMxMR8xNi45NTA5ODk3HzQ4LjIyNzkxOTUfMTcuMDY2NDEyOR9FNUMzRkM0Qh8fHg==';
-const CATALOG_FNAME_OFFSET = 57;
-const CATALOG_FNAME_LEN = 12;
-
-// In-memory progress tracking: chartNumber -> { status, message, map, zoom, percent, log }
+// In-memory progress tracking: chartNumber -> { status, message, log }
 const conversionProgress = {};
 const MAX_LOG_LINES = 100;
 
@@ -49,27 +40,27 @@ function checkPodman() {
 }
 
 /**
- * Check if the s57-tiler image is available locally
+ * Check if a container image is available locally
  */
-function checkS57TilerImage() {
+function checkImage(image) {
   return new Promise((resolve) => {
-    execFile('podman', ['image', 'exists', S57_TILER_IMAGE], (error) => {
+    execFile('podman', ['image', 'exists', image], (error) => {
       resolve(!error);
     });
   });
 }
 
 /**
- * Pull the s57-tiler image
+ * Pull a container image
  */
-function pullS57TilerImage() {
+function pullImage(image) {
   return new Promise((resolve, reject) => {
-    debug('Pulling s57-tiler image...');
-    execFile('podman', ['pull', S57_TILER_IMAGE], { timeout: 300000 }, (error, _stdout, stderr) => {
+    debug(`Pulling image: ${image}`);
+    execFile('podman', ['pull', image], { timeout: 600000 }, (error, _stdout, stderr) => {
       if (error) {
-        reject(new Error(`Failed to pull s57-tiler image: ${stderr || error.message}`));
+        reject(new Error(`Failed to pull ${image}: ${stderr || error.message}`));
       } else {
-        debug('s57-tiler image pulled successfully');
+        debug(`Image pulled: ${image}`);
         resolve();
       }
     });
@@ -77,91 +68,14 @@ function pullS57TilerImage() {
 }
 
 /**
- * Extract a ZIP file to a target directory
- * Returns array of extracted file paths
+ * Extract a ZIP preserving directory structure
  */
-/**
- * Generate a synthetic CATALOG.031 for ENC directories that lack one.
- * s57-tiler requires CATALOG.031 to discover .000 files.
- */
-function generateCatalog031(encDir) {
-  const catalogPath = path.join(encDir, 'CATALOG.031');
-
-  // Check if one already exists (search recursively)
-  const findCatalog = (dir) => {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.toUpperCase() === 'CATALOG.031') {
-        return path.join(dir, entry.name);
-      }
-      if (entry.isDirectory()) {
-        const found = findCatalog(path.join(dir, entry.name));
-        if (found) {
-          return found;
-        }
-      }
-    }
-    return null;
-  };
-
-  if (findCatalog(encDir)) {
-    debug('CATALOG.031 found in extraction');
-    return;
-  }
-
-  // Find all .000 files recursively
-  const encFiles = [];
-  const findEnc = (dir) => {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        findEnc(path.join(dir, entry.name));
-      } else if (entry.name.endsWith('.000')) {
-        encFiles.push(entry.name);
-      }
-    }
-  };
-  findEnc(encDir);
-
-  if (encFiles.length === 0) {
-    debug('No .000 files found — cannot generate CATALOG.031');
-    return;
-  }
-
-  const header = Buffer.from(CATALOG_HEADER_B64, 'base64');
-  const recordTemplate = Buffer.from(CATALOG_RECORD_B64, 'base64');
-
-  const records = [];
-  for (let i = 0; i < encFiles.length; i++) {
-    const rec = Buffer.from(recordTemplate);
-
-    // Update sequence number (5 digits after first 0x1e)
-    const seqPos = rec.indexOf(0x1e) + 1;
-    rec.write(String(i + 1).padStart(5, '0'), seqPos, 5, 'latin1');
-
-    // Update RCID (10 digits after 'CD')
-    const cdPos = rec.indexOf(Buffer.from('CD')) + 2;
-    rec.write(String(i + 1).padStart(10, '0'), cdPos, 10, 'latin1');
-
-    // Replace filename (pad/truncate to 12 chars)
-    const fname = encFiles[i].slice(0, CATALOG_FNAME_LEN).padEnd(CATALOG_FNAME_LEN);
-    rec.write(fname, CATALOG_FNAME_OFFSET, CATALOG_FNAME_LEN, 'latin1');
-
-    records.push(rec);
-  }
-
-  fs.writeFileSync(catalogPath, Buffer.concat([header, ...records]));
-  debug(`Generated CATALOG.031 with ${encFiles.length} entries`);
-}
-
 async function extractZip(zipPath, targetDir) {
-  // Extract preserving directory structure — s57-tiler scans recursively for CATALOG.031
   await fs
     .createReadStream(zipPath)
     .pipe(unzipper.Extract({ path: targetDir }))
     .promise();
 
-  // Count extracted files
   const allFiles = [];
   const scan = (dir) => {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -175,377 +89,358 @@ async function extractZip(zipPath, targetDir) {
     }
   };
   scan(targetDir);
-
   return allFiles;
 }
 
 /**
- * Parse s57-tiler output line to extract progress info.
- * Example: "Dataset: app, Map: 2W7D1870, Zoom: 14, Processed: 50 %"
+ * Find all .000 ENC files recursively in a directory
  */
-function parseProgressLine(line) {
-  // s57-tiler uses \r-separated inline progress — split and take last segment
-  const segments = line.split(/\s{4,}/);
-  const last = segments[segments.length - 1].trim();
-  const match = last.match(/Map:\s*(\S+),\s*Zoom:\s*(\d+),\s*Processed:\s*(\d+)\s*%/);
-  if (match) {
-    return { map: match[1], zoom: parseInt(match[2]), percent: parseInt(match[3]) };
-  }
-  return null;
+function findEncFiles(dir) {
+  const files = [];
+  const scan = (d) => {
+    const entries = fs.readdirSync(d, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(d, entry.name);
+      if (entry.isDirectory()) {
+        scan(fullPath);
+      } else if (entry.name.endsWith('.000')) {
+        files.push(fullPath);
+      }
+    }
+  };
+  scan(dir);
+  return files;
 }
 
 /**
- * Convert S-57 ENC files to vector tiles using s57-tiler in Podman.
- * Streams progress via conversionProgress tracking.
- *
- * @param {string} encDir - Directory containing extracted ENC files
- * @param {string} outputDir - Charts directory where tiles will be written
- * @param {string} chartNumber - Chart number for progress tracking
- * @param {object} options - Optional: { minzoom, maxzoom }
- * @returns {Promise<{chartDirs: string[]}>} Chart directories created
+ * Export ALL S-57 layers from ALL .000 files to GeoJSON in a single container run.
+ * This is much faster than spawning a container per layer.
  */
-function convertS57ToTiles(encDir, outputDir, chartNumber, options = {}) {
+function exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber) {
+  // Build a shell script that processes all files and layers
+  const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
+  const multiFile = encFiles.length > 1;
+
+  // Shell script: for each .000 file, get layers, export each to GeoJSON
+  const script = `
+set -e
+cd /input
+for enc in ${encFiles.map((f) => path.basename(f)).join(' ')}; do
+  name=$(basename "$enc" .000)
+  echo "PROGRESS: Processing $name"
+  layers=$(ogrinfo -so "/input/$enc" 2>/dev/null | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  for layer in $layers; do
+    case "$layer" in ${skipLayers.join('|')}) continue ;; esac
+    suffix="${multiFile ? '${name}' : ''}"
+    outname="${multiFile ? '${layer}_${name}' : '${layer}'}"
+    ogr2ogr -f GeoJSON "/output/$outname.geojson" "/input/$enc" "$layer" 2>/dev/null || true
+  done
+done
+echo "PROGRESS: Export complete"
+`;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'podman',
+      [
+        'run',
+        '--rm',
+        '-v',
+        `${encDir}:/input:ro,Z`,
+        '-v',
+        `${geojsonDir}:/output:Z`,
+        GDAL_IMAGE,
+        'sh',
+        '-c',
+        script
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+
+    child.stdout.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) {
+        appendLog(chartNumber, text);
+        const match = text.match(/PROGRESS: Processing (\S+)/);
+        if (match) {
+          setProgress(chartNumber, 'converting', `Exporting ${match[1]}...`);
+        }
+      }
+    });
+
+    child.stderr.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) {
+        appendLog(chartNumber, text);
+      }
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`GDAL export failed with exit code ${code}`));
+      } else {
+        resolve();
+      }
+    });
+
+    child.on('error', (err) => {
+      reject(new Error(`Failed to start GDAL container: ${err.message}`));
+    });
+  });
+}
+
+/**
+ * Run tippecanoe to combine GeoJSON layers into a single MBTiles
+ */
+function runTippecanoe(geojsonDir, outputMbtiles, chartNumber, options = {}) {
   const minzoom = options.minzoom || 9;
-  // maxzoom 16 needed so navigation aids (LIGHTS, DAYMAR, buoys) pass the SCAMIN
-  // filter in s57-tiler. At zoom 14 (~1:22,800) features with SCAMIN=22000 are excluded.
-  // Zoom 16 (~1:5,700) ensures all features are included.
   const maxzoom = options.maxzoom || 16;
+
+  // Build layer args: group files by layer name
+  const files = fs.readdirSync(geojsonDir).filter((f) => f.endsWith('.geojson'));
+  const layerArgs = [];
+  for (const file of files) {
+    const fullPath = path.join(geojsonDir, file);
+    const size = fs.statSync(fullPath).size;
+    if (size <= 100) {
+      continue;
+    }
+
+    // Extract layer name (remove _cellname suffix)
+    const base = path.basename(file, '.geojson');
+    const layer = base.replace(/_[A-Za-z0-9]+$/, '');
+    layerArgs.push('-L', `${layer}:/input/${file}`);
+  }
+
+  if (layerArgs.length === 0) {
+    return Promise.reject(new Error('No valid GeoJSON layers to process'));
+  }
 
   return new Promise((resolve, reject) => {
     const args = [
       'run',
       '--rm',
       '-v',
-      `${encDir}:/app/enc:ro,Z`,
+      `${geojsonDir}:/input:ro,Z`,
       '-v',
-      `${outputDir}:/app/output:Z`,
-      S57_TILER_IMAGE,
-      '/app/s57-tiler',
-      '--in',
-      '/app/enc',
-      '--out',
-      '/app/output',
-      '--minzoom',
+      `${path.dirname(outputMbtiles)}:/output:Z`,
+      TIPPECANOE_IMAGE,
+      'tippecanoe',
+      '-o',
+      `/output/${path.basename(outputMbtiles)}`,
+      '-z',
+      String(maxzoom),
+      '-Z',
       String(minzoom),
-      '--maxzoom',
-      String(maxzoom)
+      '--no-tile-size-limit',
+      '--force',
+      ...layerArgs
     ];
 
-    debug(`Running: podman ${args.join(' ')}`);
+    debug(`Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}`);
 
     const child = spawn('podman', args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 0
+      stdio: ['ignore', 'pipe', 'pipe']
     });
 
-    let stderrData = '';
-
     child.stdout.on('data', (data) => {
-      const text = data.toString();
-      const progress = parseProgressLine(text);
-      if (chartNumber) {
-        if (!conversionProgress[chartNumber]) {
-          conversionProgress[chartNumber] = { status: 'converting', message: '', log: [] };
-        }
-        // Append raw output as log lines
-        const lines = text
-          .split(/\r|\n/)
-          .map((l) => l.replace(/\s{4,}/g, '\n').trim())
-          .filter((l) => l);
-        const log = conversionProgress[chartNumber].log || [];
-        log.push(...lines);
-        // Keep only the last N lines
-        if (log.length > MAX_LOG_LINES) {
-          log.splice(0, log.length - MAX_LOG_LINES);
-        }
-        conversionProgress[chartNumber].log = log;
+      const text = data.toString().trim();
+      if (text) {
+        appendLog(chartNumber, text);
+      }
 
-        if (progress) {
-          conversionProgress[chartNumber].status = 'converting';
-          conversionProgress[chartNumber].message =
-            `Map ${progress.map}, Zoom ${progress.zoom}: ${progress.percent}%`;
-          conversionProgress[chartNumber].map = progress.map;
-          conversionProgress[chartNumber].zoom = progress.zoom;
-          conversionProgress[chartNumber].percent = progress.percent;
-        }
+      // Parse progress percentage
+      const match = text.match(/(\d+\.\d+)%/);
+      if (match && chartNumber && conversionProgress[chartNumber]) {
+        const pct = parseFloat(match[1]);
+        conversionProgress[chartNumber].message = `Generating tiles: ${Math.round(pct)}%`;
       }
     });
 
     child.stderr.on('data', (data) => {
-      stderrData += data.toString();
-      if (chartNumber && conversionProgress[chartNumber]) {
-        const log = conversionProgress[chartNumber].log || [];
-        log.push(`[stderr] ${data.toString().trim()}`);
-        if (log.length > MAX_LOG_LINES) {
-          log.splice(0, log.length - MAX_LOG_LINES);
-        }
-        conversionProgress[chartNumber].log = log;
+      const text = data.toString().trim();
+      if (text) {
+        appendLog(chartNumber, text);
       }
     });
 
     child.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error(`s57-tiler exited with code ${code}: ${stderrData}`));
-        return;
-      }
-
-      // Find what chart directories were created (they contain metadata.json)
-      try {
-        const entries = fs.readdirSync(outputDir, { withFileTypes: true });
-        const chartDirs = entries
-          .filter((e) => e.isDirectory())
-          .filter((e) => {
-            const metadataPath = path.join(outputDir, e.name, 'metadata.json');
-            return fs.existsSync(metadataPath);
-          })
-          .map((e) => e.name);
-
-        debug(`s57-tiler created ${chartDirs.length} chart(s): ${chartDirs.join(', ')}`);
-        resolve({ chartDirs });
-      } catch (scanError) {
-        reject(new Error(`Failed to scan output directory: ${scanError.message}`));
+        reject(new Error(`tippecanoe failed with exit code ${code}`));
+      } else {
+        resolve();
       }
     });
 
     child.on('error', (err) => {
-      reject(new Error(`Failed to start podman: ${err.message}`));
+      reject(new Error(`Failed to start tippecanoe: ${err.message}`));
     });
   });
 }
 
+function appendLog(chartNumber, text) {
+  if (!chartNumber || !text) {
+    return;
+  }
+  if (!conversionProgress[chartNumber]) {
+    conversionProgress[chartNumber] = { status: 'converting', message: '', log: [] };
+  }
+  const log = conversionProgress[chartNumber].log;
+  const lines = text.split(/\r|\n/).filter((l) => l.trim());
+  log.push(...lines);
+  if (log.length > MAX_LOG_LINES) {
+    log.splice(0, log.length - MAX_LOG_LINES);
+  }
+}
+
 /**
- * Full pipeline: Download ZIP → extract → convert S-57 → produce tiles in charts dir.
+ * Full pipeline: ZIP → extract → ogr2ogr (S-57→GeoJSON) → tippecanoe → MBTiles
+ *
+ * Produces a SINGLE vector MBTiles file with all S-57 layers from all ENC cells.
+ * No cell splitting, no SCAMIN filtering, no black spots.
  *
  * @param {string} zipPath - Path to the downloaded ZIP file
- * @param {string} chartsDir - The plugin's charts directory
- * @param {string} chartNumber - Chart number for progress tracking
- * @param {function} onStatus - Status callback: (status, message) => void
- * @returns {Promise<{chartDirs: string[]}>} Chart directories created
+ * @param {string} chartsDir - Directory where the output .mbtiles will be placed
+ * @param {string} chartNumber - Chart identifier for tracking
+ * @param {function} onStatus - Status callback
+ * @param {object} options - { minzoom, maxzoom }
+ * @returns {Promise<{mbtilesFile: string}>} Filename of created .mbtiles
  */
 async function processS57Zip(zipPath, chartsDir, chartNumber, onStatus, options = {}) {
   const statusFn = onStatus || (() => {});
+  const tmpDir = path.join(path.dirname(zipPath), `s57_${Date.now()}`);
+  const encDir = path.join(tmpDir, 'enc');
+  const geojsonDir = path.join(tmpDir, 'geojson');
+  fs.mkdirSync(encDir, { recursive: true });
+  fs.mkdirSync(geojsonDir, { recursive: true });
 
-  // Create temp dir for extracted ENC files
-  const tmpDir = path.join(path.dirname(zipPath), `enc_${Date.now()}`);
-  fs.mkdirSync(tmpDir, { recursive: true });
-
-  // Initialize progress tracking
   if (chartNumber) {
     conversionProgress[chartNumber] = {
       status: 'starting',
-      message: 'Starting conversion...'
+      message: 'Starting conversion...',
+      log: []
     };
   }
 
   try {
     // Step 1: Check Podman
-    statusFn('checking', 'Checking Podman availability...');
+    statusFn('checking', 'Checking Podman...');
     const podman = await checkPodman();
     if (!podman.available) {
-      throw new Error(
-        'Podman is not installed. S-57 chart conversion requires Podman to run the s57-tiler container.'
-      );
+      throw new Error('Podman is not installed.');
     }
 
-    // Step 2: Check/pull image
-    statusFn('pulling', 'Checking s57-tiler image...');
-    const imageExists = await checkS57TilerImage();
-    if (!imageExists) {
-      statusFn('pulling', 'Pulling s57-tiler image (first time only)...');
-      if (chartNumber) {
-        conversionProgress[chartNumber] = {
-          status: 'pulling',
-          message: 'Pulling s57-tiler image...'
-        };
-      }
-      await pullS57TilerImage();
+    // Step 2: Pull images if needed
+    statusFn('pulling', 'Checking container images...');
+    setProgress(chartNumber, 'pulling', 'Checking GDAL image...');
+    if (!(await checkImage(GDAL_IMAGE))) {
+      setProgress(chartNumber, 'pulling', 'Pulling GDAL image...');
+      await pullImage(GDAL_IMAGE);
+    }
+    setProgress(chartNumber, 'pulling', 'Checking tippecanoe image...');
+    if (!(await checkImage(TIPPECANOE_IMAGE))) {
+      setProgress(chartNumber, 'pulling', 'Pulling tippecanoe image...');
+      await pullImage(TIPPECANOE_IMAGE);
     }
 
     // Step 3: Extract ZIP
-    statusFn('extracting', 'Extracting ENC files from ZIP...');
-    if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'extracting',
-        message: 'Extracting ENC files...'
-      };
-    }
-    const extracted = await extractZip(zipPath, tmpDir);
+    statusFn('extracting', 'Extracting ENC files...');
+    setProgress(chartNumber, 'extracting', 'Extracting ENC files...');
+    const extracted = await extractZip(zipPath, encDir);
     debug(`Extracted ${extracted.length} files from ZIP`);
 
     if (extracted.length === 0) {
       throw new Error('No files found in ZIP archive');
     }
 
-    // Step 3b: Generate CATALOG.031 if missing (some ENC ZIPs ship without one)
-    generateCatalog031(tmpDir);
+    // Step 4: Find .000 files
+    const encFiles = findEncFiles(encDir);
+    if (encFiles.length === 0) {
+      throw new Error('No S-57 ENC files (.000) found in ZIP');
+    }
+    debug(`Found ${encFiles.length} ENC files`);
+    appendLog(chartNumber, `Found ${encFiles.length} ENC files`);
 
-    // Step 4: Convert
-    statusFn('converting', 'Converting S-57 to vector tiles...');
-    const result = await convertS57ToTiles(tmpDir, chartsDir, chartNumber, options);
+    // Step 5: Export ALL layers from ALL .000 files in a single container
+    statusFn('converting', 'Converting S-57 layers to GeoJSON...');
+    setProgress(chartNumber, 'converting', `Exporting ${encFiles.length} ENC files...`);
+    appendLog(chartNumber, `Exporting ${encFiles.length} ENC files in single GDAL container...`);
 
-    if (result.chartDirs.length === 0) {
-      throw new Error(
-        's57-tiler produced no charts. The ZIP may not contain valid S-57 ENC files.'
-      );
+    await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber);
+
+    // Step 6: Run tippecanoe
+    statusFn('converting', 'Generating vector tiles...');
+    setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');
+
+    const outputName = `${chartNumber || 'enc-chart'}.mbtiles`;
+    const outputPath = path.join(chartsDir, outputName);
+    await runTippecanoe(geojsonDir, outputPath, chartNumber, options);
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('tippecanoe completed but output file not found');
     }
 
-    // Step 5: Create merged metadata.json at the group directory level.
-    // This makes the group appear as a single chart in Signal K and Freeboard-SK
-    // instead of dozens of individual ENC cells.
-    createMergedMetadata(chartsDir, result.chartDirs, chartNumber);
+    // Patch MBTiles metadata so Freeboard-SK uses S-52 rendering
+    try {
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(outputPath);
+      db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'S-57')").run();
+      db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('name', ?)").run(
+        `S-57 ${chartNumber || 'ENC'}`
+      );
+      db.close();
+      debug(`Set MBTiles type=S-57 for ${outputName}`);
+    } catch (metaErr) {
+      debug(`Warning: failed to patch MBTiles metadata: ${metaErr.message}`);
+    }
 
-    statusFn('completed', `Converted ${result.chartDirs.length} chart(s) successfully`);
+    const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
+    statusFn('completed', `Created ${outputName} (${size} MB)`);
+    appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
 
     // Clean up progress on success
     if (chartNumber) {
       delete conversionProgress[chartNumber];
     }
 
-    return result;
+    return { mbtilesFile: outputName };
   } catch (err) {
-    // Keep error in progress so frontend can display it
     if (chartNumber) {
       conversionProgress[chartNumber] = {
         status: 'failed',
         message: err.message || 'Conversion failed',
         log: conversionProgress[chartNumber] ? conversionProgress[chartNumber].log || [] : []
       };
-      // Auto-clean after 5 minutes
       setTimeout(() => {
         delete conversionProgress[chartNumber];
       }, 300000);
     }
     throw err;
   } finally {
-    // Clean up temp dir
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch (_e) {
-      debug(`Warning: failed to clean up temp dir ${tmpDir}`);
+      debug(`Warning: failed to clean up ${tmpDir}`);
     }
   }
 }
 
-/**
- * Create a merged metadata.json at the group directory level.
- * Combines bounds and zoom levels from all ENC cell subdirectories.
- * This makes charts-loader.js treat the group as a single chart.
- *
- * @param {string} groupDir - e.g., S-57/AT-269/
- * @param {string[]} chartDirs - e.g., ['2W7D1870', '2W7D1880', ...]
- * @param {string} chartNumber - e.g., '269'
- */
-/**
- * Check if a cell's tiles contain LNDARE (land area) — indicating an overview cell.
- * Reads a sample tile and checks layer names in the MVT protobuf.
- */
-function cellHasLandLayer(cellDir) {
-  // Find a tile at the highest available zoom
-  const zooms = fs
-    .readdirSync(cellDir, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && /^\d+$/.test(e.name))
-    .map((e) => parseInt(e.name))
-    .sort((a, b) => b - a);
-
-  for (const z of zooms) {
-    const zDir = path.join(cellDir, String(z));
-    const xDirs = fs.readdirSync(zDir, { withFileTypes: true }).filter((e) => e.isDirectory());
-    for (const xDir of xDirs) {
-      const tiles = fs.readdirSync(path.join(zDir, xDir.name)).filter((f) => f.endsWith('.pbf'));
-      if (tiles.length > 0) {
-        const tilePath = path.join(zDir, xDir.name, tiles[0]);
-        try {
-          const data = fs.readFileSync(tilePath);
-          // Quick scan: check if "LNDARE" appears in the raw protobuf bytes
-          return data.includes(Buffer.from('LNDARE'));
-        } catch (_e) {
-          continue;
-        }
-      }
-    }
-  }
-  return false;
-}
-
-function createMergedMetadata(groupDir, chartDirs, chartNumber) {
-  let minLon = Infinity;
-  let minLat = Infinity;
-  let maxLon = -Infinity;
-  let maxLat = -Infinity;
-  let minZoom = Infinity;
-  let maxZoom = -Infinity;
-  let cellCount = 0;
-  const overviewCells = [];
-
-  for (const dir of chartDirs) {
-    const metaPath = path.join(groupDir, dir, 'metadata.json');
-    try {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      if (meta.bounds && meta.bounds.length === 4) {
-        minLon = Math.min(minLon, meta.bounds[0]);
-        minLat = Math.min(minLat, meta.bounds[1]);
-        maxLon = Math.max(maxLon, meta.bounds[2]);
-        maxLat = Math.max(maxLat, meta.bounds[3]);
-      }
-      if (meta.minzoom !== undefined) {
-        minZoom = Math.min(minZoom, meta.minzoom);
-      }
-      if (meta.maxzoom !== undefined) {
-        maxZoom = Math.max(maxZoom, meta.maxzoom);
-      }
-      cellCount++;
-
-      // Detect overview cells (contain LNDARE land polygons)
-      const cellDir = path.join(groupDir, dir);
-      if (cellHasLandLayer(cellDir)) {
-        overviewCells.push(dir);
-      }
-    } catch (_e) {
-      // skip unreadable cells
-    }
-  }
-
-  if (cellCount === 0) {
+function setProgress(chartNumber, status, message) {
+  if (!chartNumber) {
     return;
   }
-
-  debug(
-    `Cell classification: ${overviewCells.length} overview, ${cellCount - overviewCells.length} detail-only`
-  );
-
-  const merged = {
-    id: chartNumber || path.basename(groupDir),
-    name: `S-57 ${chartNumber || path.basename(groupDir)} (${cellCount} cells)`,
-    description: `Merged from ${cellCount} ENC cells (${overviewCells.length} with land coverage)`,
-    type: 'S-57',
-    format: 'pbf',
-    minzoom: minZoom === Infinity ? 9 : minZoom,
-    maxzoom: maxZoom === -Infinity ? 16 : maxZoom,
-    bounds: [
-      minLon === Infinity ? 0 : minLon,
-      minLat === Infinity ? 0 : minLat,
-      maxLon === -Infinity ? 0 : maxLon,
-      maxLat === -Infinity ? 0 : maxLat
-    ],
-    _s57Cells: chartDirs,
-    _s57OverviewCells: overviewCells.length > 0 ? overviewCells : null
-  };
-
-  const mergedPath = path.join(groupDir, 'metadata.json');
-  fs.writeFileSync(mergedPath, JSON.stringify(merged, null, 2), 'utf-8');
-  debug(
-    `Created merged metadata.json for ${chartNumber}: ${cellCount} cells, bounds [${merged.bounds}]`
-  );
+  if (!conversionProgress[chartNumber]) {
+    conversionProgress[chartNumber] = { status, message, log: [] };
+  } else {
+    conversionProgress[chartNumber].status = status;
+    conversionProgress[chartNumber].message = message;
+  }
 }
 
 module.exports = {
   initS57Converter,
   checkPodman,
-  checkS57TilerImage,
-  pullS57TilerImage,
-  convertS57ToTiles,
   processS57Zip,
   getConversionProgress,
-  getAllConversionProgress,
-  S57_TILER_IMAGE
+  getAllConversionProgress
 };
