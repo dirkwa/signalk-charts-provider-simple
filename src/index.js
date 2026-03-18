@@ -16,6 +16,7 @@ const {
   getInstalledCatalogCharts,
   setConvertingState,
   getConvertingCharts,
+  getConvertingCount,
   checkForUpdates,
   getCatalogsWithInstalledCharts
 } = require('./utils/catalog-manager');
@@ -380,12 +381,32 @@ module.exports = (app) => {
           }
         });
 
-        // Apply enabled state and downloading status from chart-state and download manager
-        const chartsWithState = charts.map((chart) => ({
-          ...chart,
-          enabled: isChartEnabled(chart.relativePath),
-          downloading: downloadingFiles.has(chart.name)
-        }));
+        // Check for active conversions (S-57/RNC)
+        const convertingCharts = getConvertingCharts();
+        const convertingFolders = new Set();
+        for (const chartNum of Object.keys(convertingCharts)) {
+          // S-57 charts land in S-57/{code}-{number}/ folders
+          // Mark any chart whose folder contains a converting chart number
+          convertingFolders.add(chartNum);
+        }
+
+        // Apply enabled state, downloading and converting status
+        const chartsWithState = charts.map((chart) => {
+          // Check if this chart is in a folder being converted
+          let converting = false;
+          for (const num of convertingFolders) {
+            if (chart.folder && chart.folder.includes(num)) {
+              converting = true;
+              break;
+            }
+          }
+          return {
+            ...chart,
+            enabled: isChartEnabled(chart.relativePath),
+            downloading: downloadingFiles.has(chart.name),
+            converting
+          };
+        });
 
         res.json({
           charts: chartsWithState,
@@ -1106,6 +1127,18 @@ module.exports = (app) => {
         // Ensure target directory exists
         if (!fs.existsSync(targetDir)) {
           fs.mkdirSync(targetDir, { recursive: true });
+        }
+
+        // Limit concurrent conversions to avoid overloading the host
+        const MAX_CONCURRENT_CONVERSIONS = 2;
+        if (
+          (classification.format === 's57-zip' || classification.format === 'rnc-zip') &&
+          getConvertingCount() >= MAX_CONCURRENT_CONVERSIONS
+        ) {
+          return res.status(429).json({
+            success: false,
+            error: `Too many conversions running (max ${MAX_CONCURRENT_CONVERSIONS}). Please wait for a conversion to finish.`
+          });
         }
 
         if (classification.format === 's57-zip') {

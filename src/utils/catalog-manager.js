@@ -450,6 +450,10 @@ function getConvertingCharts() {
   return { ...converting };
 }
 
+function getConvertingCount() {
+  return Object.keys(converting).length;
+}
+
 function checkForUpdates() {
   const updates = [];
 
@@ -502,6 +506,7 @@ module.exports = {
   getInstalledCatalogCharts,
   setConvertingState,
   getConvertingCharts,
+  getConvertingCount,
   checkForUpdates,
   getCatalogsWithInstalledCharts,
   CATALOG_REGISTRY

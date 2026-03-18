@@ -57,11 +57,11 @@ function setupAutoRefresh() {
         refreshInterval = null;
     }
 
-    // Check if any charts are downloading
-    const hasDownloading = chartsData.some(chart => chart.downloading);
+    // Check if any charts are downloading or converting
+    const hasActive = chartsData.some(chart => chart.downloading || chart.converting);
 
-    if (hasDownloading) {
-        // Refresh every 2 seconds while charts are downloading (silent mode to avoid flickering)
+    if (hasActive) {
+        // Refresh every 2 seconds while charts are downloading/converting (silent mode)
         refreshInterval = setInterval(() => {
             loadCharts(true);
         }, 2000);
@@ -207,6 +207,8 @@ function renderChartCard(chart) {
 
     const downloadingBadge = chart.downloading
         ? `<span class="downloading-badge"><span class="spinner-small"></span> Downloading</span>`
+        : chart.converting
+        ? `<span class="downloading-badge"><span class="spinner-small"></span> Converting</span>`
         : '';
 
     const typeBadge = isDir
@@ -215,7 +217,7 @@ function renderChartCard(chart) {
 
     if (viewMode === 'grid') {
         return `
-            <div class="chart-card ${chart.enabled ? '' : 'disabled'} ${chart.downloading ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${chart.relativePath}')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${chart.folder}')" data-chart-path="${chart.relativePath}">
+            <div class="chart-card ${chart.enabled ? '' : 'disabled'} ${chart.downloading || chart.converting ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${chart.relativePath}')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${chart.folder}')" data-chart-path="${chart.relativePath}">
                 <div class="chart-card-header">
                     <div class="chart-status">
                         <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" onclick="toggleChart('${chart.relativePath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
@@ -267,7 +269,7 @@ function renderChartCard(chart) {
     } else {
         // List view
         return `
-            <div class="chart-list-item ${chart.enabled ? '' : 'disabled'} ${chart.downloading ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${chart.relativePath}')" data-chart-path="${chart.relativePath}">
+            <div class="chart-list-item ${chart.enabled ? '' : 'disabled'} ${chart.downloading || chart.converting ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${chart.relativePath}')" data-chart-path="${chart.relativePath}">
                 <div class="chart-list-status">
                     <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" onclick="toggleChart('${chart.relativePath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
                         ${chart.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
