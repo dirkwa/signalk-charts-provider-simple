@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.1] 2026-03-19
+### Fixed:
+- Upload button now visible in All Folders view (defaults to root folder)
+
 ## [1.8.0] 2026-03-19
 ### Added:
 - **Chart Catalog** tab: browse and download charts from chartcatalogs.github.io
