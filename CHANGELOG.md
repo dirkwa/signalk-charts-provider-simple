@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.8.0] 2026-03-19
+### Added:
+- **Chart Catalog** tab: browse and download charts from chartcatalogs.github.io
+  - Dynamic catalog registry fetched from GitHub (auto-discovers new catalogs)
+  - Category filtering (MBTiles / RNC / IENC / General)
+  - One-click download for MBTiles charts (e.g., NOAA)
+  - Automatic update notifications via Signal K delta and tab badge
+  - Source attribution with link to catalog issue tracker
+- **S-57 ENC conversion**: IENC/ENC charts converted to vector MBTiles
+  - Uses GDAL (ogr2ogr) + tippecanoe in Podman containers
+  - All S-57 layers in single MBTiles file — full S-52 symbology in Freeboard-SK
+  - Configurable zoom levels, live conversion progress with log viewer
+  - Auto-generates CATALOG.031 for ENC ZIPs that lack one (e.g., Dutch IENC)
+- **BSB raster conversion**: RNC charts (.kap) converted to raster MBTiles via GDAL
+- **Pilot Charts**: .tar.xz archives with monthly BSB charts converted to MBTiles
+- **World basemaps**: GSHHG and OSM coastline basemaps rasterized to MBTiles for offline use
+- **Convert tab**: upload custom ZIP files (S-57 ENC or BSB raster) for conversion
+- **Conversion concurrency limit**: max 2 concurrent Podman conversions
+- **Download timeout**: 60s idle timeout with clear error messages for dead servers
+- **Manage Charts**: S-57 badge, "Converting" indicator, directory chart support
+- **Podman warning**: shown when Podman not installed, with install instructions
+
+### Changed:
+- charts-loader reads `type` from MBTiles metadata (S-57 charts register as type `S-57`)
+- `type: overlay` from GDAL automatically mapped to `tilelayer` for Freeboard-SK
+- Install tracking matches by URL for duplicate chart numbers
+- Catalog registry is dynamic (no hardcoded list)
+
+### Fixed:
+- Progress bar CSS (removed legacy conflicting styles)
+- extractZip hanging (switched from unzipper.Parse to Extract)
+- Friendly error messages for invalid ZIP files (HTML error pages from dead servers)
+- Delete handler supports directory-based charts and cleans empty parent folders
+- Install tracking cleanup on chart deletion (handles filename-to-catalog-number mapping)
+
 ## [1.7.0] 2026-03-14
 ### Changed:
 - Replaced `better-sqlite3` with Node.js built-in `node:sqlite` module

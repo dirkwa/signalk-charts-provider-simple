@@ -1,4 +1,5 @@
 const { execFile, spawn } = require('child_process');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const unzipper = require('unzipper');
@@ -446,10 +447,405 @@ function setProgress(chartNumber, status, message) {
   }
 }
 
+const GSHHG_URL = 'https://www.ngdc.noaa.gov/mgg/shorelines/data/gshhg/latest/gshhg-shp-2.3.7.zip';
+
+/**
+ * Download and convert GSHHG world basemap to vector MBTiles.
+ * Downloads shapefile ZIP from NOAA, extracts land + lakes layers, runs tippecanoe.
+ */
+async function processGshhg(tmpDir, chartsDir, resolution, chartNumber, onStatus) {
+  const statusFn = onStatus || (() => {});
+  const resLabels = { c: 'Crude', l: 'Low', i: 'Intermediate', h: 'High', f: 'Full' };
+
+  setProgress(chartNumber, 'converting', 'Downloading GSHHG shapefiles from NOAA...');
+  appendLog(chartNumber, `Downloading GSHHG shapefiles (${resLabels[resolution]})...`);
+
+  // Download the shapefile ZIP
+  const zipPath = path.join(tmpDir, 'gshhg-shp.zip');
+  await new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(zipPath);
+    https
+      .get(GSHHG_URL, (response) => {
+        if (response.statusCode === 301 || response.statusCode === 302) {
+          const loc = response.headers.location;
+          if (loc) {
+            https
+              .get(loc, (r2) => {
+                r2.pipe(file);
+                file.on('finish', () => {
+                  file.close(resolve);
+                });
+              })
+              .on('error', reject);
+            return;
+          }
+        }
+        if (response.statusCode !== 200) {
+          reject(new Error(`NOAA returned HTTP ${response.statusCode}`));
+          return;
+        }
+        const totalBytes = parseInt(response.headers['content-length'] || '0');
+        let downloadedBytes = 0;
+        response.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+          if (totalBytes > 0) {
+            const pct = Math.round((downloadedBytes / totalBytes) * 100);
+            const mb = (downloadedBytes / (1024 * 1024)).toFixed(1);
+            const totalMb = (totalBytes / (1024 * 1024)).toFixed(0);
+            setProgress(
+              chartNumber,
+              'converting',
+              `Downloading shapefiles: ${mb}/${totalMb} MB (${pct}%)`
+            );
+          }
+        });
+        response.pipe(file);
+        file.on('finish', () => {
+          file.close(resolve);
+        });
+      })
+      .on('error', reject);
+  });
+
+  appendLog(chartNumber, 'Download complete. Extracting shapefiles...');
+  setProgress(chartNumber, 'converting', 'Extracting shapefiles...');
+
+  // Extract only the needed resolution
+  const shpDir = path.join(tmpDir, 'shp');
+  fs.mkdirSync(shpDir, { recursive: true });
+
+  await fs
+    .createReadStream(zipPath)
+    .pipe(unzipper.Extract({ path: shpDir }))
+    .promise();
+
+  // Rasterize shapefiles to MBTiles (raster PNG tiles)
+  // Resolution per GSHHG level — higher = more detail but larger file
+  const rasterSizes = { c: 8192, l: 16384, i: 65536, h: 131072, f: 262144 };
+  const rasterSize = rasterSizes[resolution] || 32768;
+
+  appendLog(chartNumber, `Rasterizing land polygons (${rasterSize}px width)...`);
+  setProgress(chartNumber, 'converting', 'Rasterizing land polygons...');
+
+  const outputName = `gshhg-basemap-${resolution}.mbtiles`;
+  const outputPath = path.join(chartsDir, outputName);
+
+  await new Promise((resolve, reject) => {
+    const script = `
+set -e
+echo "Rasterizing shapefile..."
+gdal_rasterize \
+  -burn 240 -burn 230 -burn 208 \
+  -init 168 -init 212 -init 230 \
+  -a_srs EPSG:4326 \
+  -te -180 -85.05 180 85.05 \
+  -ts ${rasterSize} ${Math.round(rasterSize / 2)} \
+  -ot Byte \
+  -of GTiff \
+  -co COMPRESS=LZW \
+  /input/GSHHS_shp/${resolution}/GSHHS_${resolution}_L1.shp /work/world.tif
+echo "Creating MBTiles..."
+gdal_translate \
+  -of MBTiles \
+  -co TILE_FORMAT=PNG \
+  /work/world.tif /output/${outputName}
+echo "Adding overview zoom levels..."
+gdaladdo -r average /output/${outputName} 2 4 8 16 32 64 128 256
+echo "DONE"
+`;
+
+    const child = spawn(
+      'podman',
+      [
+        'run',
+        '--rm',
+        '-v',
+        `${shpDir}:/input:ro,Z`,
+        '-v',
+        `${tmpDir}:/work:Z`,
+        '-v',
+        `${chartsDir}:/output:Z`,
+        GDAL_IMAGE,
+        'sh',
+        '-c',
+        script
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+
+    child.stdout.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) {
+        appendLog(chartNumber, text);
+        if (text.includes('Creating MBTiles')) {
+          setProgress(chartNumber, 'converting', 'Creating MBTiles...');
+        } else if (text.includes('Adding overview')) {
+          setProgress(chartNumber, 'converting', 'Adding zoom levels...');
+        }
+      }
+    });
+
+    child.stderr.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) {
+        appendLog(chartNumber, text);
+      }
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`GDAL rasterization failed (exit ${code})`));
+      } else {
+        resolve();
+      }
+    });
+
+    child.on('error', (err) => {
+      reject(new Error(`Failed to start GDAL: ${err.message}`));
+    });
+  });
+
+  // Set metadata for Freeboard-SK raster rendering
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(outputPath);
+    db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('name', ?)").run(
+      `GSHHG World Basemap (${resLabels[resolution]})`
+    );
+    db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('description', ?)").run(
+      `Global coastlines and lakes - GSHHG v2.3.7 ${resLabels[resolution].toLowerCase()} resolution`
+    );
+    db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')").run();
+    db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('format', 'png')").run();
+    db.close();
+  } catch (_e) {
+    debug('Warning: failed to set GSHHG metadata');
+  }
+
+  const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
+  statusFn('completed', `GSHHG basemap installed (${size} MB)`);
+  appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
+
+  if (chartNumber) {
+    delete conversionProgress[chartNumber];
+  }
+
+  return { mbtilesFile: outputName };
+}
+
+/**
+ * Process a .tar.xz containing shapefiles (OSM basemap) into raster MBTiles.
+ * Downloads .tar.xz, extracts, finds land .shp, rasterizes to MBTiles.
+ *
+ * @param {string} tarPath - Path to the downloaded .tar.xz file
+ * @param {string} chartsDir - Output directory
+ * @param {string} chartNumber - e.g., 'basemap_i'
+ * @param {function} onStatus - Status callback
+ * @returns {Promise<{mbtilesFile: string}>}
+ */
+async function processShpBasemap(tarPath, chartsDir, chartNumber, onStatus) {
+  const statusFn = onStatus || (() => {});
+  const tmpDir = path.join(path.dirname(tarPath), `shpbasemap_${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
+
+  if (chartNumber) {
+    conversionProgress[chartNumber] = {
+      status: 'starting',
+      message: 'Starting basemap conversion...',
+      log: []
+    };
+  }
+
+  try {
+    const podman = await checkPodman();
+    if (!podman.available) {
+      throw new Error('Podman is not installed.');
+    }
+
+    // Extract .tar.xz using GDAL container
+    setProgress(chartNumber, 'extracting', 'Extracting shapefiles...');
+    appendLog(chartNumber, 'Extracting .tar.xz archive...');
+
+    await new Promise((resolve, reject) => {
+      execFile(
+        'podman',
+        [
+          'run',
+          '--rm',
+          '-v',
+          `${path.dirname(tarPath)}:/archive:ro,Z`,
+          '-v',
+          `${tmpDir}:/output:Z`,
+          GDAL_IMAGE,
+          'sh',
+          '-c',
+          `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`
+        ],
+        { timeout: 120000 },
+        (error, _stdout, stderr) => {
+          if (error) {
+            reject(new Error(`tar extraction failed: ${stderr || error.message}`));
+          } else {
+            resolve();
+          }
+        }
+      );
+    });
+
+    // Find the land polygon shapefile (L1 = land)
+    let landShp = null;
+    const findShp = (dir, prefix) => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          const found = findShp(fullPath, prefix);
+          if (found) {
+            return found;
+          }
+        } else if (entry.name.endsWith('.shp') && (!prefix || entry.name.includes(prefix))) {
+          return fullPath;
+        }
+      }
+      return null;
+    };
+    // Try to find land polygons
+    landShp = findShp(tmpDir, 'L1') || findShp(tmpDir, 'land') || findShp(tmpDir, null);
+
+    if (!landShp) {
+      throw new Error('No .shp files found in archive');
+    }
+
+    debug(`Found shapefile: ${landShp}`);
+    appendLog(chartNumber, `Found: ${path.basename(landShp)}`);
+
+    // Determine resolution from chart number
+    const resMap = {
+      basemap_c: { size: 8192, label: 'Crude' },
+      basemap_l: { size: 16384, label: 'Low' },
+      basemap_i: { size: 32768, label: 'Medium' },
+      basemap_h: { size: 65536, label: 'High' },
+      basemap_f: { size: 131072, label: 'Full' }
+    };
+    const res = resMap[chartNumber] || { size: 32768, label: 'Medium' };
+
+    // Rasterize
+    setProgress(chartNumber, 'converting', `Rasterizing (${res.label})...`);
+    appendLog(chartNumber, `Rasterizing at ${res.size}px width...`);
+
+    const outputName = `osm-basemap-${chartNumber.replace('basemap_', '')}.mbtiles`;
+    const outputPath = path.join(chartsDir, outputName);
+    const shpDir = path.dirname(landShp);
+    const shpName = path.basename(landShp);
+
+    await new Promise((resolve, reject) => {
+      const script = `
+set -e
+echo "Rasterizing..."
+gdal_rasterize \
+  -burn 240 -burn 230 -burn 208 \
+  -init 168 -init 212 -init 230 \
+  -a_srs EPSG:4326 \
+  -te -180 -85.05 180 85.05 \
+  -ts ${res.size} ${Math.round(res.size / 2)} \
+  -ot Byte -of GTiff -co COMPRESS=LZW \
+  /input/${shpName} /work/world.tif
+echo "Creating MBTiles..."
+gdal_translate -of MBTiles -co TILE_FORMAT=PNG /work/world.tif /output/${outputName}
+echo "Adding zoom levels..."
+gdaladdo -r average /output/${outputName} 2 4 8 16 32 64 128 256
+echo "DONE"
+`;
+      const child = spawn(
+        'podman',
+        [
+          'run',
+          '--rm',
+          '-v',
+          `${shpDir}:/input:ro,Z`,
+          '-v',
+          `${tmpDir}:/work:Z`,
+          '-v',
+          `${chartsDir}:/output:Z`,
+          GDAL_IMAGE,
+          'sh',
+          '-c',
+          script
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'] }
+      );
+
+      child.stdout.on('data', (data) => {
+        const text = data.toString().trim();
+        if (text) {
+          appendLog(chartNumber, text);
+        }
+      });
+      child.stderr.on('data', (data) => {
+        const text = data.toString().trim();
+        if (text) {
+          appendLog(chartNumber, text);
+        }
+      });
+      child.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`GDAL rasterization failed (exit ${code})`));
+        } else {
+          resolve();
+        }
+      });
+      child.on('error', (err) => reject(new Error(`Failed to start GDAL: ${err.message}`)));
+    });
+
+    // Set metadata
+    try {
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(outputPath);
+      db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('name', ?)").run(
+        `OSM Basemap (${res.label})`
+      );
+      db.prepare(
+        "INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')"
+      ).run();
+      db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('format', 'png')").run();
+      db.close();
+    } catch (_e) {
+      debug('Warning: failed to set basemap metadata');
+    }
+
+    const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
+    statusFn('completed', `Basemap installed (${size} MB)`);
+    appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
+
+    if (chartNumber) {
+      delete conversionProgress[chartNumber];
+    }
+    return { mbtilesFile: outputName };
+  } catch (err) {
+    if (chartNumber) {
+      conversionProgress[chartNumber] = {
+        status: 'failed',
+        message: err.message || 'Conversion failed',
+        log: conversionProgress[chartNumber] ? conversionProgress[chartNumber].log || [] : []
+      };
+      setTimeout(() => delete conversionProgress[chartNumber], 300000);
+    }
+    throw err;
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch (_e) {
+      // ignore
+    }
+  }
+}
+
 module.exports = {
   initS57Converter,
   checkPodman,
   processS57Zip,
+  processGshhg,
+  processShpBasemap,
   getConversionProgress,
   getAllConversionProgress
 };

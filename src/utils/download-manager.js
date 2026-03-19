@@ -102,7 +102,7 @@ class DownloadManager extends EventEmitter {
       console.log(`[${job.id}] Starting download from: ${job.url}`);
 
       const req = protocol
-        .get(job.url, { timeout: 30000 }, (response) => {
+        .get(job.url, { timeout: 60000 }, (response) => {
           // Follow redirects
           if (response.statusCode === 301 || response.statusCode === 302) {
             const redirectUrl = response.headers.location;
@@ -265,7 +265,7 @@ class DownloadManager extends EventEmitter {
 
       req.on('timeout', () => {
         req.destroy();
-        reject(new Error('Server not responding (connection timeout after 30s)'));
+        reject(new Error('Server not responding (no data received for 60s)'));
       });
     });
   }

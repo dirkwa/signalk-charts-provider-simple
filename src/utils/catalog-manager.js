@@ -261,6 +261,18 @@ function classifyUrl(url, catalogCategory) {
     };
   }
   if (lower.endsWith('.tar.xz') || lower.endsWith('.tar.gz')) {
+    // GSHHG basemap: we download shapefiles from NOAA instead of the .tar.xz binary
+    if (lower.includes('gshhg') || lower.includes('chartcatalogs/gshhg')) {
+      return { supported: true, format: 'gshhg', label: 'GSHHG basemap (requires Podman)' };
+    }
+    // Pilot Charts: .tar.xz containing .kap BSB raster files
+    if (lower.includes('pilot_kaps') || lower.includes('pilot')) {
+      return { supported: true, format: 'pilot-tar', label: 'Pilot Chart (requires Podman)' };
+    }
+    // OSM Shapefiles basemap: .tar.xz containing shapefiles
+    if (lower.includes('chartcatalogs/shapefiles') || lower.includes('basemap_')) {
+      return { supported: true, format: 'shp-basemap', label: 'Basemap (requires Podman)' };
+    }
     return { supported: false, format: 'tar', label: 'Compressed archive - not yet supported' };
   }
   // Check for common unsupported patterns
@@ -458,6 +470,24 @@ function removeInstall(chartNumber) {
   if (installs[chartNumber]) {
     delete installs[chartNumber];
     saveInstalls();
+    return;
+  }
+  // Also search by output filename pattern (e.g., delete "gshhg-basemap-l" finds "poly-l")
+  // GSHHG: gshhg-basemap-{res} → poly-{res}
+  // S-57: {number}.mbtiles → {number}
+  const lower = chartNumber.toLowerCase();
+  for (const [key] of Object.entries(installs)) {
+    const keyLower = key.toLowerCase();
+    if (
+      chartNumber === `gshhg-basemap-${key.replace('poly-', '')}` ||
+      chartNumber === `osm-basemap-${key.replace('basemap_', '')}` ||
+      lower.startsWith(keyLower) ||
+      chartNumber.includes(key)
+    ) {
+      delete installs[key];
+      saveInstalls();
+      return;
+    }
   }
 }
 

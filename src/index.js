@@ -1082,10 +1082,14 @@ module.exports = (app) => {
         const augmentedCharts = data.charts.map((chart) => ({
           ...chart,
           urlClassification: classifyUrl(chart.zipfile_location, catalogCategory),
-          installed: !!installed[chart.number],
-          installedDate: installed[chart.number]
-            ? installed[chart.number].zipfile_datetime_iso8601
-            : null
+          installed:
+            !!installed[chart.number] &&
+            installed[chart.number].zipfile_location === chart.zipfile_location,
+          installedDate:
+            installed[chart.number] &&
+            installed[chart.number].zipfile_location === chart.zipfile_location
+              ? installed[chart.number].zipfile_datetime_iso8601
+              : null
         }));
 
         res.json({
@@ -1267,7 +1271,9 @@ module.exports = (app) => {
         // Limit concurrent conversions to avoid overloading the host
         const MAX_CONCURRENT_CONVERSIONS = 2;
         if (
-          (classification.format === 's57-zip' || classification.format === 'rnc-zip') &&
+          ['s57-zip', 'rnc-zip', 'gshhg', 'pilot-tar', 'shp-basemap'].includes(
+            classification.format
+          ) &&
           getConvertingCount() >= MAX_CONCURRENT_CONVERSIONS
         ) {
           return res.status(429).json({
@@ -1464,6 +1470,222 @@ module.exports = (app) => {
             success: true,
             jobId,
             message: 'RNC download and conversion job created'
+          });
+        } else if (classification.format === 'pilot-tar') {
+          // Pilot Charts: download .tar.xz, extract .kap, convert via GDAL → MBTiles
+          const tmpDownloadDir = path.join(app.getDataDirPath(), `pilot-download-${Date.now()}`);
+          fs.mkdirSync(tmpDownloadDir, { recursive: true });
+
+          const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, {
+            saveRaw: true
+          });
+
+          trackInstall(chartNumber, catalogFile, zipfileDatetime || '', url);
+          setConvertingState(chartNumber, true);
+
+          const pilotListener = async (job) => {
+            if (job.id !== jobId) {
+              return;
+            }
+            downloadManager.removeListener('job-completed', pilotListener);
+            downloadManager.removeListener('job-failed', pilotFailListener);
+
+            const dlFileName =
+              (job.extractedFiles && job.extractedFiles[0]) ||
+              (job.targetFiles && job.targetFiles[0]);
+            const dlPath = dlFileName ? path.join(tmpDownloadDir, dlFileName) : null;
+
+            if (!dlPath || !fs.existsSync(dlPath)) {
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+              return;
+            }
+
+            try {
+              // Extract .tar.xz using tar inside GDAL container, then convert .kap files
+              const { processPilotTar } = require('./utils/rnc-converter');
+              const result = await processPilotTar(
+                dlPath,
+                targetDir,
+                chartNumber,
+                (status, message) => {
+                  app.debug(`Pilot [${chartNumber}] ${status}: ${message}`);
+                }
+              );
+
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+
+              for (const mbtilesFile of result.mbtilesFiles) {
+                const relativePath = path.relative(chartPath, path.join(targetDir, mbtilesFile));
+                setChartEnabled(relativePath, true);
+              }
+              await refreshChartProviders();
+
+              for (const mbtilesFile of result.mbtilesFiles) {
+                const chartId = mbtilesFile.replace(/\.mbtiles$/, '');
+                if (chartProviders[chartId]) {
+                  const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                  emitChartDelta(chartId, chartData);
+                }
+              }
+              app.debug(`Pilot conversion complete: ${result.mbtilesFiles.join(', ')}`);
+            } catch (convError) {
+              app.error(`Pilot conversion failed: ${convError.message}`);
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+            }
+          };
+
+          const pilotFailListener = (job) => {
+            if (job.id !== jobId) {
+              return;
+            }
+            downloadManager.removeListener('job-completed', pilotListener);
+            downloadManager.removeListener('job-failed', pilotFailListener);
+            removeInstall(chartNumber);
+            setConvertingState(chartNumber, false);
+            cleanupDir(tmpDownloadDir);
+          };
+
+          downloadManager.on('job-completed', pilotListener);
+          downloadManager.on('job-failed', pilotFailListener);
+
+          app.debug(`Pilot download started: ${chartNumber}, job: ${jobId}`);
+
+          res.json({
+            success: true,
+            jobId,
+            message: 'Pilot chart download and conversion started'
+          });
+        } else if (classification.format === 'shp-basemap') {
+          // OSM Shapefile basemap: download .tar.xz, extract, rasterize → MBTiles
+          const tmpDownloadDir = path.join(app.getDataDirPath(), `shp-download-${Date.now()}`);
+          fs.mkdirSync(tmpDownloadDir, { recursive: true });
+
+          const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, {
+            saveRaw: true
+          });
+
+          trackInstall(chartNumber, catalogFile, zipfileDatetime || '', url);
+          setConvertingState(chartNumber, true);
+
+          const shpListener = async (job) => {
+            if (job.id !== jobId) {
+              return;
+            }
+            downloadManager.removeListener('job-completed', shpListener);
+            downloadManager.removeListener('job-failed', shpFailListener);
+
+            const dlFileName =
+              (job.extractedFiles && job.extractedFiles[0]) ||
+              (job.targetFiles && job.targetFiles[0]);
+            const dlPath = dlFileName ? path.join(tmpDownloadDir, dlFileName) : null;
+
+            if (!dlPath || !fs.existsSync(dlPath)) {
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+              return;
+            }
+
+            try {
+              const { processShpBasemap } = require('./utils/s57-converter');
+              const result = await processShpBasemap(
+                dlPath,
+                targetDir,
+                chartNumber,
+                (status, message) => {
+                  app.debug(`ShpBasemap [${chartNumber}] ${status}: ${message}`);
+                }
+              );
+
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+
+              const relativePath = path.relative(
+                chartPath,
+                path.join(targetDir, result.mbtilesFile)
+              );
+              setChartEnabled(relativePath, true);
+              await refreshChartProviders();
+
+              const chartId = result.mbtilesFile.replace(/\.mbtiles$/, '');
+              if (chartProviders[chartId]) {
+                const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                emitChartDelta(chartId, chartData);
+              }
+              app.debug(`ShpBasemap installed: ${result.mbtilesFile}`);
+            } catch (convError) {
+              app.error(`ShpBasemap conversion failed: ${convError.message}`);
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+              cleanupDir(tmpDownloadDir);
+            }
+          };
+
+          const shpFailListener = (job) => {
+            if (job.id !== jobId) {
+              return;
+            }
+            downloadManager.removeListener('job-completed', shpListener);
+            downloadManager.removeListener('job-failed', shpFailListener);
+            removeInstall(chartNumber);
+            setConvertingState(chartNumber, false);
+            cleanupDir(tmpDownloadDir);
+          };
+
+          downloadManager.on('job-completed', shpListener);
+          downloadManager.on('job-failed', shpFailListener);
+
+          res.json({
+            success: true,
+            jobId,
+            message: 'Basemap download and conversion started'
+          });
+        } else if (classification.format === 'gshhg') {
+          // GSHHG basemap: download shapefiles from NOAA, convert via GDAL+tippecanoe
+          // The catalog URL is a .tar.xz binary we can't use — we use NOAA shapefiles instead
+          const resolution = chartNumber.replace('poly-', '');
+
+          trackInstall(chartNumber, catalogFile, zipfileDatetime || '', url);
+          setConvertingState(chartNumber, true);
+
+          const tmpDir = path.join(app.getDataDirPath(), `gshhg-${Date.now()}`);
+          fs.mkdirSync(tmpDir, { recursive: true });
+
+          // Run in background
+          (async () => {
+            try {
+              const { processGshhg } = require('./utils/s57-converter');
+              await processGshhg(tmpDir, targetDir, resolution, chartNumber, (status, message) => {
+                app.debug(`GSHHG [${chartNumber}] ${status}: ${message}`);
+              });
+
+              setConvertingState(chartNumber, false);
+              await refreshChartProviders();
+
+              const chartId = `gshhg-basemap-${resolution}`;
+              if (chartProviders[chartId]) {
+                const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                emitChartDelta(chartId, chartData);
+              }
+              app.debug(`GSHHG basemap installed: ${resolution}`);
+            } catch (error) {
+              app.error(`GSHHG conversion failed: ${error.message}`);
+              removeInstall(chartNumber);
+              setConvertingState(chartNumber, false);
+            } finally {
+              cleanupDir(tmpDir);
+            }
+          })();
+
+          res.json({
+            success: true,
+            jobId: `gshhg-${chartNumber}`,
+            message: 'GSHHG basemap conversion started'
           });
         } else {
           // Standard MBTiles / ZIP-with-MBTiles download

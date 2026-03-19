@@ -129,7 +129,7 @@ function openMbtilesFile(file, filename) {
         minzoom: metadata.minzoom,
         maxzoom: metadata.maxzoom,
         format: metadata.format, // 'png', 'jpg', 'pbf', etc.
-        type: metadata.type || 'tilelayer',
+        type: metadata.type === 'overlay' ? 'tilelayer' : metadata.type || 'tilelayer',
         scale: parseInt(metadata.scale) || 250000,
 
         // Signal K v1 API format
@@ -317,7 +317,7 @@ function parseMetadataJson(metadataJson) {
         minzoom: parseIntIfNotUndefined(metadata.minzoom),
         maxzoom: parseIntIfNotUndefined(metadata.maxzoom),
         format: metadata.format, // e.g., 'png', 'jpg'
-        type: metadata.type || 'tilelayer',
+        type: metadata.type === 'overlay' ? 'tilelayer' : metadata.type || 'tilelayer',
         scale: parseInt(metadata.scale) || 250000,
         identifier: '', // Will be set by caller
         _filePath: '' // Will be set by caller

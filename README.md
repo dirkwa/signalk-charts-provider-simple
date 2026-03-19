@@ -1,15 +1,18 @@
 # Signal K Charts Provider Simple
 
-A lightweight, JavaScript-based Signal K server plugin for managing local nautical charts. This plugin provides a clean interface for organizing, uploading, and serving MBTiles.
+A lightweight, JavaScript-based Signal K server plugin for managing local nautical charts. Supports MBTiles, S-57 ENC, BSB raster, and world basemaps with automatic conversion via Podman containers.
 
 ## Features
 
-- **Local Chart Management**: Support for MBTiles
-- **Download Manager**: Built-in download queue with progress tracking and automatic ZIP extraction
-- **Modern Web UI**: Clean, Material Design 3 interface with drag-and-drop chart organization
-- **Chart Organization**: Folder-based organization with enable/disable toggles
-- **Dual API Support**: Compatible with both Signal K v1 and v2 API
-
+- **Local Chart Management**: MBTiles (raster and vector), with folder organization and enable/disable toggles
+- **Download Manager**: Built-in download queue with progress tracking and ZIP extraction
+- **Chart Catalog**: Browse and download charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) with automatic update notifications
+- **S-57 ENC Conversion**: Convert IENC/ENC charts to vector MBTiles with full S-52 symbology in Freeboard-SK
+- **BSB Raster Conversion**: Convert BSB/KAP raster charts and Pilot Charts to raster MBTiles
+- **World Basemaps**: GSHHG and OSM coastline basemaps for offline use
+- **Custom Upload**: Upload your own ZIP files containing S-57 ENC or BSB charts for conversion
+- **Modern Web UI**: Material Design 3 interface with drag-and-drop
+- **Dual API Support**: Compatible with Signal K v1 and v2 API
 
 ## Installation
 
@@ -44,43 +47,69 @@ Access the plugin's web interface through your Signal K server:
 http://[your-server]:3000/plugins/signalk-charts-provider-simple/
 ```
 
-The interface provides three tabs:
+The interface provides four tabs:
 
 1. **Manage Charts**:
-   - View all charts in your library with chart names displayed from MBTiles metadata
-   - View chart metadata (name, description, bounds, zoom levels, tile count, etc.)
-   - Edit chart names directly in MBTiles files (personal use only)
-   - Enable/disable charts
-   - Organize charts into folders
-   - Upload new chart files
-   - Delete unwanted charts
-   - Rename chart files
+   - View all charts with metadata (name, bounds, zoom levels, size)
+   - Enable/disable, organize into folders, upload, delete, rename
+   - S-57 charts shown with ENC badge
+   - Converting charts shown with progress indicator
 
 2. **Download from URL**:
    - Download charts directly from any URL
-   - Supports `.mbtiles` files and `.zip` archives
-   - Automatic extraction of MBTiles from ZIP files
+   - Supports `.mbtiles` and `.zip` archives
    - Download queue with progress tracking
 
-3. **Chart Catalog**:
-   - Browse 27 chart catalogs from [chartcatalogs.github.io](https://chartcatalogs.github.io/)
-   - One-click download for MBTiles charts (e.g., NOAA vector charts)
-   - Download and convert IENC (S-57 ENC) charts to vector tiles via [s57-tiler](https://github.com/wdantuma/s57-tiler) (requires Podman)
-   - Automatic update notifications when newer chart versions are available
-   - Converted S-57 charts are rendered natively in Freeboard-SK with S-52 symbology
+3. **Convert**:
+   - Upload ZIP files containing S-57 ENC (.000) or BSB raster (.kap) charts
+   - Drag-and-drop or click to select files
+   - Configurable zoom levels for S-57 conversion
+   - Live conversion progress with log viewer
 
-### Chart Formats
+4. **Chart Catalog**:
+   - Dynamic catalog from [chartcatalogs.github.io](https://chartcatalogs.github.io/)
+   - One-click download for MBTiles charts (NOAA)
+   - Download & convert for S-57 ENC, BSB raster, Pilot Charts, and basemaps
+   - Automatic update notifications (Signal K delta + tab badge)
+   - Category filtering (MBTiles / RNC / IENC / General)
 
-The plugin supports these chart formats:
+### Supported Formats
 
-- **MBTiles** (`.mbtiles`): SQLite-based map tile format (raster and vector)
-- **S-57 ENC** (via catalog): Converted to PBF vector tiles using s57-tiler in Podman
+| Format | Source | Conversion | Output |
+|--------|--------|-----------|--------|
+| **MBTiles** | Direct download | None needed | Raster or vector tiles |
+| **S-57 ENC** (.000) | IENC catalogs, custom upload | GDAL + tippecanoe (Podman) | Vector MBTiles with S-52 styling |
+| **BSB Raster** (.kap) | RNC catalogs, custom upload | GDAL (Podman) | Raster MBTiles (PNG) |
+| **Pilot Charts** (.kap in .tar.xz) | Pilot catalog | GDAL (Podman) | Raster MBTiles (PNG) |
+| **GSHHG Basemap** | General catalog | GDAL (Podman) | Raster MBTiles (PNG) |
+| **OSM Basemap** | General catalog | GDAL (Podman) | Raster MBTiles (PNG) |
 
 ### Compatible Chart Plotters
 
-Charts provided by this plugin work with:
-- [Freeboard SK](https://www.npmjs.com/package/@signalk/freeboard-sk)
+- [Freeboard SK](https://www.npmjs.com/package/@signalk/freeboard-sk) — full S-52 symbology for S-57 vector charts
 - [OpenCPN](https://opencpn.org/)
+
+## Requirements
+
+- **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
+- **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
+
+### Optional: Podman (for chart conversion)
+
+To convert S-57 ENC, BSB raster, Pilot Charts, or basemaps, [Podman](https://podman.io/) must be installed. The plugin uses standard container images that are pulled automatically on first use:
+
+- `ghcr.io/osgeo/gdal:alpine-small-latest` — GDAL for format conversion
+- `docker.io/klokantech/tippecanoe` — tippecanoe for vector tile generation
+
+```bash
+# Debian / Ubuntu / Raspberry Pi OS
+sudo apt install podman
+
+# Fedora / RHEL
+sudo dnf install podman
+```
+
+MBTiles charts work without Podman. Chart conversion is limited to 2 concurrent jobs.
 
 ## Legal Notice
 
@@ -94,25 +123,6 @@ This plugin includes a feature to edit chart metadata (chart names) in MBTiles f
 - **Do not distribute** modified charts - this may violate copyright laws
 - Use this feature responsibly and only for organizing your personal chart library
 
-## Requirements
-
-- **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
-- **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
-
-### Optional: Podman (for IENC/S-57 charts)
-
-To download and convert IENC (S-57 ENC) charts from the Chart Catalog, [Podman](https://podman.io/) must be installed. The plugin uses the [s57-tiler](https://github.com/wdantuma/s57-tiler) container to convert S-57 files to vector tiles.
-
-```bash
-# Debian / Ubuntu / Raspberry Pi OS
-sudo apt install podman
-
-# Fedora / RHEL
-sudo dnf install podman
-```
-
-The s57-tiler container image is pulled automatically on first use. MBTiles charts work without Podman.
-
 ## Acknowledgments
 
 Inspired by [Signal K Charts Plugin](https://github.com/SignalK/charts-plugin) by Mikko Vesikkala.
@@ -125,4 +135,3 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 For issues and feature requests:
 - GitHub Issues: https://github.com/dirkwa/signalk-charts-provider-simple/issues
-

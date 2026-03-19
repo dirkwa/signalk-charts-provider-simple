@@ -42,8 +42,9 @@ async function initConvertTab() {
         <h2>Convert S-57 ENC Charts</h2>
         <p class="description">
           Upload a ZIP file containing S-57 ENC files (.000) from your national hydrographic office.
-          Charts will be converted to vector tiles using
-          <a href="https://github.com/wdantuma/s57-tiler" target="_blank" rel="noopener">s57-tiler</a> in Podman.
+          Charts will be converted to vector MBTiles using
+          <a href="https://gdal.org/" target="_blank" rel="noopener">GDAL</a> and
+          <a href="https://github.com/felt/tippecanoe" target="_blank" rel="noopener">tippecanoe</a> in Podman.
         </p>
         <div class="convert-upload-area" id="s57DropZone">
           <div class="convert-upload-icon">

@@ -312,14 +312,15 @@ function renderChartList(catalogFile) {
       } else if (isInstalled) {
         actionHtml = `<span class="installed-badge">Installed</span>`;
       } else if (cls.supported) {
-        const needsConversion = cls.format === 's57-zip' || cls.format === 'rnc-zip';
+        const needsConversion = ['s57-zip', 'rnc-zip', 'gshhg', 'pilot-tar', 'shp-basemap'].includes(cls.format);
+        const showZoomSelector = needsConversion && !['gshhg', 'pilot-tar', 'shp-basemap'].includes(cls.format);
         const btnLabel = needsConversion ? 'Download & Convert' : 'Download';
         const btnDisabled = needsConversion && !s57PodmanAvailable ? 'disabled' : '';
         const podmanHint = needsConversion && !s57PodmanAvailable
           ? `<span class="format-badge unsupported">Podman required</span>`
           : '';
 
-        const zoomHtml = needsConversion && s57PodmanAvailable ? `
+        const zoomHtml = showZoomSelector && s57PodmanAvailable ? `
           <span class="catalog-zoom-label">Zoom</span>
           <select class="catalog-zoom-select" id="catalog-minzoom-${escapeId(chart.number)}">
             ${[6,7,8,9,10,11,12].map((z) => `<option value="${z}" ${z === 9 ? 'selected' : ''}>${z}</option>`).join('')}
@@ -385,8 +386,14 @@ window.downloadCatalogChart = async function (chartNumber, catalogFile, url, zip
 
     const result = await response.json();
     if (result.success) {
-      catalogDownloadJobs[chartNumber] = result.jobId;
-      // Re-render the expanded catalog (shows downloading state)
+      // GSHHG doesn't use DownloadManager — goes straight to converting
+      if (result.jobId && !result.jobId.startsWith('gshhg-')) {
+        catalogDownloadJobs[chartNumber] = result.jobId;
+      } else {
+        // For GSHHG: set converting immediately so UI shows spinner
+        catalogConverting[chartNumber] = true;
+      }
+      // Re-render the expanded catalog (shows downloading/converting state)
       renderCatalogList();
     } else {
       alert(`Download failed: ${result.error}`);
@@ -468,11 +475,16 @@ async function pollCatalogDownloads() {
 }
 
 async function pollConversions() {
-  // If there are active conversions, refresh registry and progress
-  if (Object.keys(catalogConverting).length === 0) return;
+  // Poll if there are active conversions OR active conversion progress
+  if (
+    Object.keys(catalogConverting).length === 0 &&
+    Object.keys(catalogConversionProgress).length === 0
+  ) {
+    return;
+  }
 
   try {
-    // Fetch conversion progress (s57-tiler status)
+    // Fetch conversion progress
     const statusResp = await fetch(`${CATALOG_API_BASE}/catalog-s57-status`);
     if (statusResp.ok) {
       const statusData = await statusResp.json();
@@ -484,7 +496,15 @@ async function pollConversions() {
     if (regResp.ok) {
       const regData = await regResp.json();
       const prevConverting = { ...catalogConverting };
-      catalogConverting = regData.converting || {};
+      // Merge both sources: catalog-manager converting + s57-converter progress
+      catalogConverting = { ...(regData.converting || {}) };
+      for (const key of Object.keys(catalogConversionProgress)) {
+        if (catalogConversionProgress[key].status === 'converting' ||
+            catalogConversionProgress[key].status === 'extracting' ||
+            catalogConversionProgress[key].status === 'pulling') {
+          catalogConverting[key] = true;
+        }
+      }
       catalogInstalled = regData.installed || {};
 
       // If any conversion just finished, invalidate cached catalog data and refresh
