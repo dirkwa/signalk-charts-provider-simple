@@ -457,7 +457,7 @@ function performUpload(formData, validFileCount, files) {
                     <h3>Uploading Charts...</h3>
                 </div>
                 <div class="upload-progress-body">
-                    <p>Uploading ${validFileCount} file${validFileCount !== 1 ? 's' : ''} to ${window.getIcon('folder', true)} <strong>${selectedFolder}</strong></p>
+                    <p>Uploading ${validFileCount} file${validFileCount !== 1 ? 's' : ''} to ${window.getIcon('folder', true)} <strong>${selectedFolder || '/'}</strong></p>
                     <ul class="upload-file-list">
                         ${fileList}
                     </ul>
