@@ -129,7 +129,7 @@ function renderChartsUI() {
                     + New Folder
                 </button>
                 ${selectedFolder && selectedFolder !== '/' ? `<button class="btn btn-danger" onclick="deleteSelectedFolder()" title="Delete Selected Folder">Delete Folder</button>` : ''}
-                ${selectedFolder !== null ? `<button class="btn btn-primary" onclick="triggerUpload()" title="Upload charts to ${selectedFolder}">Upload</button>` : ''}
+                <button class="btn btn-primary" onclick="triggerUpload()" title="Upload charts to ${selectedFolder || '/'}">Upload</button>
                 <button class="btn btn-icon ${viewMode === 'grid' ? 'active' : ''}" onclick="setViewMode('grid')" title="Grid View">
                     <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>
                 </button>
@@ -385,9 +385,7 @@ window.handleFileUpload = async function(event) {
     let validFileCount = 0;
 
     // Add target folder FIRST (before files) so busboy processes it first
-    if (selectedFolder) {
-        formData.append('targetFolder', selectedFolder);
-    }
+    formData.append('targetFolder', selectedFolder || '/');
 
     // Check for existing files in target folder
     const targetFolderCharts = chartsData.filter(c => c.folder === selectedFolder);
