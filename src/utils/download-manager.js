@@ -132,27 +132,35 @@ class DownloadManager extends EventEmitter {
 
           let downloadedBytes = 0;
 
+          // Determine if this is a ZIP before setting up the data handler
+          const isZip =
+            !job.saveRaw &&
+            (contentType.includes('zip') || (job.originalUrl || job.url).endsWith('.zip'));
+
           // Track download progress
           response.on('data', (chunk) => {
             downloadedBytes += chunk.length;
             job.downloadedBytes = downloadedBytes;
 
             if (contentLength > 0) {
-              job.progress = Math.min(90, Math.floor((downloadedBytes / contentLength) * 90)); // Reserve 90-100 for extraction
+              if (isZip) {
+                // Reserve 90-100% for extraction phase
+                job.progress = Math.min(90, Math.floor((downloadedBytes / contentLength) * 90));
+                if (job.progress >= 90 && job.status === 'downloading') {
+                  job.status = 'extracting';
+                }
+              } else {
+                job.progress = Math.floor((downloadedBytes / contentLength) * 100);
+              }
             }
 
             this.emit('job-updated', job);
           });
 
-          // Check if it's a zip file (unless saveRaw is set)
-          // Use originalUrl for extension check since redirects may change the URL
-          if (
-            !job.saveRaw &&
-            (contentType.includes('zip') || (job.originalUrl || job.url).endsWith('.zip'))
-          ) {
+          if (isZip) {
             console.log(`[${job.id}] Processing as ZIP file...`);
-            job.status = 'extracting';
-            this.emit('job-updated', job);
+            // Status stays 'downloading' — extraction happens in the same stream pipeline.
+            // It transitions to 'extracting' once download reaches 90%.
 
             const extractionPromises = [];
 

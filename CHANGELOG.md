@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.4] 2026-03-20
+### Fixed:
+- ZIP download showed "Extracting" immediately instead of download progress
+- Direct (non-ZIP) downloads capped progress at 90% instead of showing full 0-100%
+- Clean up invalid/partial .mbtiles files on startup (e.g., from interrupted downloads)
+- Clean up orphaned SQLite companion files (.mbtiles-journal, .partial_tiles.db) on startup
+- Clean up leftover temp directories from interrupted conversions on startup
+
 ## [1.8.3] 2026-03-20
 ### Fixed:
 - Prune stale catalog install entries on startup when chart files no longer exist on disk

@@ -587,7 +587,7 @@ function pruneStaleInstalls(chartIdentifiers) {
     }
 
     if (!found) {
-      debug(`Pruning stale catalog install: ${key} (no matching chart on disk)`);
+      console.log(`[charts-provider] Pruning stale catalog install: ${key}`);
       delete installs[key];
       pruned = true;
     }

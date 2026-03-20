@@ -111,6 +111,22 @@ module.exports = (app) => {
     const dataDir = app.getDataDirPath();
     initCatalogManager(dataDir, app.debug);
 
+    // Clean up leftover temp directories from interrupted conversions/downloads
+    const tempDirPattern =
+      /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-)\d+$/;
+    try {
+      const dataDirEntries = fs.readdirSync(dataDir, { withFileTypes: true });
+      for (const entry of dataDirEntries) {
+        if (entry.isDirectory() && tempDirPattern.test(entry.name)) {
+          const fullPath = path.join(dataDir, entry.name);
+          console.log(`[charts-provider] Removing leftover temp directory: ${entry.name}`);
+          cleanupDir(fullPath);
+        }
+      }
+    } catch (e) {
+      app.debug(`Error scanning for temp directories: ${e.message}`);
+    }
+
     // Initialize converters (Podman-based)
     initS57Converter(app.debug);
     initRncConverter(app.debug);
@@ -179,6 +195,51 @@ module.exports = (app) => {
 
         // Prune catalog install entries that no longer have files on disk
         pruneStaleInstalls(_.keys(charts));
+
+        // Clean up invalid .mbtiles files (partial downloads, corrupt files)
+        // and orphaned SQLite companion files (.mbtiles-journal, .partial_tiles.db)
+        return scanChartsRecursively(chartPath).then((allFiles) => {
+          const validPaths = new Set(
+            _.values(charts)
+              .map((c) => c._filePath)
+              .filter(Boolean)
+          );
+          for (const file of allFiles) {
+            if (file.name.endsWith('.mbtiles') && !validPaths.has(file.path)) {
+              console.log(`[charts-provider] Removing invalid .mbtiles file: ${file.name}`);
+              try {
+                fs.unlinkSync(file.path);
+              } catch (e) {
+                app.debug(`Failed to remove ${file.path}: ${e.message}`);
+              }
+            }
+          }
+
+          // Clean up orphaned companion files (e.g. .mbtiles-journal, .partial_tiles.db)
+          try {
+            const cleanOrphans = (dir) => {
+              const entries = fs.readdirSync(dir, { withFileTypes: true });
+              for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
+                    cleanOrphans(fullPath);
+                  }
+                } else if (
+                  entry.name.endsWith('.mbtiles-journal') ||
+                  entry.name.endsWith('.mbtiles-wal') ||
+                  entry.name.endsWith('.partial_tiles.db')
+                ) {
+                  console.log(`[charts-provider] Removing orphaned file: ${entry.name}`);
+                  fs.unlinkSync(fullPath);
+                }
+              }
+            };
+            cleanOrphans(chartPath);
+          } catch (e) {
+            app.debug(`Error cleaning orphaned files: ${e.message}`);
+          }
+        });
       })
       .catch((e) => {
         console.error(`Error loading chart providers`, e.message);
