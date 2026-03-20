@@ -1,13 +1,16 @@
 # Changelog
 
+## [1.8.5] 2026-03-20
+### Fixed:
+- Direct (non-ZIP) downloads capped progress at 90% instead of showing full 0-100%
+- Clean up orphaned SQLite companion files (.mbtiles-journal, .partial_tiles.db) on startup
+- Catalog did not show "Installed" badge after download completed (stale cache)
+
 ## [1.8.4] 2026-03-20
 ### Fixed:
 - ZIP download showed "Extracting" immediately instead of download progress
-- Direct (non-ZIP) downloads capped progress at 90% instead of showing full 0-100%
 - Clean up invalid/partial .mbtiles files on startup (e.g., from interrupted downloads)
-- Clean up orphaned SQLite companion files (.mbtiles-journal, .partial_tiles.db) on startup
 - Clean up leftover temp directories from interrupted conversions on startup
-- Catalog did not show "Installed" badge after download completed (stale cache)
 
 ## [1.8.3] 2026-03-20
 ### Fixed:
