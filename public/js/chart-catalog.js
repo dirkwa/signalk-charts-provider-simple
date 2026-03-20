@@ -434,6 +434,21 @@ async function pollCatalogDownloads() {
         // Refresh installed info and re-render
         await loadCatalogRegistry();
         await loadFolders();
+        // Re-fetch chart data for catalogs containing this chart so "Installed" shows
+        const install = catalogInstalled[chartNumber];
+        if (install && install.catalogFile) {
+          try {
+            const catFile = install.catalogFile;
+            const resp = await fetch(
+              `${CATALOG_API_BASE}/catalog/${encodeURIComponent(catFile)}`
+            );
+            if (resp.ok) {
+              catalogChartData[catFile] = await resp.json();
+            }
+          } catch (_e) {
+            // ignore, will re-fetch on next expand
+          }
+        }
         renderCatalogList();
       } else if (job.status === 'failed') {
         delete catalogDownloadJobs[chartNumber];
