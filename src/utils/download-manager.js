@@ -96,6 +96,11 @@ class DownloadManager extends EventEmitter {
   }
 
   async downloadAndExtract(job) {
+    // Preserve the original URL before redirects (for ZIP extension detection)
+    if (!job.originalUrl) {
+      job.originalUrl = job.url;
+    }
+
     return new Promise((resolve, reject) => {
       const protocol = job.url.startsWith('https') ? https : http;
 
@@ -140,7 +145,11 @@ class DownloadManager extends EventEmitter {
           });
 
           // Check if it's a zip file (unless saveRaw is set)
-          if (!job.saveRaw && (contentType.includes('zip') || job.url.endsWith('.zip'))) {
+          // Use originalUrl for extension check since redirects may change the URL
+          if (
+            !job.saveRaw &&
+            (contentType.includes('zip') || (job.originalUrl || job.url).endsWith('.zip'))
+          ) {
             console.log(`[${job.id}] Processing as ZIP file...`);
             job.status = 'extracting';
             this.emit('job-updated', job);
@@ -216,7 +225,8 @@ class DownloadManager extends EventEmitter {
             let fileName;
             if (job.saveRaw) {
               // Save with original filename from URL, preserving extension
-              fileName = path.basename(job.url).split('?')[0];
+              // Use originalUrl since redirects may produce blob/UUID URLs
+              fileName = path.basename(job.originalUrl || job.url).split('?')[0];
               if (job.chartName && job.chartName.trim()) {
                 // Use chartName but preserve the URL's extension
                 const ext = path.extname(fileName) || '.zip';
@@ -229,7 +239,8 @@ class DownloadManager extends EventEmitter {
                 fileName += '.mbtiles';
               }
             } else {
-              fileName = path.basename(job.url).split('?')[0];
+              // Use originalUrl since redirects may produce blob/UUID URLs
+              fileName = path.basename(job.originalUrl || job.url).split('?')[0];
               if (!fileName.endsWith('.mbtiles')) {
                 fileName += '.mbtiles';
               }
