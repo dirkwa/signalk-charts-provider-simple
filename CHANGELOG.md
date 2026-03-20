@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.2] 2026-03-20
+### Fixed:
+- Downloads from redirecting URLs (e.g., GitHub releases) saved ZIP as raw .mbtiles instead of extracting
+
 ## [1.8.1] 2026-03-19
 ### Fixed:
 - Upload button now visible in All Folders view (defaults to root folder)
