@@ -552,6 +552,52 @@ function getCatalogsWithInstalledCharts() {
   return Array.from(catalogs);
 }
 
+/**
+ * Remove catalog install entries that have no corresponding chart file on disk.
+ * Uses the same fuzzy matching as removeInstall() to handle naming differences
+ * (e.g., catalog key "poly-i" maps to file "gshhg-basemap-i").
+ *
+ * @param {string[]} chartIdentifiers - identifiers of charts actually found on disk
+ */
+function pruneStaleInstalls(chartIdentifiers) {
+  const ids = new Set(chartIdentifiers.map((id) => id.toLowerCase()));
+  let pruned = false;
+
+  for (const key of Object.keys(installs)) {
+    const keyLower = key.toLowerCase();
+
+    // Direct match: install key matches a file identifier
+    if (ids.has(keyLower)) {
+      continue;
+    }
+
+    // Fuzzy match: check if any file on disk corresponds to this install
+    // (mirrors the reverse mappings in removeInstall)
+    let found = false;
+    for (const id of ids) {
+      if (
+        id === `gshhg-basemap-${key.replace('poly-', '')}` ||
+        id === `osm-basemap-${key.replace('basemap_', '')}` ||
+        id.startsWith(keyLower) ||
+        id.includes(key)
+      ) {
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      debug(`Pruning stale catalog install: ${key} (no matching chart on disk)`);
+      delete installs[key];
+      pruned = true;
+    }
+  }
+
+  if (pruned) {
+    saveInstalls();
+  }
+}
+
 module.exports = {
   initCatalogManager,
   getCatalogRegistry,
@@ -561,6 +607,7 @@ module.exports = {
   trackInstall,
   removeInstall,
   getInstalledCatalogCharts,
+  pruneStaleInstalls,
   setConvertingState,
   getConvertingCharts,
   getConvertingCount,

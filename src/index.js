@@ -14,6 +14,7 @@ const {
   trackInstall,
   removeInstall,
   getInstalledCatalogCharts,
+  pruneStaleInstalls,
   setConvertingState,
   getConvertingCharts,
   getConvertingCount,
@@ -175,6 +176,9 @@ module.exports = (app) => {
           } charts (${_.keys(enabledCharts).length} enabled) from ${chartPath}.`
         );
         chartProviders = enabledCharts;
+
+        // Prune catalog install entries that no longer have files on disk
+        pruneStaleInstalls(_.keys(charts));
       })
       .catch((e) => {
         console.error(`Error loading chart providers`, e.message);

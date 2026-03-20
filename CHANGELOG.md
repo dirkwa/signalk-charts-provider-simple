@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.3] 2026-03-20
+### Fixed:
+- Prune stale catalog install entries on startup when chart files no longer exist on disk
+
 ## [1.8.2] 2026-03-20
 ### Fixed:
 - Downloads from redirecting URLs (e.g., GitHub releases) saved ZIP as raw .mbtiles instead of extracting
