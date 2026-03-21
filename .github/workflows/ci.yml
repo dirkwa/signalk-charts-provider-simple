@@ -8,27 +8,27 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js 22
+      - name: Use Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Install dependencies
         run: npm install
 
-      - name: Check formatting
+      - name: Build
+        run: npm run build
+
+      - name: Check formatting and lint
         run: npm run format:check
 
-      - name: Run linter
-        run: npm run lint
-
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: lint
 
     strategy:
