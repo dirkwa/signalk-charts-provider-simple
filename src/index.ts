@@ -50,10 +50,6 @@ import type {
 
 const PLUGIN_ID = 'signalk-charts-provider-simple';
 const chartTilesPath = `/plugins/${PLUGIN_ID}`;
-const apiRoutePrefix: Record<number, string> = {
-  1: '/signalk/v1/api/resources',
-  2: '/signalk/v2/api/resources'
-};
 
 const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let chartProviders: Record<string, ChartProvider> = {};
@@ -61,11 +57,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     chartPath: ''
   };
 
-  let urlBase = '';
   let catalogUpdateInterval: ReturnType<typeof setInterval> | null = null;
-  const configBasePath = app.config.configPath;
-  const defaultChartsPath = path.join(configBasePath, '/charts-simple');
-  const serverMajorVersion: number = app.config.version
+  const pluginDataDir = app.getDataDirPath();
+  const configBasePath = path.dirname(path.dirname(pluginDataDir));
+  const defaultChartsPath = path.join(configBasePath, 'charts-simple');
+  const serverMajorVersion: number = app.config?.version
     ? parseInt(app.config.version.split('.')[0], 10)
     : 1;
   ensureDirectoryExists(defaultChartsPath);
@@ -102,6 +98,28 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     },
     registerWithRouter: (router) => {
       registerRoutes(router);
+    },
+    signalKApiRoutes: (router) => {
+      app.debug('** Registering v1 API paths via signalKApiRoutes **');
+
+      router.get('/resources/charts/:identifier', (req: Request, res: Response) => {
+        const { identifier } = req.params as Record<string, string>;
+        const provider = chartProviders[identifier];
+        if (provider) {
+          res.json(sanitizeProvider(provider));
+        } else {
+          res.status(404).send('Not found');
+        }
+      });
+
+      router.get('/resources/charts', (_req: Request, res: Response) => {
+        const sanitized = Object.fromEntries(
+          Object.entries(chartProviders).map(([k, provider]) => [k, sanitizeProvider(provider)])
+        );
+        res.json(sanitized);
+      });
+
+      return router;
     }
   };
 
@@ -109,18 +127,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     app.debug(`** loaded config: ${JSON.stringify(config)}`);
     props = { ...config };
 
-    urlBase = `${app.config.ssl ? 'https' : 'http'}://localhost:${
-      'getExternalPort' in app.config ? app.config.getExternalPort() : 3000
-    }`;
-    app.debug(`**urlBase** ${urlBase}`);
-
     const chartPath = props.chartPath || defaultChartsPath;
     ensureDirectoryExists(chartPath);
 
-    const configPath = app.config.configPath;
-    initChartState(configPath);
+    initChartState(pluginDataDir);
 
-    const dataDir = app.getDataDirPath();
+    const dataDir = pluginDataDir;
     initCatalogManager(dataDir, app.debug.bind(app));
 
     const tempDirPattern =
@@ -1439,25 +1451,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             'Failed to create download job'
         });
       }
-    });
-
-    app.debug('** Registering v1 API paths **');
-
-    app.get(apiRoutePrefix[1] + '/charts/:identifier', (req: Request, res: Response) => {
-      const { identifier } = req.params as Record<string, string>;
-      const provider = chartProviders[identifier];
-      if (provider) {
-        res.json(sanitizeProvider(provider));
-      } else {
-        res.status(404).send('Not found');
-      }
-    });
-
-    app.get(apiRoutePrefix[1] + '/charts', (_req: Request, res: Response) => {
-      const sanitized = Object.fromEntries(
-        Object.entries(chartProviders).map(([k, provider]) => [k, sanitizeProvider(provider)])
-      );
-      res.json(sanitized);
     });
   };
 

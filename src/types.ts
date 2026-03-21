@@ -21,7 +21,6 @@ export interface ServerConfig {
 
 export interface ExtendedServerAPI extends ServerAPI {
   config: ServerConfig;
-  get(path: string, handler: (req: Request, res: Response) => void): void;
 }
 
 // ---- Chart Provider (the core data structure) ----

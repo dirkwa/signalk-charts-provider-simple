@@ -22,6 +22,12 @@ after(() => {
 
 // Create a mock SignalK app object
 function createMockApp(configPath) {
+  const pluginDataDir = path.join(
+    configPath,
+    'plugin-config-data',
+    'signalk-charts-provider-simple'
+  );
+  fs.mkdirSync(pluginDataDir, { recursive: true });
   return {
     config: {
       configPath: configPath,
@@ -33,7 +39,7 @@ function createMockApp(configPath) {
     error: () => {},
     setPluginStatus: () => {},
     setPluginError: () => {},
-    get: () => {},
+    getDataDirPath: () => pluginDataDir,
     registerResourceProvider: () => {},
     handleMessage: () => {}
   };
