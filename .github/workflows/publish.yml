@@ -11,28 +11,30 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Clean workspace
         run: git clean -xfd
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      # Ensure npm 11.5.1 or later is installed
-      - name: Update npm
-        run: npm install -g npm@latest
       - run: npm install
 
+      - name: Build
+        run: npm run build
+
       - name: Publish
-        run: | 
+        run: |
           if [[ "${{ github.ref }}" == refs/tags/*-beta.* ]] || [[ "${{ github.ref }}" == refs/tags/*-rc.* ]]; then
             npm publish --provenance --access public --tag beta
           else
             npm publish --provenance --access public
           fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
