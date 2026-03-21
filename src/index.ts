@@ -58,34 +58,37 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   };
 
   let catalogUpdateInterval: ReturnType<typeof setInterval> | null = null;
-  const pluginDataDir = app.getDataDirPath();
-  const configBasePath = path.dirname(path.dirname(pluginDataDir));
-  const defaultChartsPath = path.join(configBasePath, 'charts-simple');
-  const serverMajorVersion: number = app.config?.version
-    ? parseInt(app.config.version.split('.')[0], 10)
-    : 1;
-  ensureDirectoryExists(defaultChartsPath);
+  let pluginDataDir = '';
+  let defaultChartsPath = '';
+  let serverMajorVersion = 1;
 
-  const CONFIG_SCHEMA = {
-    title: 'Charts Provider Simple',
-    type: 'object',
-    properties: {
-      chartPath: {
-        type: 'string',
-        title: 'Chart path',
-        description: `Main directory for chart files. Defaults to "${defaultChartsPath}". Subfolders will be scanned recursively.`,
-        default: defaultChartsPath
-      }
+  function getDefaultChartsPath(): string {
+    if (!defaultChartsPath) {
+      pluginDataDir = app.getDataDirPath();
+      const configBasePath = path.dirname(path.dirname(pluginDataDir));
+      defaultChartsPath = path.join(configBasePath, 'charts-simple');
+      serverMajorVersion = app.config?.version ? parseInt(app.config.version.split('.')[0], 10) : 1;
+      ensureDirectoryExists(defaultChartsPath);
     }
-  };
-
-  const CONFIG_UISCHEMA = {};
+    return defaultChartsPath;
+  }
 
   const plugin: Plugin = {
     id: PLUGIN_ID,
     name: 'Charts Provider Simple',
-    schema: () => CONFIG_SCHEMA,
-    uiSchema: () => CONFIG_UISCHEMA,
+    schema: () => ({
+      title: 'Charts Provider Simple',
+      type: 'object',
+      properties: {
+        chartPath: {
+          type: 'string',
+          title: 'Chart path',
+          description: `Main directory for chart files. Defaults to "${getDefaultChartsPath()}". Subfolders will be scanned recursively.`,
+          default: getDefaultChartsPath()
+        }
+      }
+    }),
+    uiSchema: () => ({}),
     start: (settings) => {
       doStartup(settings as PluginConfig);
     },
@@ -127,6 +130,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     app.debug(`** loaded config: ${JSON.stringify(config)}`);
     props = { ...config };
 
+    getDefaultChartsPath(); // ensure lazy init
     const chartPath = props.chartPath || defaultChartsPath;
     ensureDirectoryExists(chartPath);
 
