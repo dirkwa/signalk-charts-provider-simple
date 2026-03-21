@@ -1,11 +1,24 @@
-const https = require('https');
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const unzipper = require('unzipper');
-const { EventEmitter } = require('events');
+import https from 'https';
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
+import unzipper from 'unzipper';
+import { EventEmitter } from 'events';
+import type { DownloadJob, DownloadJobOptions, DownloadJobStatus } from '../types';
+
+interface DownloadManagerEvents {
+  'job-created': [job: DownloadJob];
+  'job-updated': [job: DownloadJob];
+  'job-completed': [job: DownloadJob];
+  'job-failed': [job: DownloadJob];
+  'job-cancelled': [job: DownloadJob];
+}
 
 class DownloadManager extends EventEmitter {
+  private jobs: Map<string, DownloadJob>;
+  private activeDownloads: number;
+  private maxConcurrent: number;
+
   constructor() {
     super();
     this.jobs = new Map();
@@ -13,54 +26,78 @@ class DownloadManager extends EventEmitter {
     this.maxConcurrent = 3;
   }
 
-  createJob(url, targetDir, chartName, options = {}) {
-    const id = `dl_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  override emit<K extends keyof DownloadManagerEvents>(
+    event: K,
+    ...args: DownloadManagerEvents[K]
+  ): boolean {
+    return super.emit(event, ...args);
+  }
 
-    const job = {
+  override on<K extends keyof DownloadManagerEvents>(
+    event: K,
+    listener: (...args: DownloadManagerEvents[K]) => void
+  ): this {
+    return super.on(event, listener);
+  }
+
+  override removeListener<K extends keyof DownloadManagerEvents>(
+    event: K,
+    listener: (...args: DownloadManagerEvents[K]) => void
+  ): this {
+    return super.removeListener(event, listener);
+  }
+
+  createJob(
+    url: string,
+    targetDir: string,
+    chartName: string,
+    options: DownloadJobOptions = {}
+  ): string {
+    const id = `dl_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+
+    const job: DownloadJob = {
       id,
       url,
       targetDir,
       chartName,
-      saveRaw: options.saveRaw || false, // Save file as-is, skip ZIP extraction
+      saveRaw: options.saveRaw ?? false,
       status: 'queued',
       progress: 0,
       downloadedBytes: 0,
       totalBytes: 0,
       extractedFiles: [],
-      targetFiles: [], // Files being written (added as soon as write starts)
+      targetFiles: [],
       createdAt: Date.now()
     };
 
     this.jobs.set(id, job);
     this.emit('job-created', job);
 
-    // Start processing if under concurrent limit
-    this.processQueue();
+    void this.processQueue();
 
     return id;
   }
 
-  getJob(id) {
+  getJob(id: string): DownloadJob | undefined {
     return this.jobs.get(id);
   }
 
-  getAllJobs() {
+  getAllJobs(): DownloadJob[] {
     return Array.from(this.jobs.values()).sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  getActiveJobs() {
+  getActiveJobs(): DownloadJob[] {
     return this.getAllJobs().filter(
       (job) =>
         job.status === 'queued' || job.status === 'downloading' || job.status === 'extracting'
     );
   }
 
-  async processQueue() {
+  private async processQueue(): Promise<void> {
     if (this.activeDownloads >= this.maxConcurrent) {
       return;
     }
 
-    // Find next queued job
     const queuedJob = Array.from(this.jobs.values()).find((job) => job.status === 'queued');
     if (!queuedJob) {
       return;
@@ -70,11 +107,10 @@ class DownloadManager extends EventEmitter {
     await this.processJob(queuedJob);
     this.activeDownloads--;
 
-    // Process next job
-    this.processQueue();
+    void this.processQueue();
   }
 
-  async processJob(job) {
+  private async processJob(job: DownloadJob): Promise<void> {
     try {
       job.status = 'downloading';
       job.startedAt = Date.now();
@@ -88,27 +124,25 @@ class DownloadManager extends EventEmitter {
       this.emit('job-completed', job);
     } catch (error) {
       job.status = 'failed';
-      job.error = error.message || 'Download failed';
+      job.error = (error instanceof Error ? error.message : String(error)) || 'Download failed';
       job.completedAt = Date.now();
       this.emit('job-failed', job);
       console.error(`Download job ${job.id} failed:`, error);
     }
   }
 
-  async downloadAndExtract(job) {
-    // Preserve the original URL before redirects (for ZIP extension detection)
+  private async downloadAndExtract(job: DownloadJob): Promise<void> {
     if (!job.originalUrl) {
       job.originalUrl = job.url;
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const protocol = job.url.startsWith('https') ? https : http;
 
       console.log(`[${job.id}] Starting download from: ${job.url}`);
 
       const req = protocol
         .get(job.url, { timeout: 60000 }, (response) => {
-          // Follow redirects
           if (response.statusCode === 301 || response.statusCode === 302) {
             const redirectUrl = response.headers.location;
             if (redirectUrl) {
@@ -124,30 +158,27 @@ class DownloadManager extends EventEmitter {
             return;
           }
 
-          const contentLength = parseInt(response.headers['content-length'] || '0');
+          const contentLength = parseInt(response.headers['content-length'] ?? '0');
           job.totalBytes = contentLength;
 
-          const contentType = response.headers['content-type'] || '';
+          const contentType = response.headers['content-type'] ?? '';
           console.log(`[${job.id}] Content-Type: ${contentType}, Size: ${contentLength} bytes`);
 
           let downloadedBytes = 0;
 
-          // Determine if this is a ZIP before setting up the data handler
           const isZip =
             !job.saveRaw &&
-            (contentType.includes('zip') || (job.originalUrl || job.url).endsWith('.zip'));
+            (contentType.includes('zip') || (job.originalUrl ?? job.url).endsWith('.zip'));
 
-          // Track download progress
-          response.on('data', (chunk) => {
+          response.on('data', (chunk: Buffer) => {
             downloadedBytes += chunk.length;
             job.downloadedBytes = downloadedBytes;
 
             if (contentLength > 0) {
               if (isZip) {
-                // Reserve 90-100% for extraction phase
                 job.progress = Math.min(90, Math.floor((downloadedBytes / contentLength) * 90));
                 if (job.progress >= 90 && job.status === 'downloading') {
-                  job.status = 'extracting';
+                  job.status = 'extracting' as DownloadJobStatus;
                 }
               } else {
                 job.progress = Math.floor((downloadedBytes / contentLength) * 100);
@@ -159,14 +190,12 @@ class DownloadManager extends EventEmitter {
 
           if (isZip) {
             console.log(`[${job.id}] Processing as ZIP file...`);
-            // Status stays 'downloading' — extraction happens in the same stream pipeline.
-            // It transitions to 'extracting' once download reaches 90%.
 
-            const extractionPromises = [];
+            const extractionPromises: Promise<void>[] = [];
 
             response
               .pipe(unzipper.Parse())
-              .on('entry', (entry) => {
+              .on('entry', (entry: unzipper.Entry) => {
                 const fileName = entry.path;
                 const type = entry.type;
 
@@ -175,12 +204,10 @@ class DownloadManager extends EventEmitter {
                   const targetFileName = path.basename(fileName);
                   console.log(`[${job.id}] Extracting: ${fileName} to ${targetPath}`);
 
-                  // Add to targetFiles immediately (before extraction completes)
                   job.targetFiles.push(targetFileName);
                   this.emit('job-updated', job);
 
-                  // Create a promise for this extraction
-                  const extractPromise = new Promise((resolveExtract, rejectExtract) => {
+                  const extractPromise = new Promise<void>((resolveExtract, rejectExtract) => {
                     const writeStream = fs.createWriteStream(targetPath);
 
                     writeStream
@@ -189,7 +216,7 @@ class DownloadManager extends EventEmitter {
                         job.extractedFiles.push(path.basename(fileName));
                         resolveExtract();
                       })
-                      .on('error', (err) => {
+                      .on('error', (err: Error) => {
                         console.error(`[${job.id}] Error writing ${fileName}:`, err);
                         rejectExtract(err);
                       });
@@ -202,53 +229,49 @@ class DownloadManager extends EventEmitter {
                   entry.autodrain();
                 }
               })
-              .on('finish', async () => {
-                // Wait for all file writes to complete
-                try {
-                  await Promise.all(extractionPromises);
-                  console.log(
-                    `[${job.id}] Extraction complete. Files: ${job.extractedFiles.join(', ')}`
-                  );
+              .on('finish', () => {
+                void (async () => {
+                  try {
+                    await Promise.all(extractionPromises);
+                    console.log(
+                      `[${job.id}] Extraction complete. Files: ${job.extractedFiles.join(', ')}`
+                    );
 
-                  if (job.extractedFiles.length === 0) {
-                    reject(new Error('No .mbtiles files found in archive'));
-                  } else {
-                    job.progress = 100;
-                    resolve();
+                    if (job.extractedFiles.length === 0) {
+                      reject(new Error('No .mbtiles files found in archive'));
+                    } else {
+                      job.progress = 100;
+                      resolve();
+                    }
+                  } catch (error) {
+                    console.error(`[${job.id}] Error during extraction:`, error);
+                    reject(error);
                   }
-                } catch (error) {
-                  console.error(`[${job.id}] Error during extraction:`, error);
-                  reject(error);
-                }
+                })();
               })
-              .on('error', (error) => {
+              .on('error', (error: Error) => {
                 console.error(`[${job.id}] Extraction error:`, error);
                 reject(error);
               });
           } else {
-            // Direct file download
-            console.log(`[${job.id}] Processing as direct file (saveRaw: ${!!job.saveRaw})...`);
+            console.log(
+              `[${job.id}] Processing as direct file (saveRaw: ${String(job.saveRaw)})...`
+            );
 
-            // Use custom chart name if provided, otherwise use filename from URL
-            let fileName;
+            let fileName: string;
             if (job.saveRaw) {
-              // Save with original filename from URL, preserving extension
-              // Use originalUrl since redirects may produce blob/UUID URLs
-              fileName = path.basename(job.originalUrl || job.url).split('?')[0];
+              fileName = path.basename(job.originalUrl ?? job.url).split('?')[0];
               if (job.chartName && job.chartName.trim()) {
-                // Use chartName but preserve the URL's extension
                 const ext = path.extname(fileName) || '.zip';
                 fileName = job.chartName.trim() + ext;
               }
             } else if (job.chartName && job.chartName.trim()) {
               fileName = job.chartName.trim();
-              // Ensure .mbtiles extension
               if (!fileName.endsWith('.mbtiles')) {
                 fileName += '.mbtiles';
               }
             } else {
-              // Use originalUrl since redirects may produce blob/UUID URLs
-              fileName = path.basename(job.originalUrl || job.url).split('?')[0];
+              fileName = path.basename(job.originalUrl ?? job.url).split('?')[0];
               if (!fileName.endsWith('.mbtiles')) {
                 fileName += '.mbtiles';
               }
@@ -256,7 +279,6 @@ class DownloadManager extends EventEmitter {
 
             const targetPath = path.join(job.targetDir, fileName);
 
-            // Add to targetFiles immediately (before download completes)
             job.targetFiles.push(fileName);
             this.emit('job-updated', job);
 
@@ -271,13 +293,13 @@ class DownloadManager extends EventEmitter {
               resolve();
             });
 
-            fileStream.on('error', (error) => {
+            fileStream.on('error', (error: Error) => {
               fs.unlink(targetPath, () => {});
               reject(error);
             });
           }
         })
-        .on('error', (error) => {
+        .on('error', (error: Error) => {
           console.error(`[${job.id}] Download error:`, error);
           reject(error);
         });
@@ -289,21 +311,19 @@ class DownloadManager extends EventEmitter {
     });
   }
 
-  // Find jobs downloading a specific file
-  findJobsByTargetFile(fileName) {
-    const jobs = [];
+  findJobsByTargetFile(fileName: string): DownloadJob[] {
+    const result: DownloadJob[] = [];
     for (const job of this.jobs.values()) {
       if (job.status === 'downloading' || job.status === 'extracting' || job.status === 'queued') {
         if (job.targetFiles && job.targetFiles.includes(fileName)) {
-          jobs.push(job);
+          result.push(job);
         }
       }
     }
-    return jobs;
+    return result;
   }
 
-  // Cancel a job and clean up any partial files
-  cancelJob(jobId) {
+  cancelJob(jobId: string): { success: boolean; error?: string } {
     const job = this.jobs.get(jobId);
     if (!job) {
       return { success: false, error: 'Job not found' };
@@ -313,20 +333,18 @@ class DownloadManager extends EventEmitter {
       return { success: false, error: 'Job already completed' };
     }
 
-    // Mark job as failed/cancelled
     job.status = 'failed';
     job.error = 'Cancelled by user';
     job.completedAt = Date.now();
 
-    // Clean up any target files that were being written
     if (job.targetFiles && job.targetFiles.length > 0) {
-      job.targetFiles.forEach((fileName) => {
-        const filePath = path.join(job.targetDir, fileName);
+      job.targetFiles.forEach((fn) => {
+        const filePath = path.join(job.targetDir, fn);
         fs.unlink(filePath, (err) => {
           if (err && err.code !== 'ENOENT') {
             console.error(`Error deleting cancelled file ${filePath}:`, err);
           } else {
-            console.log(`[${job.id}] Deleted cancelled file: ${fileName}`);
+            console.log(`[${job.id}] Deleted cancelled file: ${fn}`);
           }
         });
       });
@@ -338,8 +356,7 @@ class DownloadManager extends EventEmitter {
     return { success: true };
   }
 
-  // Clean up old completed/failed jobs (older than 1 hour)
-  cleanup() {
+  cleanup(): void {
     const oneHourAgo = Date.now() - 60 * 60 * 1000;
 
     for (const [id, job] of this.jobs.entries()) {
@@ -355,17 +372,11 @@ class DownloadManager extends EventEmitter {
   }
 }
 
-// Singleton instance
-const downloadManager = new DownloadManager();
+export const downloadManager = new DownloadManager();
 
-// Clean up old jobs every 10 minutes
 setInterval(
   () => {
     downloadManager.cleanup();
   },
   10 * 60 * 1000
 );
-
-module.exports = {
-  downloadManager
-};

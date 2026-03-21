@@ -1,32 +1,35 @@
-const { execFile, spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const unzipper = require('unzipper');
+import { execFile, spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import unzipper from 'unzipper';
+import type {
+  ConversionProgress,
+  ConversionProgressMap,
+  RncConversionResult,
+  StatusCallback,
+  DebugFunction
+} from '../types';
 
 const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
 
-// In-memory progress tracking: chartNumber -> { status, message, log }
-const conversionProgress = {};
+const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
 
-let debug = () => {};
+let debug: DebugFunction = () => {};
 
-function initRncConverter(debugFn) {
+export function initRncConverter(debugFn: DebugFunction): void {
   debug = debugFn || (() => {});
 }
 
-function getConversionProgress(chartNumber) {
-  return conversionProgress[chartNumber] || null;
+export function getConversionProgress(chartNumber: string): ConversionProgress | null {
+  return conversionProgress[chartNumber] ?? null;
 }
 
-function getAllConversionProgress() {
+export function getAllConversionProgress(): ConversionProgressMap {
   return { ...conversionProgress };
 }
 
-/**
- * Check if the GDAL image is available locally
- */
-function checkGdalImage() {
+function checkGdalImage(): Promise<boolean> {
   return new Promise((resolve) => {
     execFile('podman', ['image', 'exists', GDAL_IMAGE], (error) => {
       resolve(!error);
@@ -34,10 +37,7 @@ function checkGdalImage() {
   });
 }
 
-/**
- * Pull the GDAL image
- */
-function pullGdalImage() {
+function pullGdalImage(): Promise<void> {
   return new Promise((resolve, reject) => {
     debug('Pulling GDAL image...');
     execFile('podman', ['pull', GDAL_IMAGE], { timeout: 300000 }, (error, _stdout, stderr) => {
@@ -51,19 +51,14 @@ function pullGdalImage() {
   });
 }
 
-/**
- * Extract a ZIP file to a target directory
- * Returns array of extracted file paths
- */
-async function extractZip(zipPath, targetDir) {
-  // Extract preserving directory structure, then collect all files
+async function extractZip(zipPath: string, targetDir: string): Promise<string[]> {
   await fs
     .createReadStream(zipPath)
     .pipe(unzipper.Extract({ path: targetDir }))
     .promise();
 
-  const allFiles = [];
-  const scan = (dir) => {
+  const allFiles: string[] = [];
+  const scan = (dir: string): void => {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
@@ -78,21 +73,43 @@ async function extractZip(zipPath, targetDir) {
   return allFiles;
 }
 
-/**
- * Convert a single BSB .kap file to MBTiles using GDAL in Podman.
- *
- * @param {string} kapFile - Full path to .kap file
- * @param {string} outputDir - Directory where .mbtiles will be written
- * @param {string} chartNumber - For progress tracking
- * @returns {Promise<string>} Path to the created .mbtiles file
- */
-function convertKapToMbtiles(kapFile, outputDir, chartNumber) {
+function appendLog(chartNumber: string, text: string): void {
+  if (!chartNumber || !text) {
+    return;
+  }
+  if (!conversionProgress[chartNumber]) {
+    conversionProgress[chartNumber] = { status: 'converting', message: '', log: [] };
+  }
+  const log = conversionProgress[chartNumber].log;
+  const lines = text.split(/\r|\n/).filter((l) => l.trim());
+  log.push(...lines);
+  if (log.length > MAX_LOG_LINES) {
+    log.splice(0, log.length - MAX_LOG_LINES);
+  }
+}
+
+function setConvertProgress(chartNumber: string, status: string, message: string): void {
+  if (!chartNumber) {
+    return;
+  }
+  if (!conversionProgress[chartNumber]) {
+    conversionProgress[chartNumber] = { status, message, log: [] };
+  } else {
+    conversionProgress[chartNumber].status = status;
+    conversionProgress[chartNumber].message = message;
+  }
+}
+
+export function convertKapToMbtiles(
+  kapFile: string,
+  outputDir: string,
+  chartNumber: string
+): Promise<string> {
   const baseName = path.basename(kapFile, path.extname(kapFile));
   const outputFile = path.join(outputDir, `${baseName}.mbtiles`);
   const kapDir = path.dirname(kapFile);
 
   return new Promise((resolve, reject) => {
-    // gdal_translate -of MBTiles -co TILE_FORMAT=PNG input.kap output.mbtiles
     const args = [
       'run',
       '--rm',
@@ -119,12 +136,12 @@ function convertKapToMbtiles(kapFile, outputDir, chartNumber) {
 
     let output = '';
 
-    child.stdout.on('data', (data) => {
+    child.stdout.on('data', (data: Buffer) => {
       output += data.toString();
       appendLog(chartNumber, data.toString().trim());
     });
 
-    child.stderr.on('data', (data) => {
+    child.stderr.on('data', (data: Buffer) => {
       output += data.toString();
       appendLog(chartNumber, data.toString().trim());
     });
@@ -140,11 +157,9 @@ function convertKapToMbtiles(kapFile, outputDir, chartNumber) {
         return;
       }
 
-      // Run gdaladdo to add overviews (zoom levels) for better performance
       addOverviews(outputFile, chartNumber)
         .then(() => resolve(outputFile))
         .catch(() => {
-          // Overviews are optional, proceed without them
           debug(`Warning: failed to add overviews for ${baseName}`);
           resolve(outputFile);
         });
@@ -156,10 +171,7 @@ function convertKapToMbtiles(kapFile, outputDir, chartNumber) {
   });
 }
 
-/**
- * Add overview zoom levels to an MBTiles file using gdaladdo
- */
-function addOverviews(mbtilesFile, chartNumber) {
+function addOverviews(mbtilesFile: string, chartNumber: string): Promise<void> {
   const dir = path.dirname(mbtilesFile);
   const name = path.basename(mbtilesFile);
 
@@ -196,39 +208,18 @@ function addOverviews(mbtilesFile, chartNumber) {
   });
 }
 
-function appendLog(chartNumber, text) {
-  if (!chartNumber || !text) {
-    return;
-  }
-  if (!conversionProgress[chartNumber]) {
-    conversionProgress[chartNumber] = { status: 'converting', message: '', log: [] };
-  }
-  const log = conversionProgress[chartNumber].log;
-  const lines = text.split(/\r|\n/).filter((l) => l.trim());
-  log.push(...lines);
-  if (log.length > MAX_LOG_LINES) {
-    log.splice(0, log.length - MAX_LOG_LINES);
-  }
-}
+export async function processRncZip(
+  zipPath: string,
+  chartsDir: string,
+  chartNumber: string,
+  onStatus: StatusCallback | null
+): Promise<RncConversionResult> {
+  const statusFn = onStatus ?? (() => {});
+  const { checkPodman } = await import('./s57-converter');
 
-/**
- * Full pipeline: Download ZIP → extract → convert BSB/KAP → MBTiles.
- *
- * @param {string} zipPath - Path to the downloaded ZIP file
- * @param {string} chartsDir - The plugin's charts directory where .mbtiles will go
- * @param {string} chartNumber - For progress tracking
- * @param {function} onStatus - Status callback
- * @returns {Promise<{mbtilesFiles: string[]}>} Created .mbtiles filenames
- */
-async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
-  const statusFn = onStatus || (() => {});
-  const { checkPodman } = require('./s57-converter');
-
-  // Create temp dir for extracted BSB files
   const tmpDir = path.join(path.dirname(zipPath), `rnc_${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
 
-  // Initialize progress tracking
   if (chartNumber) {
     conversionProgress[chartNumber] = {
       status: 'starting',
@@ -238,14 +229,12 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
   }
 
   try {
-    // Step 1: Check Podman
     statusFn('checking', 'Checking Podman availability...');
     const podman = await checkPodman();
     if (!podman.available) {
       throw new Error('Podman is not installed. RNC chart conversion requires Podman.');
     }
 
-    // Step 2: Check/pull GDAL image
     statusFn('pulling', 'Checking GDAL image...');
     const imageExists = await checkGdalImage();
     if (!imageExists) {
@@ -257,18 +246,17 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
       await pullGdalImage();
     }
 
-    // Step 3: Extract ZIP
     statusFn('extracting', 'Extracting BSB chart files from ZIP...');
     if (chartNumber) {
       conversionProgress[chartNumber].status = 'extracting';
       conversionProgress[chartNumber].message = 'Extracting BSB files...';
     }
-    let extracted;
+    let extracted: string[];
     try {
       extracted = await extractZip(zipPath, tmpDir);
     } catch (zipErr) {
       throw new Error(
-        `Downloaded file is not a valid ZIP archive (${zipErr.message}). The server may have returned an error page instead.`
+        `Downloaded file is not a valid ZIP archive (${zipErr instanceof Error ? zipErr.message : String(zipErr)}). The server may have returned an error page instead.`
       );
     }
     debug(`Extracted ${extracted.length} files from ZIP`);
@@ -277,7 +265,6 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
       throw new Error('No files found in ZIP archive');
     }
 
-    // Find .kap files (BSB raster chart format)
     const kapFiles = extracted.filter(
       (f) => f.toLowerCase().endsWith('.kap') || f.toLowerCase().endsWith('.bsb')
     );
@@ -289,13 +276,11 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
     debug(`Found ${kapFiles.length} BSB chart file(s) to convert`);
     appendLog(chartNumber, `Found ${kapFiles.length} BSB chart file(s)`);
 
-    // Step 4: Convert all .kap files in a single GDAL container
     statusFn('converting', `Converting ${kapFiles.length} BSB chart(s) to MBTiles...`);
     if (chartNumber) {
       conversionProgress[chartNumber].status = 'converting';
     }
 
-    // Build shell script that converts all .kap files + adds overviews
     const kapNames = kapFiles.map((f) => path.basename(f));
     const script = kapNames
       .map(
@@ -308,11 +293,9 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
       )
       .join(' && ');
 
-    // All .kap files should be in the same directory (extracted flat)
-    // Find common parent dir
     const kapDir = path.dirname(kapFiles[0]);
 
-    const mbtilesFiles = await new Promise((resolve, reject) => {
+    const mbtilesFiles = await new Promise<string[]>((resolve, reject) => {
       const child = spawn(
         'podman',
         [
@@ -330,7 +313,7 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
         { stdio: ['ignore', 'pipe', 'pipe'] }
       );
 
-      child.stdout.on('data', (data) => {
+      child.stdout.on('data', (data: Buffer) => {
         const text = data.toString().trim();
         if (text) {
           appendLog(chartNumber, text);
@@ -341,7 +324,7 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
         }
       });
 
-      child.stderr.on('data', (data) => {
+      child.stderr.on('data', (data: Buffer) => {
         const text = data.toString().trim();
         if (text) {
           appendLog(chartNumber, text);
@@ -349,7 +332,6 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
       });
 
       child.on('close', (code) => {
-        // Collect created .mbtiles files
         const created = kapNames
           .map((n) => n.replace(/\.[^.]+$/, '.mbtiles'))
           .filter((n) => fs.existsSync(path.join(chartsDir, n)));
@@ -371,19 +353,17 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
 
     statusFn('completed', `Converted ${mbtilesFiles.length} chart(s) to MBTiles`);
 
-    // Clean up progress on success
     if (chartNumber) {
       delete conversionProgress[chartNumber];
     }
 
     return { mbtilesFiles };
   } catch (err) {
-    // Keep error in progress so frontend can display it
     if (chartNumber) {
       conversionProgress[chartNumber] = {
         status: 'failed',
-        message: err.message || 'Conversion failed',
-        log: conversionProgress[chartNumber] ? conversionProgress[chartNumber].log || [] : []
+        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
+        log: conversionProgress[chartNumber]?.log ?? []
       };
       setTimeout(() => {
         delete conversionProgress[chartNumber];
@@ -391,22 +371,22 @@ async function processRncZip(zipPath, chartsDir, chartNumber, onStatus) {
     }
     throw err;
   } finally {
-    // Clean up temp dir
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch (_e) {
+    } catch {
       debug(`Warning: failed to clean up temp dir ${tmpDir}`);
     }
   }
 }
 
-/**
- * Process a .tar.xz file containing .kap BSB charts (e.g., Pilot Charts).
- * Extracts using tar inside GDAL container, then converts .kap → MBTiles.
- */
-async function processPilotTar(tarPath, chartsDir, chartNumber, onStatus) {
-  const statusFn = onStatus || (() => {});
-  const { checkPodman } = require('./s57-converter');
+export async function processPilotTar(
+  tarPath: string,
+  chartsDir: string,
+  chartNumber: string,
+  onStatus: StatusCallback | null
+): Promise<RncConversionResult> {
+  const statusFn = onStatus ?? (() => {});
+  const { checkPodman } = await import('./s57-converter');
 
   const tmpDir = path.join(path.dirname(tarPath), `pilot_${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -420,24 +400,21 @@ async function processPilotTar(tarPath, chartsDir, chartNumber, onStatus) {
   }
 
   try {
-    // Step 1: Check Podman
     const podman = await checkPodman();
     if (!podman.available) {
       throw new Error('Podman is not installed.');
     }
 
-    // Step 2: Check/pull GDAL image
     statusFn('pulling', 'Checking GDAL image...');
     const imageExists = await checkGdalImage();
     if (!imageExists) {
       await pullGdalImage();
     }
 
-    // Step 3: Extract .tar.xz using tar inside GDAL container
     statusFn('extracting', 'Extracting pilot chart archive...');
     setConvertProgress(chartNumber, 'extracting', 'Extracting .tar.xz archive...');
 
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const child = execFile(
         'podman',
         [
@@ -464,9 +441,8 @@ async function processPilotTar(tarPath, chartsDir, chartNumber, onStatus) {
       child.on('error', reject);
     });
 
-    // Step 4: Find .kap files
-    const kapFiles = [];
-    const findKap = (dir) => {
+    const kapFiles: string[] = [];
+    const findKap = (dir: string): void => {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
@@ -486,12 +462,10 @@ async function processPilotTar(tarPath, chartsDir, chartNumber, onStatus) {
     debug(`Found ${kapFiles.length} .kap files`);
     appendLog(chartNumber, `Found ${kapFiles.length} .kap chart file(s)`);
 
-    // Step 5: Convert all .kap files in a single GDAL container
     statusFn('converting', `Converting ${kapFiles.length} chart(s)...`);
     setConvertProgress(chartNumber, 'converting', `Converting ${kapFiles.length} chart(s)...`);
 
-    // Build script: find all .kap, convert + add overviews
-    const mbtilesFiles = await new Promise((resolve, reject) => {
+    const mbtilesFiles = await new Promise<string[]>((resolve, reject) => {
       const script = `
 set -e
 cd /input
@@ -522,7 +496,7 @@ echo "PROGRESS: All done"
         { stdio: ['ignore', 'pipe', 'pipe'] }
       );
 
-      child.stdout.on('data', (data) => {
+      child.stdout.on('data', (data: Buffer) => {
         const text = data.toString().trim();
         if (text) {
           appendLog(chartNumber, text);
@@ -532,7 +506,7 @@ echo "PROGRESS: All done"
           }
         }
       });
-      child.stderr.on('data', (data) => {
+      child.stderr.on('data', (data: Buffer) => {
         const text = data.toString().trim();
         if (text) {
           appendLog(chartNumber, text);
@@ -566,8 +540,8 @@ echo "PROGRESS: All done"
     if (chartNumber) {
       conversionProgress[chartNumber] = {
         status: 'failed',
-        message: err.message || 'Conversion failed',
-        log: conversionProgress[chartNumber] ? conversionProgress[chartNumber].log || [] : []
+        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
+        log: conversionProgress[chartNumber]?.log ?? []
       };
       setTimeout(() => {
         delete conversionProgress[chartNumber];
@@ -577,32 +551,8 @@ echo "PROGRESS: All done"
   } finally {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch (_e) {
+    } catch {
       // ignore
     }
   }
 }
-
-function setConvertProgress(chartNumber, status, message) {
-  if (!chartNumber) {
-    return;
-  }
-  if (!conversionProgress[chartNumber]) {
-    conversionProgress[chartNumber] = { status, message, log: [] };
-  } else {
-    conversionProgress[chartNumber].status = status;
-    conversionProgress[chartNumber].message = message;
-  }
-}
-
-module.exports = {
-  initRncConverter,
-  checkGdalImage,
-  pullGdalImage,
-  convertKapToMbtiles,
-  processRncZip,
-  processPilotTar,
-  getConversionProgress,
-  getAllConversionProgress,
-  GDAL_IMAGE
-};

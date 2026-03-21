@@ -1,15 +1,25 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "1.8.5",
+  "version": "1.9.0-beta.1",
   "description": "Simple Signal K chart provider for local MBTiles with web and download management",
-  "main": "src/index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "assets",
+    "public"
+  ],
   "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "pretest": "npm run build",
     "test": "node --test --test-force-exit test/**/*.test.js",
     "test:fixtures": "node test/fixtures/create-test-mbtiles.js",
     "lint": "eslint src test",
     "lint:fix": "eslint src test --fix",
-    "format": "prettier --write 'src/**/*.js' 'test/**/*.js'",
-    "format:check": "prettier --check 'src/**/*.js' 'test/**/*.js'"
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.js'",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.js'",
+    "prepublishOnly": "npm run build"
   },
   "license": "MIT",
   "keywords": [
@@ -23,9 +33,7 @@
   },
   "dependencies": {
     "@signalk/server-api": "^2.0.0",
-    "bluebird": "^3.5.1",
     "busboy": "^1.6.0",
-    "lodash": "^4.17.11",
     "unzipper": "^0.12.3",
     "xml2js": "^0.6.2"
   },
@@ -57,9 +65,17 @@
     }
   },
   "devDependencies": {
+    "@eslint/js": "^9.28.0",
+    "@types/busboy": "^1.5.4",
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.15.0",
+    "@types/unzipper": "^0.10.11",
+    "@types/xml2js": "^0.4.14",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.4",
-    "prettier": "^3.7.4"
+    "prettier": "^3.7.4",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.33.1"
   }
 }

@@ -1,6 +1,9 @@
 # Node modules
 node_modules/
 
+# TypeScript build output
+dist/
+
 # IDE files
 .vscode/
 

@@ -1,11 +1,64 @@
+const tseslint = require('typescript-eslint');
 const prettier = require('eslint-plugin-prettier');
+const eslintJs = require('@eslint/js');
 
 module.exports = [
   {
-    ignores: ['node_modules/**', 'public/js/**']
+    ignores: ['node_modules/**', 'public/js/**', 'dist/**']
   },
+
+  // TypeScript source files
+  eslintJs.configs.recommended,
+  ...tseslint.configs.strictTypeChecked,
   {
-    files: ['src/**/*.js', 'test/**/*.js'],
+    files: ['src/**/*.ts'],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: __dirname
+      }
+    },
+    plugins: {
+      prettier
+    },
+    rules: {
+      'prettier/prettier': 'error',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_'
+        }
+      ],
+      'no-console': 'off',
+      eqeqeq: ['error', 'always'],
+      curly: ['error', 'all'],
+      'no-var': 'error',
+      'prefer-const': 'error',
+      '@typescript-eslint/restrict-template-expressions': [
+        'error',
+        { allowNumber: true }
+      ],
+      '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/no-unnecessary-condition': 'off',
+      '@typescript-eslint/no-misused-promises': [
+        'error',
+        { checksVoidReturn: { arguments: false } }
+      ],
+      '@typescript-eslint/no-redundant-type-constituents': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/no-dynamic-delete': 'off',
+      '@typescript-eslint/no-confusing-void-expression': 'off',
+      '@typescript-eslint/prefer-promise-reject-errors': 'off',
+      '@typescript-eslint/no-deprecated': 'warn'
+    }
+  },
+
+  // Test files (remain JS)
+  {
+    files: ['test/**/*.js'],
+    ...tseslint.configs.disableTypeChecked,
     plugins: {
       prettier
     },
@@ -29,7 +82,14 @@ module.exports = [
     },
     rules: {
       'prettier/prettier': 'error',
-      'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' }],
+      'no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_'
+        }
+      ],
       'no-console': 'off',
       eqeqeq: ['error', 'always'],
       curly: ['error', 'all'],

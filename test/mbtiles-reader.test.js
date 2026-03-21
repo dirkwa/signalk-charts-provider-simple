@@ -5,7 +5,7 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
-const { MBTilesReader, open } = require('../src/utils/mbtiles-reader');
+const { MBTilesReader, open } = require('../dist/utils/mbtiles-reader');
 
 const TEST_MBTILES = path.join(__dirname, 'fixtures', 'test-chart.mbtiles');
 

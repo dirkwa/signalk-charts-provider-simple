@@ -13,7 +13,7 @@ const os = require('os');
 // Global cleanup after all tests - clean up any lingering event listeners
 after(() => {
   try {
-    const { downloadManager } = require('../src/utils/download-manager.js');
+    const { downloadManager } = require('../dist/utils/download-manager.js');
     downloadManager.removeAllListeners();
   } catch (_e) {
     // Ignore if module not loaded
@@ -64,12 +64,12 @@ describe('Plugin Module', () => {
   });
 
   it('should load the plugin module without errors', () => {
-    const pluginFactory = require('../src/index.js');
+    const pluginFactory = require('../dist/index.js');
     assert.strictEqual(typeof pluginFactory, 'function', 'Plugin should export a function');
   });
 
   it('should create plugin instance with correct properties', () => {
-    const pluginFactory = require('../src/index.js');
+    const pluginFactory = require('../dist/index.js');
     const app = createMockApp(tempDir);
     const plugin = pluginFactory(app);
 
@@ -82,7 +82,7 @@ describe('Plugin Module', () => {
   });
 
   it('should generate valid schema', () => {
-    const pluginFactory = require('../src/index.js');
+    const pluginFactory = require('../dist/index.js');
     const app = createMockApp(tempDir);
     const plugin = pluginFactory(app);
 
@@ -95,7 +95,7 @@ describe('Plugin Module', () => {
 
 describe('Charts Loader', () => {
   it('should find charts in directory', async () => {
-    const { findCharts } = require('../src/charts-loader.js');
+    const { findCharts } = require('../dist/charts-loader.js');
     const chartsDir = path.join(__dirname, 'fixtures');
 
     const charts = await findCharts(chartsDir);
@@ -114,7 +114,7 @@ describe('Charts Loader', () => {
   });
 
   it('should handle empty directory gracefully', async () => {
-    const { findCharts } = require('../src/charts-loader.js');
+    const { findCharts } = require('../dist/charts-loader.js');
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-charts-'));
 
     try {
@@ -128,7 +128,7 @@ describe('Charts Loader', () => {
   });
 
   it('should handle non-existent directory gracefully', async () => {
-    const { findCharts } = require('../src/charts-loader.js');
+    const { findCharts } = require('../dist/charts-loader.js');
 
     const charts = await findCharts('/non/existent/path');
     // Should return undefined or empty object without throwing
@@ -142,7 +142,7 @@ describe('Tile Serving', () => {
   const chartsDir = path.join(__dirname, 'fixtures');
 
   before(async () => {
-    const { findCharts } = require('../src/charts-loader.js');
+    const { findCharts } = require('../dist/charts-loader.js');
     charts = await findCharts(chartsDir);
   });
 

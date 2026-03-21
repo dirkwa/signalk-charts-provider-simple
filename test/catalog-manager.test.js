@@ -17,7 +17,7 @@ const {
   getCatalogsWithInstalledCharts,
   getCachedCatalog,
   fetchCatalogRegistry: _fetchCatalogRegistry
-} = require('../src/utils/catalog-manager');
+} = require('../dist/utils/catalog-manager');
 
 const TEST_DATA_DIR = path.join(__dirname, 'fixtures', 'catalog-test-data');
 
