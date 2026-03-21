@@ -17,8 +17,8 @@
     "test:fixtures": "node test/fixtures/create-test-mbtiles.js",
     "lint": "eslint src test",
     "lint:fix": "eslint src test --fix",
-    "format": "prettier --write 'src/**/*.ts' 'test/**/*.js'",
-    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.js'",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.js' && eslint src test --fix",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.js' && eslint src test",
     "prepublishOnly": "npm run build"
   },
   "license": "MIT",

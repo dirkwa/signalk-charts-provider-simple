@@ -7,9 +7,14 @@ module.exports = [
     ignores: ['node_modules/**', 'public/js/**', 'dist/**']
   },
 
-  // TypeScript source files
+  // Base recommended rules for all files
   eslintJs.configs.recommended,
-  ...tseslint.configs.strictTypeChecked,
+
+  // TypeScript strict type-checked rules scoped to src/*.ts only
+  ...tseslint.configs.strictTypeChecked.map((config) => ({
+    ...config,
+    files: ['src/**/*.ts']
+  })),
   {
     files: ['src/**/*.ts'],
     languageOptions: {
@@ -55,10 +60,9 @@ module.exports = [
     }
   },
 
-  // Test files (remain JS)
+  // Test files (remain JS — no type checking)
   {
     files: ['test/**/*.js'],
-    ...tseslint.configs.disableTypeChecked,
     plugins: {
       prettier
     },
