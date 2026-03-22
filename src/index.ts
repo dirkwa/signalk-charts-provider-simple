@@ -134,6 +134,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const chartPath = props.chartPath || defaultChartsPath;
     if (!ensureDirectoryExists(chartPath)) {
       app.setPluginError(`Chart directory is not writable: ${chartPath}`);
+      app.setPluginStatus('Started (no chart directory)');
+      return;
     }
 
     initChartState(pluginDataDir);
