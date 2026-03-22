@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.9.0-beta.1] 2026-03-23
+### Changed:
+- Full strict TypeScript conversion — all source files rewritten with `strict: true`
+- Central type definitions in `src/types.ts` (40+ interfaces)
+- Removed `lodash` and `bluebird` dependencies (replaced with native JS/async-await)
+- Upgraded ESLint to typescript-eslint with strict type-checked config
+- Zero `as any`, `@ts-ignore`, `@ts-expect-error`, or `eslint-disable` in source
+- Plugin now uses `app.getDataDirPath()` instead of `app.config.configPath`
+
+### Fixed:
+- S-57/RNC conversion failed for charts with spaces or special characters (e.g. `ß`, umlauts) in path names
+- Conversion error messages were invisible in the UI (poll timing race condition)
+- Download failure errors for S-57/RNC/Pilot conversions were silently discarded
+- `schema()` crashed on read-only filesystems (was creating directories during config rendering)
+- `start({})` crashed when default chart directory was unwritable
+
 ## [1.8.5] 2026-03-20
 ### Fixed:
 - Direct (non-ZIP) downloads capped progress at 90% instead of showing full 0-100%

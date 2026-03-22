@@ -126,6 +126,17 @@ class DownloadManager extends EventEmitter {
       job.status = 'failed';
       job.error = (error instanceof Error ? error.message : String(error)) || 'Download failed';
       job.completedAt = Date.now();
+
+      for (const fileName of job.targetFiles) {
+        const filePath = path.join(job.targetDir, fileName);
+        try {
+          fs.unlinkSync(filePath);
+          console.log(`[${job.id}] Cleaned up partial file: ${fileName}`);
+        } catch {
+          // file may not exist yet
+        }
+      }
+
       this.emit('job-failed', job);
       console.error(`Download job ${job.id} failed:`, error);
     }
@@ -296,6 +307,14 @@ class DownloadManager extends EventEmitter {
             fileStream.on('error', (error: Error) => {
               fs.unlink(targetPath, () => {});
               reject(error);
+            });
+
+            response.on('error', () => {
+              fileStream.destroy();
+            });
+
+            response.on('aborted', () => {
+              fileStream.destroy();
             });
           }
         })

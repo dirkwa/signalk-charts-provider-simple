@@ -27,14 +27,16 @@ import {
   checkPodman,
   processS57Zip,
   getAllConversionProgress as getAllS57Progress,
-  getConversionProgress as getS57Progress
+  getConversionProgress as getS57Progress,
+  setConversionFailed as setS57Failed
 } from './utils/s57-converter';
 import {
   initRncConverter,
   processRncZip,
   processPilotTar,
   getAllConversionProgress as getAllRncProgress,
-  getConversionProgress as getRncProgress
+  getConversionProgress as getRncProgress,
+  setConversionFailed as setRncFailed
 } from './utils/rnc-converter';
 import { processGshhg, processShpBasemap } from './utils/s57-converter';
 import type {
@@ -1544,6 +1546,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       downloadManager.removeListener('job-failed', s57FailListener);
       removeInstall(chartNumber);
       setConvertingState(chartNumber, false);
+      setS57Failed(chartNumber, job.error ?? 'Download failed');
       cleanupDir(tmpDownloadDir);
     };
 
@@ -1631,6 +1634,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       downloadManager.removeListener('job-failed', rncFailListener);
       removeInstall(chartNumber);
       setConvertingState(chartNumber, false);
+      setRncFailed(chartNumber, job.error ?? 'Download failed');
       cleanupDir(tmpDownloadDir);
     };
 
@@ -1715,6 +1719,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       downloadManager.removeListener('job-failed', pilotFailListener);
       removeInstall(chartNumber);
       setConvertingState(chartNumber, false);
+      setRncFailed(chartNumber, job.error ?? 'Download failed');
       cleanupDir(tmpDownloadDir);
     };
 

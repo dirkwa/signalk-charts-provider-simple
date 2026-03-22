@@ -13,6 +13,7 @@ let catalogFolders = ['/']; // available folders for download target
 let catalogDownloadJobs = {}; // chartNumber -> jobId
 let catalogConverting = {}; // chartNumber -> true (S-57 conversion in progress)
 let catalogConversionProgress = {}; // chartNumber -> { status, message, map, zoom, percent }
+let catalogConversionErrors = {}; // chartNumber -> error message (persists until dismissed)
 let s57PodmanAvailable = false;
 
 // Tab activation handler
@@ -279,6 +280,7 @@ function renderChartList(catalogFile) {
     .map((chart) => {
       const cls = chart.urlClassification || { supported: false, format: 'unknown', label: 'Unknown' };
       const isConverting = !!catalogConverting[chart.number];
+      const conversionError = catalogConversionErrors[chart.number];
       const isInstalled = chart.installed && !isConverting;
       const hasUpdate =
         isInstalled &&
@@ -289,7 +291,14 @@ function renderChartList(catalogFile) {
         : '';
 
       let actionHtml = '';
-      if (isDownloading) {
+      if (conversionError) {
+        actionHtml = `
+          <div class="catalog-conversion-error">
+            <span class="conversion-error-text">${escapeHtml(conversionError)}</span>
+            <button class="btn-catalog-log" onclick="showConversionLog('${escapeAttr(chart.number)}')">Logs</button>
+            <button class="btn-catalog-dismiss" onclick="dismissConversionError('${escapeAttr(chart.number)}')">Dismiss</button>
+          </div>`;
+      } else if (isDownloading) {
         actionHtml = `
           <div class="catalog-download-progress" id="catalog-progress-${escapeId(chart.number)}">
             <div class="progress-bar"><div class="progress-fill" style="width: 0%"></div></div>
@@ -404,6 +413,11 @@ window.downloadCatalogChart = async function (chartNumber, catalogFile, url, zip
   }
 };
 
+window.dismissConversionError = function (chartNumber) {
+  delete catalogConversionErrors[chartNumber];
+  renderCatalogList();
+};
+
 async function pollCatalogDownloads() {
   const activeCharts = Object.keys(catalogDownloadJobs);
   if (activeCharts.length === 0) return;
@@ -490,14 +504,6 @@ async function pollCatalogDownloads() {
 }
 
 async function pollConversions() {
-  // Poll if there are active conversions OR active conversion progress
-  if (
-    Object.keys(catalogConverting).length === 0 &&
-    Object.keys(catalogConversionProgress).length === 0
-  ) {
-    return;
-  }
-
   try {
     // Fetch conversion progress
     const statusResp = await fetch(`${CATALOG_API_BASE}/catalog-s57-status`);
@@ -514,10 +520,13 @@ async function pollConversions() {
       // Merge both sources: catalog-manager converting + s57-converter progress
       catalogConverting = { ...(regData.converting || {}) };
       for (const key of Object.keys(catalogConversionProgress)) {
-        if (catalogConversionProgress[key].status === 'converting' ||
-            catalogConversionProgress[key].status === 'extracting' ||
-            catalogConversionProgress[key].status === 'pulling') {
+        const convStatus = catalogConversionProgress[key].status;
+        if (convStatus === 'converting' ||
+            convStatus === 'extracting' ||
+            convStatus === 'pulling') {
           catalogConverting[key] = true;
+        } else if (convStatus === 'failed' || convStatus === 'error') {
+          catalogConversionErrors[key] = catalogConversionProgress[key].message || 'Conversion failed';
         }
       }
       catalogInstalled = regData.installed || {};

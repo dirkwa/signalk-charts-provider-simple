@@ -459,6 +459,39 @@ select.catalog-folder-select:hover {
     border: none;
 }
 
+.catalog-conversion-error {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--md-sys-spacing-2);
+    font-size: 12px;
+    color: var(--md-sys-color-error, #ef4444);
+    background: var(--md-sys-color-error-container, #fef2f2);
+    padding: var(--md-sys-spacing-2) var(--md-sys-spacing-3);
+    border-radius: var(--md-sys-shape-corner-small, 4px);
+    max-width: 400px;
+}
+
+.catalog-conversion-error .conversion-error-text {
+    flex: 1;
+    word-break: break-word;
+}
+
+.btn-catalog-dismiss {
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid var(--md-sys-color-error, #ef4444);
+    border-radius: var(--md-sys-shape-corner-small, 4px);
+    background: transparent;
+    color: var(--md-sys-color-error, #ef4444);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.btn-catalog-dismiss:hover {
+    background: var(--md-sys-color-error, #ef4444);
+    color: var(--md-sys-color-on-error, #fff);
+}
+
 /* Source link */
 .catalog-source-link {
     display: flex;

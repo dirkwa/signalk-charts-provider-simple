@@ -1,6 +1,6 @@
 # Signal K Charts Provider Simple
 
-A lightweight, JavaScript-based Signal K server plugin for managing local nautical charts. Supports MBTiles, S-57 ENC, BSB raster, and world basemaps with automatic conversion via Podman containers.
+A lightweight Signal K server plugin for managing local nautical charts, written in strict TypeScript. Supports MBTiles, S-57 ENC, BSB raster, and world basemaps with automatic conversion via Podman containers.
 
 ## Features
 

@@ -33,6 +33,17 @@ export function getAllConversionProgress(): ConversionProgressMap {
   return { ...conversionProgress };
 }
 
+export function setConversionFailed(chartNumber: string, message: string): void {
+  conversionProgress[chartNumber] = {
+    status: 'failed',
+    message,
+    log: conversionProgress[chartNumber]?.log ?? []
+  };
+  setTimeout(() => {
+    delete conversionProgress[chartNumber];
+  }, 300000);
+}
+
 export function checkPodman(): Promise<PodmanStatus> {
   return new Promise((resolve) => {
     execFile('podman', ['--version'], (error, stdout) => {
@@ -144,10 +155,9 @@ function exportAllLayersToGeoJSON(
 
   const script = `
 set -e
-enc_files=$(find /input -name '*.000' -type f)
-count=$(echo "$enc_files" | wc -l)
+count=$(find /input -name '*.000' -type f | wc -l)
 i=0
-for enc in $enc_files; do
+find /input -name '*.000' -type f -print0 | while IFS= read -r -d '' enc; do
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"

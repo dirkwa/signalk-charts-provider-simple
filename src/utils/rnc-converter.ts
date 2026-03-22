@@ -29,6 +29,17 @@ export function getAllConversionProgress(): ConversionProgressMap {
   return { ...conversionProgress };
 }
 
+export function setConversionFailed(chartNumber: string, message: string): void {
+  conversionProgress[chartNumber] = {
+    status: 'failed',
+    message,
+    log: conversionProgress[chartNumber]?.log ?? []
+  };
+  setTimeout(() => {
+    delete conversionProgress[chartNumber];
+  }, 300000);
+}
+
 function checkGdalImage(): Promise<boolean> {
   return new Promise((resolve) => {
     execFile('podman', ['image', 'exists', GDAL_IMAGE], (error) => {
