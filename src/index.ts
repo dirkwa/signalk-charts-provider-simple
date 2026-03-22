@@ -132,7 +132,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     getDefaultChartsPath(); // ensure lazy init
     ensureDirectoryExists(defaultChartsPath);
     const chartPath = props.chartPath || defaultChartsPath;
-    ensureDirectoryExists(chartPath);
+    if (!ensureDirectoryExists(chartPath)) {
+      app.setPluginError(`Chart directory is not writable: ${chartPath}`);
+    }
 
     initChartState(pluginDataDir);
 
@@ -2029,9 +2031,14 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
   return { ...rest, ...v } as SanitizedChart;
 };
 
-const ensureDirectoryExists = (dirPath: string): void => {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath);
+const ensureDirectoryExists = (dirPath: string): boolean => {
+  try {
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+    }
+    return true;
+  } catch {
+    return false;
   }
 };
 
