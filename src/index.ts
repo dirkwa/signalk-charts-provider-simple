@@ -68,7 +68,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const configBasePath = path.dirname(path.dirname(pluginDataDir));
       defaultChartsPath = path.join(configBasePath, 'charts-simple');
       serverMajorVersion = app.config?.version ? parseInt(app.config.version.split('.')[0], 10) : 1;
-      ensureDirectoryExists(defaultChartsPath);
     }
     return defaultChartsPath;
   }
@@ -131,6 +130,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     props = { ...config };
 
     getDefaultChartsPath(); // ensure lazy init
+    ensureDirectoryExists(defaultChartsPath);
     const chartPath = props.chartPath || defaultChartsPath;
     ensureDirectoryExists(chartPath);
 
