@@ -546,8 +546,12 @@ async function pollConversions() {
       }
     }
 
-    // Always re-render to update progress text
-    renderCatalogList();
+    const hasActive = Object.keys(catalogConverting).length > 0 ||
+      Object.keys(catalogConversionErrors).length > 0 ||
+      justFinished.length > 0;
+    if (hasActive) {
+      renderCatalogList();
+    }
   } catch (_e) {
     // ignore
   }

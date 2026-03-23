@@ -1,8 +1,12 @@
 # Changelog
 
+## [1.9.0-beta.4] 2026-03-24
+### Fixed:
+- Catalog tab background flashing during conversions (re-rendered every 3s unconditionally)
+
 ## [1.9.0-beta.3] 2026-03-24
 ### Fixed:
-- UI flashing in multiple tabs during chart downloads and conversions
+- UI flashing in Manage Charts and Download tabs during chart downloads and conversions
 - S-57 zoom level selects triggered file explorer when clicked (controls were inside the drop zone)
 
 ## [1.9.0-beta.2] 2026-03-23
