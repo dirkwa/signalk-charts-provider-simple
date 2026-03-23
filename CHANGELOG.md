@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.9.0-beta.2] 2026-03-23
+### Fixed:
+- S-57 conversion failed on ARM64 with `Exec format error` — replaced amd64-only `klokantech/tippecanoe` with multi-arch image built from `felt/tippecanoe` ([#4](https://github.com/dirkwa/signalk-charts-provider-simple/issues/4))
+- S-57/RNC conversion failed with exit code 126 under systemd socket-activated Signal K — inherited `LISTEN_FDS` env vars corrupted Podman's internal state ([#3](https://github.com/dirkwa/signalk-charts-provider-simple/issues/3))
+- macOS resource fork files (`._*.000`) were picked up as S-57 ENC files during conversion
+
+### Added:
+- Multi-arch tippecanoe container image (amd64 + arm64) with GitHub Actions build workflow
+
 ## [1.9.0-beta.1] 2026-03-23
 ### Changed:
 - Full strict TypeScript conversion — all source files rewritten with `strict: true`
