@@ -1,9 +1,13 @@
 # Changelog
 
+## [1.9.0] 2026-03-24
+
+Full strict TypeScript rewrite, ARM64 support for S-57 conversion, systemd compatibility, and UI improvements. See beta entries below for details.
+
 ## [1.9.0-beta.4] 2026-03-24
 ### Fixed:
 - Background flashing in all tabs during downloads and conversions (Catalog, Convert, Manage Charts, Download)
-- Convert tab progress text now updates in-place without rebuilding the DOM (re-rendered every 3s unconditionally)
+- Convert tab progress text now updates in-place without rebuilding the DOM
 
 ## [1.9.0-beta.3] 2026-03-24
 ### Fixed:

@@ -1,6 +1,6 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "1.9.0-beta.4",
+  "version": "1.9.0",
   "description": "Simple Signal K chart provider for local MBTiles with web and download management",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
