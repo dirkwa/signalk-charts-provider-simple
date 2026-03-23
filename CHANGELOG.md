@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.9.0-beta.3] 2026-03-24
+### Fixed:
+- UI flashing in multiple tabs during chart downloads and conversions
+- S-57 zoom level selects triggered file explorer when clicked (controls were inside the drop zone)
+
 ## [1.9.0-beta.2] 2026-03-23
 ### Fixed:
 - S-57 conversion failed on ARM64 with `Exec format error` — replaced amd64-only `klokantech/tippecanoe` with multi-arch image built from `felt/tippecanoe` ([#4](https://github.com/dirkwa/signalk-charts-provider-simple/issues/4))
