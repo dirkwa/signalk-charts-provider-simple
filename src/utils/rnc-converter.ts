@@ -59,14 +59,19 @@ function checkGdalImage(): Promise<boolean> {
 function pullGdalImage(): Promise<void> {
   return new Promise((resolve, reject) => {
     debug('Pulling GDAL image...');
-    execFile('podman', ['pull', GDAL_IMAGE], { timeout: 300000, env: podmanEnv() }, (error, _stdout, stderr) => {
-      if (error) {
-        reject(new Error(`Failed to pull GDAL image: ${stderr || error.message}`));
-      } else {
-        debug('GDAL image pulled successfully');
-        resolve();
+    execFile(
+      'podman',
+      ['pull', GDAL_IMAGE],
+      { timeout: 300000, env: podmanEnv() },
+      (error, _stdout, stderr) => {
+        if (error) {
+          reject(new Error(`Failed to pull GDAL image: ${stderr || error.message}`));
+        } else {
+          debug('GDAL image pulled successfully');
+          resolve();
+        }
       }
-    });
+    );
   });
 }
 
@@ -214,15 +219,20 @@ function addOverviews(mbtilesFile: string, chartNumber: string): Promise<void> {
 
     appendLog(chartNumber, `Adding overview zoom levels for ${name}...`);
 
-    const child = execFile('podman', args, { timeout: 300000, env: podmanEnv() }, (error, _stdout, stderr) => {
-      if (error) {
-        appendLog(chartNumber, `Warning: gdaladdo failed: ${stderr || error.message}`);
-        reject(error);
-      } else {
-        appendLog(chartNumber, `Overviews added for ${name}`);
-        resolve();
+    const child = execFile(
+      'podman',
+      args,
+      { timeout: 300000, env: podmanEnv() },
+      (error, _stdout, stderr) => {
+        if (error) {
+          appendLog(chartNumber, `Warning: gdaladdo failed: ${stderr || error.message}`);
+          reject(error);
+        } else {
+          appendLog(chartNumber, `Overviews added for ${name}`);
+          resolve();
+        }
       }
-    });
+    );
 
     child.on('error', reject);
   });

@@ -1,6 +1,6 @@
 FROM alpine:3.21 AS builder
 
-RUN apk add --no-cache git g++ make sqlite-dev zlib-dev
+RUN apk add --no-cache git g++ make bash sqlite-dev zlib-dev
 
 RUN git clone --depth 1 https://github.com/felt/tippecanoe.git /src/tippecanoe
 WORKDIR /src/tippecanoe

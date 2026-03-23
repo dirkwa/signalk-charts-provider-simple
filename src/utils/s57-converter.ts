@@ -75,14 +75,19 @@ function checkImage(image: string): Promise<boolean> {
 function pullImage(image: string): Promise<void> {
   return new Promise((resolve, reject) => {
     debug(`Pulling image: ${image}`);
-    execFile('podman', ['pull', image], { timeout: 600000, env: podmanEnv() }, (error, _stdout, stderr) => {
-      if (error) {
-        reject(new Error(`Failed to pull ${image}: ${stderr || error.message}`));
-      } else {
-        debug(`Image pulled: ${image}`);
-        resolve();
+    execFile(
+      'podman',
+      ['pull', image],
+      { timeout: 600000, env: podmanEnv() },
+      (error, _stdout, stderr) => {
+        if (error) {
+          reject(new Error(`Failed to pull ${image}: ${stderr || error.message}`));
+        } else {
+          debug(`Image pulled: ${image}`);
+          resolve();
+        }
       }
-    });
+    );
   });
 }
 
