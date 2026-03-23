@@ -14,7 +14,15 @@ import type {
 } from '../types';
 
 const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
-const TIPPECANOE_IMAGE = 'docker.io/klokantech/tippecanoe';
+const TIPPECANOE_IMAGE = 'ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe';
+
+function podmanEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.LISTEN_FDS;
+  delete env.LISTEN_PID;
+  delete env.LISTEN_FDNAMES;
+  return env;
+}
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
@@ -46,7 +54,7 @@ export function setConversionFailed(chartNumber: string, message: string): void 
 
 export function checkPodman(): Promise<PodmanStatus> {
   return new Promise((resolve) => {
-    execFile('podman', ['--version'], (error, stdout) => {
+    execFile('podman', ['--version'], { env: podmanEnv() }, (error, stdout) => {
       if (error) {
         resolve({ available: false, version: null });
       } else {
@@ -58,7 +66,7 @@ export function checkPodman(): Promise<PodmanStatus> {
 
 function checkImage(image: string): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('podman', ['image', 'exists', image], (error) => {
+    execFile('podman', ['image', 'exists', image], { env: podmanEnv() }, (error) => {
       resolve(!error);
     });
   });
@@ -67,7 +75,7 @@ function checkImage(image: string): Promise<boolean> {
 function pullImage(image: string): Promise<void> {
   return new Promise((resolve, reject) => {
     debug(`Pulling image: ${image}`);
-    execFile('podman', ['pull', image], { timeout: 600000 }, (error, _stdout, stderr) => {
+    execFile('podman', ['pull', image], { timeout: 600000, env: podmanEnv() }, (error, _stdout, stderr) => {
       if (error) {
         reject(new Error(`Failed to pull ${image}: ${stderr || error.message}`));
       } else {
@@ -108,7 +116,7 @@ function findEncFiles(dir: string): string[] {
       const fullPath = path.join(d, entry.name);
       if (entry.isDirectory()) {
         scan(fullPath);
-      } else if (entry.name.endsWith('.000')) {
+      } else if (entry.name.endsWith('.000') && !entry.name.startsWith('._')) {
         files.push(fullPath);
       }
     }
@@ -155,9 +163,9 @@ function exportAllLayersToGeoJSON(
 
   const script = `
 set -e
-count=$(find /input -name '*.000' -type f | wc -l)
+count=$(find /input -name '*.000' ! -name '._*' -type f | wc -l)
 i=0
-find /input -name '*.000' -type f -print0 | while IFS= read -r -d '' enc; do
+find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
@@ -186,7 +194,7 @@ echo "PROGRESS: Export complete"
         '-c',
         script
       ],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
+      { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
     );
 
     child.stdout.on('data', (data: Buffer) => {
@@ -272,7 +280,8 @@ function runTippecanoe(
     debug(`Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}`);
 
     const child = spawn('podman', args, {
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: podmanEnv()
     });
 
     child.stdout.on('data', (data: Buffer) => {
@@ -565,7 +574,7 @@ echo "DONE"
         '-c',
         script
       ],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
+      { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
     );
 
     child.stdout.on('data', (data: Buffer) => {
@@ -669,7 +678,7 @@ export async function processShpBasemap(
           '-c',
           `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`
         ],
-        { timeout: 120000 },
+        { timeout: 120000, env: podmanEnv() },
         (error, _stdout, stderr) => {
           if (error) {
             reject(new Error(`tar extraction failed: ${stderr || error.message}`));
@@ -756,7 +765,7 @@ echo "DONE"
           '-c',
           script
         ],
-        { stdio: ['ignore', 'pipe', 'pipe'] }
+        { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
       );
 
       child.stdout.on('data', (data: Buffer) => {

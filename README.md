@@ -99,7 +99,7 @@ The interface provides four tabs:
 To convert S-57 ENC, BSB raster, Pilot Charts, or basemaps, [Podman](https://podman.io/) must be installed. The plugin uses standard container images that are pulled automatically on first use:
 
 - `ghcr.io/osgeo/gdal:alpine-small-latest` — GDAL for format conversion
-- `docker.io/klokantech/tippecanoe` — tippecanoe for vector tile generation
+- `ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe` — tippecanoe for vector tile generation (multi-arch: amd64 + arm64)
 
 ```bash
 # Debian / Ubuntu / Raspberry Pi OS

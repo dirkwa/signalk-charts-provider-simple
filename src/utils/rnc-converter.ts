@@ -12,6 +12,14 @@ import type {
 
 const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
 
+function podmanEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.LISTEN_FDS;
+  delete env.LISTEN_PID;
+  delete env.LISTEN_FDNAMES;
+  return env;
+}
+
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
 
@@ -42,7 +50,7 @@ export function setConversionFailed(chartNumber: string, message: string): void 
 
 function checkGdalImage(): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('podman', ['image', 'exists', GDAL_IMAGE], (error) => {
+    execFile('podman', ['image', 'exists', GDAL_IMAGE], { env: podmanEnv() }, (error) => {
       resolve(!error);
     });
   });
@@ -51,7 +59,7 @@ function checkGdalImage(): Promise<boolean> {
 function pullGdalImage(): Promise<void> {
   return new Promise((resolve, reject) => {
     debug('Pulling GDAL image...');
-    execFile('podman', ['pull', GDAL_IMAGE], { timeout: 300000 }, (error, _stdout, stderr) => {
+    execFile('podman', ['pull', GDAL_IMAGE], { timeout: 300000, env: podmanEnv() }, (error, _stdout, stderr) => {
       if (error) {
         reject(new Error(`Failed to pull GDAL image: ${stderr || error.message}`));
       } else {
@@ -142,7 +150,8 @@ export function convertKapToMbtiles(
 
     const child = spawn('podman', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 0
+      timeout: 0,
+      env: podmanEnv()
     });
 
     let output = '';
@@ -205,7 +214,7 @@ function addOverviews(mbtilesFile: string, chartNumber: string): Promise<void> {
 
     appendLog(chartNumber, `Adding overview zoom levels for ${name}...`);
 
-    const child = execFile('podman', args, { timeout: 300000 }, (error, _stdout, stderr) => {
+    const child = execFile('podman', args, { timeout: 300000, env: podmanEnv() }, (error, _stdout, stderr) => {
       if (error) {
         appendLog(chartNumber, `Warning: gdaladdo failed: ${stderr || error.message}`);
         reject(error);
@@ -321,7 +330,7 @@ export async function processRncZip(
           '-c',
           script + ' && echo "PROGRESS: All done"'
         ],
-        { stdio: ['ignore', 'pipe', 'pipe'] }
+        { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
       );
 
       child.stdout.on('data', (data: Buffer) => {
@@ -440,7 +449,7 @@ export async function processPilotTar(
           '-c',
           `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`
         ],
-        { timeout: 120000 },
+        { timeout: 120000, env: podmanEnv() },
         (error, _stdout, stderr) => {
           if (error) {
             reject(new Error(`tar extraction failed: ${stderr || error.message}`));
@@ -504,7 +513,7 @@ echo "PROGRESS: All done"
           '-c',
           script
         ],
-        { stdio: ['ignore', 'pipe', 'pipe'] }
+        { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
       );
 
       child.stdout.on('data', (data: Buffer) => {
