@@ -144,6 +144,8 @@ async function startDownload() {
 }
 
 // Load and display active downloads
+let previousJobCount = 0;
+
 async function loadActiveDownloads() {
   try {
     const response = await fetch(`${DOWNLOAD_API_BASE}/download-jobs`);
@@ -153,27 +155,38 @@ async function loadActiveDownloads() {
     if (!container) return;
 
     if (!jobs || jobs.length === 0) {
-      container.innerHTML = '';
+      if (container.innerHTML !== '') container.innerHTML = '';
+      previousJobCount = 0;
       return;
     }
 
-    // Filter to show only active or recent jobs
     const recentJobs = jobs.filter(job =>
       job.status === 'queued' ||
       job.status === 'downloading' ||
       job.status === 'extracting' ||
-      (job.completedAt && (Date.now() - job.completedAt) < 300000) // Last 5 minutes
+      (job.completedAt && (Date.now() - job.completedAt) < 300000)
     );
 
     if (recentJobs.length === 0) {
-      container.innerHTML = '';
+      if (container.innerHTML !== '') container.innerHTML = '';
+      previousJobCount = 0;
       return;
     }
 
-    container.innerHTML = `
-      <h3>Download Jobs</h3>
-      ${recentJobs.map(job => renderDownloadJob(job)).join('')}
-    `;
+    if (recentJobs.length !== previousJobCount) {
+      container.innerHTML = `
+        <h3>Download Jobs</h3>
+        ${recentJobs.map(job => `<div id="job-${job.id}">${renderDownloadJob(job)}</div>`).join('')}
+      `;
+      previousJobCount = recentJobs.length;
+    } else {
+      for (const job of recentJobs) {
+        const el = document.getElementById(`job-${job.id}`);
+        if (el) {
+          el.innerHTML = renderDownloadJob(job);
+        }
+      }
+    }
   } catch (error) {
     console.error('Error loading download jobs:', error);
   }

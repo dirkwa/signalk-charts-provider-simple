@@ -54,16 +54,16 @@ async function initConvertTab() {
           </div>
           <div class="convert-upload-text">Drop S-57 ENC ZIP here or click to select</div>
           <input type="file" id="s57FileInput" accept=".zip" style="display:none" onchange="handleConvertFile(this, 's57')">
-          <div class="convert-upload-options">
-            <label>Zoom levels:</label>
-            <select class="catalog-zoom-select" id="convertS57Minzoom">
-              ${[6, 7, 8, 9, 10, 11, 12].map((z) => `<option value="${z}" ${z === 9 ? 'selected' : ''}>${z}</option>`).join('')}
-            </select>
-            <span class="catalog-zoom-dash">-</span>
-            <select class="catalog-zoom-select" id="convertS57Maxzoom">
-              ${[12, 13, 14, 15, 16, 17, 18].map((z) => `<option value="${z}" ${z === 16 ? 'selected' : ''}>${z}</option>`).join('')}
-            </select>
-          </div>
+        </div>
+        <div class="convert-upload-options">
+          <label>Zoom levels:</label>
+          <select class="catalog-zoom-select" id="convertS57Minzoom">
+            ${[6, 7, 8, 9, 10, 11, 12].map((z) => `<option value="${z}" ${z === 9 ? 'selected' : ''}>${z}</option>`).join('')}
+          </select>
+          <span class="catalog-zoom-dash">-</span>
+          <select class="catalog-zoom-select" id="convertS57Maxzoom">
+            ${[12, 13, 14, 15, 16, 17, 18].map((z) => `<option value="${z}" ${z === 16 ? 'selected' : ''}>${z}</option>`).join('')}
+          </select>
         </div>
       </div>
 

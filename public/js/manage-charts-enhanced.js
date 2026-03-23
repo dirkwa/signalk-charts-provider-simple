@@ -51,19 +51,53 @@ async function loadCharts(silent = false) {
 }
 
 function setupAutoRefresh() {
-    // Clear existing interval
     if (refreshInterval) {
         clearInterval(refreshInterval);
         refreshInterval = null;
     }
 
-    // Check if any charts are downloading or converting
     const hasActive = chartsData.some(chart => chart.downloading || chart.converting);
 
     if (hasActive) {
-        // Refresh every 2 seconds while charts are downloading/converting (silent mode)
-        refreshInterval = setInterval(() => {
-            loadCharts(true);
+        refreshInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`${API_BASE}/local-charts`);
+                const data = await response.json();
+                const newCharts = data.charts || [];
+
+                let needsFullRender = false;
+
+                if (newCharts.length !== chartsData.length) {
+                    needsFullRender = true;
+                } else {
+                    for (const newChart of newCharts) {
+                        const old = chartsData.find(c => c.relativePath === newChart.relativePath);
+                        if (!old) {
+                            needsFullRender = true;
+                            break;
+                        }
+                        if (old.downloading !== newChart.downloading || old.converting !== newChart.converting) {
+                            needsFullRender = true;
+                            break;
+                        }
+                    }
+                }
+
+                chartsData = newCharts;
+                foldersData = data.folders || [];
+                basePath = data.basePath || '';
+
+                if (needsFullRender) {
+                    renderChartsUI();
+                }
+
+                if (!chartsData.some(c => c.downloading || c.converting)) {
+                    clearInterval(refreshInterval);
+                    refreshInterval = null;
+                }
+            } catch (error) {
+                // ignore poll errors
+            }
         }, 2000);
     }
 }
