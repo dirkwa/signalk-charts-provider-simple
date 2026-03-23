@@ -2,7 +2,8 @@
 
 ## [1.9.0-beta.4] 2026-03-24
 ### Fixed:
-- Catalog tab background flashing during conversions (re-rendered every 3s unconditionally)
+- Background flashing in all tabs during downloads and conversions (Catalog, Convert, Manage Charts, Download)
+- Convert tab progress text now updates in-place without rebuilding the DOM (re-rendered every 3s unconditionally)
 
 ## [1.9.0-beta.3] 2026-03-24
 ### Fixed:

@@ -230,9 +230,32 @@ async function pollConvertJobs() {
         }
       }
     }
-    renderConvertJobs();
+    let needsFullRender = false;
+    for (const id of activeIds) {
+      const job = convertActiveJobs[id];
+      if (job.status === 'completed' || job.status === 'failed') {
+        needsFullRender = true;
+        break;
+      }
+    }
+
+    if (needsFullRender) {
+      renderConvertJobs();
+    } else {
+      updateConvertJobsInPlace();
+    }
   } catch (_e) {
     // ignore
+  }
+}
+
+function updateConvertJobsInPlace() {
+  for (const [id, job] of Object.entries(convertActiveJobs)) {
+    const el = document.getElementById(`convert-job-${id}`);
+    if (el) {
+      const textEl = el.querySelector('.progress-text');
+      if (textEl) textEl.textContent = job.message || 'Converting...';
+    }
   }
 }
 
@@ -257,7 +280,7 @@ function renderConvertJobs() {
           ? `<button class="btn-catalog-log" onclick="showConvertLog('${escapeConvertAttr(job.chartNumber)}')">Logs</button>`
           : '';
         return `
-          <div class="download-job ${statusClass}">
+          <div class="download-job ${statusClass}" id="convert-job-${id}">
             <div class="job-header">
               <span class="job-name">${escapeConvertHtml(job.fileName)}</span>
               <span class="job-status">${escapeConvertHtml(job.status)}</span>
