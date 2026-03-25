@@ -24,7 +24,6 @@ import {
 } from './utils/catalog-manager';
 import {
   initS57Converter,
-  checkPodman,
   processS57Zip,
   getAllConversionProgress as getAllS57Progress,
   getConversionProgress as getS57Progress,
@@ -162,8 +161,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       );
     }
 
-    initS57Converter(app.debug.bind(app));
-    initRncConverter(app.debug.bind(app));
+    const runJobFn = app.runContainerJob.bind(app);
+    initS57Converter(app.debug.bind(app), runJobFn);
+    initRncConverter(app.debug.bind(app), runJobFn);
 
     startCatalogUpdateChecker();
 
@@ -1092,34 +1092,48 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/catalog-s57-status', async (_req: Request, res: Response) => {
-      try {
-        const podman = await checkPodman();
-        res.json({
-          podmanAvailable: podman.available,
-          podmanVersion: podman.version,
-          conversions: { ...getAllS57Progress(), ...getAllRncProgress() }
-        });
-      } catch {
-        res.json({ podmanAvailable: false, podmanVersion: null, conversions: {} });
-      }
+    router.get('/catalog-s57-status', (_req: Request, res: Response) => {
+      const runtime = app.getContainerRuntime();
+      const activeJobs = app.listContainerJobs().filter(
+        (j) => j.status === 'running' || j.status === 'pulling'
+      );
+      res.json({
+        podmanAvailable: runtime !== null,
+        podmanVersion: runtime?.version ?? null,
+        runtime: runtime?.runtime ?? null,
+        conversions: { ...getAllS57Progress(), ...getAllRncProgress() },
+        activeJobs: activeJobs.length
+      });
     });
 
     router.get('/catalog-s57-log/:chartNumber', (req: Request, res: Response) => {
+      const chartNumber = (req.params as Record<string, string>).chartNumber;
+      const tail = parseInt(req.query.tail as string) || 100;
+
       const progress =
-        getS57Progress((req.params as Record<string, string>).chartNumber) ||
-        getRncProgress((req.params as Record<string, string>).chartNumber);
-      if (!progress) {
-        res.json({ log: [], status: null });
+        getS57Progress(chartNumber) || getRncProgress(chartNumber);
+      if (progress) {
+        const log = progress.log || [];
+        res.json({
+          log: log.slice(-tail),
+          status: progress.status,
+          message: progress.message
+        });
         return;
       }
-      const tail = parseInt(req.query.tail as string) || 100;
-      const log = progress.log || [];
-      res.json({
-        log: log.slice(-tail),
-        status: progress.status,
-        message: progress.message
-      });
+
+      const jobs = app.listContainerJobs(chartNumber);
+      if (jobs.length > 0) {
+        const job = jobs[jobs.length - 1];
+        res.json({
+          log: job.log.slice(-tail),
+          status: job.status,
+          message: job.error ?? job.label ?? null
+        });
+        return;
+      }
+
+      res.json({ log: [], status: null });
     });
 
     router.get('/catalog-updates', (_req: Request, res: Response) => {
@@ -1228,10 +1242,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         const validatedFile = uploadedFile;
         void (async () => {
-          const podmanStatus = await checkPodman();
-          if (!podmanStatus.available) {
+          if (!app.getContainerRuntime()) {
             cleanupDir(tmpDir);
-            res.status(400).json({ success: false, error: 'Podman is not available' });
+            res.status(400).json({ success: false, error: 'No container runtime available' });
             return;
           }
 

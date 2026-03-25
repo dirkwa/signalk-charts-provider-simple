@@ -1,4 +1,3 @@
-import { execFile, spawn } from 'child_process';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
@@ -8,29 +7,26 @@ import type {
   ConversionProgressMap,
   S57ConversionResult,
   S57ConversionOptions,
-  PodmanStatus,
   StatusCallback,
-  DebugFunction
+  DebugFunction,
+  ContainerJobConfig,
+  ContainerJobResult
 } from '../types';
 
 const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
 const TIPPECANOE_IMAGE = 'ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe';
 
-function podmanEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.LISTEN_FDS;
-  delete env.LISTEN_PID;
-  delete env.LISTEN_FDNAMES;
-  return env;
-}
+export type RunJob = (config: ContainerJobConfig) => Promise<ContainerJobResult>;
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
 
 let debug: DebugFunction = () => {};
+let runJob: RunJob;
 
-export function initS57Converter(debugFn: DebugFunction): void {
+export function initS57Converter(debugFn: DebugFunction, runJobFn: RunJob): void {
   debug = debugFn || (() => {});
+  runJob = runJobFn;
 }
 
 export function getConversionProgress(chartNumber: string): ConversionProgress | null {
@@ -52,44 +48,6 @@ export function setConversionFailed(chartNumber: string, message: string): void 
   }, 300000);
 }
 
-export function checkPodman(): Promise<PodmanStatus> {
-  return new Promise((resolve) => {
-    execFile('podman', ['--version'], { env: podmanEnv() }, (error, stdout) => {
-      if (error) {
-        resolve({ available: false, version: null });
-      } else {
-        resolve({ available: true, version: stdout.trim() });
-      }
-    });
-  });
-}
-
-function checkImage(image: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile('podman', ['image', 'exists', image], { env: podmanEnv() }, (error) => {
-      resolve(!error);
-    });
-  });
-}
-
-function pullImage(image: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    debug(`Pulling image: ${image}`);
-    execFile(
-      'podman',
-      ['pull', image],
-      { timeout: 600000, env: podmanEnv() },
-      (error, _stdout, stderr) => {
-        if (error) {
-          reject(new Error(`Failed to pull ${image}: ${stderr || error.message}`));
-        } else {
-          debug(`Image pulled: ${image}`);
-          resolve();
-        }
-      }
-    );
-  });
-}
 
 async function extractZip(zipPath: string, targetDir: string): Promise<string[]> {
   await fs
@@ -157,7 +115,7 @@ function setProgress(chartNumber: string, status: string, message: string): void
   }
 }
 
-function exportAllLayersToGeoJSON(
+async function exportAllLayersToGeoJSON(
   encDir: string,
   encFiles: string[],
   geojsonDir: string,
@@ -184,26 +142,15 @@ done
 echo "PROGRESS: Export complete"
 `;
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      'podman',
-      [
-        'run',
-        '--rm',
-        '-v',
-        `${encDir}:/input:ro,Z`,
-        '-v',
-        `${geojsonDir}:/output:Z`,
-        GDAL_IMAGE,
-        'sh',
-        '-c',
-        script
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
-    );
-
-    child.stdout.on('data', (data: Buffer) => {
-      const text = data.toString().trim();
+  const result = await runJob({
+    image: GDAL_IMAGE,
+    command: ['sh', '-c', script],
+    inputs: { '/input': encDir },
+    outputs: { '/output': geojsonDir },
+    timeout: 0,
+    label: `S-57 GDAL export ${chartNumber}`,
+    onProgress: ({ data }: { data: string }) => {
+      const text = data.trim();
       if (text) {
         appendLog(chartNumber, text);
         const match = text.match(/PROGRESS: Processing (\S+)/);
@@ -211,30 +158,15 @@ echo "PROGRESS: Export complete"
           setProgress(chartNumber, 'converting', `Exporting ${match[1]}...`);
         }
       }
-    });
-
-    child.stderr.on('data', (data: Buffer) => {
-      const text = data.toString().trim();
-      if (text) {
-        appendLog(chartNumber, text);
-      }
-    });
-
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`GDAL export failed with exit code ${code}`));
-      } else {
-        resolve();
-      }
-    });
-
-    child.on('error', (err) => {
-      reject(new Error(`Failed to start GDAL container: ${err.message}`));
-    });
+    }
   });
+
+  if (result.status === 'failed') {
+    throw new Error(result.error ?? `GDAL export failed (exit ${result.exitCode})`);
+  }
 }
 
-function runTippecanoe(
+async function runTippecanoe(
   geojsonDir: string,
   outputMbtiles: string,
   chartNumber: string,
@@ -258,18 +190,14 @@ function runTippecanoe(
   }
 
   if (layerArgs.length === 0) {
-    return Promise.reject(new Error('No valid GeoJSON layers to process'));
+    throw new Error('No valid GeoJSON layers to process');
   }
 
-  return new Promise((resolve, reject) => {
-    const args = [
-      'run',
-      '--rm',
-      '-v',
-      `${geojsonDir}:/input:ro,Z`,
-      '-v',
-      `${path.dirname(outputMbtiles)}:/output:Z`,
-      TIPPECANOE_IMAGE,
+  debug(`Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}`);
+
+  const result = await runJob({
+    image: TIPPECANOE_IMAGE,
+    command: [
       'tippecanoe',
       '-o',
       `/output/${path.basename(outputMbtiles)}`,
@@ -280,47 +208,32 @@ function runTippecanoe(
       '--no-tile-size-limit',
       '--force',
       ...layerArgs
-    ];
-
-    debug(`Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}`);
-
-    const child = spawn('podman', args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: podmanEnv()
-    });
-
-    child.stdout.on('data', (data: Buffer) => {
-      const text = data.toString().trim();
+    ],
+    inputs: { '/input': geojsonDir },
+    outputs: { '/output': path.dirname(outputMbtiles) },
+    timeout: 0,
+    label: `S-57 tippecanoe ${chartNumber}`,
+    onProgress: ({ data }: { data: string }) => {
+      const text = data.trim();
       if (text) {
         appendLog(chartNumber, text);
       }
-
+      if (!chartNumber || !conversionProgress[chartNumber]) {
+        return;
+      }
       const match = text.match(/(\d+\.\d+)%/);
-      if (match && chartNumber && conversionProgress[chartNumber]) {
+      if (match) {
         const pct = parseFloat(match[1]);
         conversionProgress[chartNumber].message = `Generating tiles: ${Math.round(pct)}%`;
+      } else if (text.includes('writing') || text.includes('Writing')) {
+        conversionProgress[chartNumber].message = 'Writing MBTiles file...';
       }
-    });
-
-    child.stderr.on('data', (data: Buffer) => {
-      const text = data.toString().trim();
-      if (text) {
-        appendLog(chartNumber, text);
-      }
-    });
-
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`tippecanoe failed with exit code ${code}`));
-      } else {
-        resolve();
-      }
-    });
-
-    child.on('error', (err) => {
-      reject(new Error(`Failed to start tippecanoe: ${err.message}`));
-    });
+    }
   });
+
+  if (result.status === 'failed') {
+    throw new Error(result.error ?? `tippecanoe failed (exit ${result.exitCode})`);
+  }
 }
 
 export async function processS57Zip(
@@ -346,24 +259,6 @@ export async function processS57Zip(
   }
 
   try {
-    statusFn('checking', 'Checking Podman...');
-    const podman = await checkPodman();
-    if (!podman.available) {
-      throw new Error('Podman is not installed.');
-    }
-
-    statusFn('pulling', 'Checking container images...');
-    setProgress(chartNumber, 'pulling', 'Checking GDAL image...');
-    if (!(await checkImage(GDAL_IMAGE))) {
-      setProgress(chartNumber, 'pulling', 'Pulling GDAL image...');
-      await pullImage(GDAL_IMAGE);
-    }
-    setProgress(chartNumber, 'pulling', 'Checking tippecanoe image...');
-    if (!(await checkImage(TIPPECANOE_IMAGE))) {
-      setProgress(chartNumber, 'pulling', 'Pulling tippecanoe image...');
-      await pullImage(TIPPECANOE_IMAGE);
-    }
-
     statusFn('extracting', 'Extracting ENC files...');
     setProgress(chartNumber, 'extracting', 'Extracting ENC files...');
     let extracted: string[];
@@ -539,8 +434,7 @@ export async function processGshhg(
   const outputName = `gshhg-basemap-${resolution}.mbtiles`;
   const outputPath = path.join(chartsDir, outputName);
 
-  await new Promise<void>((resolve, reject) => {
-    const script = `
+  const script = `
 set -e
 echo "Rasterizing shapefile..."
 gdal_rasterize \
@@ -563,27 +457,15 @@ gdaladdo -r average /output/${outputName} 2 4 8 16 32 64 128 256
 echo "DONE"
 `;
 
-    const child = spawn(
-      'podman',
-      [
-        'run',
-        '--rm',
-        '-v',
-        `${shpDir}:/input:ro,Z`,
-        '-v',
-        `${tmpDir}:/work:Z`,
-        '-v',
-        `${chartsDir}:/output:Z`,
-        GDAL_IMAGE,
-        'sh',
-        '-c',
-        script
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
-    );
-
-    child.stdout.on('data', (data: Buffer) => {
-      const text = data.toString().trim();
+  const gshhgResult = await runJob({
+    image: GDAL_IMAGE,
+    command: ['sh', '-c', script],
+    inputs: { '/input': shpDir },
+    outputs: { '/work': tmpDir, '/output': chartsDir },
+    timeout: 0,
+    label: `GSHHG rasterize ${chartNumber}`,
+    onProgress: ({ data }: { data: string }) => {
+      const text = data.trim();
       if (text) {
         appendLog(chartNumber, text);
         if (text.includes('Creating MBTiles')) {
@@ -592,27 +474,12 @@ echo "DONE"
           setProgress(chartNumber, 'converting', 'Adding zoom levels...');
         }
       }
-    });
-
-    child.stderr.on('data', (data: Buffer) => {
-      const text = data.toString().trim();
-      if (text) {
-        appendLog(chartNumber, text);
-      }
-    });
-
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`GDAL rasterization failed (exit ${code})`));
-      } else {
-        resolve();
-      }
-    });
-
-    child.on('error', (err) => {
-      reject(new Error(`Failed to start GDAL: ${err.message}`));
-    });
+    }
   });
+
+  if (gshhgResult.status === 'failed') {
+    throw new Error(gshhgResult.error ?? `GDAL rasterization failed (exit ${gshhgResult.exitCode})`);
+  }
 
   try {
     const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
@@ -660,39 +527,20 @@ export async function processShpBasemap(
   }
 
   try {
-    const podman = await checkPodman();
-    if (!podman.available) {
-      throw new Error('Podman is not installed.');
-    }
-
     setProgress(chartNumber, 'extracting', 'Extracting shapefiles...');
     appendLog(chartNumber, 'Extracting .tar.xz archive...');
 
-    await new Promise<void>((resolve, reject) => {
-      execFile(
-        'podman',
-        [
-          'run',
-          '--rm',
-          '-v',
-          `${path.dirname(tarPath)}:/archive:ro,Z`,
-          '-v',
-          `${tmpDir}:/output:Z`,
-          GDAL_IMAGE,
-          'sh',
-          '-c',
-          `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`
-        ],
-        { timeout: 120000, env: podmanEnv() },
-        (error, _stdout, stderr) => {
-          if (error) {
-            reject(new Error(`tar extraction failed: ${stderr || error.message}`));
-          } else {
-            resolve();
-          }
-        }
-      );
+    const tarResult = await runJob({
+      image: GDAL_IMAGE,
+      command: ['sh', '-c', `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`],
+      inputs: { '/archive': path.dirname(tarPath) },
+      outputs: { '/output': tmpDir },
+      timeout: 120000,
+      label: `Extract ${chartNumber}`
     });
+    if (tarResult.status === 'failed') {
+      throw new Error(tarResult.error ?? 'tar extraction failed');
+    }
 
     const findShp = (dir: string, prefix: string | null): string | null => {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -736,8 +584,7 @@ export async function processShpBasemap(
     const shpDir = path.dirname(landShp);
     const shpName = path.basename(landShp);
 
-    await new Promise<void>((resolve, reject) => {
-      const script = `
+    const script = `
 set -e
 echo "Rasterizing..."
 gdal_rasterize \
@@ -754,46 +601,23 @@ echo "Adding zoom levels..."
 gdaladdo -r average /output/${outputName} 2 4 8 16 32 64 128 256
 echo "DONE"
 `;
-      const child = spawn(
-        'podman',
-        [
-          'run',
-          '--rm',
-          '-v',
-          `${shpDir}:/input:ro,Z`,
-          '-v',
-          `${tmpDir}:/work:Z`,
-          '-v',
-          `${chartsDir}:/output:Z`,
-          GDAL_IMAGE,
-          'sh',
-          '-c',
-          script
-        ],
-        { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
-      );
-
-      child.stdout.on('data', (data: Buffer) => {
-        const text = data.toString().trim();
+    const rasterResult = await runJob({
+      image: GDAL_IMAGE,
+      command: ['sh', '-c', script],
+      inputs: { '/input': shpDir },
+      outputs: { '/work': tmpDir, '/output': chartsDir },
+      timeout: 0,
+      label: `Basemap rasterize ${chartNumber}`,
+      onProgress: ({ data }: { data: string }) => {
+        const text = data.trim();
         if (text) {
           appendLog(chartNumber, text);
         }
-      });
-      child.stderr.on('data', (data: Buffer) => {
-        const text = data.toString().trim();
-        if (text) {
-          appendLog(chartNumber, text);
-        }
-      });
-      child.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`GDAL rasterization failed (exit ${code})`));
-        } else {
-          resolve();
-        }
-      });
-      child.on('error', (err) => reject(new Error(`Failed to start GDAL: ${err.message}`)));
+      }
     });
+    if (rasterResult.status === 'failed') {
+      throw new Error(rasterResult.error ?? `GDAL rasterization failed (exit ${rasterResult.exitCode})`);
+    }
 
     try {
       const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
