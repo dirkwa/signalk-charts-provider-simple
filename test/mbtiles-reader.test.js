@@ -27,7 +27,9 @@ describe('MBTilesReader', () => {
     if (reader) {
       reader.close();
     }
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   describe('getInfo()', () => {
@@ -141,7 +143,9 @@ describe('open()', () => {
   });
 
   after(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('should return a promise that resolves to MBTilesReader', async () => {
