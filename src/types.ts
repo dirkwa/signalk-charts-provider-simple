@@ -21,6 +21,9 @@ export interface ServerConfig {
 
 export interface ExtendedServerAPI extends ServerAPI {
   config: ServerConfig;
+  runContainerJob(config: ContainerJobConfig): Promise<ContainerJobResult>;
+  listContainerJobs(label?: string): ContainerJobResult[];
+  getContainerRuntime(): ContainerRuntimeInfo | null;
 }
 
 // ---- Chart Provider (the core data structure) ----
@@ -229,11 +232,6 @@ export interface S57ConversionOptions {
   maxzoom?: number;
 }
 
-export interface PodmanStatus {
-  available: boolean;
-  version: string | null;
-}
-
 export interface RncConversionResult {
   mbtilesFiles: string[];
 }
@@ -280,6 +278,50 @@ export interface TilemapXml {
     TileSets?: Array<{ TileSet?: Array<{ $?: { href?: string } }> }>;
     Metadata?: Array<{ $?: { scale?: string } }>;
   };
+}
+
+// ---- Container Job API ----
+// These types mirror @signalk/server-api's container job types.
+// They will be imported from @signalk/server-api once the package is published.
+
+export interface ContainerJobProgress {
+  stream: 'stdout' | 'stderr';
+  data: string;
+}
+
+export interface ContainerJobConfig {
+  image: string;
+  command: string[];
+  inputs?: Record<string, string>;
+  outputs?: Record<string, string>;
+  env?: Record<string, string>;
+  timeout?: number;
+  onProgress?: (data: ContainerJobProgress) => void;
+  label?: string;
+}
+
+export type ContainerJobStatus = 'pending' | 'pulling' | 'running' | 'completed' | 'failed';
+export type ContainerRuntime = 'podman' | 'docker';
+
+export interface ContainerJobResult {
+  id: string;
+  status: ContainerJobStatus;
+  image: string;
+  command: string[];
+  label?: string;
+  exitCode: number | null;
+  log: string[];
+  error?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  runtime: ContainerRuntime;
+}
+
+export interface ContainerRuntimeInfo {
+  runtime: ContainerRuntime;
+  version: string;
+  isPodmanDockerShim?: boolean;
 }
 
 // ---- Express route helpers ----
