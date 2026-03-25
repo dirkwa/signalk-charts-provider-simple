@@ -5,14 +5,21 @@
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const { MBTilesReader, open } = require('../dist/utils/mbtiles-reader');
 
-const TEST_MBTILES = path.join(__dirname, 'fixtures', 'test-chart.mbtiles');
+const FIXTURE_MBTILES = path.join(__dirname, 'fixtures', 'test-chart.mbtiles');
+let TEST_MBTILES;
 
 describe('MBTilesReader', () => {
   let reader;
+  let tmpDir;
 
   before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbtiles-test-'));
+    TEST_MBTILES = path.join(tmpDir, 'test-chart.mbtiles');
+    fs.copyFileSync(FIXTURE_MBTILES, TEST_MBTILES);
     reader = new MBTilesReader(TEST_MBTILES);
   });
 
@@ -20,6 +27,7 @@ describe('MBTilesReader', () => {
     if (reader) {
       reader.close();
     }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   describe('getInfo()', () => {
@@ -123,8 +131,21 @@ describe('MBTilesReader', () => {
 });
 
 describe('open()', () => {
+  let tmpDir;
+  let testFile;
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbtiles-open-'));
+    testFile = path.join(tmpDir, 'test-chart.mbtiles');
+    fs.copyFileSync(FIXTURE_MBTILES, testFile);
+  });
+
+  after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   it('should return a promise that resolves to MBTilesReader', async () => {
-    const reader = await open(TEST_MBTILES);
+    const reader = await open(testFile);
     assert.ok(reader instanceof MBTilesReader);
     reader.close();
   });
@@ -137,7 +158,7 @@ describe('open()', () => {
   });
 
   it('should have working getInfo after open', async () => {
-    const reader = await open(TEST_MBTILES);
+    const reader = await open(testFile);
     const info = reader.getInfo();
     assert.strictEqual(info.name, 'Test Chart');
     reader.close();
