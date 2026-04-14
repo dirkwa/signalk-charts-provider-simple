@@ -80,7 +80,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
       minzoom: metadata.minzoom,
       maxzoom: metadata.maxzoom,
       format: metadata.format ?? 'png',
-      type: metadata.type === 'overlay' ? 'tilelayer' : (metadata.type ?? 'tilelayer'),
+      type: 'tilelayer',
       scale: parseInt(metadata.scale ?? '', 10) || 250000,
 
       v1: {
@@ -210,10 +210,7 @@ async function parseMetadataJson(metadataJsonPath: string): Promise<Partial<Char
     minzoom: parseIntIfNotUndefined(metadata.minzoom),
     maxzoom: parseIntIfNotUndefined(metadata.maxzoom),
     format: (metadata.format as string | undefined) ?? '',
-    type:
-      metadata.type === 'overlay'
-        ? 'tilelayer'
-        : ((metadata.type as string | undefined) ?? 'tilelayer'),
+    type: 'tilelayer',
     scale: parseInt(typeof metadata.scale === 'string' ? metadata.scale : '', 10) || 250000,
     identifier: '',
     _filePath: ''

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.9.2] 2026-04-14
+
+### Fixed:
+- Charts with MBTiles `type: baselayer` were invisible in Freeboard SK — Freeboard only recognizes `tilelayer`, now all raster charts are served as `tilelayer` regardless of the MBTiles metadata value
+
 ## [1.9.1] 2026-04-14
 
 ### Fixed:
