@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.9.1] 2026-04-14
+
+### Fixed:
+- Large file uploads (>50 MB) failed on Node 18+ due to the server-level `requestTimeout` (default 300s) killing the connection before the transfer completed — switched to chunked upload where the browser sends 50 MB slices as separate requests
+- Catalog registry and catalog XML fetches could hang indefinitely if the remote server was unresponsive — added 15-second HTTPS socket timeouts
+
+### Added:
+- Plugin auto-enables on first install (`signalk-plugin-enabled-by-default`) so users no longer need to manually toggle it on in the admin UI
+
 ## [1.9.0] 2026-03-24
 
 Full strict TypeScript rewrite, ARM64 support for S-57 conversion, systemd compatibility, and UI improvements. See beta entries below for details.

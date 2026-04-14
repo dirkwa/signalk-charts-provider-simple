@@ -471,6 +471,9 @@ window.handleFileUpload = async function(event) {
     event.target.value = '';
 }
 
+// Chunk size for large file uploads (50 MB)
+const CHUNK_SIZE = 50 * 1024 * 1024;
+
 // Extracted upload logic to be reusable
 function performUpload(formData, validFileCount, files) {
     // Set flag to prevent UI refresh during upload
@@ -478,8 +481,8 @@ function performUpload(formData, validFileCount, files) {
 
     const manageOutput = document.getElementById('manageOutput');
 
-    const fileList = Array.from(files)
-        .filter(f => f.name.endsWith('.mbtiles'))
+    const validFiles = Array.from(files).filter(f => f.name.endsWith('.mbtiles'));
+    const fileList = validFiles
         .map(f => `<li>${f.name} (${(f.size / (1024 * 1024)).toFixed(2)} MB)</li>`)
         .join('');
 
@@ -504,35 +507,29 @@ function performUpload(formData, validFileCount, files) {
         </div>
     `;
 
-    // Use XMLHttpRequest for upload progress
+    // Use chunked upload for large files to avoid server requestTimeout
+    const needsChunked = validFiles.some(f => f.size > CHUNK_SIZE);
+
+    if (needsChunked) {
+        performChunkedUpload(validFiles, validFileCount);
+    } else {
+        performSimpleUpload(formData, validFileCount);
+    }
+}
+
+function performSimpleUpload(formData, validFileCount) {
     const xhr = new XMLHttpRequest();
 
     xhr.upload.addEventListener('progress', (e) => {
         if (e.lengthComputable) {
-            const percentComplete = Math.round((e.loaded / e.total) * 100);
-            const progressBar = document.getElementById('uploadProgressBar');
-            const statusText = document.getElementById('uploadStatus');
-
-            if (progressBar) {
-                progressBar.style.width = percentComplete + '%';
-            }
-            if (statusText) {
-                const uploadedMB = (e.loaded / (1024 * 1024)).toFixed(2);
-                const totalMB = (e.total / (1024 * 1024)).toFixed(2);
-                statusText.textContent = `Uploading... ${percentComplete}% (${uploadedMB} / ${totalMB} MB)`;
-            }
+            updateUploadProgress(e.loaded, e.total);
         }
     });
 
     xhr.addEventListener('load', () => {
-        // Reset upload flag before refreshing UI
         isUploadInProgress = false;
-
         if (xhr.status === 200) {
-            // Refresh the charts list immediately
             loadCharts();
-
-            // Show success notification
             showUploadNotification(validFileCount);
         } else {
             loadCharts();
@@ -541,9 +538,7 @@ function performUpload(formData, validFileCount, files) {
     });
 
     xhr.addEventListener('error', () => {
-        // Reset upload flag before refreshing UI
         isUploadInProgress = false;
-
         console.error('Error uploading files');
         loadCharts();
         showErrorNotification('Error uploading files. Please try again.');
@@ -551,6 +546,86 @@ function performUpload(formData, validFileCount, files) {
 
     xhr.open('POST', `${API_BASE}/upload`);
     xhr.send(formData);
+}
+
+async function performChunkedUpload(validFiles, validFileCount) {
+    const targetFolder = selectedFolder || '/';
+    let totalBytes = 0;
+    for (const f of validFiles) totalBytes += f.size;
+    let bytesSent = 0;
+
+    try {
+        for (const file of validFiles) {
+            const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * CHUNK_SIZE;
+                const end = Math.min(start + CHUNK_SIZE, file.size);
+                const chunk = file.slice(start, end);
+
+                await sendChunk(chunk, file.name, i, totalChunks, targetFolder, (chunkLoaded) => {
+                    updateUploadProgress(bytesSent + chunkLoaded, totalBytes);
+                });
+
+                bytesSent += (end - start);
+                updateUploadProgress(bytesSent, totalBytes);
+            }
+        }
+
+        isUploadInProgress = false;
+        loadCharts();
+        showUploadNotification(validFileCount);
+    } catch (error) {
+        isUploadInProgress = false;
+        console.error('Chunked upload failed:', error);
+        loadCharts();
+        showErrorNotification(`Upload failed: ${error.message || 'Unknown error'}`);
+    }
+}
+
+function sendChunk(chunk, filename, chunkIndex, totalChunks, targetFolder, onProgress) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable && onProgress) {
+                onProgress(e.loaded);
+            }
+        });
+
+        xhr.addEventListener('load', () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                resolve();
+            } else {
+                reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
+            }
+        });
+
+        xhr.addEventListener('error', () => reject(new Error('Network error')));
+
+        xhr.open('PUT', `${API_BASE}/upload-chunk`);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.setRequestHeader('X-Upload-Filename', filename);
+        xhr.setRequestHeader('X-Chunk-Index', String(chunkIndex));
+        xhr.setRequestHeader('X-Total-Chunks', String(totalChunks));
+        xhr.setRequestHeader('X-Target-Folder', targetFolder);
+        xhr.send(chunk);
+    });
+}
+
+function updateUploadProgress(loaded, total) {
+    const percentComplete = Math.round((loaded / total) * 100);
+    const progressBar = document.getElementById('uploadProgressBar');
+    const statusText = document.getElementById('uploadStatus');
+
+    if (progressBar) {
+        progressBar.style.width = percentComplete + '%';
+    }
+    if (statusText) {
+        const uploadedMB = (loaded / (1024 * 1024)).toFixed(2);
+        const totalMB = (total / (1024 * 1024)).toFixed(2);
+        statusText.textContent = `Uploading... ${percentComplete}% (${uploadedMB} / ${totalMB} MB)`;
+    }
 }
 
 // Drag and drop handlers

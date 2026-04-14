@@ -1,6 +1,6 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "Simple Signal K chart provider for local MBTiles with web and download management",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -44,6 +44,7 @@
   "bugs": {
     "url": "https://github.com/dirkwa/signalk-charts-provider-simple/issues"
   },
+  "signalk-plugin-enabled-by-default": true,
   "engines": {
     "node": ">=22.5.0"
   },

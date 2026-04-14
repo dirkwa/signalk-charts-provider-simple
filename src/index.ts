@@ -270,6 +270,31 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
   };
 
+  const finalizeUploadedFiles = async (
+    uploadedFiles: string[],
+    targetFolder: string,
+    basePath: string
+  ): Promise<void> => {
+    for (const filename of uploadedFiles) {
+      const uploadDir =
+        targetFolder && targetFolder !== '/' ? path.join(basePath, targetFolder) : basePath;
+      const relativePath = path.relative(basePath, path.join(uploadDir, filename));
+      setChartEnabled(relativePath, true);
+      app.debug(`Enabled uploaded chart: ${relativePath}`);
+    }
+
+    await refreshChartProviders();
+
+    for (const filename of uploadedFiles) {
+      const chartId = filename.replace(/\.mbtiles$/, '');
+
+      if (chartProviders[chartId]) {
+        const chartData = sanitizeProvider(chartProviders[chartId], 2);
+        emitChartDelta(chartId, chartData);
+      }
+    }
+  };
+
   const registerRoutes = (router: IRouter): void => {
     app.debug('** Registering API paths via registerWithRouter **');
 
@@ -1030,26 +1055,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               await Promise.all(writePromises);
 
               if (uploadedFiles.length > 0) {
-                for (const filename of uploadedFiles) {
-                  const uploadDir =
-                    targetFolder && targetFolder !== '/'
-                      ? path.join(basePath, targetFolder)
-                      : basePath;
-                  const relativePath = path.relative(basePath, path.join(uploadDir, filename));
-                  setChartEnabled(relativePath, true);
-                  app.debug(`Enabled uploaded chart: ${relativePath}`);
-                }
-
-                await refreshChartProviders();
-
-                for (const filename of uploadedFiles) {
-                  const chartId = filename.replace(/\.mbtiles$/, '');
-
-                  if (chartProviders[chartId]) {
-                    const chartData = sanitizeProvider(chartProviders[chartId], 2);
-                    emitChartDelta(chartId, chartData);
-                  }
-                }
+                await finalizeUploadedFiles(uploadedFiles, targetFolder, basePath);
 
                 res.status(200).json({
                   success: true,
@@ -1075,6 +1081,81 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           'Error uploading charts: ' + (error instanceof Error ? error.message : String(error))
         );
         res.status(500).send('Error uploading charts');
+      }
+    });
+
+    // Chunked upload for large files — each chunk is a short-lived request that
+    // stays well within Node's server.requestTimeout (default 300s in Node 18+).
+    router.put('/upload-chunk', (req: Request, res: Response) => {
+      try {
+        const filename = req.headers['x-upload-filename'] as string;
+        const chunkIndex = parseInt(req.headers['x-chunk-index'] as string, 10);
+        const totalChunks = parseInt(req.headers['x-total-chunks'] as string, 10);
+        const targetFolder = (req.headers['x-target-folder'] as string) || '/';
+
+        if (
+          !filename ||
+          !filename.endsWith('.mbtiles') ||
+          isNaN(chunkIndex) ||
+          isNaN(totalChunks)
+        ) {
+          res.status(400).json({ error: 'Missing or invalid chunk upload headers' });
+          return;
+        }
+
+        const basePath = props.chartPath || defaultChartsPath;
+        let uploadPath = basePath;
+        if (targetFolder && targetFolder !== '/') {
+          uploadPath = path.join(basePath, targetFolder);
+        }
+
+        const partialPath = path.join(uploadPath, filename + '.partial');
+        const finalPath = path.join(uploadPath, filename);
+
+        const writeStream = fs.createWriteStream(partialPath, {
+          flags: chunkIndex === 0 ? 'w' : 'a'
+        });
+
+        req.pipe(writeStream);
+
+        writeStream.on('finish', () => {
+          void (async () => {
+            try {
+              if (chunkIndex + 1 < totalChunks) {
+                app.debug(`Chunk ${chunkIndex + 1}/${totalChunks} for ${filename}`);
+                res.json({ received: chunkIndex, total: totalChunks });
+                return;
+              }
+
+              // Final chunk — rename partial to final
+              app.debug(`Final chunk ${totalChunks}/${totalChunks} for ${filename}, assembling`);
+              fs.renameSync(partialPath, finalPath);
+
+              await finalizeUploadedFiles([filename], targetFolder, basePath);
+
+              res.json({
+                success: true,
+                message: `${filename} uploaded successfully`,
+                files: [filename]
+              });
+            } catch (error) {
+              app.error(
+                `Error finalizing chunked upload: ${error instanceof Error ? error.message : String(error)}`
+              );
+              res.status(500).json({ error: 'Error finalizing upload' });
+            }
+          })();
+        });
+
+        writeStream.on('error', (err: Error) => {
+          app.error(`Error writing chunk for ${filename}: ${err.message}`);
+          res.status(500).json({ error: 'Error writing chunk' });
+        });
+      } catch (error) {
+        app.error(
+          'Error in chunked upload: ' + (error instanceof Error ? error.message : String(error))
+        );
+        res.status(500).json({ error: 'Error in chunked upload' });
       }
     });
 

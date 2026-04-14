@@ -250,7 +250,7 @@ export function initCatalogManager(dataDirPath: string, debugFn: DebugFunction):
 
 export function fetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
   return new Promise((resolve, reject) => {
-    https
+    const req = https
       .get(
         CATALOG_GITHUB_API,
         { headers: { 'User-Agent': 'signalk-charts-provider-simple' } },
@@ -290,6 +290,9 @@ export function fetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
         }
       )
       .on('error', reject);
+    req.setTimeout(15000, () => {
+      req.destroy(new Error('GitHub API request timed out after 15s'));
+    });
   });
 }
 
@@ -365,7 +368,7 @@ export function fetchCatalog(catalogFile: string): Promise<CatalogData> {
   const url = CATALOG_BASE_URL + catalogFile;
 
   return new Promise((resolve, reject) => {
-    https
+    const req = https
       .get(url, (response) => {
         if (response.statusCode !== 200) {
           response.resume();
@@ -410,6 +413,9 @@ export function fetchCatalog(catalogFile: string): Promise<CatalogData> {
           reject(error);
         }
       });
+    req.setTimeout(15000, () => {
+      req.destroy(new Error(`Catalog fetch timed out after 15s: ${catalogFile}`));
+    });
   });
 }
 
