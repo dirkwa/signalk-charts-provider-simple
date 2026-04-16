@@ -4,6 +4,22 @@ import { parseStringPromise } from 'xml2js';
 import { open as openMbtiles } from './utils/mbtiles-reader';
 import type { ChartProvider, TilemapXml, VectorLayer } from './types';
 
+const KNOWN_CHART_TYPES = new Set([
+  'tilelayer',
+  's-57',
+  'mapstylejson',
+  'tilejson',
+  'wms',
+  'wmts'
+]);
+
+function resolveChartType(metadataType: string | undefined): string {
+  if (metadataType && KNOWN_CHART_TYPES.has(metadataType.toLowerCase())) {
+    return metadataType;
+  }
+  return 'tilelayer';
+}
+
 export async function findCharts(chartBaseDir: string): Promise<Record<string, ChartProvider>> {
   try {
     const results = await findChartsRecursive(chartBaseDir);
@@ -80,7 +96,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
       minzoom: metadata.minzoom,
       maxzoom: metadata.maxzoom,
       format: metadata.format ?? 'png',
-      type: 'tilelayer',
+      type: resolveChartType(metadata.type as string | undefined),
       scale: parseInt(metadata.scale ?? '', 10) || 250000,
 
       v1: {
@@ -210,7 +226,7 @@ async function parseMetadataJson(metadataJsonPath: string): Promise<Partial<Char
     minzoom: parseIntIfNotUndefined(metadata.minzoom),
     maxzoom: parseIntIfNotUndefined(metadata.maxzoom),
     format: (metadata.format as string | undefined) ?? '',
-    type: 'tilelayer',
+    type: resolveChartType(metadata.type as string | undefined),
     scale: parseInt(typeof metadata.scale === 'string' ? metadata.scale : '', 10) || 250000,
     identifier: '',
     _filePath: ''
