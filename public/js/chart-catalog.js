@@ -512,6 +512,8 @@ async function pollConversions() {
       catalogConversionProgress = statusData.conversions || {};
     }
 
+    let justFinished = [];
+
     // Fetch registry to check if conversions finished
     const regResp = await fetch(`${CATALOG_API_BASE}/catalog-registry`);
     if (regResp.ok) {
@@ -531,11 +533,8 @@ async function pollConversions() {
       }
       catalogInstalled = regData.installed || {};
 
-      // If any conversion just finished, invalidate cached catalog data and refresh
-      const justFinished = Object.keys(prevConverting).filter((k) => !catalogConverting[k]);
+      justFinished = Object.keys(prevConverting).filter((k) => !catalogConverting[k]);
       if (justFinished.length > 0) {
-        // Clear cached chart data for catalogs that had conversions finish
-        // so the next expand re-fetches with updated installed status
         for (const chartNum of justFinished) {
           const install = catalogInstalled[chartNum];
           if (install && install.catalogFile) {
