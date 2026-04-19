@@ -4,14 +4,7 @@ import { parseStringPromise } from 'xml2js';
 import { open as openMbtiles } from './utils/mbtiles-reader';
 import type { ChartProvider, TilemapXml, VectorLayer } from './types';
 
-const KNOWN_CHART_TYPES = new Set([
-  'tilelayer',
-  's-57',
-  'mapstylejson',
-  'tilejson',
-  'wms',
-  'wmts'
-]);
+const KNOWN_CHART_TYPES = new Set(['tilelayer', 's-57', 'mapstylejson', 'tilejson', 'wms', 'wmts']);
 
 function resolveChartType(metadataType: string | undefined): string {
   if (metadataType && KNOWN_CHART_TYPES.has(metadataType.toLowerCase())) {
@@ -96,7 +89,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
       minzoom: metadata.minzoom,
       maxzoom: metadata.maxzoom,
       format: metadata.format ?? 'png',
-      type: resolveChartType(metadata.type as string | undefined),
+      type: resolveChartType(metadata.type),
       scale: parseInt(metadata.scale ?? '', 10) || 250000,
 
       v1: {
