@@ -12,3 +12,6 @@ dist/
 
 # samples
 samples/
+
+# generated test fixtures
+test/fixtures/test-chart.mbtiles
