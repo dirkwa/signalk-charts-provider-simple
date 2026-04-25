@@ -1,6 +1,6 @@
 # Signal K Charts Provider Simple
 
-A lightweight Signal K server plugin for managing local nautical charts, written in strict TypeScript. Supports MBTiles, S-57 ENC, BSB raster, and world basemaps with automatic conversion via Podman containers.
+A lightweight Signal K server plugin for managing local nautical charts, written in strict TypeScript. Supports MBTiles, S-57 ENC, BSB raster, and world basemaps with automatic conversion via Docker- or Podman-managed containers.
 
 ## Features
 
@@ -78,11 +78,11 @@ The interface provides four tabs:
 | Format | Source | Conversion | Output |
 |--------|--------|-----------|--------|
 | **MBTiles** | Direct download | None needed | Raster or vector tiles |
-| **S-57 ENC** (.000) | IENC catalogs, custom upload | GDAL + tippecanoe (Podman) | Vector MBTiles with S-52 styling |
-| **BSB Raster** (.kap) | RNC catalogs, custom upload | GDAL (Podman) | Raster MBTiles (PNG) |
-| **Pilot Charts** (.kap in .tar.xz) | Pilot catalog | GDAL (Podman) | Raster MBTiles (PNG) |
-| **GSHHG Basemap** | General catalog | GDAL (Podman) | Raster MBTiles (PNG) |
-| **OSM Basemap** | General catalog | GDAL (Podman) | Raster MBTiles (PNG) |
+| **S-57 ENC** (.000) | IENC catalogs, custom upload | GDAL + tippecanoe (containerized) | Vector MBTiles with S-52 styling |
+| **BSB Raster** (.kap) | RNC catalogs, custom upload | GDAL (containerized) | Raster MBTiles (PNG) |
+| **Pilot Charts** (.kap in .tar.xz) | Pilot catalog | GDAL (containerized) | Raster MBTiles (PNG) |
+| **GSHHG Basemap** | General catalog | GDAL (containerized) | Raster MBTiles (PNG) |
+| **OSM Basemap** | General catalog | GDAL (containerized) | Raster MBTiles (PNG) |
 
 ### Compatible Chart Plotters
 

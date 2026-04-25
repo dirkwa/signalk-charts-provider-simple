@@ -6,7 +6,7 @@ This page covers the two common shapes:
 - Signal K in Docker on a Docker host (most users).
 - Signal K in Docker on a Podman host (the [issue #7](https://github.com/dirkwa/signalk-charts-provider-simple/issues/7) setup).
 
-The bare-metal case (Signal K running directly on the host) is unchanged from previous releases — see the [README](../README.md#optional-podman-for-chart-conversion) for the bare-metal install steps.
+The bare-metal case (Signal K running directly on the host) is unchanged from previous releases — see the [README](../README.md#optional-container-runtime-for-chart-conversion) for the bare-metal install steps.
 
 ## How the plugin finds the daemon
 
