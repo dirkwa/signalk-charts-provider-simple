@@ -12,7 +12,6 @@ export interface RunOptions {
   env?: string[];
   onStdoutLine?: (line: string) => void;
   onStderrLine?: (line: string) => void;
-  signal?: AbortSignal;
 }
 
 interface ResolvedClient {
@@ -202,30 +201,13 @@ export async function runContainer(opts: RunOptions): Promise<{ exitCode: number
 
   const container = await resolved.client.createContainer(createOptions);
 
-  const onAbort = (): void => {
-    container.kill().catch(() => {});
-  };
-  if (opts.signal) {
-    if (opts.signal.aborted) {
-      await container.remove({ force: true }).catch(() => {});
-      throw new Error('Aborted before start');
-    }
-    opts.signal.addEventListener('abort', onAbort, { once: true });
-  }
-
-  try {
-    const stream = await container.attach({ stream: true, stdout: true, stderr: true });
-    resolved.client.modem.demuxStream(stream, stdout, stderr);
-    await container.start();
-    const result = (await container.wait()) as { StatusCode: number };
-    stdout.end();
-    stderr.end();
-    return { exitCode: result.StatusCode };
-  } finally {
-    if (opts.signal) {
-      opts.signal.removeEventListener('abort', onAbort);
-    }
-  }
+  const stream = await container.attach({ stream: true, stdout: true, stderr: true });
+  resolved.client.modem.demuxStream(stream, stdout, stderr);
+  await container.start();
+  const result = (await container.wait()) as { StatusCode: number };
+  stdout.end();
+  stderr.end();
+  return { exitCode: result.StatusCode };
 }
 
 export function _resetCacheForTests(): void {

@@ -104,5 +104,16 @@ describe('container-runtime', () => {
       const second = await runtime.checkContainerRuntime();
       assert.strictEqual(first, second);
     });
+
+    it('does not cache transient failures', async () => {
+      mockBehavior = 'fail';
+      const first = await runtime.checkContainerRuntime();
+      assert.strictEqual(first.available, false);
+
+      mockBehavior = 'docker';
+      const second = await runtime.checkContainerRuntime();
+      assert.strictEqual(second.available, true);
+      assert.strictEqual(second.engine, 'docker');
+    });
   });
 });
