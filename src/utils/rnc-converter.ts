@@ -232,40 +232,76 @@ export async function processRncZip(
       conversionProgress[chartNumber].status = 'converting';
     }
 
-    const kapNames = kapFiles.map((f) => path.basename(f));
-    const script = kapNames
-      .map(
-        (name) =>
-          `echo "PROGRESS: Converting ${name}" && ` +
-          `gdal_translate -of MBTiles -co TILE_FORMAT=PNG "/input/${name}" "/output/${name.replace(/\.[^.]+$/, '.mbtiles')}" 2>/dev/null && ` +
-          `gdaladdo -r average "/output/${name.replace(/\.[^.]+$/, '.mbtiles')}" 2 4 8 16 2>/dev/null && ` +
-          `sqlite3 "/output/${name.replace(/\.[^.]+$/, '.mbtiles')}" "INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')" 2>/dev/null || ` +
-          `echo "ERROR: Failed ${name}"`
-      )
-      .join(' && ');
+    const mbtilesFiles: string[] = [];
+    let i = 0;
+    for (const kap of kapFiles) {
+      i += 1;
+      const relInput = path.relative(tmpDir, kap);
+      const baseName = path.basename(kap, path.extname(kap));
+      const outputName = `${baseName}.mbtiles`;
+      const containerInput = `/input/${relInput}`;
+      const containerOutput = `/output/${outputName}`;
 
-    const kapDir = path.dirname(kapFiles[0]);
+      const friendly = path.basename(kap);
+      appendLog(chartNumber, `PROGRESS: Converting ${friendly} (${i}/${kapFiles.length})`);
+      if (chartNumber && conversionProgress[chartNumber]) {
+        conversionProgress[chartNumber].message =
+          `Converting ${friendly} (${i}/${kapFiles.length})...`;
+      }
 
-    const runResult = await runContainer({
-      image: GDAL_IMAGE,
-      cmd: ['sh', '-c', script + ' && echo "PROGRESS: All done"'],
-      binds: [`${kapDir}:/input:ro`, `${chartsDir}:/output`],
-      onStdoutLine: (line) => {
-        appendLog(chartNumber, line);
-        const match = line.match(/PROGRESS: Converting (\S+)/);
-        if (match && chartNumber && conversionProgress[chartNumber]) {
-          conversionProgress[chartNumber].message = `Converting ${match[1]}...`;
-        }
-      },
-      onStderrLine: (line) => appendLog(chartNumber, line)
-    });
+      const translateResult = await runContainer({
+        image: GDAL_IMAGE,
+        cmd: [
+          'gdal_translate',
+          '-of',
+          'MBTiles',
+          '-co',
+          'TILE_FORMAT=PNG',
+          containerInput,
+          containerOutput
+        ],
+        binds: [`${tmpDir}:/input:ro`, `${chartsDir}:/output`],
+        onStdoutLine: (line) => appendLog(chartNumber, line),
+        onStderrLine: (line) => appendLog(chartNumber, line)
+      });
+      if (translateResult.exitCode !== 0) {
+        appendLog(chartNumber, `ERROR: gdal_translate failed for ${friendly}`);
+        continue;
+      }
 
-    const mbtilesFiles = kapNames
-      .map((n) => n.replace(/\.[^.]+$/, '.mbtiles'))
-      .filter((n) => fs.existsSync(path.join(chartsDir, n)));
+      const overviewResult = await runContainer({
+        image: GDAL_IMAGE,
+        cmd: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
+        binds: [`${chartsDir}:/output`],
+        onStdoutLine: (line) => appendLog(chartNumber, line),
+        onStderrLine: (line) => appendLog(chartNumber, line)
+      });
+      if (overviewResult.exitCode !== 0) {
+        appendLog(chartNumber, `Warning: gdaladdo failed for ${friendly}`);
+      }
+
+      const tagResult = await runContainer({
+        image: GDAL_IMAGE,
+        cmd: [
+          'sqlite3',
+          containerOutput,
+          "INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')"
+        ],
+        binds: [`${chartsDir}:/output`],
+        onStdoutLine: (line) => appendLog(chartNumber, line),
+        onStderrLine: (line) => appendLog(chartNumber, line)
+      });
+      if (tagResult.exitCode !== 0) {
+        appendLog(chartNumber, `Warning: failed to set tilelayer metadata for ${friendly}`);
+      }
+
+      if (fs.existsSync(path.join(chartsDir, outputName))) {
+        mbtilesFiles.push(outputName);
+      }
+    }
 
     if (mbtilesFiles.length === 0) {
-      throw new Error(`No charts converted (exit ${runResult.exitCode})`);
+      throw new Error('No charts converted');
     }
 
     statusFn('completed', `Converted ${mbtilesFiles.length} chart(s) to MBTiles`);
@@ -329,7 +365,7 @@ export async function processPilotTar(
 
     const tarResult = await runContainer({
       image: GDAL_IMAGE,
-      cmd: ['sh', '-c', `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`],
+      cmd: ['tar', '-xf', `/archive/${path.basename(tarPath)}`, '-C', '/output'],
       binds: [`${path.dirname(tarPath)}:/archive:ro`, `${tmpDir}:/output`],
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
@@ -362,39 +398,77 @@ export async function processPilotTar(
     statusFn('converting', `Converting ${kapFiles.length} chart(s)...`);
     setConvertProgress(chartNumber, 'converting', `Converting ${kapFiles.length} chart(s)...`);
 
-    const script = `
-set -e
-cd /input
-for kap in $(find /input -name '*.kap' -o -name '*.KAP'); do
-  name=$(basename "$kap" | sed 's/\\.[^.]*$/.mbtiles/')
-  echo "PROGRESS: Converting $(basename $kap)"
-  gdal_translate -of MBTiles -co TILE_FORMAT=PNG "$kap" "/output/$name" 2>/dev/null && \
-  gdaladdo -r average "/output/$name" 2 4 8 16 2>/dev/null && \
-  sqlite3 "/output/$name" "INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')" 2>/dev/null || \
-  echo "ERROR: Failed $(basename $kap)"
-done
-echo "PROGRESS: All done"
-`;
-    const runResult = await runContainer({
-      image: GDAL_IMAGE,
-      cmd: ['sh', '-c', script],
-      binds: [`${tmpDir}:/input:ro`, `${chartsDir}:/output`],
-      onStdoutLine: (line) => {
-        appendLog(chartNumber, line);
-        const match = line.match(/PROGRESS: Converting (\S+)/);
-        if (match) {
-          setConvertProgress(chartNumber, 'converting', `Converting ${match[1]}...`);
-        }
-      },
-      onStderrLine: (line) => appendLog(chartNumber, line)
-    });
+    const mbtilesFiles: string[] = [];
+    let i = 0;
+    for (const kap of kapFiles) {
+      i += 1;
+      const relInput = path.relative(tmpDir, kap);
+      const baseName = path.basename(kap, path.extname(kap));
+      const outputName = `${baseName}.mbtiles`;
+      const containerInput = `/input/${relInput}`;
+      const containerOutput = `/output/${outputName}`;
+      const friendly = path.basename(kap);
 
-    const mbtilesFiles = kapFiles
-      .map((f) => path.basename(f).replace(/\.[^.]+$/, '.mbtiles'))
-      .filter((n) => fs.existsSync(path.join(chartsDir, n)));
+      appendLog(chartNumber, `PROGRESS: Converting ${friendly} (${i}/${kapFiles.length})`);
+      setConvertProgress(
+        chartNumber,
+        'converting',
+        `Converting ${friendly} (${i}/${kapFiles.length})...`
+      );
+
+      const translateResult = await runContainer({
+        image: GDAL_IMAGE,
+        cmd: [
+          'gdal_translate',
+          '-of',
+          'MBTiles',
+          '-co',
+          'TILE_FORMAT=PNG',
+          containerInput,
+          containerOutput
+        ],
+        binds: [`${tmpDir}:/input:ro`, `${chartsDir}:/output`],
+        onStdoutLine: (line) => appendLog(chartNumber, line),
+        onStderrLine: (line) => appendLog(chartNumber, line)
+      });
+      if (translateResult.exitCode !== 0) {
+        appendLog(chartNumber, `ERROR: gdal_translate failed for ${friendly}`);
+        continue;
+      }
+
+      const overviewResult = await runContainer({
+        image: GDAL_IMAGE,
+        cmd: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
+        binds: [`${chartsDir}:/output`],
+        onStdoutLine: (line) => appendLog(chartNumber, line),
+        onStderrLine: (line) => appendLog(chartNumber, line)
+      });
+      if (overviewResult.exitCode !== 0) {
+        appendLog(chartNumber, `Warning: gdaladdo failed for ${friendly}`);
+      }
+
+      const tagResult = await runContainer({
+        image: GDAL_IMAGE,
+        cmd: [
+          'sqlite3',
+          containerOutput,
+          "INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')"
+        ],
+        binds: [`${chartsDir}:/output`],
+        onStdoutLine: (line) => appendLog(chartNumber, line),
+        onStderrLine: (line) => appendLog(chartNumber, line)
+      });
+      if (tagResult.exitCode !== 0) {
+        appendLog(chartNumber, `Warning: failed to set tilelayer metadata for ${friendly}`);
+      }
+
+      if (fs.existsSync(path.join(chartsDir, outputName))) {
+        mbtilesFiles.push(outputName);
+      }
+    }
 
     if (mbtilesFiles.length === 0) {
-      throw new Error(`No charts converted (exit ${runResult.exitCode})`);
+      throw new Error('No charts converted');
     }
 
     statusFn('completed', `Converted ${mbtilesFiles.length} chart(s)`);

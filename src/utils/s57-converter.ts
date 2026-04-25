@@ -379,6 +379,15 @@ export async function processGshhg(
     f: 'Full'
   };
 
+  const runtime = await checkContainerRuntime();
+  if (!runtime.available) {
+    throw new Error('No Docker- or Podman-compatible socket reachable.');
+  }
+  if (!(await runtimeImageExists(GDAL_IMAGE))) {
+    setProgress(chartNumber, 'pulling', 'Pulling GDAL image...');
+    await ensureImage(GDAL_IMAGE);
+  }
+
   setProgress(chartNumber, 'converting', 'Downloading GSHHG shapefiles from NOAA...');
   appendLog(
     chartNumber,
@@ -543,13 +552,17 @@ export async function processShpBasemap(
     if (!runtime.available) {
       throw new Error('No Docker- or Podman-compatible socket reachable.');
     }
+    if (!(await runtimeImageExists(GDAL_IMAGE))) {
+      setProgress(chartNumber, 'pulling', 'Pulling GDAL image...');
+      await ensureImage(GDAL_IMAGE);
+    }
 
     setProgress(chartNumber, 'extracting', 'Extracting shapefiles...');
     appendLog(chartNumber, 'Extracting .tar.xz archive...');
 
     const tarResult = await runContainer({
       image: GDAL_IMAGE,
-      cmd: ['sh', '-c', `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`],
+      cmd: ['tar', '-xf', `/archive/${path.basename(tarPath)}`, '-C', '/output'],
       binds: [`${path.dirname(tarPath)}:/archive:ro`, `${tmpDir}:/output`],
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
@@ -600,33 +613,93 @@ export async function processShpBasemap(
     const shpDir = path.dirname(landShp);
     const shpName = path.basename(landShp);
 
-    const script = `
-set -e
-echo "Rasterizing..."
-gdal_rasterize \
-  -burn 240 -burn 230 -burn 208 \
-  -init 168 -init 212 -init 230 \
-  -a_srs EPSG:4326 \
-  -te -180 -85.05 180 85.05 \
-  -ts ${res.size} ${Math.round(res.size / 2)} \
-  -ot Byte -of GTiff -co COMPRESS=LZW \
-  /input/${shpName} /work/world.tif
-echo "Creating MBTiles..."
-gdal_translate -of MBTiles -co TILE_FORMAT=PNG /work/world.tif /output/${outputName}
-echo "Adding zoom levels..."
-gdaladdo -r average /output/${outputName} 2 4 8 16 32 64 128 256
-echo "DONE"
-`;
-    const result = await runContainer({
+    appendLog(chartNumber, 'Rasterizing...');
+    const rasterizeResult = await runContainer({
       image: GDAL_IMAGE,
-      cmd: ['sh', '-c', script],
-      binds: [`${shpDir}:/input:ro`, `${tmpDir}:/work`, `${chartsDir}:/output`],
+      cmd: [
+        'gdal_rasterize',
+        '-burn',
+        '240',
+        '-burn',
+        '230',
+        '-burn',
+        '208',
+        '-init',
+        '168',
+        '-init',
+        '212',
+        '-init',
+        '230',
+        '-a_srs',
+        'EPSG:4326',
+        '-te',
+        '-180',
+        '-85.05',
+        '180',
+        '85.05',
+        '-ts',
+        String(res.size),
+        String(Math.round(res.size / 2)),
+        '-ot',
+        'Byte',
+        '-of',
+        'GTiff',
+        '-co',
+        'COMPRESS=LZW',
+        `/input/${shpName}`,
+        '/work/world.tif'
+      ],
+      binds: [`${shpDir}:/input:ro`, `${tmpDir}:/work`],
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
+    if (rasterizeResult.exitCode !== 0) {
+      throw new Error(`gdal_rasterize failed (exit ${rasterizeResult.exitCode})`);
+    }
 
-    if (result.exitCode !== 0) {
-      throw new Error(`GDAL rasterization failed (exit ${result.exitCode})`);
+    appendLog(chartNumber, 'Creating MBTiles...');
+    const translateResult = await runContainer({
+      image: GDAL_IMAGE,
+      cmd: [
+        'gdal_translate',
+        '-of',
+        'MBTiles',
+        '-co',
+        'TILE_FORMAT=PNG',
+        '/work/world.tif',
+        `/output/${outputName}`
+      ],
+      binds: [`${tmpDir}:/work`, `${chartsDir}:/output`],
+      onStdoutLine: (line) => appendLog(chartNumber, line),
+      onStderrLine: (line) => appendLog(chartNumber, line)
+    });
+    if (translateResult.exitCode !== 0) {
+      throw new Error(`gdal_translate failed (exit ${translateResult.exitCode})`);
+    }
+
+    appendLog(chartNumber, 'Adding zoom levels...');
+    const overviewResult = await runContainer({
+      image: GDAL_IMAGE,
+      cmd: [
+        'gdaladdo',
+        '-r',
+        'average',
+        `/output/${outputName}`,
+        '2',
+        '4',
+        '8',
+        '16',
+        '32',
+        '64',
+        '128',
+        '256'
+      ],
+      binds: [`${chartsDir}:/output`],
+      onStdoutLine: (line) => appendLog(chartNumber, line),
+      onStderrLine: (line) => appendLog(chartNumber, line)
+    });
+    if (overviewResult.exitCode !== 0) {
+      throw new Error(`gdaladdo failed (exit ${overviewResult.exitCode})`);
     }
 
     try {
