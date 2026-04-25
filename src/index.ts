@@ -1413,7 +1413,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       req.pipe(bb);
     });
 
-    router.post('/catalog/download', (req: Request, res: Response) => {
+    router.post('/catalog/download', async (req: Request, res: Response) => {
       const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder, minzoom, maxzoom } =
         req.body as {
           url?: string;
@@ -1453,12 +1453,23 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        if (
-          ['s57-zip', 'rnc-zip', 'gshhg', 'pilot-tar', 'shp-basemap'].includes(
-            classification.format
-          ) &&
-          getConvertingCount() >= MAX_CONCURRENT_CONVERSIONS
-        ) {
+        const needsRuntime = ['s57-zip', 'rnc-zip', 'gshhg', 'pilot-tar', 'shp-basemap'].includes(
+          classification.format
+        );
+
+        if (needsRuntime) {
+          const runtimeStatus = await checkContainerRuntime();
+          if (!runtimeStatus.available) {
+            res.status(503).json({
+              success: false,
+              error:
+                'No Docker- or Podman-compatible socket reachable. See docs/running-in-docker.md.'
+            });
+            return;
+          }
+        }
+
+        if (needsRuntime && getConvertingCount() >= MAX_CONCURRENT_CONVERSIONS) {
           res.status(429).json({
             success: false,
             error: `Too many conversions running (max ${MAX_CONCURRENT_CONVERSIONS}). Please wait for a conversion to finish.`

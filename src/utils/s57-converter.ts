@@ -201,6 +201,15 @@ async function runTippecanoe(
     `Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}, ${TIPPECANOE_THREADS_PER_JOB} threads`
   );
 
+  const handleTippecanoeLine = (line: string): void => {
+    appendLog(chartNumber, line);
+    const match = line.match(/(\d+\.\d+)%/);
+    if (match && chartNumber && conversionProgress[chartNumber]) {
+      const pct = parseFloat(match[1]);
+      conversionProgress[chartNumber].message = `Generating tiles: ${Math.round(pct)}%`;
+    }
+  };
+
   const result = await runContainer({
     image: TIPPECANOE_IMAGE,
     cmd: [
@@ -217,15 +226,8 @@ async function runTippecanoe(
     ],
     binds: [`${geojsonDir}:/input:ro`, `${path.dirname(outputMbtiles)}:/output`],
     env: [`TIPPECANOE_MAX_THREADS=${TIPPECANOE_THREADS_PER_JOB}`],
-    onStdoutLine: (line) => {
-      appendLog(chartNumber, line);
-      const match = line.match(/(\d+\.\d+)%/);
-      if (match && chartNumber && conversionProgress[chartNumber]) {
-        const pct = parseFloat(match[1]);
-        conversionProgress[chartNumber].message = `Generating tiles: ${Math.round(pct)}%`;
-      }
-    },
-    onStderrLine: (line) => appendLog(chartNumber, line)
+    onStdoutLine: handleTippecanoeLine,
+    onStderrLine: handleTippecanoeLine
   });
 
   if (result.exitCode !== 0) {
