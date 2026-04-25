@@ -1,13 +1,9 @@
 import fs from 'fs';
 import { PassThrough } from 'stream';
 import Docker from 'dockerode';
+import type { ContainerRuntimeStatus } from '../types';
 
-export interface RuntimeStatus {
-  available: boolean;
-  version: string | null;
-  socketPath: string | null;
-  engine: 'docker' | 'podman' | null;
-}
+export type RuntimeStatus = ContainerRuntimeStatus;
 
 export interface RunOptions {
   image: string;
@@ -97,8 +93,7 @@ export async function checkContainerRuntime(): Promise<RuntimeStatus> {
   }
   const resolved = await resolveClient();
   if (!resolved) {
-    cachedStatus = { available: false, version: null, socketPath: null, engine: null };
-    return cachedStatus;
+    return { available: false, version: null, socketPath: null, engine: null };
   }
   try {
     const version = await resolved.client.version();
@@ -109,15 +104,15 @@ export async function checkContainerRuntime(): Promise<RuntimeStatus> {
       socketPath: resolved.socketPath,
       engine
     };
+    return cachedStatus;
   } catch {
-    cachedStatus = {
+    return {
       available: false,
       version: null,
       socketPath: resolved.socketPath,
       engine: null
     };
   }
-  return cachedStatus;
 }
 
 export async function imageExists(image: string): Promise<boolean> {

@@ -22,7 +22,7 @@ function jsonResponse(res, body, status = 200) {
 }
 
 function startMockServer() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     mockServer = http.createServer((req, res) => {
       const url = req.url.replace(/^\/v[0-9.]+/, '');
       if (url === '/_ping') {
@@ -50,6 +50,7 @@ function startMockServer() {
       res.writeHead(404);
       res.end();
     });
+    mockServer.once('error', reject);
     mockServer.listen(SOCKET_PATH, () => resolve());
   });
 }

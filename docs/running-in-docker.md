@@ -12,10 +12,12 @@ The bare-metal case (Signal K running directly on the host) is unchanged from pr
 
 At startup, the plugin tries these socket paths in order and uses the first one that responds:
 
-1. `DOCKER_HOST` env var, if set (parses `unix://` and `tcp://` schemes).
+1. `DOCKER_HOST` env var with a `unix://` URI, if set.
 2. `/var/run/docker.sock` (default Docker location, also where rootful Podman puts its docker-compat socket).
 3. `/run/user/$UID/podman/podman.sock` (rootless Podman).
 4. `/run/podman/podman.sock` (rootful Podman as a system service).
+
+`DOCKER_HOST=tcp://...` is not supported yet; if you need a TCP-served daemon, route it through a local unix socket forwarder.
 
 If none respond, the plugin's startup log says so and the Convert / Catalog tabs show a warning. The plugin does **not** crash Signal K when no runtime is reachable — chart conversion just stays disabled.
 
@@ -78,15 +80,24 @@ services:
       - "3000:3000"
 ```
 
-You may need to relax permissions on the host socket so the in-container `node` user (uid 1000 by default) can talk to it:
+You may need to grant the in-container `node` user (uid 1000 by default) access to the host socket. Under rootful Docker, host UIDs don't map cleanly into the container, so the bind-mounted socket appears with surprising ownership inside.
+
+**Recommended — scoped ACL** for just the user that needs access:
 
 ```bash
-chmod 666 /run/user/1000/podman/podman.sock
-# Or, more conservatively, ACL the user that's running Docker:
 setfacl -m u:1000:rw /run/user/1000/podman/podman.sock
 ```
 
-The reason: under rootful Docker, host UIDs don't map cleanly into the container, so the bind-mounted socket appears with surprising ownership inside the container. ACLs / `chmod 666` are the simplest workarounds. If you're using rootless Docker (or running Signal K under Podman directly), UIDs map and no permission tweak is needed.
+ACLs survive socket re-creation if you use a systemd drop-in, but a one-off `setfacl` is wiped when the socket is recreated; reapply on each podman service restart, or wire it into a systemd `ExecStartPost=`.
+
+**Last resort — `chmod 666`** opens the socket to every local user. Only acceptable on a single-user host where you're sure no other process you don't trust runs as a different user:
+
+```bash
+# WARNING: grants podman API access to every local user on this host.
+chmod 666 /run/user/1000/podman/podman.sock
+```
+
+If you're using rootless Docker (or running Signal K under Podman directly), UIDs map and no permission tweak is needed.
 
 Verify:
 

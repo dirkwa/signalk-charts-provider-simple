@@ -1178,12 +1178,25 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       try {
         const runtime = await checkContainerRuntime();
         res.json({
+          containerRuntimeAvailable: runtime.available,
+          containerRuntimeVersion: runtime.version,
+          containerRuntimeEngine: runtime.engine,
+          containerRuntimeSocketPath: runtime.socketPath,
+          // legacy aliases (kept until next breaking release)
           podmanAvailable: runtime.available,
           podmanVersion: runtime.version,
           conversions: { ...getAllS57Progress(), ...getAllRncProgress() }
         });
       } catch {
-        res.json({ podmanAvailable: false, podmanVersion: null, conversions: {} });
+        res.json({
+          containerRuntimeAvailable: false,
+          containerRuntimeVersion: null,
+          containerRuntimeEngine: null,
+          containerRuntimeSocketPath: null,
+          podmanAvailable: false,
+          podmanVersion: null,
+          conversions: {}
+        });
       }
     });
 
@@ -1313,7 +1326,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const runtimeStatus = await checkContainerRuntime();
           if (!runtimeStatus.available) {
             cleanupDir(tmpDir);
-            res.status(400).json({
+            res.status(503).json({
               success: false,
               error:
                 'No Docker- or Podman-compatible socket reachable. See docs/running-in-docker.md.'
