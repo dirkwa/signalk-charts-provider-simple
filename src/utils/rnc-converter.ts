@@ -1,7 +1,7 @@
-import { execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
+import { checkContainerRuntime, imageExists, pullImage, runContainer } from './container-runtime';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -11,14 +11,6 @@ import type {
 } from '../types';
 
 const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
-
-function podmanEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.LISTEN_FDS;
-  delete env.LISTEN_PID;
-  delete env.LISTEN_FDNAMES;
-  return env;
-}
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
@@ -46,33 +38,6 @@ export function setConversionFailed(chartNumber: string, message: string): void 
   setTimeout(() => {
     delete conversionProgress[chartNumber];
   }, 300000);
-}
-
-function checkGdalImage(): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile('podman', ['image', 'exists', GDAL_IMAGE], { env: podmanEnv() }, (error) => {
-      resolve(!error);
-    });
-  });
-}
-
-function pullGdalImage(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    debug('Pulling GDAL image...');
-    execFile(
-      'podman',
-      ['pull', GDAL_IMAGE],
-      { timeout: 300000, env: podmanEnv() },
-      (error, _stdout, stderr) => {
-        if (error) {
-          reject(new Error(`Failed to pull GDAL image: ${stderr || error.message}`));
-        } else {
-          debug('GDAL image pulled successfully');
-          resolve();
-        }
-      }
-    );
-  });
 }
 
 async function extractZip(zipPath: string, targetDir: string): Promise<string[]> {
@@ -124,7 +89,16 @@ function setConvertProgress(chartNumber: string, status: string, message: string
   }
 }
 
-export function convertKapToMbtiles(
+async function ensureGdalImage(): Promise<void> {
+  if (await imageExists(GDAL_IMAGE)) {
+    return;
+  }
+  debug('Pulling GDAL image...');
+  await pullImage(GDAL_IMAGE, (msg) => debug(msg));
+  debug('GDAL image pulled successfully');
+}
+
+export async function convertKapToMbtiles(
   kapFile: string,
   outputDir: string,
   chartNumber: string
@@ -133,15 +107,9 @@ export function convertKapToMbtiles(
   const outputFile = path.join(outputDir, `${baseName}.mbtiles`);
   const kapDir = path.dirname(kapFile);
 
-  return new Promise((resolve, reject) => {
-    const args = [
-      'run',
-      '--rm',
-      '-v',
-      `${kapDir}:/input:ro,Z`,
-      '-v',
-      `${outputDir}:/output:Z`,
-      GDAL_IMAGE,
+  const result = await runContainer({
+    image: GDAL_IMAGE,
+    cmd: [
       'gdal_translate',
       '-of',
       'MBTiles',
@@ -149,93 +117,46 @@ export function convertKapToMbtiles(
       'TILE_FORMAT=PNG',
       `/input/${path.basename(kapFile)}`,
       `/output/${baseName}.mbtiles`
-    ];
-
-    debug(`Running: podman ${args.join(' ')}`);
-
-    const child = spawn('podman', args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 0,
-      env: podmanEnv()
-    });
-
-    let output = '';
-
-    child.stdout.on('data', (data: Buffer) => {
-      output += data.toString();
-      appendLog(chartNumber, data.toString().trim());
-    });
-
-    child.stderr.on('data', (data: Buffer) => {
-      output += data.toString();
-      appendLog(chartNumber, data.toString().trim());
-    });
-
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`gdal_translate failed (exit ${code}): ${output}`));
-        return;
-      }
-
-      if (!fs.existsSync(outputFile)) {
-        reject(new Error(`gdal_translate succeeded but output file not found: ${outputFile}`));
-        return;
-      }
-
-      addOverviews(outputFile, chartNumber)
-        .then(() => resolve(outputFile))
-        .catch(() => {
-          debug(`Warning: failed to add overviews for ${baseName}`);
-          resolve(outputFile);
-        });
-    });
-
-    child.on('error', (err) => {
-      reject(new Error(`Failed to start podman: ${err.message}`));
-    });
+    ],
+    binds: [`${kapDir}:/input:ro`, `${outputDir}:/output`],
+    onStdoutLine: (line) => appendLog(chartNumber, line),
+    onStderrLine: (line) => appendLog(chartNumber, line)
   });
+
+  if (result.exitCode !== 0) {
+    throw new Error(`gdal_translate failed (exit ${result.exitCode})`);
+  }
+  if (!fs.existsSync(outputFile)) {
+    throw new Error(`gdal_translate succeeded but output file not found: ${outputFile}`);
+  }
+
+  try {
+    await addOverviews(outputFile, chartNumber);
+  } catch {
+    debug(`Warning: failed to add overviews for ${baseName}`);
+  }
+  return outputFile;
 }
 
-function addOverviews(mbtilesFile: string, chartNumber: string): Promise<void> {
+async function addOverviews(mbtilesFile: string, chartNumber: string): Promise<void> {
   const dir = path.dirname(mbtilesFile);
   const name = path.basename(mbtilesFile);
 
-  return new Promise((resolve, reject) => {
-    const args = [
-      'run',
-      '--rm',
-      '-v',
-      `${dir}:/data:Z`,
-      GDAL_IMAGE,
-      'gdaladdo',
-      '-r',
-      'average',
-      `/data/${name}`,
-      '2',
-      '4',
-      '8',
-      '16'
-    ];
+  appendLog(chartNumber, `Adding overview zoom levels for ${name}...`);
 
-    appendLog(chartNumber, `Adding overview zoom levels for ${name}...`);
-
-    const child = execFile(
-      'podman',
-      args,
-      { timeout: 300000, env: podmanEnv() },
-      (error, _stdout, stderr) => {
-        if (error) {
-          appendLog(chartNumber, `Warning: gdaladdo failed: ${stderr || error.message}`);
-          reject(error);
-        } else {
-          appendLog(chartNumber, `Overviews added for ${name}`);
-          resolve();
-        }
-      }
-    );
-
-    child.on('error', reject);
+  const result = await runContainer({
+    image: GDAL_IMAGE,
+    cmd: ['gdaladdo', '-r', 'average', `/data/${name}`, '2', '4', '8', '16'],
+    binds: [`${dir}:/data`],
+    onStdoutLine: (line) => appendLog(chartNumber, line),
+    onStderrLine: (line) => appendLog(chartNumber, line)
   });
+
+  if (result.exitCode !== 0) {
+    appendLog(chartNumber, `Warning: gdaladdo failed (exit ${result.exitCode})`);
+    throw new Error(`gdaladdo exit ${result.exitCode}`);
+  }
+  appendLog(chartNumber, `Overviews added for ${name}`);
 }
 
 export async function processRncZip(
@@ -245,7 +166,6 @@ export async function processRncZip(
   onStatus: StatusCallback | null
 ): Promise<RncConversionResult> {
   const statusFn = onStatus ?? (() => {});
-  const { checkPodman } = await import('./s57-converter');
 
   const tmpDir = path.join(path.dirname(zipPath), `rnc_${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -259,21 +179,22 @@ export async function processRncZip(
   }
 
   try {
-    statusFn('checking', 'Checking Podman availability...');
-    const podman = await checkPodman();
-    if (!podman.available) {
-      throw new Error('Podman is not installed. RNC chart conversion requires Podman.');
+    statusFn('checking', 'Checking container runtime...');
+    const runtime = await checkContainerRuntime();
+    if (!runtime.available) {
+      throw new Error(
+        'No Docker- or Podman-compatible socket reachable. RNC chart conversion needs a container runtime API.'
+      );
     }
 
     statusFn('pulling', 'Checking GDAL image...');
-    const imageExists = await checkGdalImage();
-    if (!imageExists) {
+    if (!(await imageExists(GDAL_IMAGE))) {
       statusFn('pulling', 'Pulling GDAL image (first time only)...');
       if (chartNumber) {
         conversionProgress[chartNumber].status = 'pulling';
         conversionProgress[chartNumber].message = 'Pulling GDAL image...';
       }
-      await pullGdalImage();
+      await ensureGdalImage();
     }
 
     statusFn('extracting', 'Extracting BSB chart files from ZIP...');
@@ -325,60 +246,26 @@ export async function processRncZip(
 
     const kapDir = path.dirname(kapFiles[0]);
 
-    const mbtilesFiles = await new Promise<string[]>((resolve, reject) => {
-      const child = spawn(
-        'podman',
-        [
-          'run',
-          '--rm',
-          '-v',
-          `${kapDir}:/input:ro,Z`,
-          '-v',
-          `${chartsDir}:/output:Z`,
-          GDAL_IMAGE,
-          'sh',
-          '-c',
-          script + ' && echo "PROGRESS: All done"'
-        ],
-        { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
-      );
-
-      child.stdout.on('data', (data: Buffer) => {
-        const text = data.toString().trim();
-        if (text) {
-          appendLog(chartNumber, text);
-          const match = text.match(/PROGRESS: Converting (\S+)/);
-          if (match && chartNumber && conversionProgress[chartNumber]) {
-            conversionProgress[chartNumber].message = `Converting ${match[1]}...`;
-          }
+    const runResult = await runContainer({
+      image: GDAL_IMAGE,
+      cmd: ['sh', '-c', script + ' && echo "PROGRESS: All done"'],
+      binds: [`${kapDir}:/input:ro`, `${chartsDir}:/output`],
+      onStdoutLine: (line) => {
+        appendLog(chartNumber, line);
+        const match = line.match(/PROGRESS: Converting (\S+)/);
+        if (match && chartNumber && conversionProgress[chartNumber]) {
+          conversionProgress[chartNumber].message = `Converting ${match[1]}...`;
         }
-      });
-
-      child.stderr.on('data', (data: Buffer) => {
-        const text = data.toString().trim();
-        if (text) {
-          appendLog(chartNumber, text);
-        }
-      });
-
-      child.on('close', (code) => {
-        const created = kapNames
-          .map((n) => n.replace(/\.[^.]+$/, '.mbtiles'))
-          .filter((n) => fs.existsSync(path.join(chartsDir, n)));
-        if (created.length === 0) {
-          reject(new Error(`No charts converted (exit ${code})`));
-        } else {
-          resolve(created);
-        }
-      });
-
-      child.on('error', (err) => {
-        reject(new Error(`Failed to start GDAL: ${err.message}`));
-      });
+      },
+      onStderrLine: (line) => appendLog(chartNumber, line)
     });
 
+    const mbtilesFiles = kapNames
+      .map((n) => n.replace(/\.[^.]+$/, '.mbtiles'))
+      .filter((n) => fs.existsSync(path.join(chartsDir, n)));
+
     if (mbtilesFiles.length === 0) {
-      throw new Error('No charts were successfully converted');
+      throw new Error(`No charts converted (exit ${runResult.exitCode})`);
     }
 
     statusFn('completed', `Converted ${mbtilesFiles.length} chart(s) to MBTiles`);
@@ -416,7 +303,6 @@ export async function processPilotTar(
   onStatus: StatusCallback | null
 ): Promise<RncConversionResult> {
   const statusFn = onStatus ?? (() => {});
-  const { checkPodman } = await import('./s57-converter');
 
   const tmpDir = path.join(path.dirname(tarPath), `pilot_${Date.now()}`);
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -430,46 +316,27 @@ export async function processPilotTar(
   }
 
   try {
-    const podman = await checkPodman();
-    if (!podman.available) {
-      throw new Error('Podman is not installed.');
+    const runtime = await checkContainerRuntime();
+    if (!runtime.available) {
+      throw new Error('No Docker- or Podman-compatible socket reachable.');
     }
 
     statusFn('pulling', 'Checking GDAL image...');
-    const imageExists = await checkGdalImage();
-    if (!imageExists) {
-      await pullGdalImage();
-    }
+    await ensureGdalImage();
 
     statusFn('extracting', 'Extracting pilot chart archive...');
     setConvertProgress(chartNumber, 'extracting', 'Extracting .tar.xz archive...');
 
-    await new Promise<void>((resolve, reject) => {
-      const child = execFile(
-        'podman',
-        [
-          'run',
-          '--rm',
-          '-v',
-          `${path.dirname(tarPath)}:/archive:ro,Z`,
-          '-v',
-          `${tmpDir}:/output:Z`,
-          GDAL_IMAGE,
-          'sh',
-          '-c',
-          `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`
-        ],
-        { timeout: 120000, env: podmanEnv() },
-        (error, _stdout, stderr) => {
-          if (error) {
-            reject(new Error(`tar extraction failed: ${stderr || error.message}`));
-          } else {
-            resolve();
-          }
-        }
-      );
-      child.on('error', reject);
+    const tarResult = await runContainer({
+      image: GDAL_IMAGE,
+      cmd: ['sh', '-c', `tar -xf /archive/${path.basename(tarPath)} -C /output && echo DONE`],
+      binds: [`${path.dirname(tarPath)}:/archive:ro`, `${tmpDir}:/output`],
+      onStdoutLine: (line) => appendLog(chartNumber, line),
+      onStderrLine: (line) => appendLog(chartNumber, line)
     });
+    if (tarResult.exitCode !== 0) {
+      throw new Error(`tar extraction failed (exit ${tarResult.exitCode})`);
+    }
 
     const kapFiles: string[] = [];
     const findKap = (dir: string): void => {
@@ -495,8 +362,7 @@ export async function processPilotTar(
     statusFn('converting', `Converting ${kapFiles.length} chart(s)...`);
     setConvertProgress(chartNumber, 'converting', `Converting ${kapFiles.length} chart(s)...`);
 
-    const mbtilesFiles = await new Promise<string[]>((resolve, reject) => {
-      const script = `
+    const script = `
 set -e
 cd /input
 for kap in $(find /input -name '*.kap' -o -name '*.KAP'); do
@@ -509,54 +375,26 @@ for kap in $(find /input -name '*.kap' -o -name '*.KAP'); do
 done
 echo "PROGRESS: All done"
 `;
-      const child = spawn(
-        'podman',
-        [
-          'run',
-          '--rm',
-          '-v',
-          `${tmpDir}:/input:ro,Z`,
-          '-v',
-          `${chartsDir}:/output:Z`,
-          GDAL_IMAGE,
-          'sh',
-          '-c',
-          script
-        ],
-        { stdio: ['ignore', 'pipe', 'pipe'], env: podmanEnv() }
-      );
-
-      child.stdout.on('data', (data: Buffer) => {
-        const text = data.toString().trim();
-        if (text) {
-          appendLog(chartNumber, text);
-          const match = text.match(/PROGRESS: Converting (\S+)/);
-          if (match) {
-            setConvertProgress(chartNumber, 'converting', `Converting ${match[1]}...`);
-          }
+    const runResult = await runContainer({
+      image: GDAL_IMAGE,
+      cmd: ['sh', '-c', script],
+      binds: [`${tmpDir}:/input:ro`, `${chartsDir}:/output`],
+      onStdoutLine: (line) => {
+        appendLog(chartNumber, line);
+        const match = line.match(/PROGRESS: Converting (\S+)/);
+        if (match) {
+          setConvertProgress(chartNumber, 'converting', `Converting ${match[1]}...`);
         }
-      });
-      child.stderr.on('data', (data: Buffer) => {
-        const text = data.toString().trim();
-        if (text) {
-          appendLog(chartNumber, text);
-        }
-      });
-      child.on('close', (code) => {
-        const created = kapFiles
-          .map((f) => path.basename(f).replace(/\.[^.]+$/, '.mbtiles'))
-          .filter((n) => fs.existsSync(path.join(chartsDir, n)));
-        if (created.length === 0) {
-          reject(new Error(`No charts converted (exit ${code})`));
-        } else {
-          resolve(created);
-        }
-      });
-      child.on('error', (err) => reject(new Error(`Failed to start GDAL: ${err.message}`)));
+      },
+      onStderrLine: (line) => appendLog(chartNumber, line)
     });
 
+    const mbtilesFiles = kapFiles
+      .map((f) => path.basename(f).replace(/\.[^.]+$/, '.mbtiles'))
+      .filter((n) => fs.existsSync(path.join(chartsDir, n)));
+
     if (mbtilesFiles.length === 0) {
-      throw new Error('No charts were successfully converted');
+      throw new Error(`No charts converted (exit ${runResult.exitCode})`);
     }
 
     statusFn('completed', `Converted ${mbtilesFiles.length} chart(s)`);
