@@ -14,7 +14,6 @@ import type {
   ConversionProgressMap,
   S57ConversionResult,
   S57ConversionOptions,
-  ContainerRuntimeStatus,
   StatusCallback,
   DebugFunction
 } from '../types';
@@ -48,10 +47,6 @@ export function setConversionFailed(chartNumber: string, message: string): void 
   setTimeout(() => {
     delete conversionProgress[chartNumber];
   }, 300000);
-}
-
-export async function checkPodman(): Promise<ContainerRuntimeStatus> {
-  return checkContainerRuntime();
 }
 
 async function ensureImage(image: string): Promise<void> {

@@ -24,12 +24,12 @@ import {
 } from './utils/catalog-manager';
 import {
   initS57Converter,
-  checkPodman,
   processS57Zip,
   getAllConversionProgress as getAllS57Progress,
   getConversionProgress as getS57Progress,
   setConversionFailed as setS57Failed
 } from './utils/s57-converter';
+import { checkContainerRuntime } from './utils/container-runtime';
 import {
   initRncConverter,
   processRncZip,
@@ -1176,10 +1176,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     router.get('/catalog-s57-status', async (_req: Request, res: Response) => {
       try {
-        const podman = await checkPodman();
+        const runtime = await checkContainerRuntime();
         res.json({
-          podmanAvailable: podman.available,
-          podmanVersion: podman.version,
+          podmanAvailable: runtime.available,
+          podmanVersion: runtime.version,
           conversions: { ...getAllS57Progress(), ...getAllRncProgress() }
         });
       } catch {
@@ -1310,10 +1310,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         const validatedFile = uploadedFile;
         void (async () => {
-          const podmanStatus = await checkPodman();
-          if (!podmanStatus.available) {
+          const runtimeStatus = await checkContainerRuntime();
+          if (!runtimeStatus.available) {
             cleanupDir(tmpDir);
-            res.status(400).json({ success: false, error: 'Podman is not available' });
+            res.status(400).json({
+              success: false,
+              error:
+                'No Docker- or Podman-compatible socket reachable. See docs/running-in-docker.md.'
+            });
             return;
           }
 

@@ -236,9 +236,6 @@ export interface ContainerRuntimeStatus {
   engine: 'docker' | 'podman' | null;
 }
 
-/** @deprecated use ContainerRuntimeStatus */
-export type PodmanStatus = ContainerRuntimeStatus;
-
 export interface RncConversionResult {
   mbtilesFiles: string[];
 }

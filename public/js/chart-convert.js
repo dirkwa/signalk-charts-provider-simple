@@ -32,10 +32,9 @@ async function initConvertTab() {
     <div class="catalog-container">
       ${!convertPodmanAvailable ? `
         <div class="catalog-podman-warning">
-          <strong>Podman not found.</strong>
-          Chart conversion requires Podman.
-          <a href="https://podman.io/docs/installation" target="_blank" rel="noopener">Install Podman</a>
-          to enable chart conversion.
+          <strong>Container runtime not reachable.</strong>
+          Chart conversion needs a Docker- or Podman-compatible socket.
+          <a href="https://github.com/dirkwa/signalk-charts-provider-simple/blob/main/docs/running-in-docker.md" target="_blank" rel="noopener">See setup notes</a>.
         </div>
       ` : ''}
       <div class="convert-section">
@@ -104,7 +103,7 @@ function setupDropZone(zoneId, inputId) {
 
   zone.onclick = () => {
     if (!convertPodmanAvailable) {
-      alert('Podman is required for chart conversion. Please install Podman first.');
+      alert('Chart conversion needs a Docker- or Podman-compatible socket. See the warning above.');
       return;
     }
     input.click();
@@ -123,7 +122,7 @@ function setupDropZone(zoneId, inputId) {
     e.preventDefault();
     zone.classList.remove('dragover');
     if (!convertPodmanAvailable) {
-      alert('Podman is required for chart conversion. Please install Podman first.');
+      alert('Chart conversion needs a Docker- or Podman-compatible socket. See the warning above.');
       return;
     }
     const files = e.dataTransfer.files;
