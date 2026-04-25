@@ -55,7 +55,13 @@ function startMockServer() {
   });
 }
 
-describe('container-runtime', () => {
+// Unix-socket bind on Windows fails with EACCES; Node only supports named-pipe
+// paths there. The plugin's runtime targets Docker/Podman daemons, which are
+// Linux-only at runtime — running this harness on Windows tests an unsupported
+// host. Skip the whole suite there.
+const skipOnWindows = process.platform === 'win32' ? describe.skip : describe;
+
+skipOnWindows('container-runtime', () => {
   let runtime;
 
   before(async () => {
