@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'child_process';
 import https from 'https';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import unzipper from 'unzipper';
 import type {
@@ -262,9 +263,12 @@ function runTippecanoe(
   }
 
   return new Promise((resolve, reject) => {
+    const tippecanoeThreads = Math.max(1, Math.floor(os.cpus().length / 2));
     const args = [
       'run',
       '--rm',
+      '-e',
+      `TIPPECANOE_MAX_THREADS=${tippecanoeThreads}`,
       '-v',
       `${geojsonDir}:/input:ro,Z`,
       '-v',
@@ -282,7 +286,9 @@ function runTippecanoe(
       ...layerArgs
     ];
 
-    debug(`Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}`);
+    debug(
+      `Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}, ${tippecanoeThreads} threads`
+    );
 
     const child = spawn('podman', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
