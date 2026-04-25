@@ -94,22 +94,30 @@ The interface provides four tabs:
 - **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
 - **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
 
-### Optional: Podman (for chart conversion)
+### Optional: container runtime (for chart conversion)
 
-To convert S-57 ENC, BSB raster, Pilot Charts, or basemaps, [Podman](https://podman.io/) must be installed. The plugin uses standard container images that are pulled automatically on first use:
+To convert S-57 ENC, BSB raster, Pilot Charts, or basemaps, the plugin needs a Docker- or Podman-compatible API socket. Both engines work the same way; pick whichever is easier on your host.
+
+The plugin uses standard images that are pulled automatically on first use:
 
 - `ghcr.io/osgeo/gdal:alpine-small-latest` — GDAL for format conversion
 - `ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe` — tippecanoe for vector tile generation (multi-arch: amd64 + arm64)
 
+**Bare-metal install (Signal K running directly on the host):**
+
 ```bash
 # Debian / Ubuntu / Raspberry Pi OS
 sudo apt install podman
+systemctl --user enable --now podman.socket
 
 # Fedora / RHEL
 sudo dnf install podman
+systemctl --user enable --now podman.socket
 ```
 
-MBTiles charts work without Podman. Chart conversion is limited to 2 concurrent jobs.
+**Signal K running in Docker?** See [docs/running-in-docker.md](docs/running-in-docker.md) for the docker-compose snippet.
+
+Conversion concurrency scales with CPU cores. MBTiles charts (display only, no conversion) work without any container runtime.
 
 ## Legal Notice
 
