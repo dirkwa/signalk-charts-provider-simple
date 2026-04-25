@@ -229,10 +229,15 @@ export interface S57ConversionOptions {
   maxzoom?: number;
 }
 
-export interface PodmanStatus {
+export interface ContainerRuntimeStatus {
   available: boolean;
   version: string | null;
+  socketPath: string | null;
+  engine: 'docker' | 'podman' | null;
 }
+
+/** @deprecated use ContainerRuntimeStatus */
+export type PodmanStatus = ContainerRuntimeStatus;
 
 export interface RncConversionResult {
   mbtilesFiles: string[];
