@@ -52,8 +52,8 @@ async function initConvertTab() {
               <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
             </svg>
           </div>
-          <div class="convert-upload-text">Drop S-57 ENC ZIP here or click to select</div>
-          <input type="file" id="s57FileInput" accept=".zip" style="display:none" onchange="handleConvertFile(this, 's57')">
+          <div class="convert-upload-text">Drop S-57 ENC ZIP files here or click to select</div>
+          <input type="file" id="s57FileInput" accept=".zip" multiple style="display:none" onchange="handleConvertFile(this, 's57')">
         </div>
         <div class="convert-upload-options">
           <label>Zoom levels:</label>
@@ -127,16 +127,22 @@ function setupDropZone(zoneId, inputId) {
       return;
     }
     const files = e.dataTransfer.files;
-    if (files.length > 0 && files[0].name.endsWith('.zip')) {
-      const type = zoneId === 's57DropZone' ? 's57' : 'rnc';
-      uploadConvertFile(files[0], type);
+    const type = zoneId === 's57DropZone' ? 's57' : 'rnc';
+    if (zoneId === 's57DropZone') {
+      // Allow multiple files for S-57
+      const zips = Array.from(files).filter((f) => f.name.endsWith('.zip'));
+      zips.forEach((f) => uploadConvertFile(f, type));
+    } else {
+      if (files.length > 0 && files[0].name.endsWith('.zip')) {
+        uploadConvertFile(files[0], type);
+      }
     }
   };
 }
 
 window.handleConvertFile = function (input, type) {
   if (input.files.length > 0) {
-    uploadConvertFile(input.files[0], type);
+    Array.from(input.files).forEach((file) => uploadConvertFile(file, type));
     input.value = ''; // reset so same file can be selected again
   }
 };

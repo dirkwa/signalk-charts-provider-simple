@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import https from 'https';
+import os from 'os';
 import type { Plugin, Path } from '@signalk/server-api';
 import { findCharts } from './charts-loader';
 import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner';
@@ -1316,7 +1317,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             return;
           }
 
-          const MAX_CONCURRENT = 2;
+          const MAX_CONCURRENT = os.cpus().length;
           if (getConvertingCount() >= MAX_CONCURRENT) {
             cleanupDir(tmpDir);
             res.status(429).json({
@@ -1436,7 +1437,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        const MAX_CONCURRENT_CONVERSIONS = 2;
+        const MAX_CONCURRENT_CONVERSIONS = Math.max(1, Math.floor(os.cpus().length / 2));
         if (
           ['s57-zip', 'rnc-zip', 'gshhg', 'pilot-tar', 'shp-basemap'].includes(
             classification.format
