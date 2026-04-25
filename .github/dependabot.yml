@@ -9,6 +9,12 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # @types/node major versions track the Node.js major. Keep this pinned
+      # to the lowest supported runtime (Node 22 per package.json engines)
+      # so types reflect what's actually available on every supported version.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: '/'
