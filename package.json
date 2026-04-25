@@ -34,6 +34,7 @@
   "dependencies": {
     "@signalk/server-api": "^2.0.0",
     "busboy": "^1.6.0",
+    "dockerode": "^5.0.0",
     "unzipper": "^0.12.3",
     "xml2js": "^0.6.2"
   },
@@ -68,6 +69,7 @@
   "devDependencies": {
     "@eslint/js": "^9.28.0",
     "@types/busboy": "^1.5.4",
+    "@types/dockerode": "^4.0.1",
     "@types/express": "^5.0.3",
     "@types/node": "^22.15.0",
     "@types/unzipper": "^0.10.11",
