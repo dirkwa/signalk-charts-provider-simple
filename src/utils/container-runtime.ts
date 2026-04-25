@@ -158,20 +158,28 @@ function splitLines(callback: ((line: string) => void) | undefined): PassThrough
     stream.resume();
     return stream;
   }
+  // Treat any of \r\n, \n, or bare \r as a line boundary. Tools like tippecanoe
+  // repaint a progress line in place using bare \r — without that split, every
+  // update concatenates into a single never-ending "line" and stream consumers
+  // see only the first segment.
   let buffer = '';
   stream.on('data', (chunk: Buffer) => {
     buffer += chunk.toString('utf8');
-    const lines = buffer.split(/\r?\n/);
+    const lines = buffer.split(/\r\n|\r|\n/);
     buffer = lines.pop() ?? '';
     for (const line of lines) {
-      if (line.length) {
-        callback(line);
+      const trimmed = line.trim();
+      if (trimmed.length) {
+        callback(trimmed);
       }
     }
   });
   stream.on('end', () => {
     if (buffer.length) {
-      callback(buffer);
+      const trimmed = buffer.trim();
+      if (trimmed.length) {
+        callback(trimmed);
+      }
       buffer = '';
     }
   });
