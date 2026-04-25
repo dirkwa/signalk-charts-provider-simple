@@ -53,6 +53,7 @@ import type {
 
 const PLUGIN_ID = 'signalk-charts-provider-simple';
 const chartTilesPath = `/plugins/${PLUGIN_ID}`;
+const MAX_CONCURRENT_CONVERSIONS = Math.max(1, Math.floor(os.cpus().length / 2));
 
 const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let chartProviders: Record<string, ChartProvider> = {};
@@ -1317,12 +1318,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             return;
           }
 
-          const MAX_CONCURRENT = os.cpus().length;
-          if (getConvertingCount() >= MAX_CONCURRENT) {
+          if (getConvertingCount() >= MAX_CONCURRENT_CONVERSIONS) {
             cleanupDir(tmpDir);
             res.status(429).json({
               success: false,
-              error: `Too many conversions running (max ${MAX_CONCURRENT}). Please wait.`
+              error: `Too many conversions running (max ${MAX_CONCURRENT_CONVERSIONS}). Please wait for a conversion to finish.`
             });
             return;
           }
@@ -1437,7 +1437,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        const MAX_CONCURRENT_CONVERSIONS = Math.max(1, Math.floor(os.cpus().length / 2));
         if (
           ['s57-zip', 'rnc-zip', 'gshhg', 'pilot-tar', 'shp-basemap'].includes(
             classification.format
