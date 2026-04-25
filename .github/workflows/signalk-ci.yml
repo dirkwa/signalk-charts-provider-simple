@@ -11,7 +11,7 @@ on:
 
 jobs:
   test:
-    uses: dirkwa/signalk-server/.github/workflows/plugin-ci.yml@feat-ci-for-plugins
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@master
     with:
       enable-armv7: false
       enable-signalk-integration: true

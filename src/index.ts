@@ -1,7 +1,6 @@
 import path from 'path';
 import fs from 'fs';
 import https from 'https';
-import os from 'os';
 import type { Plugin, Path } from '@signalk/server-api';
 import { findCharts } from './charts-loader';
 import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner';
@@ -40,6 +39,7 @@ import {
   setConversionFailed as setRncFailed
 } from './utils/rnc-converter';
 import { processGshhg, processShpBasemap } from './utils/s57-converter';
+import { MAX_CONCURRENT_CONVERSIONS } from './utils/concurrency';
 import type {
   ExtendedServerAPI,
   PluginConfig,
@@ -1317,12 +1317,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             return;
           }
 
-          const MAX_CONCURRENT = os.cpus().length;
-          if (getConvertingCount() >= MAX_CONCURRENT) {
+          if (getConvertingCount() >= MAX_CONCURRENT_CONVERSIONS) {
             cleanupDir(tmpDir);
             res.status(429).json({
               success: false,
-              error: `Too many conversions running (max ${MAX_CONCURRENT}). Please wait.`
+              error: `Too many conversions running (max ${MAX_CONCURRENT_CONVERSIONS}). Please wait for a conversion to finish.`
             });
             return;
           }
@@ -1437,7 +1436,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        const MAX_CONCURRENT_CONVERSIONS = Math.max(1, Math.floor(os.cpus().length / 2));
         if (
           ['s57-zip', 'rnc-zip', 'gshhg', 'pilot-tar', 'shp-basemap'].includes(
             classification.format

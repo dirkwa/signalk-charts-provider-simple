@@ -3,6 +3,7 @@ import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
+import { TIPPECANOE_THREADS_PER_JOB } from './concurrency';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -265,6 +266,8 @@ function runTippecanoe(
     const args = [
       'run',
       '--rm',
+      '-e',
+      `TIPPECANOE_MAX_THREADS=${TIPPECANOE_THREADS_PER_JOB}`,
       '-v',
       `${geojsonDir}:/input:ro,Z`,
       '-v',
@@ -282,7 +285,9 @@ function runTippecanoe(
       ...layerArgs
     ];
 
-    debug(`Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}`);
+    debug(
+      `Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}, ${TIPPECANOE_THREADS_PER_JOB} threads`
+    );
 
     const child = spawn('podman', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
