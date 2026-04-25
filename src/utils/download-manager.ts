@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
 import { EventEmitter } from 'events';
-import type { DownloadJob, DownloadJobOptions, DownloadJobStatus } from '../types';
+import type { DownloadJob, DownloadJobOptions } from '../types';
 
 interface DownloadManagerEvents {
   'job-created': [job: DownloadJob];
@@ -189,7 +189,7 @@ class DownloadManager extends EventEmitter {
               if (isZip) {
                 job.progress = Math.min(90, Math.floor((downloadedBytes / contentLength) * 90));
                 if (job.progress >= 90 && job.status === 'downloading') {
-                  job.status = 'extracting' as DownloadJobStatus;
+                  job.status = 'extracting';
                 }
               } else {
                 job.progress = Math.floor((downloadedBytes / contentLength) * 100);

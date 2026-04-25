@@ -2115,7 +2115,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
   }
 
   const { _filePath, _fileFormat, _mbtilesHandle, _flipY, v1: _v1, v2: _v2, ...rest } = provider;
-  return { ...rest, ...v } as SanitizedChart;
+  return { ...rest, ...v };
 };
 
 const ensureDirectoryExists = (dirPath: string): boolean => {
