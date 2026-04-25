@@ -115,10 +115,9 @@ async function checkS57Status() {
     if (!s57PodmanAvailable) {
       warningEl.innerHTML = `
         <div class="catalog-podman-warning">
-          <strong>Podman not found.</strong>
-          IENC (S-57) and RNC (BSB raster) chart conversion is not available.
-          <a href="https://podman.io/docs/installation" target="_blank" rel="noopener">Install Podman</a>
-          to enable chart conversion.
+          <strong>Container runtime not reachable.</strong>
+          IENC (S-57) and RNC (BSB raster) chart conversion needs a Docker- or Podman-compatible socket.
+          <a href="https://github.com/dirkwa/signalk-charts-provider-simple/blob/main/docs/running-in-docker.md" target="_blank" rel="noopener">See setup notes</a>.
         </div>`;
     } else {
       warningEl.innerHTML = '';
@@ -326,7 +325,7 @@ function renderChartList(catalogFile) {
         const btnLabel = needsConversion ? 'Download & Convert' : 'Download';
         const btnDisabled = needsConversion && !s57PodmanAvailable ? 'disabled' : '';
         const podmanHint = needsConversion && !s57PodmanAvailable
-          ? `<span class="format-badge unsupported">Podman required</span>`
+          ? `<span class="format-badge unsupported">Container runtime required</span>`
           : '';
 
         const zoomHtml = showZoomSelector && s57PodmanAvailable ? `

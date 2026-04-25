@@ -229,9 +229,11 @@ export interface S57ConversionOptions {
   maxzoom?: number;
 }
 
-export interface PodmanStatus {
+export interface ContainerRuntimeStatus {
   available: boolean;
   version: string | null;
+  socketPath: string | null;
+  engine: 'docker' | 'podman' | null;
 }
 
 export interface RncConversionResult {
