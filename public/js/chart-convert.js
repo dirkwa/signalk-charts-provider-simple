@@ -129,9 +129,12 @@ function setupDropZone(zoneId, inputId) {
     const files = e.dataTransfer.files;
     const type = zoneId === 's57DropZone' ? 's57' : 'rnc';
     if (zoneId === 's57DropZone') {
-      // Allow multiple files for S-57
       const zips = Array.from(files).filter((f) => f.name.endsWith('.zip'));
-      zips.forEach((f) => uploadConvertFile(f, type));
+      (async () => {
+        for (const f of zips) {
+          await uploadConvertFile(f, type);
+        }
+      })();
     } else {
       if (files.length > 0 && files[0].name.endsWith('.zip')) {
         uploadConvertFile(files[0], type);
@@ -140,10 +143,13 @@ function setupDropZone(zoneId, inputId) {
   };
 }
 
-window.handleConvertFile = function (input, type) {
+window.handleConvertFile = async function (input, type) {
   if (input.files.length > 0) {
-    Array.from(input.files).forEach((file) => uploadConvertFile(file, type));
-    input.value = ''; // reset so same file can be selected again
+    const files = Array.from(input.files);
+    input.value = '';
+    for (const file of files) {
+      await uploadConvertFile(file, type);
+    }
   }
 };
 
