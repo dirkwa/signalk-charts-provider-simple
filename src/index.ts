@@ -1,7 +1,6 @@
 import path from 'path';
 import fs from 'fs';
 import https from 'https';
-import os from 'os';
 import type { Plugin, Path } from '@signalk/server-api';
 import { findCharts } from './charts-loader';
 import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner';
@@ -40,6 +39,7 @@ import {
   setConversionFailed as setRncFailed
 } from './utils/rnc-converter';
 import { processGshhg, processShpBasemap } from './utils/s57-converter';
+import { MAX_CONCURRENT_CONVERSIONS } from './utils/concurrency';
 import type {
   ExtendedServerAPI,
   PluginConfig,
@@ -53,7 +53,6 @@ import type {
 
 const PLUGIN_ID = 'signalk-charts-provider-simple';
 const chartTilesPath = `/plugins/${PLUGIN_ID}`;
-const MAX_CONCURRENT_CONVERSIONS = Math.max(1, Math.floor(os.cpus().length / 2));
 
 const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let chartProviders: Record<string, ChartProvider> = {};

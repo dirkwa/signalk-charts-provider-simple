@@ -1,9 +1,9 @@
 import { execFile, spawn } from 'child_process';
 import https from 'https';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import unzipper from 'unzipper';
+import { TIPPECANOE_THREADS_PER_JOB } from './concurrency';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -263,12 +263,11 @@ function runTippecanoe(
   }
 
   return new Promise((resolve, reject) => {
-    const tippecanoeThreads = Math.max(1, Math.floor(os.cpus().length / 2));
     const args = [
       'run',
       '--rm',
       '-e',
-      `TIPPECANOE_MAX_THREADS=${tippecanoeThreads}`,
+      `TIPPECANOE_MAX_THREADS=${TIPPECANOE_THREADS_PER_JOB}`,
       '-v',
       `${geojsonDir}:/input:ro,Z`,
       '-v',
@@ -287,7 +286,7 @@ function runTippecanoe(
     ];
 
     debug(
-      `Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}, ${tippecanoeThreads} threads`
+      `Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}, ${TIPPECANOE_THREADS_PER_JOB} threads`
     );
 
     const child = spawn('podman', args, {
