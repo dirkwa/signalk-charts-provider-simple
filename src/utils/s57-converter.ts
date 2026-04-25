@@ -381,6 +381,10 @@ export async function processGshhg(
     f: 'Full'
   };
 
+  if (!Object.prototype.hasOwnProperty.call(resLabels, resolution)) {
+    throw new Error(`Invalid GSHHG resolution: ${resolution}`);
+  }
+
   const runtime = await checkContainerRuntime();
   if (!runtime.available) {
     throw new Error('No Docker- or Podman-compatible socket reachable.');
@@ -462,46 +466,95 @@ export async function processGshhg(
   const outputName = `gshhg-basemap-${resolution}.mbtiles`;
   const outputPath = path.join(chartsDir, outputName);
 
-  const script = `
-set -e
-echo "Rasterizing shapefile..."
-gdal_rasterize \
-  -burn 240 -burn 230 -burn 208 \
-  -init 168 -init 212 -init 230 \
-  -a_srs EPSG:4326 \
-  -te -180 -85.05 180 85.05 \
-  -ts ${rasterSize} ${Math.round(rasterSize / 2)} \
-  -ot Byte \
-  -of GTiff \
-  -co COMPRESS=LZW \
-  /input/GSHHS_shp/${resolution}/GSHHS_${resolution}_L1.shp /work/world.tif
-echo "Creating MBTiles..."
-gdal_translate \
-  -of MBTiles \
-  -co TILE_FORMAT=PNG \
-  /work/world.tif /output/${outputName}
-echo "Adding overview zoom levels..."
-gdaladdo -r average /output/${outputName} 2 4 8 16 32 64 128 256
-echo "DONE"
-`;
-
-  const result = await runContainer({
+  appendLog(chartNumber, 'Rasterizing shapefile...');
+  const rasterizeResult = await runContainer({
     image: GDAL_IMAGE,
-    cmd: ['sh', '-c', script],
-    binds: [`${shpDir}:/input:ro`, `${tmpDir}:/work`, `${chartsDir}:/output`],
-    onStdoutLine: (line) => {
-      appendLog(chartNumber, line);
-      if (line.includes('Creating MBTiles')) {
-        setProgress(chartNumber, 'converting', 'Creating MBTiles...');
-      } else if (line.includes('Adding overview')) {
-        setProgress(chartNumber, 'converting', 'Adding zoom levels...');
-      }
-    },
+    cmd: [
+      'gdal_rasterize',
+      '-burn',
+      '240',
+      '-burn',
+      '230',
+      '-burn',
+      '208',
+      '-init',
+      '168',
+      '-init',
+      '212',
+      '-init',
+      '230',
+      '-a_srs',
+      'EPSG:4326',
+      '-te',
+      '-180',
+      '-85.05',
+      '180',
+      '85.05',
+      '-ts',
+      String(rasterSize),
+      String(Math.round(rasterSize / 2)),
+      '-ot',
+      'Byte',
+      '-of',
+      'GTiff',
+      '-co',
+      'COMPRESS=LZW',
+      `/input/GSHHS_shp/${resolution}/GSHHS_${resolution}_L1.shp`,
+      '/work/world.tif'
+    ],
+    binds: [`${shpDir}:/input:ro`, `${tmpDir}:/work`],
+    onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
+  if (rasterizeResult.exitCode !== 0) {
+    throw new Error(`gdal_rasterize failed (exit ${rasterizeResult.exitCode})`);
+  }
 
-  if (result.exitCode !== 0) {
-    throw new Error(`GDAL rasterization failed (exit ${result.exitCode})`);
+  setProgress(chartNumber, 'converting', 'Creating MBTiles...');
+  appendLog(chartNumber, 'Creating MBTiles...');
+  const translateResult = await runContainer({
+    image: GDAL_IMAGE,
+    cmd: [
+      'gdal_translate',
+      '-of',
+      'MBTiles',
+      '-co',
+      'TILE_FORMAT=PNG',
+      '/work/world.tif',
+      `/output/${outputName}`
+    ],
+    binds: [`${tmpDir}:/work`, `${chartsDir}:/output`],
+    onStdoutLine: (line) => appendLog(chartNumber, line),
+    onStderrLine: (line) => appendLog(chartNumber, line)
+  });
+  if (translateResult.exitCode !== 0) {
+    throw new Error(`gdal_translate failed (exit ${translateResult.exitCode})`);
+  }
+
+  setProgress(chartNumber, 'converting', 'Adding zoom levels...');
+  appendLog(chartNumber, 'Adding overview zoom levels...');
+  const overviewResult = await runContainer({
+    image: GDAL_IMAGE,
+    cmd: [
+      'gdaladdo',
+      '-r',
+      'average',
+      `/output/${outputName}`,
+      '2',
+      '4',
+      '8',
+      '16',
+      '32',
+      '64',
+      '128',
+      '256'
+    ],
+    binds: [`${chartsDir}:/output`],
+    onStdoutLine: (line) => appendLog(chartNumber, line),
+    onStderrLine: (line) => appendLog(chartNumber, line)
+  });
+  if (overviewResult.exitCode !== 0) {
+    throw new Error(`gdaladdo failed (exit ${overviewResult.exitCode})`);
   }
 
   try {
