@@ -10,6 +10,10 @@ export interface RunOptions {
   cmd?: string[];
   binds?: string[];
   env?: string[];
+  /** Short identifier for the work being done (e.g. 'tippecanoe', 'gdal-export'). Becomes part of the container name and a label. */
+  phase?: string;
+  /** Identifier of the chart/job being processed. Becomes part of the container name and a label. */
+  job?: string;
   onStdoutLine?: (line: string) => void;
   onStderrLine?: (line: string) => void;
 }
@@ -179,6 +183,34 @@ function stripVolumeFlags(bind: string): string {
   return bind.replace(/(?::Z|,Z)/g, '');
 }
 
+const CONTAINER_NAME_PREFIX = 'signalk-charts';
+const LABEL_PLUGIN = 'io.signalk.charts-provider.plugin';
+const LABEL_PHASE = 'io.signalk.charts-provider.phase';
+const LABEL_JOB = 'io.signalk.charts-provider.job';
+
+function sanitizeNamePart(s: string): string {
+  // Container names allow [a-zA-Z0-9][a-zA-Z0-9_.-]*; map the rest to '-'.
+  return s.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 60);
+}
+
+function buildContainerName(
+  phase: string | undefined,
+  job: string | undefined
+): string | undefined {
+  if (!phase && !job) {
+    return undefined;
+  }
+  const parts = [CONTAINER_NAME_PREFIX];
+  if (phase) {
+    parts.push(sanitizeNamePart(phase));
+  }
+  if (job) {
+    parts.push(sanitizeNamePart(job));
+  }
+  parts.push(String(Date.now()));
+  return parts.join('-');
+}
+
 export async function runContainer(opts: RunOptions): Promise<{ exitCode: number }> {
   const resolved = await resolveClient();
   if (!resolved) {
@@ -188,10 +220,22 @@ export async function runContainer(opts: RunOptions): Promise<{ exitCode: number
   const stdout = splitLines(opts.onStdoutLine);
   const stderr = splitLines(opts.onStderrLine);
 
+  const labels: Record<string, string> = {
+    [LABEL_PLUGIN]: 'signalk-charts-provider-simple'
+  };
+  if (opts.phase) {
+    labels[LABEL_PHASE] = opts.phase;
+  }
+  if (opts.job) {
+    labels[LABEL_JOB] = opts.job;
+  }
+
   const createOptions: Docker.ContainerCreateOptions = {
+    name: buildContainerName(opts.phase, opts.job),
     Image: opts.image,
     Cmd: opts.cmd,
     Env: opts.env,
+    Labels: labels,
     HostConfig: {
       AutoRemove: true,
       Binds: opts.binds?.map(stripVolumeFlags)

@@ -153,6 +153,8 @@ echo "PROGRESS: Export complete"
 
   const result = await runContainer({
     image: GDAL_IMAGE,
+    phase: 'gdal-export',
+    job: chartNumber,
     cmd: ['sh', '-c', script],
     binds: [`${encDir}:/input:ro`, `${geojsonDir}:/output`],
     onStdoutLine: (line) => {
@@ -203,7 +205,7 @@ async function runTippecanoe(
 
   const handleTippecanoeLine = (line: string): void => {
     appendLog(chartNumber, line);
-    const match = line.match(/(\d+\.\d+)%/);
+    const match = line.match(/(\d+(?:\.\d+)?)%/);
     if (match && chartNumber && conversionProgress[chartNumber]) {
       const pct = parseFloat(match[1]);
       conversionProgress[chartNumber].message = `Generating tiles: ${Math.round(pct)}%`;
@@ -212,6 +214,8 @@ async function runTippecanoe(
 
   const result = await runContainer({
     image: TIPPECANOE_IMAGE,
+    phase: 'tippecanoe',
+    job: chartNumber,
     cmd: [
       'tippecanoe',
       '-o',
@@ -469,6 +473,8 @@ export async function processGshhg(
   appendLog(chartNumber, 'Rasterizing shapefile...');
   const rasterizeResult = await runContainer({
     image: GDAL_IMAGE,
+    phase: 'gdal-rasterize',
+    job: chartNumber,
     cmd: [
       'gdal_rasterize',
       '-burn',
@@ -514,6 +520,8 @@ export async function processGshhg(
   appendLog(chartNumber, 'Creating MBTiles...');
   const translateResult = await runContainer({
     image: GDAL_IMAGE,
+    phase: 'gdal-translate',
+    job: chartNumber,
     cmd: [
       'gdal_translate',
       '-of',
@@ -535,6 +543,8 @@ export async function processGshhg(
   appendLog(chartNumber, 'Adding overview zoom levels...');
   const overviewResult = await runContainer({
     image: GDAL_IMAGE,
+    phase: 'gdaladdo',
+    job: chartNumber,
     cmd: [
       'gdaladdo',
       '-r',
@@ -617,6 +627,8 @@ export async function processShpBasemap(
 
     const tarResult = await runContainer({
       image: GDAL_IMAGE,
+      phase: 'tar-extract',
+      job: chartNumber,
       cmd: ['tar', '-xf', `/archive/${path.basename(tarPath)}`, '-C', '/output'],
       binds: [`${path.dirname(tarPath)}:/archive:ro`, `${tmpDir}:/output`],
       onStdoutLine: (line) => appendLog(chartNumber, line),
@@ -671,6 +683,8 @@ export async function processShpBasemap(
     appendLog(chartNumber, 'Rasterizing...');
     const rasterizeResult = await runContainer({
       image: GDAL_IMAGE,
+      phase: 'gdal-rasterize',
+      job: chartNumber,
       cmd: [
         'gdal_rasterize',
         '-burn',
@@ -715,6 +729,8 @@ export async function processShpBasemap(
     appendLog(chartNumber, 'Creating MBTiles...');
     const translateResult = await runContainer({
       image: GDAL_IMAGE,
+      phase: 'gdal-translate',
+      job: chartNumber,
       cmd: [
         'gdal_translate',
         '-of',
@@ -735,6 +751,8 @@ export async function processShpBasemap(
     appendLog(chartNumber, 'Adding zoom levels...');
     const overviewResult = await runContainer({
       image: GDAL_IMAGE,
+      phase: 'gdaladdo',
+      job: chartNumber,
       cmd: [
         'gdaladdo',
         '-r',

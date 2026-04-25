@@ -109,6 +109,8 @@ export async function convertKapToMbtiles(
 
   const result = await runContainer({
     image: GDAL_IMAGE,
+    phase: 'gdal-translate',
+    job: chartNumber || baseName,
     cmd: [
       'gdal_translate',
       '-of',
@@ -146,6 +148,8 @@ async function addOverviews(mbtilesFile: string, chartNumber: string): Promise<v
 
   const result = await runContainer({
     image: GDAL_IMAGE,
+    phase: 'gdaladdo',
+    job: chartNumber || name,
     cmd: ['gdaladdo', '-r', 'average', `/data/${name}`, '2', '4', '8', '16'],
     binds: [`${dir}:/data`],
     onStdoutLine: (line) => appendLog(chartNumber, line),
@@ -251,6 +255,8 @@ export async function processRncZip(
 
       const translateResult = await runContainer({
         image: GDAL_IMAGE,
+        phase: 'gdal-translate',
+        job: baseName,
         cmd: [
           'gdal_translate',
           '-of',
@@ -271,6 +277,8 @@ export async function processRncZip(
 
       const overviewResult = await runContainer({
         image: GDAL_IMAGE,
+        phase: 'gdaladdo',
+        job: baseName,
         cmd: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
         binds: [`${chartsDir}:/output`],
         onStdoutLine: (line) => appendLog(chartNumber, line),
@@ -282,6 +290,8 @@ export async function processRncZip(
 
       const tagResult = await runContainer({
         image: GDAL_IMAGE,
+        phase: 'sqlite-tag',
+        job: baseName,
         cmd: [
           'sqlite3',
           containerOutput,
@@ -365,6 +375,8 @@ export async function processPilotTar(
 
     const tarResult = await runContainer({
       image: GDAL_IMAGE,
+      phase: 'tar-extract',
+      job: chartNumber,
       cmd: ['tar', '-xf', `/archive/${path.basename(tarPath)}`, '-C', '/output'],
       binds: [`${path.dirname(tarPath)}:/archive:ro`, `${tmpDir}:/output`],
       onStdoutLine: (line) => appendLog(chartNumber, line),
@@ -418,6 +430,8 @@ export async function processPilotTar(
 
       const translateResult = await runContainer({
         image: GDAL_IMAGE,
+        phase: 'gdal-translate',
+        job: baseName,
         cmd: [
           'gdal_translate',
           '-of',
@@ -438,6 +452,8 @@ export async function processPilotTar(
 
       const overviewResult = await runContainer({
         image: GDAL_IMAGE,
+        phase: 'gdaladdo',
+        job: baseName,
         cmd: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
         binds: [`${chartsDir}:/output`],
         onStdoutLine: (line) => appendLog(chartNumber, line),
@@ -449,6 +465,8 @@ export async function processPilotTar(
 
       const tagResult = await runContainer({
         image: GDAL_IMAGE,
+        phase: 'sqlite-tag',
+        job: baseName,
         cmd: [
           'sqlite3',
           containerOutput,
