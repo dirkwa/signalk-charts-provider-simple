@@ -115,6 +115,43 @@ describe('consolidateGeoJSONByLayer', () => {
       assert.strictEqual(fc.features.length, 2);
     }
   });
+
+  it('mixed-band bundles preserve harbour-tier layers from band-5 charts', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'mixed-band-'));
+
+    for (const chart of ['US3CO100', 'US3CO200', 'US5MA1SK']) {
+      writeFC(path.join(dir, `LNDARE_${chart}.geojson`), [point({ src: chart })]);
+      writeFC(path.join(dir, `DEPARE_${chart}.geojson`), [point({ src: chart })]);
+      writeFC(path.join(dir, `COALNE_${chart}.geojson`), [point({ src: chart })]);
+    }
+
+    writeFC(path.join(dir, 'HRBFAC_US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
+    writeFC(path.join(dir, 'ACHARE_US5MA1SK.geojson'), [point({ obj: 'anchorage' })]);
+    writeFC(path.join(dir, 'BRIDGE_US5MA1SK.geojson'), [point({ obj: 'bridge' })]);
+    writeFC(path.join(dir, 'MORFAC_US5MA1SK.geojson'), [point({ obj: 'mooring' })]);
+    writeFC(path.join(dir, 'PILBOP_US5MA1SK.geojson'), [point({ obj: 'pilot-boarding' })]);
+
+    const merged = consolidateGeoJSONByLayer(dir);
+    const layerNames = new Set(merged.map((p) => path.basename(p, '.geojson')));
+
+    for (const layer of ['LNDARE', 'DEPARE', 'COALNE']) {
+      assert.ok(layerNames.has(layer), `bulk layer ${layer} should be merged`);
+      const fc = JSON.parse(
+        fs.readFileSync(
+          merged.find((p) => p.endsWith(`${layer}.geojson`)),
+          'utf8'
+        )
+      );
+      assert.strictEqual(fc.features.length, 3, `${layer} should have 3 features (1 per chart)`);
+    }
+
+    for (const layer of ['HRBFAC', 'ACHARE', 'BRIDGE', 'MORFAC', 'PILBOP']) {
+      assert.ok(
+        layerNames.has(layer),
+        `harbour-tier layer ${layer} from US5MA1SK must survive consolidation`
+      );
+    }
+  });
 });
 
 describe('buildExportScript', () => {
