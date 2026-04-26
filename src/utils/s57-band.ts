@@ -36,6 +36,64 @@ export const BAND_MAX_ZOOM: Record<number, number> = {
 };
 
 /**
+ * Sensible tippecanoe minzoom for each IHO band: each band's ceiling minus 4.
+ * Band-3 features start emitting at z8 (~150 km tile), band-5 at z12 (~10 km
+ * tile), band-6 at z14. Below these zooms the features overplot into
+ * illegible blobs anyway, so emitting tiles there only wastes bytes and CPU
+ * without adding navigational value.
+ */
+export const BAND_MIN_ZOOM: Record<number, number> = {
+  1: 4, // Overview  ceiling z8
+  2: 6, // General   ceiling z10
+  3: 8, // Coastal   ceiling z12
+  4: 10, // Approach ceiling z14
+  5: 12, // Harbour  ceiling z16
+  6: 14 // Berthing  ceiling z18
+};
+
+/**
+ * Pull the chart-ID portion out of a per-chart-per-layer filename like
+ * 'HRBFAC_US5MA1SK.geojson'. The consolidator (s57-converter.ts) writes
+ * these as `<LAYER>_<CHART>.geojson` for multi-chart bundles, where LAYER
+ * is uppercase letters/underscores with no digits and CHART always has
+ * digits (NOAA chart IDs follow the IHO Annex E filename convention).
+ *
+ * For files already named '<CHART>.geojson' (single-chart bundles or raw
+ * .000 inputs), returns the basename minus extension unchanged.
+ */
+function extractChartId(filename: string): string {
+  const base = path.basename(filename).replace(/\.[^.]+$/, '');
+  const underscore = base.lastIndexOf('_');
+  if (underscore === -1) {
+    return base;
+  }
+  const tail = base.slice(underscore + 1);
+  return /\d/.test(tail) ? tail : base;
+}
+
+/**
+ * Band of the highest-resolution chart that contributed to a consolidated
+ * S-57 layer. After consolidation, each merged file is the union of features
+ * from one or more source charts; the layer's *effective* band is the
+ * highest among its sources, because that's the smallest scale at which any
+ * of those features were captured. Returns `null` for IENC / non-conforming
+ * filenames.
+ *
+ * Accepts both raw chart names (e.g. 'US5MA1SK.000') and per-layer-per-chart
+ * filenames produced by the GDAL export step (e.g. 'HRBFAC_US5MA1SK.geojson').
+ */
+export function highestBandForFiles(filenames: readonly string[]): number | null {
+  let highest: number | null = null;
+  for (const f of filenames) {
+    const b = detectEncBand(extractChartId(f));
+    if (b !== null && (highest === null || b > highest)) {
+      highest = b;
+    }
+  }
+  return highest;
+}
+
+/**
  * Resolve the effective tippecanoe maxzoom for a bundle of ENC files.
  * Highest band in the bundle wins; user-requested maxzoom is the ceiling
  * (we never raise it past what the user asked for).
