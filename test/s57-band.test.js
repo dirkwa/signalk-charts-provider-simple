@@ -92,6 +92,14 @@ describe('bandClampedMaxzoom', () => {
     assert.strictEqual(r.highestBand, 3);
   });
 
+  it('handles Windows-style paths via path.basename', () => {
+    // Windows path.basename only strips '\' on win32, but the test confirms
+    // forward-slash paths (which path.basename handles cross-platform) work.
+    const r = bandClampedMaxzoom(['C:/Users/u/enc/US3CO100/US3CO100.000'], 16);
+    assert.strictEqual(r.effective, 12);
+    assert.strictEqual(r.highestBand, 3);
+  });
+
   it('mixed conforming + non-conforming uses only the conforming bands', () => {
     // Two NOAA charts + one IENC. Only the NOAA bands count.
     const r = bandClampedMaxzoom(['US3CO100.000', 'US5MA1SK.000', 'IENC_AREA.000'], 16);

@@ -1,3 +1,5 @@
+import path from 'path';
+
 /**
  * IHO S-57 ENC usage band parsed from the chart's base filename, per the
  * IHO Annex E filename convention `<CC><band><area>` followed by all
@@ -45,7 +47,7 @@ export function bandClampedMaxzoom(
   userRequestedMaxzoom: number
 ): { effective: number; highestBand: number | null; bands: number[] } {
   const bands = encFiles
-    .map((f) => detectEncBand(f.split('/').pop() ?? f))
+    .map((f) => detectEncBand(path.basename(f)))
     .filter((b): b is number => b !== null);
 
   if (bands.length === 0) {
