@@ -2,7 +2,7 @@ import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
-import { TIPPECANOE_THREADS_PER_JOB } from './concurrency';
+import { getCpuBudget } from './concurrency';
 import {
   checkContainerRuntime,
   imageExists as runtimeImageExists,
@@ -124,16 +124,28 @@ function setProgress(chartNumber: string, status: string, message: string): void
   }
 }
 
-async function exportAllLayersToGeoJSON(
-  encDir: string,
-  encFiles: string[],
-  geojsonDir: string,
-  chartNumber: string
-): Promise<void> {
-  const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
-  const multiFile = encFiles.length > 1;
+interface ExportScriptOptions {
+  multiFile: boolean;
+  /** xargs -P fan-out for the per-layer ogr2ogr loop. 1 = sequential. */
+  parallelism: number;
+  skipLayers: string[];
+}
 
-  const script = `
+// Build the shell script that runs inside the GDAL container. Extracted as a
+// pure function so it's testable and so the parallelism knob is visible.
+//
+// When parallelism > 1, the per-layer loop uses `xargs -P` and the per-layer
+// body runs in a child shell that receives $enc, $name, $multi as positional
+// args (so chart names with spaces / shell metacharacters can't escape into
+// the command). When parallelism === 1, the script keeps the simpler
+// sequential `for layer` form — same behaviour as before this option existed.
+export function buildExportScript(opts: ExportScriptOptions): string {
+  const skipPattern = opts.skipLayers.join('|');
+  const parallel = Math.max(1, Math.floor(opts.parallelism));
+  const multiBranch = opts.multiFile ? '${layer}_${name}' : '${layer}';
+
+  if (parallel === 1) {
+    return `
 set -e
 count=$(find /input -name '*.000' ! -name '._*' -type f | wc -l)
 i=0
@@ -143,15 +155,10 @@ find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d 
   echo "PROGRESS: Processing $name ($i/$count)"
   layers=$(ogrinfo -so "$enc" 2>/dev/null | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
   for layer in $layers; do
-    case "$layer" in ${skipLayers.join('|')}) continue ;; esac
-    outname="${multiFile ? '${layer}_${name}' : '${layer}'}"
+    case "$layer" in ${skipPattern}) continue ;; esac
+    outname="${multiBranch}"
     if [ "$layer" = "SOUNDG" ]; then
-      # SOUNDG stores hundreds of soundings per feature as a MultiPointZ with
-      # depth in the Z coord. Vector-tile renderers label from properties, not
-      # geometry, so without these GDAL open options each feature is a single
-      # un-labelable blob of points. SPLIT_MULTIPOINT explodes them into
-      # individual Points; ADD_SOUNDG_DEPTH copies Z into a DEPTH property.
-      ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \
+      ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
         "/output/$outname.geojson" "$enc" "$layer" 2>/dev/null || true
     else
       ogr2ogr -f GeoJSON "/output/$outname.geojson" "$enc" "$layer" 2>/dev/null || true
@@ -160,6 +167,51 @@ find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d 
 done
 echo "PROGRESS: Export complete"
 `;
+  }
+
+  // Parallel branch: fan out per-layer ogr2ogr via xargs -P.
+  // The inner sh -c receives layer / enc / name / multi as positional args
+  // so we don't smuggle untrusted strings through shell quoting.
+  const multiArg = opts.multiFile ? '1' : '0';
+  return `
+set -e
+count=$(find /input -name '*.000' ! -name '._*' -type f | wc -l)
+i=0
+find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
+  i=$((i + 1))
+  name=$(basename "$enc" .000)
+  echo "PROGRESS: Processing $name ($i/$count)"
+  layers=$(ogrinfo -so "$enc" 2>/dev/null | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  printf '%s\\n' $layers | xargs -P ${parallel} -I '{}' sh -c '
+    layer="$1"
+    enc="$2"
+    name="$3"
+    multi="$4"
+    case "$layer" in ${skipPattern}) exit 0 ;; esac
+    if [ "$multi" = "1" ]; then outname="\${layer}_\${name}"; else outname="$layer"; fi
+    if [ "$layer" = "SOUNDG" ]; then
+      ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
+        "/output/\${outname}.geojson" "$enc" "$layer" 2>/dev/null || true
+    else
+      ogr2ogr -f GeoJSON "/output/\${outname}.geojson" "$enc" "$layer" 2>/dev/null || true
+    fi
+  ' _ '{}' "$enc" "$name" "${multiArg}"
+done
+echo "PROGRESS: Export complete"
+`;
+}
+
+async function exportAllLayersToGeoJSON(
+  encDir: string,
+  encFiles: string[],
+  geojsonDir: string,
+  chartNumber: string
+): Promise<void> {
+  const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
+  const multiFile = encFiles.length > 1;
+  const parallelism = getCpuBudget().gdalExportParallelism;
+
+  const script = buildExportScript({ multiFile, parallelism, skipLayers });
 
   const result = await runContainer({
     image: GDAL_IMAGE,
@@ -255,7 +307,8 @@ function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
 }
 
 export const _testInternals = {
-  consolidateGeoJSONByLayer
+  consolidateGeoJSONByLayer,
+  buildExportScript
 };
 
 async function runTippecanoe(
@@ -283,8 +336,9 @@ async function runTippecanoe(
     layerArgs.push('-L', `${layer}:/input/${rel}`);
   }
 
+  const tippecanoeThreads = getCpuBudget().tippecanoeThreadsPerJob;
   debug(
-    `Running tippecanoe with ${layerArgs.length / 2} consolidated layers, zoom ${minzoom}-${maxzoom}, ${TIPPECANOE_THREADS_PER_JOB} threads`
+    `Running tippecanoe with ${layerArgs.length / 2} consolidated layers, zoom ${minzoom}-${maxzoom}, ${tippecanoeThreads} threads`
   );
 
   const handleTippecanoeLine = (line: string): void => {
@@ -314,7 +368,7 @@ async function runTippecanoe(
       ...layerArgs
     ],
     binds: [`${mergedDir}:/input:ro`, `${path.dirname(outputMbtiles)}:/output`],
-    env: [`TIPPECANOE_MAX_THREADS=${TIPPECANOE_THREADS_PER_JOB}`],
+    env: [`TIPPECANOE_MAX_THREADS=${tippecanoeThreads}`],
     onStdoutLine: handleTippecanoeLine,
     onStderrLine: handleTippecanoeLine
   });

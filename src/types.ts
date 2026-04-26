@@ -4,8 +4,11 @@ import type { MBTilesReader } from './utils/mbtiles-reader';
 
 // ---- Plugin Configuration ----
 
+export type CpuBudgetPreset = 'single-core' | 'half' | 'all';
+
 export interface PluginConfig {
   chartPath: string;
+  cpuBudget?: CpuBudgetPreset;
 }
 
 // ---- Extended ServerAPI ----
