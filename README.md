@@ -36,7 +36,7 @@ npm install signalk-charts-provider-simple
 2. Set your chart directory path (defaults to `~/.signalk/charts-simple`)
 3. (Optional) Pick a **CPU budget** for chart conversion — see [CPU budget](#cpu-budget-for-chart-conversion) below
 4. Enable the plugin
-5. Restart Signal K server
+5. Restart Signal K server (first-time install only — later config changes hot-apply on Save without a full restart)
 
 ### CPU budget for chart conversion
 
@@ -45,7 +45,7 @@ Chart conversion (S-57 ENC, BSB raster, basemaps) is the only CPU-heavy thing th
 | Setting | What happens during a conversion | When to pick it |
 |---|---|---|
 | `single-core` | One job at a time, one thread; each `ogr2ogr` runs sequentially | Multi-tenant Pi (Signal K + Grafana + Node-RED + …) where keeping the rest of the box responsive matters more than conversion speed |
-| `half` (default) | `cpus/2` concurrent jobs, each tippecanoe gets `cpus/2` threads, `ogr2ogr` parallelizes up to the per-job ceiling | Balanced — leaves half the box for everything else. Matches the behaviour of plugin versions before 1.10 |
+| `half` (default) | `cpus/2` concurrent jobs, each tippecanoe gets `cpus / max-jobs` threads (typically ~2), `ogr2ogr` parallelizes to the same per-job ceiling | Balanced — leaves half the box for everything else. Matches the behaviour of plugin versions before 1.10 |
 | `all` | One full-throttle job using every core in both the GDAL export and tippecanoe stages; multi-bundle uploads queue serially | Dedicated chart-prep box, or when you just want a NOAA bundle to finish as fast as possible |
 
 The setting hot-applies — change it in the plugin config and Signal K will restart the plugin automatically; no server restart needed. In-flight conversions keep their already-spawned threads; the next conversion picks up the new budget.
