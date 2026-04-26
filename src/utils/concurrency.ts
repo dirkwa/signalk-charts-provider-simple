@@ -13,8 +13,8 @@ export interface ResolvedBudget {
 
 const cpuCount = (): number => Math.max(1, os.cpus().length);
 
-function computeBudget(preset: CpuBudgetPreset): ResolvedBudget {
-  const cpus = cpuCount();
+function resolveBudget(preset: CpuBudgetPreset, cpus: number): ResolvedBudget {
+  const safe = Math.max(1, cpus);
   switch (preset) {
     case 'single-core':
       return {
@@ -22,22 +22,20 @@ function computeBudget(preset: CpuBudgetPreset): ResolvedBudget {
         tippecanoeThreadsPerJob: 1,
         gdalExportParallelism: 1
       };
-    case 'all': {
+    case 'all':
       // One full-throttle job. Multi-bundle uploads queue serially; each
       // single bundle uses every core in both stages.
       return {
         maxConcurrentConversions: 1,
-        tippecanoeThreadsPerJob: cpus,
-        gdalExportParallelism: cpus
+        tippecanoeThreadsPerJob: safe,
+        gdalExportParallelism: safe
       };
-    }
     case 'half':
     default: {
       // Today's behaviour: cpus/2 jobs in parallel, each tippecanoe gets
-      // floor(cpus / max-jobs) threads. GDAL export reuses the per-job
-      // ceiling.
-      const max = Math.max(1, Math.floor(cpus / 2));
-      const perJob = Math.max(1, Math.floor(cpus / max));
+      // floor(cpus / max-jobs) threads. GDAL export reuses the per-job ceiling.
+      const max = Math.max(1, Math.floor(safe / 2));
+      const perJob = Math.max(1, Math.floor(safe / max));
       return {
         maxConcurrentConversions: max,
         tippecanoeThreadsPerJob: perJob,
@@ -47,11 +45,11 @@ function computeBudget(preset: CpuBudgetPreset): ResolvedBudget {
   }
 }
 
-let current: ResolvedBudget = computeBudget('half');
+let current: ResolvedBudget = resolveBudget('half', cpuCount());
 
 /** Apply a budget preset. Called from the plugin's start() with the user's setting. */
 export function setCpuBudget(preset: CpuBudgetPreset | undefined | null): void {
-  current = computeBudget(preset ?? 'half');
+  current = resolveBudget(preset ?? 'half', cpuCount());
 }
 
 /** Read the currently applied budget. Each call returns the live values, so
@@ -62,29 +60,5 @@ export function getCpuBudget(): ResolvedBudget {
 
 /** For tests: pure function over a synthetic CPU count. */
 export function _computeBudgetForTests(preset: CpuBudgetPreset, cpus: number): ResolvedBudget {
-  const safe = Math.max(1, cpus);
-  switch (preset) {
-    case 'single-core':
-      return {
-        maxConcurrentConversions: 1,
-        tippecanoeThreadsPerJob: 1,
-        gdalExportParallelism: 1
-      };
-    case 'all':
-      return {
-        maxConcurrentConversions: 1,
-        tippecanoeThreadsPerJob: safe,
-        gdalExportParallelism: safe
-      };
-    case 'half':
-    default: {
-      const max = Math.max(1, Math.floor(safe / 2));
-      const perJob = Math.max(1, Math.floor(safe / max));
-      return {
-        maxConcurrentConversions: max,
-        tippecanoeThreadsPerJob: perJob,
-        gdalExportParallelism: perJob
-      };
-    }
-  }
+  return resolveBudget(preset, cpus);
 }
