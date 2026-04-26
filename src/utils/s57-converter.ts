@@ -145,7 +145,17 @@ find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d 
   for layer in $layers; do
     case "$layer" in ${skipLayers.join('|')}) continue ;; esac
     outname="${multiFile ? '${layer}_${name}' : '${layer}'}"
-    ogr2ogr -f GeoJSON "/output/$outname.geojson" "$enc" "$layer" 2>/dev/null || true
+    if [ "$layer" = "SOUNDG" ]; then
+      # SOUNDG stores hundreds of soundings per feature as a MultiPointZ with
+      # depth in the Z coord. Vector-tile renderers label from properties, not
+      # geometry, so without these GDAL open options each feature is a single
+      # un-labelable blob of points. SPLIT_MULTIPOINT explodes them into
+      # individual Points; ADD_SOUNDG_DEPTH copies Z into a DEPTH property.
+      ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \
+        "/output/$outname.geojson" "$enc" "$layer" 2>/dev/null || true
+    else
+      ogr2ogr -f GeoJSON "/output/$outname.geojson" "$enc" "$layer" 2>/dev/null || true
+    fi
   done
 done
 echo "PROGRESS: Export complete"
@@ -172,6 +182,82 @@ echo "PROGRESS: Export complete"
   }
 }
 
+// Group per-chart-per-layer GeoJSON files into one merged file per layer.
+// Tippecanoe runs faster with fewer -L args (one merged file per layer) than
+// with N×M args (one per chart × layer). Streams the output so a multi-state
+// bundle's largest layer doesn't have to fit in memory at once.
+function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
+  const files = fs.readdirSync(geojsonDir).filter((f) => f.endsWith('.geojson'));
+
+  // Group by layer name. The export script writes 'LAYER_CHART.geojson' for
+  // multi-chart bundles and 'LAYER.geojson' for single-chart. Many S-57 layer
+  // names contain underscores (M_COVR, M_QUAL, M_NPUB, M_NSYS, M_PROP, …),
+  // and S-57 layer names are uppercase letters and underscores only — no
+  // digits. NOAA chart IDs (US3CO100, US5MA1SK) always contain digits. So
+  // strip the trailing '_<id>' suffix only when that tail looks like a chart
+  // ID (contains a digit); otherwise the basename is already the layer name.
+  const layerGroups = new Map<string, string[]>();
+  for (const file of files) {
+    const fullPath = path.join(geojsonDir, file);
+    if (fs.statSync(fullPath).size <= 100) {
+      continue;
+    }
+    const base = path.basename(file, '.geojson');
+    const underscore = base.lastIndexOf('_');
+    const tailLooksLikeChartId = underscore !== -1 && /\d/.test(base.slice(underscore + 1));
+    const layer = tailLooksLikeChartId ? base.slice(0, underscore) : base;
+    const list = layerGroups.get(layer) ?? [];
+    list.push(file);
+    layerGroups.set(layer, list);
+  }
+
+  const mergedDir = path.join(geojsonDir, '.merged');
+  fs.mkdirSync(mergedDir, { recursive: true });
+
+  const mergedFiles: string[] = [];
+  for (const [layer, sources] of layerGroups) {
+    const out = path.join(mergedDir, `${layer}.geojson`);
+    if (sources.length === 1) {
+      // Single-source layer — just copy. We can't symlink because runTippecanoe
+      // bind-mounts only the merged dir into the container, so a symlink
+      // pointing back into geojsonDir would dangle inside the container.
+      fs.copyFileSync(path.join(geojsonDir, sources[0]), out);
+      mergedFiles.push(out);
+      continue;
+    }
+    const handle = fs.openSync(out, 'w');
+    fs.writeSync(handle, '{"type":"FeatureCollection","features":[\n');
+    let first = true;
+    for (const source of sources) {
+      let parsed: { features?: unknown[] };
+      try {
+        parsed = JSON.parse(fs.readFileSync(path.join(geojsonDir, source), 'utf8')) as {
+          features?: unknown[];
+        };
+      } catch {
+        continue;
+      }
+      const features = parsed.features ?? [];
+      for (const feat of features) {
+        if (!first) {
+          fs.writeSync(handle, ',\n');
+        }
+        fs.writeSync(handle, JSON.stringify(feat));
+        first = false;
+      }
+    }
+    fs.writeSync(handle, '\n]}\n');
+    fs.closeSync(handle);
+    mergedFiles.push(out);
+  }
+
+  return mergedFiles;
+}
+
+export const _testInternals = {
+  consolidateGeoJSONByLayer
+};
+
 async function runTippecanoe(
   geojsonDir: string,
   outputMbtiles: string,
@@ -181,26 +267,24 @@ async function runTippecanoe(
   const minzoom = options.minzoom ?? 9;
   const maxzoom = options.maxzoom ?? 16;
 
-  const files = fs.readdirSync(geojsonDir).filter((f) => f.endsWith('.geojson'));
-  const layerArgs: string[] = [];
-  for (const file of files) {
-    const fullPath = path.join(geojsonDir, file);
-    const size = fs.statSync(fullPath).size;
-    if (size <= 100) {
-      continue;
-    }
-
-    const base = path.basename(file, '.geojson');
-    const layer = base.replace(/_[A-Za-z0-9]+$/, '');
-    layerArgs.push('-L', `${layer}:/input/${file}`);
-  }
-
-  if (layerArgs.length === 0) {
+  // Merge per-chart-per-layer GeoJSON into one file per layer before invoking
+  // tippecanoe. A typical NOAA bundle of 4 charts × ~30 layers used to mean
+  // 120 -L args; consolidating drops that to ~30 and cuts tippecanoe's I/O
+  // setup proportionally.
+  const mergedFiles = consolidateGeoJSONByLayer(geojsonDir);
+  if (mergedFiles.length === 0) {
     throw new Error('No valid GeoJSON layers to process');
+  }
+  const mergedDir = path.dirname(mergedFiles[0]);
+  const layerArgs: string[] = [];
+  for (const f of mergedFiles) {
+    const rel = path.basename(f);
+    const layer = path.basename(rel, '.geojson');
+    layerArgs.push('-L', `${layer}:/input/${rel}`);
   }
 
   debug(
-    `Running tippecanoe with ${layerArgs.length / 2} layers, zoom ${minzoom}-${maxzoom}, ${TIPPECANOE_THREADS_PER_JOB} threads`
+    `Running tippecanoe with ${layerArgs.length / 2} consolidated layers, zoom ${minzoom}-${maxzoom}, ${TIPPECANOE_THREADS_PER_JOB} threads`
   );
 
   const handleTippecanoeLine = (line: string): void => {
@@ -225,10 +309,11 @@ async function runTippecanoe(
       '-Z',
       String(minzoom),
       '--no-tile-size-limit',
+      '--no-feature-limit',
       '--force',
       ...layerArgs
     ],
-    binds: [`${geojsonDir}:/input:ro`, `${path.dirname(outputMbtiles)}:/output`],
+    binds: [`${mergedDir}:/input:ro`, `${path.dirname(outputMbtiles)}:/output`],
     env: [`TIPPECANOE_MAX_THREADS=${TIPPECANOE_THREADS_PER_JOB}`],
     onStdoutLine: handleTippecanoeLine,
     onStderrLine: handleTippecanoeLine
@@ -236,6 +321,13 @@ async function runTippecanoe(
 
   if (result.exitCode !== 0) {
     throw new Error(`tippecanoe failed with exit code ${result.exitCode}`);
+  }
+
+  // Best-effort cleanup of the merged dir.
+  try {
+    fs.rmSync(mergedDir, { recursive: true, force: true });
+  } catch {
+    // ignore
   }
 }
 
