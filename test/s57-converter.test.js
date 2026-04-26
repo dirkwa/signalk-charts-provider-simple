@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { _testInternals } = require('../dist/utils/s57-converter');
-const { consolidateGeoJSONByLayer } = _testInternals;
+const { consolidateGeoJSONByLayer, buildExportScript } = _testInternals;
 
 function writeFC(p, features) {
   fs.writeFileSync(p, JSON.stringify({ type: 'FeatureCollection', features }));
@@ -113,6 +113,59 @@ describe('consolidateGeoJSONByLayer', () => {
     for (const file of merged) {
       const fc = JSON.parse(fs.readFileSync(file, 'utf8'));
       assert.strictEqual(fc.features.length, 2);
+    }
+  });
+});
+
+describe('buildExportScript', () => {
+  const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
+
+  it('produces the sequential branch when parallelism === 1', () => {
+    const s = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
+    assert.match(s, /for layer in \$layers; do/, 'expected `for layer` loop in sequential branch');
+    assert.doesNotMatch(s, /xargs/, 'sequential branch should not invoke xargs');
+    assert.match(s, /SPLIT_MULTIPOINT=YES/, 'SOUNDG handling must still be present');
+    assert.match(s, /ADD_SOUNDG_DEPTH=YES/);
+  });
+
+  it('uses xargs -P with the configured parallelism when > 1', () => {
+    const s = buildExportScript({ multiFile: true, parallelism: 4, skipLayers });
+    assert.match(s, /xargs -P 4 /, 'expected xargs -P with the requested fan-out');
+    assert.doesNotMatch(s, /for layer in \$layers; do/, 'parallel branch should not use for-layer');
+  });
+
+  it('coerces non-integer parallelism with Math.floor and a 1-floor', () => {
+    const s = buildExportScript({ multiFile: false, parallelism: 2.7, skipLayers });
+    assert.match(s, /xargs -P 2 /);
+  });
+
+  it('falls back to the sequential branch when parallelism === 0', () => {
+    const s = buildExportScript({ multiFile: false, parallelism: 0, skipLayers });
+    assert.match(s, /for layer in \$layers; do/);
+    assert.doesNotMatch(s, /xargs/);
+  });
+
+  it('multi-file=true emits LAYER_<chart> output names; multi-file=false emits LAYER', () => {
+    const multi = buildExportScript({ multiFile: true, parallelism: 1, skipLayers });
+    assert.match(multi, /\$\{layer\}_\$\{name\}/);
+    const single = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
+    // Single-file path keeps just $layer in the outname assignment.
+    assert.match(single, /outname="\$\{layer\}"/);
+  });
+
+  it('passes enc / name / multi to the parallel inner shell as positional args, not interpolated', () => {
+    // Defence-in-depth: the parallel branch must invoke `sh -c '...' _ '{}' "$enc" "$name"
+    // "<multi>"` so chart names with shell metacharacters can't escape the command.
+    const s = buildExportScript({ multiFile: true, parallelism: 4, skipLayers });
+    assert.match(s, /sh -c [\s\S]*' _ '\{\}' "\$enc" "\$name" "1"/);
+  });
+
+  it('keeps the skip-layer pattern in both branches', () => {
+    const seq = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
+    const par = buildExportScript({ multiFile: false, parallelism: 4, skipLayers });
+    for (const layer of skipLayers) {
+      assert.ok(seq.includes(layer), `sequential branch missing skip layer ${layer}`);
+      assert.ok(par.includes(layer), `parallel branch missing skip layer ${layer}`);
     }
   });
 });

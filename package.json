@@ -1,13 +1,14 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "1.10.0-beta.3",
+  "version": "1.10.0-beta.4",
   "description": "Simple Signal K chart provider for local MBTiles with web and download management",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
     "assets",
-    "public"
+    "public",
+    "docs/screenshots"
   ],
   "scripts": {
     "build": "tsc",
@@ -52,6 +53,14 @@
   "signalk": {
     "appIcon": "assets/charts_logo.png",
     "displayName": "Charts Provider Simple",
+    "screenshots": [
+      "./docs/screenshots/1_charts-provider-simple.png",
+      "./docs/screenshots/2_charts-provider-simple.png",
+      "./docs/screenshots/3_charts-provider-simple.png",
+      "./docs/screenshots/4_charts-provider-simple.png",
+      "./docs/screenshots/5_charts-provider-simple.png",
+      "./docs/screenshots/6_charts-provider-simple.png"
+    ],
     "appstore": {
       "displayName": "Charts Provider Simple",
       "categories": [

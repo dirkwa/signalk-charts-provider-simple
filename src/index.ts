@@ -39,7 +39,7 @@ import {
   setConversionFailed as setRncFailed
 } from './utils/rnc-converter';
 import { processGshhg, processShpBasemap } from './utils/s57-converter';
-import { MAX_CONCURRENT_CONVERSIONS } from './utils/concurrency';
+import { getCpuBudget, setCpuBudget } from './utils/concurrency';
 import type {
   ExtendedServerAPI,
   PluginConfig,
@@ -87,6 +87,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           title: 'Chart path',
           description: `Main directory for chart files. Defaults to "${getDefaultChartsPath()}". Subfolders will be scanned recursively.`,
           default: getDefaultChartsPath()
+        },
+        cpuBudget: {
+          type: 'string',
+          title: 'CPU budget for chart conversion',
+          description:
+            'How much of the host CPU chart conversion may use. ' +
+            '"single-core" keeps Signal K maximally responsive but conversions are slowest. ' +
+            '"half" (default) balances conversion speed and Signal K responsiveness. ' +
+            '"all" uses every core for fastest single-bundle conversion; Signal K may be sluggish during a conversion.',
+          enum: ['single-core', 'half', 'all'],
+          default: 'half'
         }
       }
     }),
@@ -131,6 +142,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const doStartup = (config: PluginConfig): void => {
     app.debug(`** loaded config: ${JSON.stringify(config)}`);
     props = { ...config };
+
+    setCpuBudget(props.cpuBudget);
 
     getDefaultChartsPath(); // ensure lazy init
     ensureDirectoryExists(defaultChartsPath);
@@ -1334,11 +1347,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             return;
           }
 
-          if (getConvertingCount() >= MAX_CONCURRENT_CONVERSIONS) {
+          const budgetMax = getCpuBudget().maxConcurrentConversions;
+          if (getConvertingCount() >= budgetMax) {
             cleanupDir(tmpDir);
             res.status(429).json({
               success: false,
-              error: `Too many conversions running (max ${MAX_CONCURRENT_CONVERSIONS}). Please wait for a conversion to finish.`
+              error: `Too many conversions running (max ${budgetMax}). Please wait for a conversion to finish.`
             });
             return;
           }
@@ -1469,10 +1483,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           }
         }
 
-        if (needsRuntime && getConvertingCount() >= MAX_CONCURRENT_CONVERSIONS) {
+        const budgetMax = getCpuBudget().maxConcurrentConversions;
+        if (needsRuntime && getConvertingCount() >= budgetMax) {
           res.status(429).json({
             success: false,
-            error: `Too many conversions running (max ${MAX_CONCURRENT_CONVERSIONS}). Please wait for a conversion to finish.`
+            error: `Too many conversions running (max ${budgetMax}). Please wait for a conversion to finish.`
           });
           return;
         }
