@@ -132,6 +132,14 @@ systemctl --user enable --now podman.socket
 
 Conversion concurrency is configurable — see the [CPU budget](#cpu-budget-for-chart-conversion) section. MBTiles charts (display only, no conversion) work without any container runtime.
 
+### Known install warnings
+
+Signal K's appstore installs plugins with `--ignore-scripts`, so any optional native addons in the dependency tree won't compile. CI flags one such case for this plugin:
+
+> `Optional native addons found: cpu-features. App Store uses --ignore-scripts so these will not be compiled.`
+
+This is harmless. `cpu-features` is a transitive optional dependency of `ssh2`, pulled in by `dockerode`. The plugin only ever talks to a local Docker/Podman Unix socket, so the SSH transport (and its native crypto accelerator) is never used. The warning is informational; the plugin runs fully without the addon.
+
 ## Legal Notice
 
 ### Chart Metadata Editing
