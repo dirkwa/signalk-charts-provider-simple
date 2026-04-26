@@ -9,6 +9,7 @@ import {
   pullImage as runtimePullImage,
   runContainer
 } from './container-runtime';
+import { bandClampedMaxzoom } from './s57-band';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -308,7 +309,8 @@ function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
 
 export const _testInternals = {
   consolidateGeoJSONByLayer,
-  buildExportScript
+  buildExportScript,
+  bandClampedMaxzoom
 };
 
 async function runTippecanoe(
@@ -460,9 +462,29 @@ export async function processS57Zip(
     statusFn('converting', 'Generating vector tiles...');
     setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');
 
+    // Clamp tippecanoe's maxzoom to the IHO band ceiling. Most tippecanoe time
+    // is spent at the highest zooms; if the source charts only have band-3
+    // (coastal) precision, asking for z16 emits 4 zoom levels of tiles that
+    // can't be backed by real feature precision.
+    const userMaxzoom = options.maxzoom ?? 16;
+    const encBasenames = encFiles.map((f) => path.basename(f));
+    const clamp = bandClampedMaxzoom(encBasenames, userMaxzoom);
+    if (clamp.highestBand !== null && clamp.effective < userMaxzoom) {
+      const msg =
+        `Detected IHO bands [${clamp.bands.join(', ')}] (highest = ${clamp.highestBand}) ` +
+        `→ tippecanoe maxzoom clamped to z${clamp.effective} (was z${userMaxzoom})`;
+      debug(msg);
+      appendLog(chartNumber, msg);
+    } else if (clamp.highestBand === null) {
+      const msg = `No IHO band detected (likely IENC or non-conforming filenames); using user maxzoom z${userMaxzoom}`;
+      debug(msg);
+      appendLog(chartNumber, msg);
+    }
+    const effectiveOptions: S57ConversionOptions = { ...options, maxzoom: clamp.effective };
+
     const outputName = `${chartNumber || 'enc-chart'}.mbtiles`;
     const outputPath = path.join(chartsDir, outputName);
-    await runTippecanoe(geojsonDir, outputPath, chartNumber, options);
+    await runTippecanoe(geojsonDir, outputPath, chartNumber, effectiveOptions);
 
     if (!fs.existsSync(outputPath)) {
       throw new Error('tippecanoe completed but output file not found');

@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { _testInternals } = require('../dist/utils/s57-converter');
-const { consolidateGeoJSONByLayer, buildExportScript } = _testInternals;
+const { consolidateGeoJSONByLayer, buildExportScript, bandClampedMaxzoom } = _testInternals;
 
 function writeFC(p, features) {
   fs.writeFileSync(p, JSON.stringify({ type: 'FeatureCollection', features }));
@@ -167,5 +167,25 @@ describe('buildExportScript', () => {
       assert.ok(seq.includes(layer), `sequential branch missing skip layer ${layer}`);
       assert.ok(par.includes(layer), `parallel branch missing skip layer ${layer}`);
     }
+  });
+});
+
+// Smoke that the helper is reachable through s57-converter's _testInternals
+// (the deeper coverage lives in test/s57-band.test.js — this just confirms
+// processS57Zip's wiring uses the same export the test suite does).
+describe('bandClampedMaxzoom (re-export from s57-converter._testInternals)', () => {
+  it('clamps an AQ_ENCs-style band-3 bundle to z12', () => {
+    const r = bandClampedMaxzoom(
+      ['US3CO100.000', 'US3CO200.000', 'US3CO300.000', 'US3CO400.000'],
+      16
+    );
+    assert.strictEqual(r.effective, 12);
+    assert.strictEqual(r.highestBand, 3);
+  });
+
+  it('IENC fallback preserves user maxzoom (regression guard for processS57Zip)', () => {
+    const r = bandClampedMaxzoom(['IENC_PASS_001.000'], 16);
+    assert.strictEqual(r.effective, 16);
+    assert.strictEqual(r.highestBand, null);
   });
 });
