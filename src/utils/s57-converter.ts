@@ -189,8 +189,13 @@ echo "PROGRESS: Export complete"
 function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
   const files = fs.readdirSync(geojsonDir).filter((f) => f.endsWith('.geojson'));
 
-  // Group by layer prefix (everything before the first underscore, or the whole
-  // basename if there's no underscore — matches the export script naming).
+  // Group by layer name. The export script writes 'LAYER_CHART.geojson' for
+  // multi-chart bundles and 'LAYER.geojson' for single-chart. Many S-57 layer
+  // names contain underscores (M_COVR, M_QUAL, M_NPUB, M_NSYS, M_PROP, …),
+  // and S-57 layer names are uppercase letters and underscores only — no
+  // digits. NOAA chart IDs (US3CO100, US5MA1SK) always contain digits. So
+  // strip the trailing '_<id>' suffix only when that tail looks like a chart
+  // ID (contains a digit); otherwise the basename is already the layer name.
   const layerGroups = new Map<string, string[]>();
   for (const file of files) {
     const fullPath = path.join(geojsonDir, file);
@@ -198,8 +203,9 @@ function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
       continue;
     }
     const base = path.basename(file, '.geojson');
-    const underscore = base.indexOf('_');
-    const layer = underscore === -1 ? base : base.slice(0, underscore);
+    const underscore = base.lastIndexOf('_');
+    const tailLooksLikeChartId = underscore !== -1 && /\d/.test(base.slice(underscore + 1));
+    const layer = tailLooksLikeChartId ? base.slice(0, underscore) : base;
     const list = layerGroups.get(layer) ?? [];
     list.push(file);
     layerGroups.set(layer, list);
@@ -211,13 +217,11 @@ function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
   const mergedFiles: string[] = [];
   for (const [layer, sources] of layerGroups) {
     const out = path.join(mergedDir, `${layer}.geojson`);
-    if (sources.length === 1 && sources[0] === `${layer}.geojson`) {
-      // Already named LAYER.geojson with one source — symlink to avoid a copy.
-      try {
-        fs.symlinkSync(path.join(geojsonDir, sources[0]), out);
-      } catch {
-        fs.copyFileSync(path.join(geojsonDir, sources[0]), out);
-      }
+    if (sources.length === 1) {
+      // Single-source layer — just copy. We can't symlink because runTippecanoe
+      // bind-mounts only the merged dir into the container, so a symlink
+      // pointing back into geojsonDir would dangle inside the container.
+      fs.copyFileSync(path.join(geojsonDir, sources[0]), out);
       mergedFiles.push(out);
       continue;
     }
@@ -249,6 +253,10 @@ function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
 
   return mergedFiles;
 }
+
+export const _testInternals = {
+  consolidateGeoJSONByLayer
+};
 
 async function runTippecanoe(
   geojsonDir: string,
