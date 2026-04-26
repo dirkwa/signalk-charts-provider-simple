@@ -34,8 +34,21 @@ npm install signalk-charts-provider-simple
 
 1. Navigate to **Server → Plugin Config → Charts Provider Simple**
 2. Set your chart directory path (defaults to `~/.signalk/charts-simple`)
-3. Enable the plugin
-4. Restart Signal K server
+3. (Optional) Pick a **CPU budget** for chart conversion — see [CPU budget](#cpu-budget-for-chart-conversion) below
+4. Enable the plugin
+5. Restart Signal K server
+
+### CPU budget for chart conversion
+
+Chart conversion (S-57 ENC, BSB raster, basemaps) is the only CPU-heavy thing this plugin does. The **CPU budget** dropdown lets you decide how greedy that work is allowed to be:
+
+| Setting | What happens during a conversion | When to pick it |
+|---|---|---|
+| `single-core` | One job at a time, one thread; each `ogr2ogr` runs sequentially | Multi-tenant Pi (Signal K + Grafana + Node-RED + …) where keeping the rest of the box responsive matters more than conversion speed |
+| `half` (default) | `cpus/2` concurrent jobs, each tippecanoe gets `cpus/2` threads, `ogr2ogr` parallelizes up to the per-job ceiling | Balanced — leaves half the box for everything else. Matches the behaviour of plugin versions before 1.10 |
+| `all` | One full-throttle job using every core in both the GDAL export and tippecanoe stages; multi-bundle uploads queue serially | Dedicated chart-prep box, or when you just want a NOAA bundle to finish as fast as possible |
+
+The setting hot-applies — change it in the plugin config and Signal K will restart the plugin automatically; no server restart needed. In-flight conversions keep their already-spawned threads; the next conversion picks up the new budget.
 
 ## Usage
 
@@ -117,7 +130,7 @@ systemctl --user enable --now podman.socket
 
 **Signal K running in Docker?** See [docs/running-in-docker.md](docs/running-in-docker.md) for the docker-compose snippet.
 
-Conversion concurrency scales with CPU cores. MBTiles charts (display only, no conversion) work without any container runtime.
+Conversion concurrency is configurable — see the [CPU budget](#cpu-budget-for-chart-conversion) section. MBTiles charts (display only, no conversion) work without any container runtime.
 
 ## Legal Notice
 
