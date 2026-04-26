@@ -38,23 +38,34 @@ export const BAND_MAX_ZOOM: Record<number, number> = {
 /**
  * Resolve the effective tippecanoe maxzoom for a bundle of ENC files.
  * Highest band in the bundle wins; user-requested maxzoom is the ceiling
- * (we never raise it past what the user asked for). Returns `null` if no
- * file in the bundle conforms to IHO Annex E — caller should fall back
- * to the user-requested value unchanged.
+ * (we never raise it past what the user asked for).
+ *
+ * Always returns an object:
+ *   - `effective`: the maxzoom the caller should pass to tippecanoe.
+ *   - `highestBand`: the highest band detected, or `null` when no file in
+ *     the bundle conforms to IHO Annex E (IENC, hand-named, custom
+ *     producers). Caller can use this to log a fallback path.
+ *   - `bands`: unique sorted list of bands detected across the bundle,
+ *     for diagnostics. Empty when nothing matches.
+ *
+ * On `highestBand === null`, `effective` equals `userRequestedMaxzoom`
+ * unchanged — i.e. behaviour matches the pre-band-clamp pipeline.
  */
 export function bandClampedMaxzoom(
   encFiles: readonly string[],
   userRequestedMaxzoom: number
 ): { effective: number; highestBand: number | null; bands: number[] } {
-  const bands = encFiles
-    .map((f) => detectEncBand(path.basename(f)))
-    .filter((b): b is number => b !== null);
+  const bands = [
+    ...new Set(
+      encFiles.map((f) => detectEncBand(path.basename(f))).filter((b): b is number => b !== null)
+    )
+  ].sort((a, b) => a - b);
 
   if (bands.length === 0) {
     return { effective: userRequestedMaxzoom, highestBand: null, bands: [] };
   }
 
-  const highestBand = Math.max(...bands);
+  const highestBand = bands[bands.length - 1];
   const bandCeiling = BAND_MAX_ZOOM[highestBand];
   const effective =
     bandCeiling !== undefined ? Math.min(userRequestedMaxzoom, bandCeiling) : userRequestedMaxzoom;

@@ -56,11 +56,22 @@ describe('BAND_MAX_ZOOM', () => {
 });
 
 describe('bandClampedMaxzoom', () => {
-  it('clamps single-band-3 bundles to z12', () => {
+  it('clamps single-band-3 bundles to z12 and returns deduped bands', () => {
     const r = bandClampedMaxzoom(['US3CO100.000', 'US3CO200.000', 'US3CO300.000'], 16);
     assert.strictEqual(r.effective, 12);
     assert.strictEqual(r.highestBand, 3);
-    assert.deepStrictEqual(r.bands, [3, 3, 3]);
+    // Bands are deduped + sorted for diagnostic stability.
+    assert.deepStrictEqual(r.bands, [3]);
+  });
+
+  it('returns deduped + sorted bands for log/diagnostic stability', () => {
+    // Input order: 5, 3, 3, 5, 4 → output should be [3, 4, 5].
+    const r = bandClampedMaxzoom(
+      ['US5MA1SK.000', 'US3CO100.000', 'US3CO200.000', 'US5NY1SK.000', 'US4PR1AB.000'],
+      16
+    );
+    assert.deepStrictEqual(r.bands, [3, 4, 5]);
+    assert.strictEqual(r.highestBand, 5);
   });
 
   it('takes the highest band when bundle is mixed', () => {
