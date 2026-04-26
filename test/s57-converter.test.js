@@ -5,7 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { _testInternals } = require('../dist/utils/s57-converter');
-const { consolidateGeoJSONByLayer, buildExportScript, bandClampedMaxzoom } = _testInternals;
+const { consolidateGeoJSONByLayer, buildExportScript, bandClampedMaxzoom, buildLayerArgs } =
+  _testInternals;
 
 function writeFC(p, features) {
   fs.writeFileSync(p, JSON.stringify({ type: 'FeatureCollection', features }));
@@ -33,12 +34,12 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'M_NPUB_US3CO100.geojson'), [point({ kind: 'm-npub' })]);
 
     const merged = consolidateGeoJSONByLayer(dir);
-    const names = merged.map((p) => path.basename(p, '.geojson')).sort();
+    const names = merged.map((m) => path.basename(m.file, '.geojson')).sort();
     assert.deepStrictEqual(names, ['M_COVR', 'M_NPUB', 'M_QUAL']);
 
     // Each merged file should contain exactly its own feature, not all three
     // smashed together.
-    for (const file of merged) {
+    for (const { file } of merged) {
       const fc = JSON.parse(fs.readFileSync(file, 'utf8'));
       assert.strictEqual(fc.features.length, 1, `${file} should hold one feature`);
     }
@@ -52,9 +53,9 @@ describe('consolidateGeoJSONByLayer', () => {
 
     const merged = consolidateGeoJSONByLayer(dir);
     assert.strictEqual(merged.length, 1);
-    assert.strictEqual(path.basename(merged[0], '.geojson'), 'BUAARE');
+    assert.strictEqual(path.basename(merged[0].file, '.geojson'), 'BUAARE');
 
-    const fc = JSON.parse(fs.readFileSync(merged[0], 'utf8'));
+    const fc = JSON.parse(fs.readFileSync(merged[0].file, 'utf8'));
     assert.strictEqual(fc.features.length, 3);
     const names = fc.features.map((f) => f.properties.name).sort();
     assert.deepStrictEqual(names, ['a', 'b', 'c']);
@@ -66,13 +67,13 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'M_COVR.geojson'), [point({ k: 'm-covr' })]);
 
     const merged = consolidateGeoJSONByLayer(dir);
-    const names = merged.map((p) => path.basename(p, '.geojson')).sort();
+    const names = merged.map((m) => path.basename(m.file, '.geojson')).sort();
     assert.deepStrictEqual(names, ['COALNE', 'M_COVR']);
 
     // Output must be a real file, not a symlink — the caller bind-mounts only
     // the merged dir into the container, so a symlink to the parent geojsonDir
     // would dangle.
-    for (const file of merged) {
+    for (const { file } of merged) {
       const lst = fs.lstatSync(file);
       assert.ok(!lst.isSymbolicLink(), `${file} must not be a symlink`);
       const fc = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -86,7 +87,7 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'REAL_US3CO100.geojson'), [point({ k: 'real' })]);
 
     const merged = consolidateGeoJSONByLayer(dir);
-    const names = merged.map((p) => path.basename(p, '.geojson'));
+    const names = merged.map((m) => path.basename(m.file, '.geojson'));
     assert.deepStrictEqual(names, ['REAL']);
   });
 
@@ -107,10 +108,10 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'M_QUAL_US3CO200.geojson'), [point({ k: 'qual-200' })]);
 
     const merged = consolidateGeoJSONByLayer(dir);
-    const names = merged.map((p) => path.basename(p, '.geojson')).sort();
+    const names = merged.map((m) => path.basename(m.file, '.geojson')).sort();
     assert.deepStrictEqual(names, ['M_COVR', 'M_QUAL']);
 
-    for (const file of merged) {
+    for (const { file } of merged) {
       const fc = JSON.parse(fs.readFileSync(file, 'utf8'));
       assert.strictEqual(fc.features.length, 2);
     }
@@ -132,16 +133,12 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'PILBOP_US5MA1SK.geojson'), [point({ obj: 'pilot-boarding' })]);
 
     const merged = consolidateGeoJSONByLayer(dir);
-    const layerNames = new Set(merged.map((p) => path.basename(p, '.geojson')));
+    const layerNames = new Set(merged.map((m) => path.basename(m.file, '.geojson')));
 
     for (const layer of ['LNDARE', 'DEPARE', 'COALNE']) {
       assert.ok(layerNames.has(layer), `bulk layer ${layer} should be merged`);
-      const fc = JSON.parse(
-        fs.readFileSync(
-          merged.find((p) => p.endsWith(`${layer}.geojson`)),
-          'utf8'
-        )
-      );
+      const entry = merged.find((m) => m.file.endsWith(`${layer}.geojson`));
+      const fc = JSON.parse(fs.readFileSync(entry.file, 'utf8'));
       assert.strictEqual(fc.features.length, 3, `${layer} should have 3 features (1 per chart)`);
     }
 
@@ -224,5 +221,62 @@ describe('bandClampedMaxzoom (re-export from s57-converter._testInternals)', () 
     const r = bandClampedMaxzoom(['IENC_PASS_001.000'], 16);
     assert.strictEqual(r.effective, 16);
     assert.strictEqual(r.highestBand, null);
+  });
+});
+
+describe('buildLayerArgs (per-band minzoom wiring)', () => {
+  function parseLayerArgs(args) {
+    // args is an interleaved list: ['-L', '<json>', '-L', '<json>', …]
+    const parsed = [];
+    for (let i = 0; i < args.length; i += 2) {
+      assert.strictEqual(args[i], '-L');
+      parsed.push(JSON.parse(args[i + 1]));
+    }
+    return parsed;
+  }
+
+  it('uses BAND_MIN_ZOOM[5]=12 for harbour layers and merges-up to highest band', () => {
+    const layers = [
+      { file: '/m/HRBFAC.geojson', sourceFiles: ['HRBFAC_US5MA1SK.geojson'] },
+      {
+        file: '/m/LNDARE.geojson',
+        sourceFiles: ['LNDARE_US3CO100.geojson', 'LNDARE_US5MA1SK.geojson']
+      },
+      { file: '/m/COALNE.geojson', sourceFiles: ['COALNE_US3CO100.geojson'] }
+    ];
+    const parsed = parseLayerArgs(buildLayerArgs(layers, 9));
+
+    const hrbfac = parsed.find((p) => p.layer === 'HRBFAC');
+    const lndare = parsed.find((p) => p.layer === 'LNDARE');
+    const coalne = parsed.find((p) => p.layer === 'COALNE');
+
+    assert.strictEqual(hrbfac.minzoom, 12, 'band-5 HRBFAC must start at z12');
+    assert.strictEqual(lndare.minzoom, 12, 'merged 3+5 LNDARE takes the highest band (5) → z12');
+    assert.strictEqual(
+      coalne.minzoom,
+      9,
+      'pure band-3 COALNE bounded by user minzoom 9, not floor 8'
+    );
+  });
+
+  it('respects user minzoom as a floor (never below)', () => {
+    const layers = [{ file: '/m/COALNE.geojson', sourceFiles: ['COALNE_US3CO100.geojson'] }];
+    const parsed = parseLayerArgs(buildLayerArgs(layers, 11));
+    assert.strictEqual(parsed[0].minzoom, 11, 'user-asked z11 wins over band-3 floor z8');
+  });
+
+  it('falls back to userMinzoom when sources do not match the IHO Annex E pattern', () => {
+    const layers = [{ file: '/m/X.geojson', sourceFiles: ['X_IENC_AREA.geojson'] }];
+    const parsed = parseLayerArgs(buildLayerArgs(layers, 9));
+    assert.strictEqual(parsed[0].minzoom, 9);
+  });
+
+  it('points the file path at /input (the in-container bind mount) and uses the layer basename', () => {
+    const layers = [
+      { file: '/some/host/path/HRBFAC.geojson', sourceFiles: ['HRBFAC_US5MA1SK.geojson'] }
+    ];
+    const parsed = parseLayerArgs(buildLayerArgs(layers, 9));
+    assert.strictEqual(parsed[0].file, '/input/HRBFAC.geojson');
+    assert.strictEqual(parsed[0].layer, 'HRBFAC');
   });
 });

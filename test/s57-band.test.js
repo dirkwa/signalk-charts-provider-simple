@@ -1,7 +1,13 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
 
-const { detectEncBand, BAND_MAX_ZOOM, bandClampedMaxzoom } = require('../dist/utils/s57-band');
+const {
+  detectEncBand,
+  BAND_MAX_ZOOM,
+  BAND_MIN_ZOOM,
+  bandClampedMaxzoom,
+  highestBandForFiles
+} = require('../dist/utils/s57-band');
 
 describe('detectEncBand (IHO Annex E filename convention)', () => {
   it('parses NOAA filenames', () => {
@@ -52,6 +58,48 @@ describe('BAND_MAX_ZOOM', () => {
     assert.strictEqual(BAND_MAX_ZOOM[4], 14);
     assert.strictEqual(BAND_MAX_ZOOM[5], 16);
     assert.strictEqual(BAND_MAX_ZOOM[6], 18);
+  });
+});
+
+describe('BAND_MIN_ZOOM', () => {
+  it('uses ceiling-minus-4 for every band', () => {
+    assert.strictEqual(BAND_MIN_ZOOM[1], 4);
+    assert.strictEqual(BAND_MIN_ZOOM[2], 6);
+    assert.strictEqual(BAND_MIN_ZOOM[3], 8);
+    assert.strictEqual(BAND_MIN_ZOOM[4], 10);
+    assert.strictEqual(BAND_MIN_ZOOM[5], 12);
+    assert.strictEqual(BAND_MIN_ZOOM[6], 14);
+  });
+
+  it('every band has min < max so tippecanoe gets a non-empty zoom range', () => {
+    for (const band of [1, 2, 3, 4, 5, 6]) {
+      assert.ok(BAND_MIN_ZOOM[band] < BAND_MAX_ZOOM[band], `band ${band}`);
+    }
+  });
+});
+
+describe('highestBandForFiles', () => {
+  it('returns the highest band among conforming filenames', () => {
+    assert.strictEqual(
+      highestBandForFiles(['HRBFAC_US5MA1SK.geojson', 'LNDARE_US3CO100.geojson']),
+      5
+    );
+  });
+
+  it('ignores non-conforming filenames (IENC, hand-named) when others conform', () => {
+    assert.strictEqual(highestBandForFiles(['HRBFAC_US5MA1SK.geojson', 'WEIRD_NAME.geojson']), 5);
+  });
+
+  it('returns null when nothing conforms', () => {
+    assert.strictEqual(highestBandForFiles(['weird.geojson', 'IENC_PASS_001.geojson']), null);
+  });
+
+  it('returns null for empty input', () => {
+    assert.strictEqual(highestBandForFiles([]), null);
+  });
+
+  it('takes the basename so directory-prefixed paths still work', () => {
+    assert.strictEqual(highestBandForFiles(['/tmp/enc/HRBFAC_US5MA1SK.geojson']), 5);
   });
 });
 

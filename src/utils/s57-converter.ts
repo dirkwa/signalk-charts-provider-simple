@@ -9,7 +9,7 @@ import {
   pullImage as runtimePullImage,
   runContainer
 } from './container-runtime';
-import { bandClampedMaxzoom } from './s57-band';
+import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -235,11 +235,16 @@ async function exportAllLayersToGeoJSON(
   }
 }
 
+// One row per merged layer. `sourceFiles` are the per-chart GeoJSON filenames
+// (basenames, e.g. 'HRBFAC_US5MA1SK.geojson') that fed the merge — the caller
+// uses them to recover IHO band info per layer.
+type ConsolidatedLayer = { file: string; sourceFiles: string[] };
+
 // Group per-chart-per-layer GeoJSON files into one merged file per layer.
 // Tippecanoe runs faster with fewer -L args (one merged file per layer) than
 // with N×M args (one per chart × layer). Streams the output so a multi-state
 // bundle's largest layer doesn't have to fit in memory at once.
-function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
+function consolidateGeoJSONByLayer(geojsonDir: string): ConsolidatedLayer[] {
   const files = fs.readdirSync(geojsonDir).filter((f) => f.endsWith('.geojson'));
 
   // Group by layer name. The export script writes 'LAYER_CHART.geojson' for
@@ -267,7 +272,7 @@ function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
   const mergedDir = path.join(geojsonDir, '.merged');
   fs.mkdirSync(mergedDir, { recursive: true });
 
-  const mergedFiles: string[] = [];
+  const consolidated: ConsolidatedLayer[] = [];
   for (const [layer, sources] of layerGroups) {
     const out = path.join(mergedDir, `${layer}.geojson`);
     if (sources.length === 1) {
@@ -275,7 +280,7 @@ function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
       // bind-mounts only the merged dir into the container, so a symlink
       // pointing back into geojsonDir would dangle inside the container.
       fs.copyFileSync(path.join(geojsonDir, sources[0]), out);
-      mergedFiles.push(out);
+      consolidated.push({ file: out, sourceFiles: sources });
       continue;
     }
     const handle = fs.openSync(out, 'w');
@@ -301,16 +306,38 @@ function consolidateGeoJSONByLayer(geojsonDir: string): string[] {
     }
     fs.writeSync(handle, '\n]}\n');
     fs.closeSync(handle);
-    mergedFiles.push(out);
+    consolidated.push({ file: out, sourceFiles: sources });
   }
 
-  return mergedFiles;
+  return consolidated;
+}
+
+// Build tippecanoe `-L <json>` args with per-layer minzoom set from the IHO
+// band detected in each merged layer's source filenames. Layers whose
+// source charts don't follow the IHO Annex E filename convention (IENC,
+// hand-named) fall back to userMinzoom — same behaviour as before.
+function buildLayerArgs(layers: readonly ConsolidatedLayer[], userMinzoom: number): string[] {
+  const args: string[] = [];
+  for (const { file, sourceFiles } of layers) {
+    const rel = path.basename(file);
+    const layer = path.basename(rel, '.geojson');
+    const band = highestBandForFiles(sourceFiles);
+    const bandFloor = band !== null ? BAND_MIN_ZOOM[band] : null;
+    // Per-layer minzoom = max(user-requested global minzoom, band floor). The
+    // band floor is the smallest zoom at which features captured at this
+    // band's native scale are still legible; never go above it for that
+    // layer, never go below the user's global ask either.
+    const layerMinzoom = bandFloor !== null ? Math.max(userMinzoom, bandFloor) : userMinzoom;
+    args.push('-L', JSON.stringify({ file: `/input/${rel}`, layer, minzoom: layerMinzoom }));
+  }
+  return args;
 }
 
 export const _testInternals = {
   consolidateGeoJSONByLayer,
   buildExportScript,
-  bandClampedMaxzoom
+  bandClampedMaxzoom,
+  buildLayerArgs
 };
 
 async function runTippecanoe(
@@ -326,16 +353,36 @@ async function runTippecanoe(
   // tippecanoe. A typical NOAA bundle of 4 charts × ~30 layers used to mean
   // 120 -L args; consolidating drops that to ~30 and cuts tippecanoe's I/O
   // setup proportionally.
-  const mergedFiles = consolidateGeoJSONByLayer(geojsonDir);
-  if (mergedFiles.length === 0) {
+  const mergedLayers = consolidateGeoJSONByLayer(geojsonDir);
+  if (mergedLayers.length === 0) {
     throw new Error('No valid GeoJSON layers to process');
   }
-  const mergedDir = path.dirname(mergedFiles[0]);
-  const layerArgs: string[] = [];
-  for (const f of mergedFiles) {
-    const rel = path.basename(f);
-    const layer = path.basename(rel, '.geojson');
-    layerArgs.push('-L', `${layer}:/input/${rel}`);
+  const mergedDir = path.dirname(mergedLayers[0].file);
+  const layerArgs = buildLayerArgs(mergedLayers, minzoom);
+
+  // Log per-band layer breakdown so users can see why low-zoom features differ
+  // by band. Counts plus a sample of layer names — full lists would be noisy
+  // (a state bundle has ~40 layers per band).
+  const byBand = new Map<number | null, string[]>();
+  for (const { file, sourceFiles } of mergedLayers) {
+    const b = highestBandForFiles(sourceFiles);
+    const layer = path.basename(file, '.geojson');
+    const list = byBand.get(b) ?? [];
+    list.push(layer);
+    byBand.set(b, list);
+  }
+  const sortedBands = [...byBand.entries()].sort(
+    ([a], [b]) => (a ?? Number.POSITIVE_INFINITY) - (b ?? Number.POSITIVE_INFINITY)
+  );
+  for (const [band, layers] of sortedBands) {
+    const floor = band !== null ? BAND_MIN_ZOOM[band] : minzoom;
+    const effectiveFloor = Math.max(minzoom, floor);
+    const sample = layers.slice(0, 6).join(', ');
+    const more = layers.length > 6 ? `, …` : '';
+    appendLog(
+      chartNumber,
+      `Band ${band ?? 'unknown'}: ${layers.length} layers from z${effectiveFloor} (${sample}${more})`
+    );
   }
 
   const tippecanoeThreads = getCpuBudget().tippecanoeThreadsPerJob;
@@ -366,6 +413,7 @@ async function runTippecanoe(
       String(minzoom),
       '--no-tile-size-limit',
       '--no-feature-limit',
+      '--detect-shared-borders',
       '--force',
       ...layerArgs
     ],
