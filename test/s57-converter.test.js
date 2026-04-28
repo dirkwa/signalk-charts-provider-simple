@@ -33,7 +33,7 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'M_QUAL_US3CO100.geojson'), [point({ kind: 'm-qual' })]);
     writeFC(path.join(dir, 'M_NPUB_US3CO100.geojson'), [point({ kind: 'm-npub' })]);
 
-    const merged = consolidateGeoJSONByLayer(dir);
+    const merged = consolidateGeoJSONByLayer(dir, 9);
     const names = merged.map((m) => path.basename(m.file, '.geojson')).sort();
     assert.deepStrictEqual(names, ['M_COVR', 'M_NPUB', 'M_QUAL']);
 
@@ -51,7 +51,7 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'BUAARE_US3CO200.geojson'), [point({ name: 'b' })]);
     writeFC(path.join(dir, 'BUAARE_US3CO400.geojson'), [point({ name: 'c' })]);
 
-    const merged = consolidateGeoJSONByLayer(dir);
+    const merged = consolidateGeoJSONByLayer(dir, 9);
     assert.strictEqual(merged.length, 1);
     assert.strictEqual(path.basename(merged[0].file, '.geojson'), 'BUAARE');
 
@@ -66,7 +66,7 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'COALNE.geojson'), [point({ k: 'coalne' })]);
     writeFC(path.join(dir, 'M_COVR.geojson'), [point({ k: 'm-covr' })]);
 
-    const merged = consolidateGeoJSONByLayer(dir);
+    const merged = consolidateGeoJSONByLayer(dir, 9);
     const names = merged.map((m) => path.basename(m.file, '.geojson')).sort();
     assert.deepStrictEqual(names, ['COALNE', 'M_COVR']);
 
@@ -86,14 +86,14 @@ describe('consolidateGeoJSONByLayer', () => {
     fs.writeFileSync(path.join(dir, 'EMPTY_US3CO100.geojson'), '{}');
     writeFC(path.join(dir, 'REAL_US3CO100.geojson'), [point({ k: 'real' })]);
 
-    const merged = consolidateGeoJSONByLayer(dir);
+    const merged = consolidateGeoJSONByLayer(dir, 9);
     const names = merged.map((m) => path.basename(m.file, '.geojson'));
     assert.deepStrictEqual(names, ['REAL']);
   });
 
   it('returns an empty array when there are no usable inputs', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'none-'));
-    const merged = consolidateGeoJSONByLayer(dir);
+    const merged = consolidateGeoJSONByLayer(dir, 9);
     assert.deepStrictEqual(merged, []);
   });
 
@@ -107,7 +107,7 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'M_QUAL_US3CO100.geojson'), [point({ k: 'qual-100' })]);
     writeFC(path.join(dir, 'M_QUAL_US3CO200.geojson'), [point({ k: 'qual-200' })]);
 
-    const merged = consolidateGeoJSONByLayer(dir);
+    const merged = consolidateGeoJSONByLayer(dir, 9);
     const names = merged.map((m) => path.basename(m.file, '.geojson')).sort();
     assert.deepStrictEqual(names, ['M_COVR', 'M_QUAL']);
 
@@ -132,7 +132,7 @@ describe('consolidateGeoJSONByLayer', () => {
     writeFC(path.join(dir, 'MORFAC_US5MA1SK.geojson'), [point({ obj: 'mooring' })]);
     writeFC(path.join(dir, 'PILBOP_US5MA1SK.geojson'), [point({ obj: 'pilot-boarding' })]);
 
-    const merged = consolidateGeoJSONByLayer(dir);
+    const merged = consolidateGeoJSONByLayer(dir, 9);
     const layerNames = new Set(merged.map((m) => path.basename(m.file, '.geojson')));
 
     for (const layer of ['LNDARE', 'DEPARE', 'COALNE']) {
@@ -224,59 +224,104 @@ describe('bandClampedMaxzoom (re-export from s57-converter._testInternals)', () 
   });
 });
 
-describe('buildLayerArgs (per-band minzoom wiring)', () => {
-  function parseLayerArgs(args) {
-    // args is an interleaved list: ['-L', '<json>', '-L', '<json>', …]
-    const parsed = [];
-    for (let i = 0; i < args.length; i += 2) {
-      assert.strictEqual(args[i], '-L');
-      parsed.push(JSON.parse(args[i + 1]));
-    }
-    return parsed;
+describe('buildLayerArgs (simple -L NAME:FILE form)', () => {
+  it('emits one -L LAYER:/input/LAYER.geojson pair per consolidated layer', () => {
+    const layers = [
+      { file: '/some/host/path/HRBFAC.geojson', sourceFiles: ['HRBFAC_US5MA1SK.geojson'] },
+      { file: '/some/host/path/LNDARE.geojson', sourceFiles: ['LNDARE_US3CO100.geojson'] }
+    ];
+    const args = buildLayerArgs(layers);
+    assert.deepStrictEqual(args, [
+      '-L',
+      'HRBFAC:/input/HRBFAC.geojson',
+      '-L',
+      'LNDARE:/input/LNDARE.geojson'
+    ]);
+  });
+
+  it('uses the layer name from the merged file basename', () => {
+    const layers = [{ file: '/anywhere/M_COVR.geojson', sourceFiles: ['M_COVR_US5MA1SK.geojson'] }];
+    assert.deepStrictEqual(buildLayerArgs(layers), ['-L', 'M_COVR:/input/M_COVR.geojson']);
+  });
+});
+
+describe('per-feature tippecanoe.minzoom stamping (band-aware consolidation)', () => {
+  let tmp;
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-feat-minzoom-'));
+  });
+
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function readFeatures(file) {
+    return JSON.parse(fs.readFileSync(file, 'utf8')).features;
   }
 
-  it('uses BAND_MIN_ZOOM[5]=12 for harbour layers and merges-up to highest band', () => {
-    const layers = [
-      { file: '/m/HRBFAC.geojson', sourceFiles: ['HRBFAC_US5MA1SK.geojson'] },
-      {
-        file: '/m/LNDARE.geojson',
-        sourceFiles: ['LNDARE_US3CO100.geojson', 'LNDARE_US5MA1SK.geojson']
-      },
-      { file: '/m/COALNE.geojson', sourceFiles: ['COALNE_US3CO100.geojson'] }
-    ];
-    const parsed = parseLayerArgs(buildLayerArgs(layers, 9));
+  it('stamps tippecanoe.minzoom = BAND_MIN_ZOOM[5] = 12 on band-5 features', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'b5-'));
+    writeFC(path.join(dir, 'HRBFAC_US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
+    const merged = consolidateGeoJSONByLayer(dir, /* userMinzoom */ 9);
+    const fc = readFeatures(merged.find((m) => m.file.endsWith('HRBFAC.geojson')).file);
+    assert.strictEqual(fc.length, 1);
+    assert.strictEqual(fc[0].tippecanoe.minzoom, 12);
+  });
 
-    const hrbfac = parsed.find((p) => p.layer === 'HRBFAC');
-    const lndare = parsed.find((p) => p.layer === 'LNDARE');
-    const coalne = parsed.find((p) => p.layer === 'COALNE');
+  it('stamps per-source band, not per-merged-layer max — multi-band layers get mixed minzoom', () => {
+    // LNDARE features from a band-3 chart and a band-5 chart end up in the
+    // same merged file. Each feature carries the floor for its own source
+    // chart, so band-3 features can emit at z9 (= max(user 9, band-3 floor 8))
+    // while band-5 features only emit from z12. This is *better* than a
+    // layer-wide floor: the band-3 LNDARE outline is visible at z9 while
+    // band-5 detail kicks in at z12.
+    const dir = fs.mkdtempSync(path.join(tmp, 'mixed-'));
+    writeFC(path.join(dir, 'LNDARE_US3CO100.geojson'), [point({ src: 'b3' })]);
+    writeFC(path.join(dir, 'LNDARE_US5MA1SK.geojson'), [point({ src: 'b5' })]);
+    const merged = consolidateGeoJSONByLayer(dir, /* userMinzoom */ 9);
+    const fc = readFeatures(merged[0].file);
+    assert.strictEqual(fc.length, 2);
+    const b3 = fc.find((f) => f.properties.src === 'b3');
+    const b5 = fc.find((f) => f.properties.src === 'b5');
+    assert.strictEqual(b3.tippecanoe.minzoom, 9, 'band-3 floor 8 < user 9 → user wins');
+    assert.strictEqual(b5.tippecanoe.minzoom, 12, 'band-5 floor 12 > user 9 → band wins');
+  });
 
-    assert.strictEqual(hrbfac.minzoom, 12, 'band-5 HRBFAC must start at z12');
-    assert.strictEqual(lndare.minzoom, 12, 'merged 3+5 LNDARE takes the highest band (5) → z12');
+  it('respects userMinzoom as a floor (never goes below user-asked)', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'user-floor-'));
+    writeFC(path.join(dir, 'HRBFAC_US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
+    const merged = consolidateGeoJSONByLayer(dir, /* userMinzoom */ 14);
+    const fc = readFeatures(merged[0].file);
+    assert.strictEqual(fc[0].tippecanoe.minzoom, 14, 'user 14 > band-5 floor 12 → user wins');
+  });
+
+  it('does NOT stamp tippecanoe.minzoom on features from non-conforming sources', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'ienc-'));
+    writeFC(path.join(dir, 'HRBFAC_IENC_AREA.geojson'), [point({ obj: 'harbour' })]);
+    const merged = consolidateGeoJSONByLayer(dir, /* userMinzoom */ 9);
+    const fc = readFeatures(merged[0].file);
     assert.strictEqual(
-      coalne.minzoom,
-      9,
-      'pure band-3 COALNE bounded by user minzoom 9, not floor 8'
+      fc[0].tippecanoe,
+      undefined,
+      'IENC features fall back to the global -Z, no per-feature override'
     );
   });
 
-  it('respects user minzoom as a floor (never below)', () => {
-    const layers = [{ file: '/m/COALNE.geojson', sourceFiles: ['COALNE_US3CO100.geojson'] }];
-    const parsed = parseLayerArgs(buildLayerArgs(layers, 11));
-    assert.strictEqual(parsed[0].minzoom, 11, 'user-asked z11 wins over band-3 floor z8');
-  });
-
-  it('falls back to userMinzoom when sources do not match the IHO Annex E pattern', () => {
-    const layers = [{ file: '/m/X.geojson', sourceFiles: ['X_IENC_AREA.geojson'] }];
-    const parsed = parseLayerArgs(buildLayerArgs(layers, 9));
-    assert.strictEqual(parsed[0].minzoom, 9);
-  });
-
-  it('points the file path at /input (the in-container bind mount) and uses the layer basename', () => {
-    const layers = [
-      { file: '/some/host/path/HRBFAC.geojson', sourceFiles: ['HRBFAC_US5MA1SK.geojson'] }
-    ];
-    const parsed = parseLayerArgs(buildLayerArgs(layers, 9));
-    assert.strictEqual(parsed[0].file, '/input/HRBFAC.geojson');
-    assert.strictEqual(parsed[0].layer, 'HRBFAC');
+  it('preserves any pre-existing tippecanoe.* extension fields', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'preserve-'));
+    const feat = {
+      ...point({ obj: 'harbour' }),
+      tippecanoe: { layer: 'override', maxzoom: 18 }
+    };
+    fs.writeFileSync(
+      path.join(dir, 'HRBFAC_US5MA1SK.geojson'),
+      JSON.stringify({ type: 'FeatureCollection', features: [feat] })
+    );
+    const merged = consolidateGeoJSONByLayer(dir, 9);
+    const out = readFeatures(merged[0].file)[0];
+    assert.strictEqual(out.tippecanoe.minzoom, 12, 'minzoom added');
+    assert.strictEqual(out.tippecanoe.maxzoom, 18, 'pre-existing maxzoom preserved');
+    assert.strictEqual(out.tippecanoe.layer, 'override', 'pre-existing layer preserved');
   });
 });
