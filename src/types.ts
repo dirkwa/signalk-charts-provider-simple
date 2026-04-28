@@ -9,6 +9,8 @@ export type CpuBudgetPreset = 'single-core' | 'half' | 'all';
 export interface PluginConfig {
   chartPath: string;
   cpuBudget?: CpuBudgetPreset;
+  /** Enables the NOAA LNDARE-cut-by-DEPARE fix during S-57 conversion. Default true. */
+  noaaLndareCutByDepare?: boolean;
 }
 
 // ---- Extended ServerAPI ----
@@ -230,6 +232,16 @@ export interface S57ConversionResult {
 export interface S57ConversionOptions {
   minzoom?: number;
   maxzoom?: number;
+  /**
+   * NOAA fix for the cell-layered LNDARE encoding where marina basins and
+   * inland lagoons render as land because the surrounding LNDARE polygon
+   * doesn't cut a hole for the basin. When enabled (default true), DEPARE
+   * polygons with `DRVAL2 > 0` (water at chart datum, not drying flats) are
+   * subtracted from overlapping LNDARE in the same chart cell before tile
+   * generation. Disable if the cut produces visual artifacts on a specific
+   * bundle. See docs/noaa-enc-quirks.md.
+   */
+  noaaLndareCutByDepare?: boolean;
 }
 
 export interface ContainerRuntimeStatus {

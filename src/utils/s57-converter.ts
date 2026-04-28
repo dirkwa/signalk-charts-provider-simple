@@ -10,6 +10,7 @@ import {
   runContainer
 } from './container-runtime';
 import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
+import { cutLndareByDepare } from './lndare-depare-cut';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -526,6 +527,24 @@ export async function processS57Zip(
     appendLog(chartNumber, `Exporting ${encFiles.length} ENC files in single GDAL container...`);
 
     await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber);
+
+    // NOAA fix: cut DEPARE water out of overlapping LNDARE in the same chart
+    // cell so marina basins / inland lagoons render as water. Default-on; can
+    // be disabled per-bundle via S57ConversionOptions.noaaLndareCutByDepare.
+    if (options.noaaLndareCutByDepare !== false) {
+      try {
+        cutLndareByDepare(geojsonDir, {
+          onProgress: (msg) => {
+            debug(msg);
+            appendLog(chartNumber, msg);
+          }
+        });
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        debug(`LNDARE cut pass failed (continuing without it): ${m}`);
+        appendLog(chartNumber, `LNDARE cut pass failed (continuing without it): ${m}`);
+      }
+    }
 
     statusFn('converting', 'Generating vector tiles...');
     setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');
