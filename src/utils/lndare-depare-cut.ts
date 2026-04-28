@@ -58,8 +58,7 @@ function isCuttableDepare(feat: Feature): boolean {
   if (feat.geometry.type !== 'Polygon' && feat.geometry.type !== 'MultiPolygon') {
     return false;
   }
-  const props = (feat.properties ?? {}) as Record<string, unknown>;
-  const drval2 = props['DRVAL2'];
+  const drval2: unknown = feat.properties?.['DRVAL2'];
   if (typeof drval2 !== 'number') {
     return false;
   }
