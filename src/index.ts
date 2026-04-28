@@ -40,6 +40,12 @@ import {
 } from './utils/rnc-converter';
 import { processGshhg, processShpBasemap } from './utils/s57-converter';
 import { getCpuBudget, setCpuBudget } from './utils/concurrency';
+import { writeChartPathMarker } from './utils/path-marker';
+
+// Read at module load so the marker file always reflects the running build.
+// `require` keeps this synchronous and avoids dragging package.json into the
+// emitted dist (tsc resolves it through CommonJS interop).
+const pluginVersion: string = (require('../package.json') as { version: string }).version;
 import type {
   ExtendedServerAPI,
   PluginConfig,
@@ -152,6 +158,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       app.setPluginError(`Chart directory is not writable: ${chartPath}`);
       app.setPluginStatus('Started (no chart directory)');
       return;
+    }
+
+    // Drop a marker file at the resolved chart path. Lets users (especially
+    // running under Docker/Podman) confirm the bind mount points where they
+    // expect by looking for this file on the host filesystem.
+    const marker = writeChartPathMarker(chartPath, pluginVersion, {
+      onError: (msg) => app.debug(msg)
+    });
+    if (marker) {
+      console.log(`[charts-provider] chartPath resolved to ${chartPath} (marker: ${marker})`);
+    } else {
+      console.log(`[charts-provider] chartPath resolved to ${chartPath} (marker write failed)`);
     }
 
     initChartState(pluginDataDir);
