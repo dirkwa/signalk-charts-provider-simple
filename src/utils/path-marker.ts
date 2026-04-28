@@ -6,10 +6,10 @@ export const MARKER_FILENAME = '.charts-provider-marker.json';
 export interface ContainerHints {
   /** Whether well-known container indicator files exist on the running filesystem. */
   isLikelyContainer: boolean;
-  /** $HOME at startup, useful when comparing host vs in-container paths. */
-  homeEnv: string | undefined;
-  /** Effective UID, useful when explaining permission mismatches with the host. */
-  uid: number | undefined;
+  /** $HOME at startup, useful when comparing host vs in-container paths. `null` when unset. */
+  homeEnv: string | null;
+  /** Effective UID, useful when explaining permission mismatches. `null` on platforms without `process.getuid` (Windows). */
+  uid: number | null;
 }
 
 export interface ChartPathMarker {
@@ -30,10 +30,16 @@ export function detectContainerHints(): ContainerHints {
   } catch {
     isLikelyContainer = false;
   }
-  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  // Use `null` (not `undefined`) for missing values so JSON.stringify keeps
+  // the keys in the marker file. The marker is a documented schema —
+  // tooling consumers shouldn't have to handle "key sometimes absent" on
+  // platforms where the value can't be obtained (Windows lacks
+  // `process.getuid`; `$HOME` may be unset in stripped environments).
+  const uid: number | null = typeof process.getuid === 'function' ? process.getuid() : null;
+  const homeEnv: string | null = process.env.HOME ?? null;
   return {
     isLikelyContainer,
-    homeEnv: process.env.HOME,
+    homeEnv,
     uid
   };
 }

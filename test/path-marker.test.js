@@ -99,12 +99,39 @@ describe('detectContainerHints', () => {
     const hints = detectContainerHints();
     assert.deepStrictEqual(Object.keys(hints).sort(), ['homeEnv', 'isLikelyContainer', 'uid']);
     assert.strictEqual(typeof hints.isLikelyContainer, 'boolean');
-    // homeEnv may be undefined in unusual environments; uid undefined on Windows.
-    if (hints.homeEnv !== undefined) {
-      assert.strictEqual(typeof hints.homeEnv, 'string');
-    }
-    if (hints.uid !== undefined) {
-      assert.strictEqual(typeof hints.uid, 'number');
+    // homeEnv is `null` when $HOME is unset; uid is `null` on Windows
+    // (process.getuid is undefined there). Either way, the keys are always
+    // present so the marker schema is platform-stable.
+    assert.ok(
+      hints.homeEnv === null || typeof hints.homeEnv === 'string',
+      `homeEnv must be string|null, got ${typeof hints.homeEnv}`
+    );
+    assert.ok(
+      hints.uid === null || typeof hints.uid === 'number',
+      `uid must be number|null, got ${typeof hints.uid}`
+    );
+  });
+
+  it('emits explicit null (not undefined) when uid or homeEnv is unavailable', () => {
+    // Regression guard for Windows: Node has no `process.getuid` there, so
+    // the previous implementation produced `uid: undefined`, and
+    // JSON.stringify dropped the key from the marker file. The schema must
+    // be stable across platforms, so the helper must coerce to `null` and
+    // the marker must round-trip through JSON with all three keys present.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-marker-stable-'));
+    try {
+      const written = writeChartPathMarker(dir, '1.0.0');
+      const parsed = JSON.parse(fs.readFileSync(written, 'utf8'));
+      assert.deepStrictEqual(Object.keys(parsed.containerHints).sort(), [
+        'homeEnv',
+        'isLikelyContainer',
+        'uid'
+      ]);
+      // null is allowed; undefined is not (the latter would drop the key).
+      assert.notStrictEqual(parsed.containerHints.uid, undefined);
+      assert.notStrictEqual(parsed.containerHints.homeEnv, undefined);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
