@@ -236,15 +236,24 @@ async function exportAllLayersToGeoJSON(
 }
 
 // One row per merged layer. `sourceFiles` are the per-chart GeoJSON filenames
-// (basenames, e.g. 'HRBFAC_US5MA1SK.geojson') that fed the merge — the caller
-// uses them to recover IHO band info per layer.
+// (basenames, e.g. 'HRBFAC_US5MA1SK.geojson') that fed the merge — kept for
+// caller diagnostics (per-band log line). Per-feature minzoom is already
+// stamped onto features inside the merged file via `tippecanoe.minzoom`.
 type ConsolidatedLayer = { file: string; sourceFiles: string[] };
 
 // Group per-chart-per-layer GeoJSON files into one merged file per layer.
 // Tippecanoe runs faster with fewer -L args (one merged file per layer) than
 // with N×M args (one per chart × layer). Streams the output so a multi-state
 // bundle's largest layer doesn't have to fit in memory at once.
-function consolidateGeoJSONByLayer(geojsonDir: string): ConsolidatedLayer[] {
+//
+// Each emitted feature carries a `tippecanoe.minzoom` extension property
+// derived from its source chart's IHO band: tippecanoe respects the
+// per-feature `tippecanoe.minzoom` extension and won't emit the feature
+// below that zoom. (Tippecanoe's `-L` JSON form does NOT support per-layer
+// minzoom — silently ignored — so we MUST set it per-feature.) Source
+// charts that don't follow the IHO Annex E filename convention (IENC,
+// hand-named) get no extension property and fall back to the global `-Z`.
+function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): ConsolidatedLayer[] {
   const files = fs.readdirSync(geojsonDir).filter((f) => f.endsWith('.geojson'));
 
   // Group by layer name. The export script writes 'LAYER_CHART.geojson' for
@@ -275,18 +284,17 @@ function consolidateGeoJSONByLayer(geojsonDir: string): ConsolidatedLayer[] {
   const consolidated: ConsolidatedLayer[] = [];
   for (const [layer, sources] of layerGroups) {
     const out = path.join(mergedDir, `${layer}.geojson`);
-    if (sources.length === 1) {
-      // Single-source layer — just copy. We can't symlink because runTippecanoe
-      // bind-mounts only the merged dir into the container, so a symlink
-      // pointing back into geojsonDir would dangle inside the container.
-      fs.copyFileSync(path.join(geojsonDir, sources[0]), out);
-      consolidated.push({ file: out, sourceFiles: sources });
-      continue;
-    }
     const handle = fs.openSync(out, 'w');
     fs.writeSync(handle, '{"type":"FeatureCollection","features":[\n');
     let first = true;
     for (const source of sources) {
+      // Per-source-chart band → per-feature minzoom. Files in this source
+      // share a band because they all come from the same chart cell, so the
+      // band lookup is one-shot per source file.
+      const band = highestBandForFiles([source]);
+      const bandFloor = band !== null ? BAND_MIN_ZOOM[band] : null;
+      const featureMinzoom = bandFloor !== null ? Math.max(userMinzoom, bandFloor) : null;
+
       let parsed: { features?: unknown[] };
       try {
         parsed = JSON.parse(fs.readFileSync(path.join(geojsonDir, source), 'utf8')) as {
@@ -300,7 +308,9 @@ function consolidateGeoJSONByLayer(geojsonDir: string): ConsolidatedLayer[] {
         if (!first) {
           fs.writeSync(handle, ',\n');
         }
-        fs.writeSync(handle, JSON.stringify(feat));
+        const stamped =
+          featureMinzoom !== null ? withTippecanoeMinzoom(feat, featureMinzoom) : feat;
+        fs.writeSync(handle, JSON.stringify(stamped));
         first = false;
       }
     }
@@ -312,23 +322,33 @@ function consolidateGeoJSONByLayer(geojsonDir: string): ConsolidatedLayer[] {
   return consolidated;
 }
 
-// Build tippecanoe `-L <json>` args with per-layer minzoom set from the IHO
-// band detected in each merged layer's source filenames. Layers whose
-// source charts don't follow the IHO Annex E filename convention (IENC,
-// hand-named) fall back to userMinzoom — same behaviour as before.
-function buildLayerArgs(layers: readonly ConsolidatedLayer[], userMinzoom: number): string[] {
+// Stamp tippecanoe.minzoom on a single feature without mutating the input.
+// Preserves any existing `tippecanoe` extension fields if the source already
+// set them (rare for ogr2ogr output, but harmless to support).
+function withTippecanoeMinzoom(feature: unknown, minzoom: number): unknown {
+  if (typeof feature !== 'object' || feature === null) {
+    return feature;
+  }
+  const f = feature as Record<string, unknown>;
+  const existing =
+    typeof f.tippecanoe === 'object' && f.tippecanoe !== null
+      ? (f.tippecanoe as Record<string, unknown>)
+      : {};
+  return { ...f, tippecanoe: { ...existing, minzoom } };
+}
+
+// Build tippecanoe `-L NAME:FILE` args (the simple form). Per-layer minzoom
+// is *not* settable via `-L` JSON — tippecanoe silently ignores `minzoom`
+// fields there. Per-band minzoom is therefore stamped onto each feature in
+// the consolidator (see `consolidateGeoJSONByLayer`), and tippecanoe honors
+// `feature.tippecanoe.minzoom` natively. This function is just the
+// container-relative path stitching.
+function buildLayerArgs(layers: readonly ConsolidatedLayer[]): string[] {
   const args: string[] = [];
-  for (const { file, sourceFiles } of layers) {
+  for (const { file } of layers) {
     const rel = path.basename(file);
     const layer = path.basename(rel, '.geojson');
-    const band = highestBandForFiles(sourceFiles);
-    const bandFloor = band !== null ? BAND_MIN_ZOOM[band] : null;
-    // Per-layer minzoom = max(user-requested global minzoom, band floor). The
-    // band floor is the smallest zoom at which features captured at this
-    // band's native scale are still legible; never go above it for that
-    // layer, never go below the user's global ask either.
-    const layerMinzoom = bandFloor !== null ? Math.max(userMinzoom, bandFloor) : userMinzoom;
-    args.push('-L', JSON.stringify({ file: `/input/${rel}`, layer, minzoom: layerMinzoom }));
+    args.push('-L', `${layer}:/input/${rel}`);
   }
   return args;
 }
@@ -353,12 +373,12 @@ async function runTippecanoe(
   // tippecanoe. A typical NOAA bundle of 4 charts × ~30 layers used to mean
   // 120 -L args; consolidating drops that to ~30 and cuts tippecanoe's I/O
   // setup proportionally.
-  const mergedLayers = consolidateGeoJSONByLayer(geojsonDir);
+  const mergedLayers = consolidateGeoJSONByLayer(geojsonDir, minzoom);
   if (mergedLayers.length === 0) {
     throw new Error('No valid GeoJSON layers to process');
   }
   const mergedDir = path.dirname(mergedLayers[0].file);
-  const layerArgs = buildLayerArgs(mergedLayers, minzoom);
+  const layerArgs = buildLayerArgs(mergedLayers);
 
   // Log per-band layer breakdown so users can see why low-zoom features differ
   // by band. Counts plus a sample of layer names — full lists would be noisy
