@@ -70,7 +70,16 @@ export async function patchS57Mbtiles(
 ): Promise<PatchResult> {
   const sleeper = options.sleep ?? sleep;
   const retryMs = options.retryDelayMs ?? DEFAULT_RETRY_MS;
-  const log = (m: string): void => options.onMessage?.(m);
+  // Swallow callback errors so a buggy onMessage can't break the
+  // best-effort/never-throws contract this helper advertises. Same reasoning
+  // for the sleep wrapper below.
+  const log = (m: string): void => {
+    try {
+      options.onMessage?.(m);
+    } catch {
+      /* best-effort logging */
+    }
+  };
 
   if (!fs.existsSync(outputPath)) {
     const message = `MBTiles file does not exist: ${outputPath}`;
@@ -94,10 +103,19 @@ export async function patchS57Mbtiles(
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt === 2) {
       log(`Retrying MBTiles metadata patch after ${retryMs}ms…`);
-      await sleeper(retryMs);
+      try {
+        await sleeper(retryMs);
+      } catch (err) {
+        // A misbehaving sleep callback (e.g. a test injecting an explicit
+        // throw) would otherwise propagate out and break the never-throws
+        // contract. Treat it as a no-op delay and continue to the retry.
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`Sleep before retry threw (continuing): ${msg}`);
+      }
     }
     try {
       const db = new sqlite.DatabaseSync(outputPath);
+      let inTransaction = false;
       try {
         // Tippecanoe creates the `metadata` table WITHOUT a UNIQUE constraint
         // on `name`, so a plain `INSERT OR REPLACE` doesn't replace — it
@@ -107,14 +125,24 @@ export async function patchS57Mbtiles(
         // `type` rows: tippecanoe's `overlay` plus our `S-57`. SELECT order
         // then decided which a downstream consumer saw. Robust fix:
         // DELETE the rows we own, then INSERT cleanly.
+        //
+        // Wrapped in a transaction so that DELETE + INSERT + verify are
+        // atomic — a verify failure rolls the whole thing back, leaving the
+        // pre-existing rows intact. Without this we could DELETE the
+        // tippecanoe defaults, fail to verify the new rows, and leave the
+        // file in a worse state than before.
+        db.exec('BEGIN TRANSACTION');
+        inTransaction = true;
         db.exec("DELETE FROM metadata WHERE name IN ('type', 'name')");
         db.prepare("INSERT INTO metadata (name, value) VALUES ('type', ?)").run(wantedType);
         db.prepare("INSERT INTO metadata (name, value) VALUES ('name', ?)").run(wantedName);
 
-        // Verify-after-write: read back what we just put. INSERT OR REPLACE
-        // should always succeed when the prepare succeeds, but a busy WAL
+        // Verify-after-write: read back what we just put. INSERT should
+        // always succeed when the prepare succeeds, but a busy WAL
         // checkpoint or a process-level write filter could swallow it
         // silently — and that's the bug we're trying to make visible.
+        // The verify happens INSIDE the transaction so a mismatch can be
+        // rolled back to leave the pre-existing rows intact.
         const typeRow = db.prepare("SELECT value FROM metadata WHERE name = 'type'").get();
         const nameRow = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get();
         const gotType =
@@ -127,6 +155,8 @@ export async function patchS57Mbtiles(
             : null;
 
         if (gotType !== wantedType || gotName !== wantedName) {
+          db.exec('ROLLBACK');
+          inTransaction = false;
           lastError =
             `MBTiles metadata patch verify failed: ` +
             `type='${gotType}' (wanted '${wantedType}'), ` +
@@ -135,6 +165,8 @@ export async function patchS57Mbtiles(
           continue; // try the retry
         }
 
+        db.exec('COMMIT');
+        inTransaction = false;
         const message =
           attempt === 1
             ? `Set MBTiles type=${wantedType}, name='${wantedName}'`
@@ -148,6 +180,16 @@ export async function patchS57Mbtiles(
           message
         };
       } finally {
+        // If we threw mid-transaction, roll back so the file is left in its
+        // pre-attempt state. ROLLBACK on its own can throw if the
+        // transaction has already been committed/rolled back; swallow that.
+        if (inTransaction) {
+          try {
+            db.exec('ROLLBACK');
+          } catch {
+            /* already committed or no transaction */
+          }
+        }
         db.close();
       }
     } catch (err) {
