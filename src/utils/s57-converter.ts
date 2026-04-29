@@ -10,7 +10,6 @@ import {
   runContainer
 } from './container-runtime';
 import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
-import { cutLndareByDepare } from './lndare-depare-cut';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -435,15 +434,17 @@ async function runTippecanoe(
       '--no-tile-size-limit',
       '--no-feature-limit',
       '--detect-shared-borders',
-      // Preserve interior rings (holes) at the user's maxzoom. Tippecanoe's
-      // default tiny-polygon reduction silently drops holes that fall below
-      // a size threshold relative to the tile, which kills the basin/lagoon
-      // cut-outs we just made — a 300m basin at z16 has its hole removed
-      // at maxzoom even though it survives perfectly at z13..z15. This flag
-      // only affects the highest zoom, lower zooms keep the size-aware
-      // reduction (which is correct there — a basin too small to render at
-      // z12 *should* be omitted).
-      '--no-tiny-polygon-reduction-at-maximum-zoom',
+      // Preserve coastline detail end-to-end. Tippecanoe's defaults aggressively
+      // simplify and drop tiny polygons at high zooms, which destroys the
+      // coastline indentations that define marina basins, inland lagoons, and
+      // narrow harbour features. Empirically the basin-as-land issue some NOAA
+      // bundles exhibit at z16 (Michigan City Outer Basin, Lake Worth) goes
+      // away when these defaults are off — the basin coastline is in the
+      // source data, simplification was destroying it. Larger tile buffer
+      // (80, default 5) keeps polygon edges that hug a tile boundary intact.
+      '--no-simplification',
+      '--no-tiny-polygon-reduction',
+      '--buffer=80',
       '--force',
       ...layerArgs
     ],
@@ -536,24 +537,6 @@ export async function processS57Zip(
     appendLog(chartNumber, `Exporting ${encFiles.length} ENC files in single GDAL container...`);
 
     await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber);
-
-    // NOAA fix: cut DEPARE water out of overlapping LNDARE in the same chart
-    // cell so marina basins / inland lagoons render as water. Default-on; can
-    // be disabled per-bundle via S57ConversionOptions.noaaLndareCutByDepare.
-    if (options.noaaLndareCutByDepare !== false) {
-      try {
-        cutLndareByDepare(geojsonDir, {
-          onProgress: (msg) => {
-            debug(msg);
-            appendLog(chartNumber, msg);
-          }
-        });
-      } catch (err) {
-        const m = err instanceof Error ? err.message : String(err);
-        debug(`LNDARE cut pass failed (continuing without it): ${m}`);
-        appendLog(chartNumber, `LNDARE cut pass failed (continuing without it): ${m}`);
-      }
-    }
 
     statusFn('converting', 'Generating vector tiles...');
     setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');

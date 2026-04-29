@@ -35,9 +35,8 @@ npm install signalk-charts-provider-simple
 1. Navigate to **Server → Plugin Config → Charts Provider Simple**
 2. Set your chart directory path (defaults to `~/.signalk/charts-simple`)
 3. (Optional) Pick a **CPU budget** for chart conversion — see [CPU budget](#cpu-budget-for-chart-conversion) below
-4. (Optional) Toggle the **NOAA LNDARE fix** — see [NOAA ENC quirks](docs/noaa-enc-quirks.md) for what it does and when to disable it
-5. Enable the plugin
-6. Restart Signal K server (first-time install only — later config changes hot-apply on Save without a full restart)
+4. Enable the plugin
+5. Restart Signal K server (first-time install only — later config changes hot-apply on Save without a full restart)
 
 ### CPU budget for chart conversion
 

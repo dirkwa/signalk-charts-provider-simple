@@ -104,19 +104,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             '"all" uses every core for fastest single-bundle conversion; Signal K may be sluggish during a conversion.',
           enum: ['single-core', 'half', 'all'],
           default: 'half'
-        },
-        noaaLndareCutByDepare: {
-          type: 'boolean',
-          title: 'NOAA fix: cut basin/lagoon water out of land polygons',
-          description:
-            'NOAA US ENC charts often encode marina basins and inland lagoons as land (LNDARE) ' +
-            'with the water area (DEPARE) drawn underneath. By default S-52 renderers draw land ' +
-            'on top, so these basins look tan instead of blue. When enabled (default), DEPARE ' +
-            'polygons with DRVAL2 > 0 (water at chart datum, not drying flats) are subtracted ' +
-            'from overlapping LNDARE in the same chart cell before tile generation. Drying ' +
-            'flats are left untouched. Disable if you see chart artifacts on a specific bundle. ' +
-            'See docs/noaa-enc-quirks.md.',
-          default: true
         }
       }
     }),
@@ -1405,11 +1392,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 (status, message) => {
                   app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
                 },
-                {
-                  minzoom,
-                  maxzoom,
-                  noaaLndareCutByDepare: props.noaaLndareCutByDepare !== false
-                }
+                { minzoom, maxzoom }
               );
 
               const relativePath = path.relative(
@@ -1670,11 +1653,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           (status, message) => {
             app.debug(`S-57 [${chartNumber}] ${status}: ${message}`);
           },
-          {
-            minzoom,
-            maxzoom,
-            noaaLndareCutByDepare: props.noaaLndareCutByDepare !== false
-          }
+          { minzoom, maxzoom }
         );
 
         setConvertingState(chartNumber, false);
