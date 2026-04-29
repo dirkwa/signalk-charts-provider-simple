@@ -10,6 +10,7 @@ import {
   runContainer
 } from './container-runtime';
 import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
+import { patchS57Mbtiles } from './mbtiles-metadata';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -569,19 +570,21 @@ export async function processS57Zip(
       throw new Error('tippecanoe completed but output file not found');
     }
 
-    try {
-      const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
-      const db = new DatabaseSync(outputPath);
-      db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'S-57')").run();
-      db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('name', ?)").run(
-        `S-57 ${chartNumber || 'ENC'}`
-      );
-      db.close();
-      debug(`Set MBTiles type=S-57 for ${outputName}`);
-    } catch (metaErr) {
-      debug(
-        `Warning: failed to patch MBTiles metadata: ${metaErr instanceof Error ? metaErr.message : String(metaErr)}`
-      );
+    // Overwrite tippecanoe's default `type=overlay` and `name=/output/...` with
+    // `type=S-57` so Signal K + chart consumers identify the file correctly.
+    // The patcher logs to BOTH the conversion log (visible in the UI) and
+    // server stdout — earlier versions only logged to debug() so failures
+    // (sqlite locks, node:sqlite unavailable on older Nodes, …) were silent.
+    // See docs/reports against 1.11.x bundles still ending up as type=overlay.
+    const patchResult = await patchS57Mbtiles(outputPath, chartNumber, {
+      onMessage: (msg) => {
+        debug(msg);
+        appendLog(chartNumber, msg);
+      }
+    });
+    if (!patchResult.ok) {
+      const banner = `[charts-provider] WARNING: ${patchResult.message} (${outputName})`;
+      console.warn(banner);
     }
 
     const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
