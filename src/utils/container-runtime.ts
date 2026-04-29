@@ -242,8 +242,15 @@ export async function runContainer(opts: RunOptions): Promise<{ exitCode: number
 
   const createOptions: Docker.ContainerCreateOptions = {
     // By default, run the container as the current process UID:GID so files
-    // created by the container are owned by the invoking user. Allow this
-    // to be overridden via `opts.user`.
+    // created by the container are owned by the invoking user. Without this
+    // (default behaviour), rootful Docker / rootful Podman would produce
+    // files owned by root on the host, which breaks anything we do
+    // afterwards that needs to write — most visibly the post-tippecanoe
+    // metadata patch, which fails with "attempt to write a readonly
+    // database". Allow this to be overridden via `opts.user` for the rare
+    // case where a container needs an explicit user. process.getuid is
+    // undefined on Windows; Docker Desktop does its own UID translation
+    // there, so we leave User unset.
     User:
       opts.user ??
       (typeof process.getuid === 'function' && typeof process.getgid === 'function'
