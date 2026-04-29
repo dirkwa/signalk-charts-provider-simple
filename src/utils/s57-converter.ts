@@ -435,6 +435,15 @@ async function runTippecanoe(
       '--no-tile-size-limit',
       '--no-feature-limit',
       '--detect-shared-borders',
+      // Preserve interior rings (holes) at the user's maxzoom. Tippecanoe's
+      // default tiny-polygon reduction silently drops holes that fall below
+      // a size threshold relative to the tile, which kills the basin/lagoon
+      // cut-outs we just made — a 300m basin at z16 has its hole removed
+      // at maxzoom even though it survives perfectly at z13..z15. This flag
+      // only affects the highest zoom, lower zooms keep the size-aware
+      // reduction (which is correct there — a basin too small to render at
+      // z12 *should* be omitted).
+      '--no-tiny-polygon-reduction-at-maximum-zoom',
       '--force',
       ...layerArgs
     ],
