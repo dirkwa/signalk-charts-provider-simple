@@ -16,6 +16,8 @@ export interface RunOptions {
   job?: string;
   onStdoutLine?: (line: string) => void;
   onStderrLine?: (line: string) => void;
+  /** Override the user the container runs as (format: "uid[:gid]" or "user[:group]") */
+  user?: string;
 }
 
 interface ResolvedClient {
@@ -239,6 +241,14 @@ export async function runContainer(opts: RunOptions): Promise<{ exitCode: number
   }
 
   const createOptions: Docker.ContainerCreateOptions = {
+    // By default, run the container as the current process UID:GID so files
+    // created by the container are owned by the invoking user. Allow this
+    // to be overridden via `opts.user`.
+    User:
+      opts.user ??
+      (typeof process.getuid === 'function' && typeof process.getgid === 'function'
+        ? `${process.getuid()}:${process.getgid()}`
+        : undefined),
     name: buildContainerName(opts.phase, opts.job),
     Image: opts.image,
     Cmd: opts.cmd,
