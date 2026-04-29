@@ -165,16 +165,15 @@ skipOnWindows('container-runtime', () => {
       lastCreatePayload = null;
     });
 
-    it('runs the container as the host process UID:GID', async () => {
-      // Day reported on Discord: containers were running as root inside,
+    it('runs the container as the host process UID:GID against a Docker-style socket', async () => {
+      // Original symptom (Day on Discord): containers ran as root inside,
       // producing root-owned files on the host that the (non-root) Signal K
       // Node process couldn't write to later — the metadata patch failed
       // with "attempt to write a readonly database". Setting User to the
       // host process's uid:gid makes file ownership match the consumer.
+      // The mock socket here lives under /tmp (not a /run/user/<uid>/podman
+      // path), so it's treated as Docker / rootful Podman.
       if (typeof process.getuid !== 'function' || typeof process.getgid !== 'function') {
-        // Defensive: this branch shouldn't be reachable on Linux/macOS but
-        // means the assertion below would be wrong on a hypothetical Node
-        // build without these calls.
         return;
       }
       await runtime.runContainer({
@@ -188,6 +187,77 @@ skipOnWindows('container-runtime', () => {
         `${process.getuid()}:${process.getgid()}`,
         'User must match the host UID:GID so bind-mount file ownership is correct'
       );
+    });
+
+    it('honours an explicit opts.user override', async () => {
+      await runtime.runContainer({
+        image: 'busybox',
+        cmd: ['true'],
+        user: '0:0'
+      });
+      assert.strictEqual(lastCreatePayload.User, '0:0');
+    });
+
+    describe('defaultContainerUser()', () => {
+      // Direct unit tests on the helper — easier than smuggling a fake
+      // socket path through the mock-Docker harness. The function is
+      // exported precisely so it's testable in isolation.
+      it('returns uid:gid for a Docker socket path', () => {
+        if (typeof process.getuid !== 'function') {
+          return;
+        }
+        const got = runtime.defaultContainerUser('/var/run/docker.sock');
+        assert.strictEqual(got, `${process.getuid()}:${process.getgid()}`);
+      });
+
+      it('returns uid:gid for a rootful-Podman socket path', () => {
+        if (typeof process.getuid !== 'function') {
+          return;
+        }
+        const got = runtime.defaultContainerUser('/run/podman/podman.sock');
+        assert.strictEqual(got, `${process.getuid()}:${process.getgid()}`);
+      });
+
+      it('returns undefined for a rootless-Podman socket (skip User)', () => {
+        // Rootless Podman maps the host user to root inside its user
+        // namespace; bind-mounted dirs appear root-owned to the in-container
+        // process. Forcing --user uid:gid in that namespace breaks
+        // bind-mount writes ("Permission denied" from ogr2ogr). Without
+        // the flag, Podman maps writes back to the host user correctly.
+        const got = runtime.defaultContainerUser(
+          `/run/user/${process.getuid?.() ?? 1000}/podman/podman.sock`
+        );
+        assert.strictEqual(got, undefined);
+      });
+
+      it('returns undefined when getuid is not available (Windows etc.)', () => {
+        // Stub out getuid to mimic a runtime without it. Restore after.
+        const origUid = process.getuid;
+        Object.defineProperty(process, 'getuid', { value: undefined, configurable: true });
+        try {
+          assert.strictEqual(runtime.defaultContainerUser('/var/run/docker.sock'), undefined);
+        } finally {
+          Object.defineProperty(process, 'getuid', { value: origUid, configurable: true });
+        }
+      });
+
+      it('returns uid:gid when socketPath is null (defensive fall-through)', () => {
+        if (typeof process.getuid !== 'function') {
+          return;
+        }
+        // The runContainer codepath only ever calls this helper after
+        // resolveClient() succeeds, so socketPath is never null in
+        // practice. If a future caller invokes it with null, we fall
+        // through to the Docker-style default — that's the strictly
+        // more common runtime, and a Docker user with root-owned files
+        // is exactly the bug we're solving. Rootless-Podman users on
+        // an unrecognised socket path are an unreachable edge today;
+        // we revisit if it shows up.
+        assert.strictEqual(
+          runtime.defaultContainerUser(null),
+          `${process.getuid()}:${process.getgid()}`
+        );
+      });
     });
 
     it('passes through bind mounts and labels', async () => {

@@ -203,6 +203,46 @@ function sanitizeNamePart(s: string): string {
   return s.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 60);
 }
 
+/**
+ * Decide what (if anything) to pass as `User` on a container create.
+ *
+ * The rules differ by container runtime:
+ *
+ *   - **Rootful Docker / rootful Podman**: by default the container runs as
+ *     root inside, so anything it writes through a bind mount comes back
+ *     owned by `root:root` on the host. The (non-root) Signal K Node
+ *     process then can't open that file for writing — sqlite reports
+ *     "attempt to write a readonly database" when the post-tippecanoe
+ *     metadata patcher tries to fix `type=overlay`. Forcing
+ *     `User=<uid>:<gid>` makes the container write as the invoking user
+ *     directly, so file ownership is correct from the start.
+ *
+ *   - **Rootless Podman**: setting `User=<uid>:<gid>` *breaks* writes.
+ *     Rootless Podman runs in a user namespace where the host's UID is
+ *     mapped to root inside; bind-mounted directories are visible as
+ *     `root:root` from inside the namespace. Adding `--user 1000:1000`
+ *     forces the in-container process to a UID that doesn't own the
+ *     bind-mount, so `ogr2ogr` fails with `Permission denied`. Without
+ *     the flag, Podman's namespace already maps the container's root back
+ *     to the host user — files come out owned correctly.
+ *
+ *   - **Windows**: `process.getuid` is undefined; Docker Desktop does its
+ *     own UID translation. Leave User unset.
+ *
+ * Detection: rootless Podman uses a per-user socket at
+ * `/run/user/<uid>/podman/podman.sock`. Anything else (including rootful
+ * Podman at `/run/podman/podman.sock`) falls into the "set User" branch.
+ */
+export function defaultContainerUser(socketPath: string | null): string | undefined {
+  if (typeof process.getuid !== 'function' || typeof process.getgid !== 'function') {
+    return undefined;
+  }
+  if (socketPath && /\/run\/user\/\d+\/podman\/podman\.sock$/.test(socketPath)) {
+    return undefined;
+  }
+  return `${process.getuid()}:${process.getgid()}`;
+}
+
 function buildContainerName(
   phase: string | undefined,
   job: string | undefined
@@ -241,21 +281,7 @@ export async function runContainer(opts: RunOptions): Promise<{ exitCode: number
   }
 
   const createOptions: Docker.ContainerCreateOptions = {
-    // By default, run the container as the current process UID:GID so files
-    // created by the container are owned by the invoking user. Without this
-    // (default behaviour), rootful Docker / rootful Podman would produce
-    // files owned by root on the host, which breaks anything we do
-    // afterwards that needs to write — most visibly the post-tippecanoe
-    // metadata patch, which fails with "attempt to write a readonly
-    // database". Allow this to be overridden via `opts.user` for the rare
-    // case where a container needs an explicit user. process.getuid is
-    // undefined on Windows; Docker Desktop does its own UID translation
-    // there, so we leave User unset.
-    User:
-      opts.user ??
-      (typeof process.getuid === 'function' && typeof process.getgid === 'function'
-        ? `${process.getuid()}:${process.getgid()}`
-        : undefined),
+    User: opts.user ?? defaultContainerUser(resolved.socketPath),
     name: buildContainerName(opts.phase, opts.job),
     Image: opts.image,
     Cmd: opts.cmd,
