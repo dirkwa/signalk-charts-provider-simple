@@ -115,14 +115,16 @@ export async function patchS57Mbtiles(
         // should always succeed when the prepare succeeds, but a busy WAL
         // checkpoint or a process-level write filter could swallow it
         // silently — and that's the bug we're trying to make visible.
-        const typeRow = db.prepare("SELECT value FROM metadata WHERE name = 'type'").get() as
-          | { value?: string }
-          | undefined;
-        const nameRow = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get() as
-          | { value?: string }
-          | undefined;
-        const gotType = typeRow?.value ?? null;
-        const gotName = nameRow?.value ?? null;
+        const typeRow = db.prepare("SELECT value FROM metadata WHERE name = 'type'").get();
+        const nameRow = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get();
+        const gotType =
+          typeof typeRow === 'object' && typeRow !== null && 'value' in typeRow
+            ? String(typeRow.value)
+            : null;
+        const gotName =
+          typeof nameRow === 'object' && nameRow !== null && 'value' in nameRow
+            ? String(nameRow.value)
+            : null;
 
         if (gotType !== wantedType || gotName !== wantedName) {
           lastError =
