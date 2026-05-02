@@ -12,3 +12,6 @@ dist/
 
 # samples
 samples/
+
+# Generated test fixture — rebuilt by pretest via test/fixtures/create-test-mbtiles.js
+test/fixtures/test-chart.mbtiles
