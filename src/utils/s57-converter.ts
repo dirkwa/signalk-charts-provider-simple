@@ -309,8 +309,9 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
         if (!first) {
           fs.writeSync(handle, ',\n');
         }
+        const flattened = flattenListProperties(feat);
         const stamped =
-          featureMinzoom !== null ? withTippecanoeMinzoom(feat, featureMinzoom) : feat;
+          featureMinzoom !== null ? withTippecanoeMinzoom(flattened, featureMinzoom) : flattened;
         fs.writeSync(handle, JSON.stringify(stamped));
         first = false;
       }
@@ -321,6 +322,34 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
   }
 
   return consolidated;
+}
+
+// MVT properties must be scalar (string|number|bool). GDAL emits S-57 list
+// attributes (COLOUR, STATUS, COLPAT, CATLIT, CATSPM, …) as JSON arrays;
+// tippecanoe then stringifies them as `["3"]`, which client decoders that
+// split on `,` can't read. Convert arrays to comma-separated strings so
+// downstream code can treat them uniformly.
+function flattenListProperties(feature: unknown): unknown {
+  if (typeof feature !== 'object' || feature === null) {
+    return feature;
+  }
+  const f = feature as Record<string, unknown>;
+  const props = f.properties;
+  if (typeof props !== 'object' || props === null) {
+    return feature;
+  }
+  const p = props as Record<string, unknown>;
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(p)) {
+    if (Array.isArray(v)) {
+      out[k] = v.join(',');
+      changed = true;
+    } else {
+      out[k] = v;
+    }
+  }
+  return changed ? { ...f, properties: out } : feature;
 }
 
 // Stamp tippecanoe.minzoom on a single feature without mutating the input.
