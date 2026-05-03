@@ -149,6 +149,32 @@ describe('consolidateGeoJSONByLayer', () => {
       );
     }
   });
+
+  it('flattens GDAL list-type properties (COLOUR, STATUS, …) to comma-separated strings', () => {
+    // GDAL emits S-57 multi-value attributes (COLOUR, STATUS, COLPAT, CATLIT,
+    // CATSPM, QUASOU, …) as JSON arrays. MVT/tippecanoe can only carry scalar
+    // property values, and would stringify the array as `["3"]` — breaking
+    // client-side decoders that expect `"3"` or `"3,1"`. The consolidator
+    // flattens any array-valued property to a comma-separated string so
+    // downstream code sees a uniform shape.
+    const dir = fs.mkdtempSync(path.join(tmp, 'flatten-'));
+    writeFC(path.join(dir, 'BCNLAT.geojson'), [
+      point({ COLOUR: ['3'], STATUS: ['1'], OBJNAM: 'X', SCAMIN: 29999 }),
+      point({ COLOUR: ['3', '1', '3'], COLPAT: ['1'], OBJNAM: 'Y' }),
+      point({ OBJNAM: 'no-array' })
+    ]);
+
+    const merged = consolidateGeoJSONByLayer(dir, 9);
+    assert.strictEqual(merged.length, 1);
+    const fc = JSON.parse(fs.readFileSync(merged[0].file, 'utf8'));
+    assert.strictEqual(fc.features[0].properties.COLOUR, '3');
+    assert.strictEqual(fc.features[0].properties.STATUS, '1');
+    assert.strictEqual(fc.features[0].properties.OBJNAM, 'X');
+    assert.strictEqual(fc.features[0].properties.SCAMIN, 29999);
+    assert.strictEqual(fc.features[1].properties.COLOUR, '3,1,3');
+    assert.strictEqual(fc.features[1].properties.COLPAT, '1');
+    assert.strictEqual(fc.features[2].properties.OBJNAM, 'no-array');
+  });
 });
 
 describe('buildExportScript', () => {
