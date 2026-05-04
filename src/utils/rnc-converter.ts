@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
 import { checkContainerRuntime, imageExists, pullImage, runContainer } from './container-runtime';
+import { setMbtilesType } from './mbtiles-metadata';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -288,20 +289,10 @@ export async function processRncZip(
         appendLog(chartNumber, `Warning: gdaladdo failed for ${friendly}`);
       }
 
-      const tagResult = await runContainer({
-        image: GDAL_IMAGE,
-        phase: 'sqlite-tag',
-        job: baseName,
-        cmd: [
-          'sqlite3',
-          containerOutput,
-          "INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')"
-        ],
-        binds: [`${chartsDir}:/output`],
-        onStdoutLine: (line) => appendLog(chartNumber, line),
-        onStderrLine: (line) => appendLog(chartNumber, line)
+      const tagResult = await setMbtilesType(path.join(chartsDir, outputName), 'tilelayer', {
+        onMessage: (msg) => appendLog(chartNumber, msg)
       });
-      if (tagResult.exitCode !== 0) {
+      if (!tagResult.ok) {
         appendLog(chartNumber, `Warning: failed to set tilelayer metadata for ${friendly}`);
       }
 
@@ -463,20 +454,10 @@ export async function processPilotTar(
         appendLog(chartNumber, `Warning: gdaladdo failed for ${friendly}`);
       }
 
-      const tagResult = await runContainer({
-        image: GDAL_IMAGE,
-        phase: 'sqlite-tag',
-        job: baseName,
-        cmd: [
-          'sqlite3',
-          containerOutput,
-          "INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')"
-        ],
-        binds: [`${chartsDir}:/output`],
-        onStdoutLine: (line) => appendLog(chartNumber, line),
-        onStderrLine: (line) => appendLog(chartNumber, line)
+      const tagResult = await setMbtilesType(path.join(chartsDir, outputName), 'tilelayer', {
+        onMessage: (msg) => appendLog(chartNumber, msg)
       });
-      if (tagResult.exitCode !== 0) {
+      if (!tagResult.ok) {
         appendLog(chartNumber, `Warning: failed to set tilelayer metadata for ${friendly}`);
       }
 

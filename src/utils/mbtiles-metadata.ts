@@ -208,3 +208,117 @@ export async function patchS57Mbtiles(
     message: lastError || 'MBTiles metadata patch failed (unknown reason)'
   };
 }
+
+export interface SetTypeResult {
+  ok: boolean;
+  type: string | null;
+  attempts: number;
+  message: string;
+}
+
+/**
+ * Set just the `type` row in an MBTiles `metadata` table. Used by the RNC/KAP
+ * pipeline to tag the GDAL-produced MBTiles as `tilelayer` so Signal K knows
+ * to serve it as a raster tile source.
+ *
+ * Same atomicity guarantees as patchS57Mbtiles (DELETE + INSERT + verify in a
+ * transaction; one retry on transient lock). Best-effort, never throws.
+ *
+ * Replaces an earlier in-container `sqlite3` shell-out, which broke when the
+ * upstream `ghcr.io/osgeo/gdal:alpine-small-latest` image stopped including
+ * the sqlite3 CLI binary (issue #52).
+ */
+export async function setMbtilesType(
+  outputPath: string,
+  wantedType: string,
+  options: PatchOptions = {}
+): Promise<SetTypeResult> {
+  const sleeper = options.sleep ?? sleep;
+  const retryMs = options.retryDelayMs ?? DEFAULT_RETRY_MS;
+  const log = (m: string): void => {
+    try {
+      options.onMessage?.(m);
+    } catch {
+      /* best-effort logging */
+    }
+  };
+
+  if (!fs.existsSync(outputPath)) {
+    const message = `MBTiles file does not exist: ${outputPath}`;
+    log(message);
+    return { ok: false, type: null, attempts: 0, message };
+  }
+
+  const sqlite = loadSqlite();
+  if (!sqlite.ok) {
+    log(sqlite.reason);
+    return { ok: false, type: null, attempts: 0, message: sqlite.reason };
+  }
+
+  let lastError = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (attempt === 2) {
+      log(`Retrying MBTiles type tag after ${retryMs}ms…`);
+      try {
+        await sleeper(retryMs);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`Sleep before retry threw (continuing): ${msg}`);
+      }
+    }
+    try {
+      const db = new sqlite.DatabaseSync(outputPath);
+      let inTransaction = false;
+      try {
+        db.exec('BEGIN TRANSACTION');
+        inTransaction = true;
+        db.exec("DELETE FROM metadata WHERE name = 'type'");
+        db.prepare("INSERT INTO metadata (name, value) VALUES ('type', ?)").run(wantedType);
+
+        const typeRow = db.prepare("SELECT value FROM metadata WHERE name = 'type'").get();
+        const gotType =
+          typeof typeRow === 'object' && typeRow !== null && 'value' in typeRow
+            ? String(typeRow.value)
+            : null;
+
+        if (gotType !== wantedType) {
+          db.exec('ROLLBACK');
+          inTransaction = false;
+          lastError = `MBTiles type tag verify failed: type='${gotType}' (wanted '${wantedType}')`;
+          log(lastError);
+          continue;
+        }
+
+        db.exec('COMMIT');
+        inTransaction = false;
+        const message =
+          attempt === 1
+            ? `Set MBTiles type=${wantedType}`
+            : `Set MBTiles type=${wantedType} on retry`;
+        log(message);
+        return { ok: true, type: gotType, attempts: attempt, message };
+      } finally {
+        if (inTransaction) {
+          try {
+            db.exec('ROLLBACK');
+          } catch {
+            /* already committed or no transaction */
+          }
+        }
+        db.close();
+      }
+    } catch (err) {
+      lastError = `MBTiles type tag failed (attempt ${attempt}/2): ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      log(lastError);
+    }
+  }
+
+  return {
+    ok: false,
+    type: null,
+    attempts: 2,
+    message: lastError || 'MBTiles type tag failed (unknown reason)'
+  };
+}

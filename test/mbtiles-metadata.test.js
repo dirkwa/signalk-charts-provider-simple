@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { patchS57Mbtiles } = require('../dist/utils/mbtiles-metadata');
+const { patchS57Mbtiles, setMbtilesType } = require('../dist/utils/mbtiles-metadata');
 
 // Build a synthetic MBTiles file shaped like tippecanoe's output: empty
 // metadata table with the columns the patcher writes. We don't need actual
@@ -310,5 +310,68 @@ describe('patchS57Mbtiles', () => {
     } finally {
       db2.close();
     }
+  });
+});
+
+describe('setMbtilesType', () => {
+  let tmp;
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-mbtiles-settype-'));
+  });
+
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('sets type=tilelayer on a fresh MBTiles, preserving unrelated metadata', async () => {
+    const file = path.join(tmp, 'fresh.mbtiles');
+    makeFakeMbtiles(file, { format: 'png' });
+
+    const result = await setMbtilesType(file, 'tilelayer');
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.type, 'tilelayer');
+    assert.strictEqual(result.attempts, 1);
+
+    const meta = readMetadata(file);
+    assert.strictEqual(meta.type, 'tilelayer');
+    assert.strictEqual(meta.format, 'png', 'unrelated metadata keys are preserved');
+  });
+
+  it('replaces an existing type without leaving duplicate rows', async () => {
+    const file = path.join(tmp, 'existing.mbtiles');
+    makeFakeMbtiles(file, { type: 'overlay', format: 'png' });
+
+    const result = await setMbtilesType(file, 'tilelayer');
+    assert.strictEqual(result.ok, true);
+
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(file);
+    try {
+      const rows = db.prepare("SELECT value FROM metadata WHERE name = 'type'").all();
+      assert.strictEqual(rows.length, 1, 'no duplicate type rows');
+      assert.strictEqual(rows[0].value, 'tilelayer');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('returns ok=false (not throw) when the file is missing', async () => {
+    const result = await setMbtilesType(path.join(tmp, 'nope.mbtiles'), 'tilelayer');
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.attempts, 0);
+    assert.match(result.message, /does not exist/);
+  });
+
+  it('forwards progress messages via onMessage', async () => {
+    const file = path.join(tmp, 'logged.mbtiles');
+    makeFakeMbtiles(file, {});
+    const messages = [];
+    await setMbtilesType(file, 'tilelayer', { onMessage: (m) => messages.push(m) });
+    assert.ok(
+      messages.some((m) => m.includes('Set MBTiles type=tilelayer')),
+      'logs the success message'
+    );
   });
 });
