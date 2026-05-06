@@ -11,7 +11,7 @@ import {
 } from './container-runtime';
 import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
 import { detectContainerRuntime } from './container-environment';
-import { patchS57Mbtiles } from './mbtiles-metadata';
+import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -767,6 +767,30 @@ export async function processS57Zip(
     if (!patchResult.ok) {
       const banner = `[charts-provider] WARNING: ${patchResult.message} (${outputName})`;
       console.warn(banner);
+    }
+
+    // Optional second patch: when the caller (catalog flow) supplied a
+    // human-friendly label, overwrite the `name` row that
+    // patchS57Mbtiles just wrote with the cleaned catalog title, and set
+    // `description` to the full original title for provenance. Manual
+    // uploads leave displayName undefined and keep the patcher's
+    // `S-57 <chartNumber>` default.
+    if (options.displayName) {
+      const dnResult = await setMbtilesDisplayName(
+        outputPath,
+        options.displayName,
+        options.displayDescription,
+        {
+          onMessage: (msg) => {
+            debug(msg);
+            appendLog(chartNumber, msg);
+          }
+        }
+      );
+      if (!dnResult.ok) {
+        const banner = `[charts-provider] WARNING: ${dnResult.message} (${outputName})`;
+        console.warn(banner);
+      }
     }
 
     const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);

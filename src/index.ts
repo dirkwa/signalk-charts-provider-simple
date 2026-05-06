@@ -31,6 +31,8 @@ import {
 } from './utils/s57-converter';
 import { checkContainerRuntime } from './utils/container-runtime';
 import { detectContainerRuntime } from './utils/container-environment';
+import { cleanCatalogTitle } from './utils/catalog-title';
+import { setMbtilesDisplayName } from './utils/mbtiles-metadata';
 import {
   initRncConverter,
   processRncZip,
@@ -901,6 +903,26 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         await fs.promises.rename(sourcePath, targetPath);
         app.debug(`Renamed chart from ${sourcePath} to ${targetPath}`);
 
+        // Patch the MBTiles `metadata.name` row to match the new label
+        // so consumers (Freeboard-SK, OpenCPN-Web) display the renamed
+        // chart by its new name and not the stale value tippecanoe (or
+        // an earlier rename) wrote. Best-effort — a failure here doesn't
+        // abort the rename, the file move already succeeded.
+        try {
+          const dnResult = await setMbtilesDisplayName(targetPath, nameWithoutExt, undefined, {
+            onMessage: (m) => app.debug(`rename-chart: ${m}`)
+          });
+          if (!dnResult.ok) {
+            console.warn(
+              `[charts-provider] WARNING: ${dnResult.message} (${path.basename(targetPath)})`
+            );
+          }
+        } catch (mdErr) {
+          app.debug(
+            `rename-chart metadata patch threw: ${mdErr instanceof Error ? mdErr.message : String(mdErr)}`
+          );
+        }
+
         await refreshChartProviders();
 
         const oldChartId = path.basename(chartPathBody).replace(/\.mbtiles$/, '');
@@ -1539,6 +1561,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
+        // Look up the chart's catalog title so the converter can write
+        // the cleaned label into MBTiles metadata.name (and the full
+        // original title into metadata.description). Manual uploads
+        // don't go through this path so they keep the existing
+        // 'S-57 <chartNumber>' default.
+        const cachedCatalog = getCachedCatalog(catalogFile);
+        const chartTitle = cachedCatalog?.charts.find((c) => c.number === chartNumber)?.title;
+
         if (classification.format === 's57-zip') {
           handleS57Download(
             res,
@@ -1550,7 +1580,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             targetDir,
             chartPath,
             minzoom,
-            maxzoom
+            maxzoom,
+            chartTitle
           );
         } else if (classification.format === 'rnc-zip') {
           handleRncDownload(
@@ -1646,7 +1677,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     targetDir: string,
     chartPath: string,
     minzoom: number | undefined,
-    maxzoom: number | undefined
+    maxzoom: number | undefined,
+    chartTitle: string | undefined
   ): void {
     const tmpDownloadDir = path.join(app.getDataDirPath(), `s57-download-${Date.now()}`);
     fs.mkdirSync(tmpDownloadDir, { recursive: true });
@@ -1675,6 +1707,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
 
       try {
+        const displayName = chartTitle ? cleanCatalogTitle(chartTitle) : undefined;
         const result = await processS57Zip(
           zipPath,
           targetDir,
@@ -1682,7 +1715,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           (status, message) => {
             app.debug(`S-57 [${chartNumber}] ${status}: ${message}`);
           },
-          { minzoom, maxzoom }
+          {
+            minzoom,
+            maxzoom,
+            displayName: displayName || undefined,
+            displayDescription: chartTitle || undefined
+          }
         );
 
         setConvertingState(chartNumber, false);

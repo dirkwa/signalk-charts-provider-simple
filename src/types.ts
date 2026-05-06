@@ -230,6 +230,20 @@ export interface S57ConversionResult {
 export interface S57ConversionOptions {
   minzoom?: number;
   maxzoom?: number;
+  /**
+   * Optional human-friendly chart label written into the MBTiles
+   * `metadata.name` row after conversion. When the conversion is driven
+   * by a catalog click this is the cleaned catalog title; manual
+   * uploads leave it undefined and the existing metadata stays in
+   * place. See `cleanCatalogTitle` in `utils/catalog-title.ts`.
+   */
+  displayName?: string;
+  /**
+   * Optional longer text written into MBTiles `metadata.description`.
+   * Typically the full original (un-cleaned) catalog title so chart
+   * provenance survives in clients that surface description.
+   */
+  displayDescription?: string;
 }
 
 export interface ContainerRuntimeStatus {
