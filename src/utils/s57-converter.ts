@@ -248,7 +248,12 @@ async function probeHostBindFileCount(encDir: string): Promise<number> {
       image: GDAL_IMAGE,
       phase: 'gdal-mount-probe',
       job: 'mount-probe',
-      cmd: ['sh', '-c', "find /probe -maxdepth 2 -name '*.000' -type f 2>/dev/null | wc -l"],
+      // Mirror the export's find exactly (unbounded depth, skip macOS
+      // ._-resource files). The original `-maxdepth 2` was a guess that
+      // false-positived the mismatch error on real-world NL IENC ZIPs
+      // whose .000 files nest deeper than two levels — the probe saw
+      // 0 while the export saw N.
+      cmd: ['sh', '-c', "find /probe -name '*.000' ! -name '._*' -type f 2>/dev/null | wc -l"],
       binds: [`${encDir}:/probe:ro`],
       onStdoutLine: (line) => lines.push(line),
       onStderrLine: () => {
