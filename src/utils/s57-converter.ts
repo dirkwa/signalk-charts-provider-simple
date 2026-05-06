@@ -133,6 +133,16 @@ interface ExportScriptOptions {
   skipLayers: string[];
 }
 
+// Path inside the container where per-file ogr2ogr stderr is captured.
+// Without this, ogr2ogr failures get swallowed (they used to redirect to
+// /dev/null) and a "the export ran but produced nothing" outcome is
+// indistinguishable from "every chart failed for the same reason".
+// Surfaced into the user-visible conversion log when zero output files
+// land in /output.
+export const EXPORT_ERRORS_LOG = '/output/.export-errors.log';
+const EXPORT_ERROR_FILE_BASENAME = path.basename(EXPORT_ERRORS_LOG);
+const EXPORT_ERROR_SAMPLE_LINES = 10;
+
 // Build the shell script that runs inside the GDAL container. Extracted as a
 // pure function so it's testable and so the parallelism knob is visible.
 //
@@ -145,25 +155,27 @@ export function buildExportScript(opts: ExportScriptOptions): string {
   const skipPattern = opts.skipLayers.join('|');
   const parallel = Math.max(1, Math.floor(opts.parallelism));
   const multiBranch = opts.multiFile ? '${layer}_${name}' : '${layer}';
+  const errLog = EXPORT_ERRORS_LOG;
 
   if (parallel === 1) {
     return `
 set -e
+: > ${errLog}
 count=$(find /input -name '*.000' ! -name '._*' -type f | wc -l)
 i=0
 find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
-  layers=$(ogrinfo -so "$enc" 2>/dev/null | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  layers=$(ogrinfo -so "$enc" 2>>${errLog} | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
   for layer in $layers; do
     case "$layer" in ${skipPattern}) continue ;; esac
     outname="${multiBranch}"
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "/output/$outname.geojson" "$enc" "$layer" 2>/dev/null || true
+        "/output/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
     else
-      ogr2ogr -f GeoJSON "/output/$outname.geojson" "$enc" "$layer" 2>/dev/null || true
+      ogr2ogr -f GeoJSON "/output/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
     fi
   done
 done
@@ -177,13 +189,14 @@ echo "PROGRESS: Export complete"
   const multiArg = opts.multiFile ? '1' : '0';
   return `
 set -e
+: > ${errLog}
 count=$(find /input -name '*.000' ! -name '._*' -type f | wc -l)
 i=0
 find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
-  layers=$(ogrinfo -so "$enc" 2>/dev/null | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  layers=$(ogrinfo -so "$enc" 2>>${errLog} | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
   printf '%s\\n' $layers | xargs -P ${parallel} -I '{}' sh -c '
     layer="$1"
     enc="$2"
@@ -193,9 +206,9 @@ find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d 
     if [ "$multi" = "1" ]; then outname="\${layer}_\${name}"; else outname="$layer"; fi
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "/output/\${outname}.geojson" "$enc" "$layer" 2>/dev/null || true
+        "/output/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
     else
-      ogr2ogr -f GeoJSON "/output/\${outname}.geojson" "$enc" "$layer" 2>/dev/null || true
+      ogr2ogr -f GeoJSON "/output/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
     fi
   ' _ '{}' "$enc" "$name" "${multiArg}"
 done
@@ -233,6 +246,68 @@ async function exportAllLayersToGeoJSON(
 
   if (result.exitCode !== 0) {
     throw new Error(`GDAL export failed with exit code ${result.exitCode}`);
+  }
+
+  // The export script swallows non-zero exits from per-file ogr2ogr calls
+  // (one bad chart shouldn't kill a 60-chart bundle), so a clean exit
+  // doesn't mean any output landed. If nothing usable came out, surface
+  // a sample of the per-file stderr the script captured, so the user
+  // sees the actual GDAL error instead of just the downstream
+  // "No valid GeoJSON layers" message.
+  surfaceExportErrorsIfEmpty(geojsonDir, chartNumber);
+}
+
+function surfaceExportErrorsIfEmpty(geojsonDir: string, chartNumber: string): void {
+  let hasUsableOutput = false;
+  try {
+    for (const f of fs.readdirSync(geojsonDir)) {
+      if (!f.endsWith('.geojson')) {
+        continue;
+      }
+      if (fs.statSync(path.join(geojsonDir, f)).size > 100) {
+        hasUsableOutput = true;
+        break;
+      }
+    }
+  } catch {
+    return;
+  }
+  if (hasUsableOutput) {
+    return;
+  }
+
+  const errorFile = path.join(geojsonDir, EXPORT_ERROR_FILE_BASENAME);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(errorFile, 'utf8');
+  } catch {
+    appendLog(
+      chartNumber,
+      'GDAL export produced no usable layers and no per-file errors were captured. ' +
+        'This usually means the GDAL container could not read /input — check chart-path host bind mounts and SELinux/AppArmor labels.'
+    );
+    return;
+  }
+  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) {
+    appendLog(
+      chartNumber,
+      'GDAL export produced no usable layers and the captured error log was empty.'
+    );
+    return;
+  }
+  appendLog(
+    chartNumber,
+    `GDAL export ran but produced no usable GeoJSON layers. First ${Math.min(EXPORT_ERROR_SAMPLE_LINES, lines.length)} of ${lines.length} captured ogr2ogr/ogrinfo error line(s):`
+  );
+  for (const line of lines.slice(0, EXPORT_ERROR_SAMPLE_LINES)) {
+    appendLog(chartNumber, `  ${line}`);
+  }
+  if (lines.length > EXPORT_ERROR_SAMPLE_LINES) {
+    appendLog(
+      chartNumber,
+      `  ... ${lines.length - EXPORT_ERROR_SAMPLE_LINES} more error line(s) suppressed.`
+    );
   }
 }
 
@@ -387,7 +462,8 @@ export const _testInternals = {
   consolidateGeoJSONByLayer,
   buildExportScript,
   bandClampedMaxzoom,
-  buildLayerArgs
+  buildLayerArgs,
+  surfaceExportErrorsIfEmpty
 };
 
 async function runTippecanoe(

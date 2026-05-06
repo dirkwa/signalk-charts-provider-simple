@@ -4,9 +4,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { _testInternals } = require('../dist/utils/s57-converter');
-const { consolidateGeoJSONByLayer, buildExportScript, bandClampedMaxzoom, buildLayerArgs } =
-  _testInternals;
+const {
+  _testInternals,
+  EXPORT_ERRORS_LOG,
+  getConversionProgress
+} = require('../dist/utils/s57-converter');
+const {
+  consolidateGeoJSONByLayer,
+  buildExportScript,
+  bandClampedMaxzoom,
+  buildLayerArgs,
+  surfaceExportErrorsIfEmpty
+} = _testInternals;
 
 function writeFC(p, features) {
   fs.writeFileSync(p, JSON.stringify({ type: 'FeatureCollection', features }));
@@ -227,6 +236,98 @@ describe('buildExportScript', () => {
       assert.ok(seq.includes(layer), `sequential branch missing skip layer ${layer}`);
       assert.ok(par.includes(layer), `parallel branch missing skip layer ${layer}`);
     }
+  });
+
+  it('redirects per-file ogr2ogr stderr to the export error log in both branches', () => {
+    // Regression for charts where every per-file ogr2ogr call failed
+    // (e.g. IENC bundles on a GDAL build without inland S-57 support):
+    // the previous `2>/dev/null` swallowed the error so the user only
+    // saw a confusing downstream "No valid GeoJSON layers" message.
+    const seq = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
+    const par = buildExportScript({ multiFile: true, parallelism: 4, skipLayers });
+    assert.match(seq, new RegExp(`2>>${EXPORT_ERRORS_LOG.replace(/\//g, '\\/')}`));
+    assert.match(par, new RegExp(`2>>${EXPORT_ERRORS_LOG.replace(/\//g, '\\/')}`));
+    assert.doesNotMatch(seq, /2>\/dev\/null/);
+    assert.doesNotMatch(par, /2>\/dev\/null/);
+  });
+
+  it('initializes the error log with `: > <path>` so a stale log from a prior run is cleared', () => {
+    const s = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
+    assert.match(s, new RegExp(`: > ${EXPORT_ERRORS_LOG.replace(/\//g, '\\/')}`));
+  });
+});
+
+describe('surfaceExportErrorsIfEmpty', () => {
+  let tmp;
+  const chartNumber = 'test-surface-empty';
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-surface-'));
+  });
+
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('surfaces a sample of captured errors when the geojson dir is empty', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'errs-'));
+    fs.writeFileSync(
+      path.join(dir, '.export-errors.log'),
+      'ERROR 4: Cannot open IENC profile\nERROR 4: Unrecognized S57 product\n'
+    );
+    surfaceExportErrorsIfEmpty(dir, chartNumber);
+    const log = getConversionProgress(chartNumber)?.log ?? [];
+    assert.ok(
+      log.some((l) => l.includes('produced no usable GeoJSON layers')),
+      'expected a "no usable layers" headline in the surfaced log'
+    );
+    assert.ok(
+      log.some((l) => l.includes('Cannot open IENC profile')),
+      'expected the captured ogr2ogr error line to be surfaced verbatim'
+    );
+  });
+
+  it('skips surfacing when usable geojson output exists', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'ok-'));
+    // A real-feature-bearing GeoJSON file is well over the 100-byte
+    // threshold, so the helper should treat it as "we have output" and
+    // leave the conversion log alone.
+    fs.writeFileSync(
+      path.join(dir, 'HRBFAC.geojson'),
+      JSON.stringify({
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            properties: { OBJL: 1 },
+            geometry: { type: 'Point', coordinates: [0, 0] }
+          }
+        ]
+      })
+    );
+    fs.writeFileSync(
+      path.join(dir, '.export-errors.log'),
+      'ERROR 4: this should NOT be surfaced because output exists\n'
+    );
+    const skipChartNumber = 'test-surface-skip';
+    surfaceExportErrorsIfEmpty(dir, skipChartNumber);
+    const log = getConversionProgress(skipChartNumber)?.log ?? [];
+    assert.deepStrictEqual(
+      log,
+      [],
+      'no log lines should be surfaced when usable output is present'
+    );
+  });
+
+  it('reports a chart-path/SELinux hint when the dir is empty AND the error log is missing', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'missinglog-'));
+    const noLogChartNumber = 'test-surface-nolog';
+    surfaceExportErrorsIfEmpty(dir, noLogChartNumber);
+    const log = getConversionProgress(noLogChartNumber)?.log ?? [];
+    assert.ok(
+      log.some((l) => l.includes('SELinux/AppArmor')),
+      'expected the missing-log diagnostic when no errors were captured'
+    );
   });
 });
 
