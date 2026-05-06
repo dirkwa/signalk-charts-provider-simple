@@ -30,6 +30,7 @@ import {
   setConversionFailed as setS57Failed
 } from './utils/s57-converter';
 import { checkContainerRuntime } from './utils/container-runtime';
+import { detectContainerRuntime } from './utils/container-environment';
 import {
   initRncConverter,
   processRncZip,
@@ -170,6 +171,25 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       console.log(`[charts-provider] chartPath resolved to ${chartPath} (marker: ${marker})`);
     } else {
       console.log(`[charts-provider] chartPath resolved to ${chartPath} (marker write failed)`);
+    }
+
+    // When Signal K runs in a container and talks to the host docker
+    // daemon via socket pass-through, the bind paths we hand to docker
+    // are container-internal — the host daemon mounts them against the
+    // host filesystem. If the host doesn't have the same paths,
+    // conversions silently produce nothing. Warn at startup so users
+    // bind-mount their data dir at an identical host path
+    // (e.g. -v /opt/signalk:/opt/signalk) before it bites them.
+    const containerKind = detectContainerRuntime();
+    if (containerKind) {
+      const warning =
+        `[charts-provider] Signal K appears to be running in a ${containerKind} container. ` +
+        `Chart conversions launch GDAL/tippecanoe via the host container runtime, so the data dir ` +
+        `'${pluginDataDir}' must resolve to the SAME path on the host. If your bind mount maps a ` +
+        `different host path (e.g. -v /opt/signalk:/home/node/.signalk), conversions will start ` +
+        `but the GDAL container will see an empty /input and produce no output. Use a matching ` +
+        `bind path (e.g. -v /opt/signalk:/opt/signalk) to avoid this.`;
+      console.warn(warning);
     }
 
     initChartState(pluginDataDir);
