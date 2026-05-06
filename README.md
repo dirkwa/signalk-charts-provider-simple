@@ -107,16 +107,11 @@ The interface provides four tabs:
 - **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
 - **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
 
-### Optional: container runtime (for chart conversion)
+### Required for chart conversion: `signalk-container` plugin
 
-To convert S-57 ENC, BSB raster, Pilot Charts, or basemaps, the plugin needs a Docker- or Podman-compatible API socket. Both engines work the same way; pick whichever is easier on your host.
+To convert S-57 ENC, BSB raster, Pilot Charts, or basemaps, this plugin delegates all container work to the [`signalk-container`](https://github.com/dirkwa/signalk-container) plugin. The Signal K App Store handles installing it for you when you install Charts Provider Simple — the plugin's detail page shows it as a required plugin and offers a one-click bulk install.
 
-The plugin uses standard images that are pulled automatically on first use:
-
-- `ghcr.io/osgeo/gdal:alpine-small-latest` — GDAL for format conversion
-- `ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe` — tippecanoe for vector tile generation (multi-arch: amd64 + arm64)
-
-**Bare-metal install (Signal K running directly on the host):**
+`signalk-container` itself needs a Docker- or Podman-compatible runtime on the host. Both engines work the same way; pick whichever is easier:
 
 ```bash
 # Debian / Ubuntu / Raspberry Pi OS
@@ -128,9 +123,20 @@ sudo dnf install podman
 systemctl --user enable --now podman.socket
 ```
 
+The plugin uses standard images that `signalk-container` pulls automatically on first use:
+
+- `ghcr.io/osgeo/gdal:alpine-small-latest` — GDAL for format conversion
+- `ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe` — tippecanoe for vector tile generation (multi-arch: amd64 + arm64)
+
+**Why `signalk-container`?** It transparently handles the three deployment topologies that 1.x got wrong:
+
+- **Bare-metal Signal K** — straight bind mount of the data dir.
+- **Signal K in Docker / Podman with a named volume** — the helper container mounts the same named volume. (1.x couldn't do this; named-volume deployments were unable to convert.)
+- **Signal K in Docker / Podman with bind-mounted data** — the helper container gets the resolved host path, even when the in-container path doesn't match the host path. (1.x relied on host/container paths matching exactly; mismatches silently failed.)
+
 **Signal K running in Docker?** See [docs/running-in-docker.md](docs/running-in-docker.md) for the docker-compose snippet.
 
-Conversion concurrency is configurable — see the [CPU budget](#cpu-budget-for-chart-conversion) section. MBTiles charts (display only, no conversion) work without any container runtime.
+Conversion concurrency is configurable — see the [CPU budget](#cpu-budget-for-chart-conversion) section. MBTiles charts (display only, no conversion) work without any container runtime, and without `signalk-container`.
 
 ### Known install warnings
 

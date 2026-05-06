@@ -39,6 +39,9 @@
     "unzipper": "^0.12.3",
     "xml2js": "^0.6.2"
   },
+  "peerDependencies": {
+    "signalk-container": ">=1.0.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dirkwa/signalk-charts-provider-simple"
@@ -53,6 +56,9 @@
   "signalk": {
     "appIcon": "assets/charts_logo.png",
     "displayName": "Charts Provider Simple",
+    "requires": [
+      "signalk-container"
+    ],
     "screenshots": [
       "./docs/screenshots/1_charts-provider-simple.png",
       "./docs/screenshots/2_charts-provider-simple.png",
