@@ -10,6 +10,7 @@ import {
   runContainer
 } from './container-runtime';
 import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
+import { detectContainerRuntime } from './container-environment';
 import { patchS57Mbtiles } from './mbtiles-metadata';
 import type {
   ConversionProgress,
@@ -214,6 +215,53 @@ find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d 
 done
 echo "PROGRESS: Export complete"
 `;
+}
+
+// Pure parsing of the probe container's stdout. Extracted so the parsing
+// edge cases are unit-testable without a real docker daemon. Returns
+// the integer the wc -l line emitted, or -1 when the output was empty
+// or unparseable.
+export function parseProbeOutput(lines: readonly string[]): number {
+  const numeric = lines.map((l) => l.trim()).find((l) => /^\d+$/.test(l));
+  if (numeric === undefined) {
+    return -1;
+  }
+  const n = parseInt(numeric, 10);
+  return Number.isFinite(n) ? n : -1;
+}
+
+// Probe the host container runtime with the same bind we're about to use
+// for the GDAL export. Returns the file count the *host* daemon sees at
+// the bind source. When Signal K runs in a container with docker socket
+// pass-through and no matching host bind, the host daemon mounts an empty
+// directory and this probe returns 0 even though our own readdir sees
+// the .000 files. Caller compares against in-process file count and
+// throws a clear error rather than letting GDAL exit clean with no
+// output (the original "37 ms silent failure" symptom).
+//
+// Returns -1 when the probe itself failed (couldn't run / couldn't parse
+// output) — caller treats that as inconclusive and proceeds normally.
+async function probeHostBindFileCount(encDir: string): Promise<number> {
+  try {
+    const lines: string[] = [];
+    const result = await runContainer({
+      image: GDAL_IMAGE,
+      phase: 'gdal-mount-probe',
+      job: 'mount-probe',
+      cmd: ['sh', '-c', "find /probe -maxdepth 2 -name '*.000' -type f 2>/dev/null | wc -l"],
+      binds: [`${encDir}:/probe:ro`],
+      onStdoutLine: (line) => lines.push(line),
+      onStderrLine: () => {
+        /* swallow — host bind issues land on stdout via wc -l */
+      }
+    });
+    if (result.exitCode !== 0) {
+      return -1;
+    }
+    return parseProbeOutput(lines);
+  } catch {
+    return -1;
+  }
 }
 
 async function exportAllLayersToGeoJSON(
@@ -463,7 +511,8 @@ export const _testInternals = {
   buildExportScript,
   bandClampedMaxzoom,
   buildLayerArgs,
-  surfaceExportErrorsIfEmpty
+  surfaceExportErrorsIfEmpty,
+  parseProbeOutput
 };
 
 async function runTippecanoe(
@@ -637,6 +686,29 @@ export async function processS57Zip(
     }
     debug(`Found ${encFiles.length} ENC files`);
     appendLog(chartNumber, `Found ${encFiles.length} ENC files`);
+
+    // When Signal K runs in a container, the path we hand to the host
+    // container runtime is a container-internal path. If the host doesn't
+    // have an identical bind, the runtime silently mounts an empty
+    // directory and the GDAL container exits cleanly with no output.
+    // Probe the bind once before the real export so we can fail fast
+    // with an actionable error instead.
+    if (detectContainerRuntime() !== null) {
+      const hostVisibleCount = await probeHostBindFileCount(encDir);
+      if (hostVisibleCount === 0) {
+        throw new Error(
+          `Bind-mount mismatch: this container sees ${encFiles.length} .000 file(s) at ${encDir}, ` +
+            `but the host container runtime sees an empty directory at the same path. ` +
+            `Signal K is running in a container — make sure the data dir is bind-mounted at an ` +
+            `identical path on the host (e.g. -v /opt/signalk:/opt/signalk), or run Signal K on ` +
+            `the host. Without that, conversions can't reach the chart files.`
+        );
+      }
+      // hostVisibleCount === -1 means the probe was inconclusive (image
+      // unavailable, runtime hiccup, exec error). Fall through and let
+      // the export try; surfaceExportErrorsIfEmpty will pick up any
+      // resulting empty-output failure.
+    }
 
     statusFn('converting', 'Converting S-57 layers to GeoJSON...');
     setProgress(chartNumber, 'converting', `Exporting ${encFiles.length} ENC files...`);
