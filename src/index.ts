@@ -31,6 +31,7 @@ import {
 } from './utils/s57-converter';
 import { checkContainerRuntime } from './utils/container-runtime';
 import { detectContainerRuntime } from './utils/container-environment';
+import { waitForContainerManager } from './utils/container-manager';
 import { cleanCatalogTitle } from './utils/catalog-title';
 import { setMbtilesDisplayName } from './utils/mbtiles-metadata';
 import {
@@ -112,7 +113,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }),
     uiSchema: () => ({}),
     start: (settings) => {
-      doStartup(settings as PluginConfig);
+      // Signal K does not await start(); run async init in a self-contained
+      // promise that handles its own errors so a setPluginError surfaces
+      // anything we couldn't recover from (e.g. signalk-container missing).
+      doStartup(settings as PluginConfig).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        app.setPluginError(`Startup failed: ${msg}`);
+      });
     },
     stop: () => {
       if (catalogUpdateInterval) {
@@ -148,7 +155,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
   };
 
-  const doStartup = (config: PluginConfig): void => {
+  const doStartup = async (config: PluginConfig): Promise<void> => {
     app.debug(`** loaded config: ${JSON.stringify(config)}`);
     props = { ...config };
 
@@ -228,6 +235,28 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     initS57Converter(app.debug.bind(app));
     initRncConverter(app.debug.bind(app));
 
+    // Discover the signalk-container plugin's manager API.  Chart conversion
+    // (S-57, BSB raster, Pilot, basemaps) goes through it from 2.0 onward;
+    // the App Store's `signalk.requires` declaration in our package.json
+    // ensures users are prompted to install signalk-container, but plugin
+    // load order is not deterministic, so we wait up to 30 s before giving
+    // up.  A missing manager surfaces as setPluginError but does NOT abort
+    // startup — chart *display* (serving tiles for already-converted
+    // .mbtiles) doesn't need the runtime layer and remains functional.
+    const containerManager = await waitForContainerManager({
+      onWaitingStatus: () => app.setPluginStatus('Waiting for signalk-container...')
+    });
+    if (!containerManager) {
+      app.setPluginError(
+        'signalk-container plugin required for chart conversion. Install it from the App Store and restart Signal K. Chart display continues to work without it.'
+      );
+    } else {
+      const runtime = containerManager.getRuntime();
+      app.debug(
+        `signalk-container detected: ${runtime?.runtime ?? 'unknown'} ${runtime?.version ?? ''}`.trim()
+      );
+    }
+
     startCatalogUpdateChecker();
 
     downloadManager.removeAllListeners('job-completed');
@@ -262,7 +291,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       registerAsProvider();
     }
 
-    app.setPluginStatus('Started');
+    // Don't overwrite a pluginError that the manager-discovery block may
+    // have set — that message must stay visible so the user knows chart
+    // conversion will not work until they install signalk-container.
+    if (containerManager) {
+      app.setPluginStatus('Started');
+    }
 
     findCharts(chartPath)
       .then((charts) => {
