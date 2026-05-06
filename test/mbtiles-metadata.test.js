@@ -4,7 +4,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { patchS57Mbtiles, setMbtilesType } = require('../dist/utils/mbtiles-metadata');
+const {
+  patchS57Mbtiles,
+  setMbtilesType,
+  setMbtilesDisplayName
+} = require('../dist/utils/mbtiles-metadata');
 
 // Build a synthetic MBTiles file shaped like tippecanoe's output: empty
 // metadata table with the columns the patcher writes. We don't need actual
@@ -371,6 +375,92 @@ describe('setMbtilesType', () => {
     await setMbtilesType(file, 'tilelayer', { onMessage: (m) => messages.push(m) });
     assert.ok(
       messages.some((m) => m.includes('Set MBTiles type=tilelayer')),
+      'logs the success message'
+    );
+  });
+});
+
+describe('setMbtilesDisplayName', () => {
+  let tmp;
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-displayname-'));
+  });
+
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("replaces tippecanoe's `/output/0.mbtiles` name with the supplied label", async () => {
+    const file = path.join(tmp, 'rename.mbtiles');
+    makeFakeMbtiles(file, { name: '/output/0.mbtiles' });
+    const result = await setMbtilesDisplayName(file, 'Waddenzee 2026 Week 18', undefined);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.name, 'Waddenzee 2026 Week 18');
+    assert.strictEqual(readMetadata(file).name, 'Waddenzee 2026 Week 18');
+  });
+
+  it('also writes description when supplied', async () => {
+    const file = path.join(tmp, 'desc.mbtiles');
+    makeFakeMbtiles(file, {});
+    const result = await setMbtilesDisplayName(
+      file,
+      'Cleaned title',
+      'Full original title with size – 25 MB (1)'
+    );
+    assert.strictEqual(result.ok, true);
+    const md = readMetadata(file);
+    assert.strictEqual(md.name, 'Cleaned title');
+    assert.strictEqual(md.description, 'Full original title with size – 25 MB (1)');
+  });
+
+  it('leaves an existing description in place when description is undefined', async () => {
+    const file = path.join(tmp, 'preserve-desc.mbtiles');
+    makeFakeMbtiles(file, {
+      name: 'old name',
+      description: 'pre-existing description'
+    });
+    const result = await setMbtilesDisplayName(file, 'new name', undefined);
+    assert.strictEqual(result.ok, true);
+    const md = readMetadata(file);
+    assert.strictEqual(md.name, 'new name');
+    assert.strictEqual(md.description, 'pre-existing description');
+  });
+
+  it('does not duplicate the name row on repeated calls', async () => {
+    // Same DELETE+INSERT idempotency we rely on for type. Repeat the call
+    // and check there's still exactly one name row, not two.
+    const file = path.join(tmp, 'dup.mbtiles');
+    makeFakeMbtiles(file, {});
+    await setMbtilesDisplayName(file, 'A', undefined);
+    await setMbtilesDisplayName(file, 'B', undefined);
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(file);
+    try {
+      const rows = db.prepare("SELECT value FROM metadata WHERE name = 'name'").all();
+      assert.strictEqual(rows.length, 1, 'no duplicate name rows');
+      assert.strictEqual(rows[0].value, 'B');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('returns ok=false (not throw) when the file is missing', async () => {
+    const result = await setMbtilesDisplayName(path.join(tmp, 'nope.mbtiles'), 'X', undefined);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.attempts, 0);
+    assert.match(result.message, /does not exist/);
+  });
+
+  it('forwards progress messages via onMessage', async () => {
+    const file = path.join(tmp, 'logged.mbtiles');
+    makeFakeMbtiles(file, {});
+    const messages = [];
+    await setMbtilesDisplayName(file, 'logged-name', undefined, {
+      onMessage: (m) => messages.push(m)
+    });
+    assert.ok(
+      messages.some((m) => m.includes("Set MBTiles name='logged-name'")),
       'logs the success message'
     );
   });

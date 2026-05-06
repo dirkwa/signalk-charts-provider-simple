@@ -322,3 +322,147 @@ export async function setMbtilesType(
     message: lastError || 'MBTiles type tag failed (unknown reason)'
   };
 }
+
+export interface SetDisplayNameResult {
+  ok: boolean;
+  name: string | null;
+  description: string | null;
+  attempts: number;
+  message: string;
+}
+
+/**
+ * Set the `name` row (and optionally the `description` row) in an MBTiles
+ * `metadata` table. Used after the conversion pipeline finishes so the
+ * chart shows up in clients (Freeboard-SK, OpenCPN-Web) under a friendly
+ * label instead of tippecanoe's `/output/0.mbtiles`.
+ *
+ * `description` is only written when supplied — undefined leaves any
+ * existing row in place. Same atomicity guarantees as patchS57Mbtiles
+ * (DELETE + INSERT + verify in a transaction; one retry on transient
+ * lock). Best-effort, never throws.
+ */
+export async function setMbtilesDisplayName(
+  outputPath: string,
+  wantedName: string,
+  wantedDescription: string | undefined,
+  options: PatchOptions = {}
+): Promise<SetDisplayNameResult> {
+  const sleeper = options.sleep ?? sleep;
+  const retryMs = options.retryDelayMs ?? DEFAULT_RETRY_MS;
+  const log = (m: string): void => {
+    try {
+      options.onMessage?.(m);
+    } catch {
+      /* best-effort logging */
+    }
+  };
+
+  if (!fs.existsSync(outputPath)) {
+    const message = `MBTiles file does not exist: ${outputPath}`;
+    log(message);
+    return { ok: false, name: null, description: null, attempts: 0, message };
+  }
+
+  const sqlite = loadSqlite();
+  if (!sqlite.ok) {
+    log(sqlite.reason);
+    return { ok: false, name: null, description: null, attempts: 0, message: sqlite.reason };
+  }
+
+  let lastError = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (attempt === 2) {
+      log(`Retrying MBTiles display-name patch after ${retryMs}ms…`);
+      try {
+        await sleeper(retryMs);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`Sleep before retry threw (continuing): ${msg}`);
+      }
+    }
+    try {
+      const db = new sqlite.DatabaseSync(outputPath);
+      let inTransaction = false;
+      try {
+        db.exec('BEGIN TRANSACTION');
+        inTransaction = true;
+        db.exec("DELETE FROM metadata WHERE name = 'name'");
+        db.prepare("INSERT INTO metadata (name, value) VALUES ('name', ?)").run(wantedName);
+        if (wantedDescription !== undefined) {
+          db.exec("DELETE FROM metadata WHERE name = 'description'");
+          db.prepare("INSERT INTO metadata (name, value) VALUES ('description', ?)").run(
+            wantedDescription
+          );
+        }
+
+        const nameRow = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get();
+        const gotName =
+          typeof nameRow === 'object' && nameRow !== null && 'value' in nameRow
+            ? String(nameRow.value)
+            : null;
+
+        let gotDescription: string | null = null;
+        if (wantedDescription !== undefined) {
+          const descRow = db.prepare("SELECT value FROM metadata WHERE name = 'description'").get();
+          gotDescription =
+            typeof descRow === 'object' && descRow !== null && 'value' in descRow
+              ? String(descRow.value)
+              : null;
+        }
+
+        if (gotName !== wantedName) {
+          db.exec('ROLLBACK');
+          inTransaction = false;
+          lastError = `MBTiles display-name verify failed: name='${gotName}' (wanted '${wantedName}')`;
+          log(lastError);
+          continue;
+        }
+        if (wantedDescription !== undefined && gotDescription !== wantedDescription) {
+          db.exec('ROLLBACK');
+          inTransaction = false;
+          lastError = `MBTiles display-name verify failed: description mismatch`;
+          log(lastError);
+          continue;
+        }
+
+        db.exec('COMMIT');
+        inTransaction = false;
+        const message =
+          attempt === 1
+            ? `Set MBTiles name='${wantedName}'`
+            : `Set MBTiles name='${wantedName}' on retry`;
+        log(message);
+        return {
+          ok: true,
+          name: gotName,
+          description: gotDescription,
+          attempts: attempt,
+          message
+        };
+      } finally {
+        if (inTransaction) {
+          try {
+            db.exec('ROLLBACK');
+          } catch {
+            /* already committed or no transaction */
+          }
+        }
+        db.close();
+      }
+    } catch (err) {
+      lastError = `MBTiles display-name patch failed (attempt ${attempt}/2): ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      log(lastError);
+    }
+  }
+
+  return {
+    ok: false,
+    name: null,
+    description: null,
+    attempts: 2,
+    message: lastError || 'MBTiles display-name patch failed (unknown reason)'
+  };
+}
