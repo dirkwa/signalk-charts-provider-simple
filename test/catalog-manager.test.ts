@@ -2,11 +2,12 @@
  * Tests for the catalog manager module
  */
 
-const { describe, it, before, after } = require('node:test');
-const assert = require('node:assert');
-const fs = require('fs');
-const path = require('path');
-const {
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import {
   initCatalogManager,
   getCatalogRegistry,
   classifyUrl,
@@ -15,10 +16,13 @@ const {
   getInstalledCatalogCharts,
   checkForUpdates,
   getCatalogsWithInstalledCharts,
-  getCachedCatalog,
-  fetchCatalogRegistry: _fetchCatalogRegistry
-} = require('../dist/utils/catalog-manager');
+  getCachedCatalog
+} from '../dist/utils/catalog-manager';
 
+// Test data dir is created on demand; doesn't need to live in the
+// shared fixtures tree.  Compiled tests resolve __dirname to dist-test/,
+// so the data dir ends up at dist-test/fixtures/catalog-test-data —
+// gets cleaned in the test's after hook so no commit-time leakage.
 const TEST_DATA_DIR = path.join(__dirname, 'fixtures', 'catalog-test-data');
 
 describe('CatalogManager', () => {
@@ -55,7 +59,8 @@ describe('CatalogManager', () => {
   describe('classifyUrl()', () => {
     it('should classify .mbtiles as supported', () => {
       const result = classifyUrl(
-        'https://distribution.charts.noaa.gov/ncds/mbtiles/ncds_01a.mbtiles'
+        'https://distribution.charts.noaa.gov/ncds/mbtiles/ncds_01a.mbtiles',
+        ''
       );
       assert.strictEqual(result.supported, true);
       assert.strictEqual(result.format, 'mbtiles');
@@ -83,33 +88,35 @@ describe('CatalogManager', () => {
       const result = classifyUrl('https://example.com/chart.zip', 'general');
       assert.strictEqual(result.supported, false);
 
-      const result2 = classifyUrl('https://example.com/chart.zip');
+      const result2 = classifyUrl('https://example.com/chart.zip', '');
       assert.strictEqual(result2.supported, false);
     });
 
     it('should classify .tar.xz as unsupported', () => {
-      const result = classifyUrl('https://example.com/chart.tar.xz');
+      const result = classifyUrl('https://example.com/chart.tar.xz', '');
       assert.strictEqual(result.supported, false);
       assert.strictEqual(result.format, 'tar');
     });
 
     it('should classify .tar.gz as unsupported', () => {
-      const result = classifyUrl('https://example.com/chart.tar.gz');
+      const result = classifyUrl('https://example.com/chart.tar.gz', '');
       assert.strictEqual(result.supported, false);
       assert.strictEqual(result.format, 'tar');
     });
 
     it('should handle null/empty url', () => {
-      const result = classifyUrl(null);
+      // Defensive runtime check; the function signature is `string`
+      // but parsed-JSON callers can still hand it null upstream.
+      const result = classifyUrl(null as unknown as string, '');
       assert.strictEqual(result.supported, false);
       assert.strictEqual(result.format, 'unknown');
 
-      const result2 = classifyUrl('');
+      const result2 = classifyUrl('', '');
       assert.strictEqual(result2.supported, false);
     });
 
     it('should classify unknown URLs as unsupported', () => {
-      const result = classifyUrl('https://example.com/some/path');
+      const result = classifyUrl('https://example.com/some/path', '');
       assert.strictEqual(result.supported, false);
       assert.strictEqual(result.format, 'unknown');
     });
@@ -169,7 +176,7 @@ describe('CatalogManager', () => {
     it('should persist installs to disk', () => {
       const installsPath = path.join(TEST_DATA_DIR, 'catalog-installs.json');
       assert.ok(fs.existsSync(installsPath));
-      const data = JSON.parse(fs.readFileSync(installsPath, 'utf-8'));
+      const data = JSON.parse(fs.readFileSync(installsPath, 'utf-8')) as Record<string, unknown>;
       assert.ok(data['ncds_01a']);
     });
 
@@ -241,9 +248,9 @@ describe('CatalogManager', () => {
 
       const updates = checkForUpdates();
       assert.strictEqual(updates.length, 1);
-      assert.strictEqual(updates[0].chartNumber, 'test_chart');
-      assert.strictEqual(updates[0].installedDate, '2023-08-02T00:08:00Z');
-      assert.strictEqual(updates[0].availableDate, '2024-06-01T00:00:00Z');
+      assert.strictEqual(updates[0]!.chartNumber, 'test_chart');
+      assert.strictEqual(updates[0]!.installedDate, '2023-08-02T00:08:00Z');
+      assert.strictEqual(updates[0]!.availableDate, '2024-06-01T00:00:00Z');
 
       // Clean up
       removeInstall('test_chart');
@@ -308,7 +315,7 @@ describe('CatalogManager', () => {
       const result = getCachedCatalog('OLD_TEST_Catalog.xml');
       assert.ok(result);
       assert.strictEqual(result.charts.length, 1);
-      assert.strictEqual(result.charts[0].number, 'old1');
+      assert.strictEqual(result.charts[0]!.number, 'old1');
     });
   });
 });

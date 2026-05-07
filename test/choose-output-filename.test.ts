@@ -1,13 +1,13 @@
-const { describe, it } = require('node:test');
-const assert = require('node:assert');
-const path = require('node:path');
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import path from 'node:path';
 
-const { chooseOutputFilename } = require('../dist/utils/s57-converter');
+import { chooseOutputFilename } from '../dist/utils/s57-converter';
 
 // Build a `fileExists` stub that says "yes" for the listed paths and "no"
 // for everything else.  Lets us drive the collision logic without
 // touching disk.
-function existsIn(paths) {
+function existsIn(paths: readonly string[]): (p: string) => boolean {
   const set = new Set(paths);
   return (p) => set.has(p);
 }

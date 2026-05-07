@@ -1,17 +1,17 @@
-const { describe, it, before, after, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-const {
+import {
   writeChartPathMarker,
   detectContainerHints,
   MARKER_FILENAME
-} = require('../dist/utils/path-marker');
+} from '../dist/utils/path-marker';
 
 describe('writeChartPathMarker', () => {
-  let tmp;
+  let tmp: string;
 
   before(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-marker-'));
@@ -32,7 +32,7 @@ describe('writeChartPathMarker', () => {
       path.join(dir, MARKER_FILENAME),
       'returned path matches the documented filename inside chartPath'
     );
-    assert.ok(fs.existsSync(written), 'marker file should be present on disk');
+    assert.ok(written && fs.existsSync(written), 'marker file should be present on disk');
   });
 
   it('persists the documented schema (version, chartPath, writtenAt, containerHints)', () => {
@@ -40,7 +40,13 @@ describe('writeChartPathMarker', () => {
     const written = writeChartPathMarker(dir, '1.11.2', {
       now: new Date('2026-04-29T05:32:14.123Z')
     });
-    const parsed = JSON.parse(fs.readFileSync(written, 'utf8'));
+    assert.ok(written, 'expected marker write to succeed');
+    const parsed = JSON.parse(fs.readFileSync(written, 'utf8')) as {
+      chartPath: string;
+      version: string;
+      writtenAt: string;
+      containerHints: { homeEnv: string | null; isLikelyContainer: boolean; uid: number | null };
+    };
 
     // Locked shape so future tooling consumers can rely on it.
     assert.deepStrictEqual(Object.keys(parsed).sort(), [
@@ -71,21 +77,22 @@ describe('writeChartPathMarker', () => {
 
     // Same target file, second write overwrites the first.
     assert.strictEqual(w1, w2);
-    const parsed = JSON.parse(fs.readFileSync(w2, 'utf8'));
+    assert.ok(w2);
+    const parsed = JSON.parse(fs.readFileSync(w2, 'utf8')) as { writtenAt: string };
     assert.strictEqual(parsed.writtenAt, t2.toISOString());
   });
 
   it('returns null and reports via onError when the path is not writable', () => {
     // Point at a directory that doesn't exist — fs.writeFileSync will throw.
     const dir = path.join(tmp, 'definitely-not-here', 'nested');
-    const errors = [];
+    const errors: string[] = [];
     const result = writeChartPathMarker(dir, '1.11.2', {
       onError: (msg) => errors.push(msg)
     });
 
     assert.strictEqual(result, null);
     assert.strictEqual(errors.length, 1);
-    assert.match(errors[0], /Failed to write chart path marker/);
+    assert.match(errors[0]!, /Failed to write chart path marker/);
   });
 
   it('does not throw when onError is not provided (best-effort)', () => {
@@ -121,7 +128,10 @@ describe('detectContainerHints', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-marker-stable-'));
     try {
       const written = writeChartPathMarker(dir, '1.0.0');
-      const parsed = JSON.parse(fs.readFileSync(written, 'utf8'));
+      assert.ok(written);
+      const parsed = JSON.parse(fs.readFileSync(written, 'utf8')) as {
+        containerHints: { homeEnv: string | null; isLikelyContainer: boolean; uid: number | null };
+      };
       assert.deepStrictEqual(Object.keys(parsed.containerHints).sort(), [
         'homeEnv',
         'isLikelyContainer',
@@ -142,7 +152,3 @@ describe('detectContainerHints', () => {
     assert.strictEqual(detectContainerHints().isLikelyContainer, expected);
   });
 });
-
-// Silence unused-import warning when the `beforeEach`/`afterEach` hooks aren't used.
-void beforeEach;
-void afterEach;

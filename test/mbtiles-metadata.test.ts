@@ -1,20 +1,25 @@
-const { describe, it, before, after } = require('node:test');
-const assert = require('node:assert');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-const {
+import {
   patchS57Mbtiles,
   setMbtilesType,
   setMbtilesDisplayName
-} = require('../dist/utils/mbtiles-metadata');
+} from '../dist/utils/mbtiles-metadata';
+
+interface MetadataRow {
+  name: string;
+  value: string;
+}
 
 // Build a synthetic MBTiles file shaped like tippecanoe's output: empty
 // metadata table with the columns the patcher writes. We don't need actual
 // tiles — only the metadata table is exercised.
-function makeFakeMbtiles(filePath, initial = {}) {
-  const { DatabaseSync } = require('node:sqlite');
+function makeFakeMbtiles(filePath: string, initial: Record<string, string> = {}): void {
   const db = new DatabaseSync(filePath);
   try {
     db.exec(`
@@ -29,11 +34,10 @@ function makeFakeMbtiles(filePath, initial = {}) {
   }
 }
 
-function readMetadata(filePath) {
-  const { DatabaseSync } = require('node:sqlite');
+function readMetadata(filePath: string): Record<string, string> {
   const db = new DatabaseSync(filePath);
   try {
-    const rows = db.prepare('SELECT name, value FROM metadata').all();
+    const rows = db.prepare('SELECT name, value FROM metadata').all() as unknown as MetadataRow[];
     return Object.fromEntries(rows.map((r) => [r.name, r.value]));
   } finally {
     db.close();
@@ -41,7 +45,7 @@ function readMetadata(filePath) {
 }
 
 describe('patchS57Mbtiles', () => {
-  let tmp;
+  let tmp: string;
 
   before(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-mbtiles-meta-'));
@@ -59,7 +63,7 @@ describe('patchS57Mbtiles', () => {
       format: 'pbf'
     });
 
-    const messages = [];
+    const messages: string[] = [];
     const result = await patchS57Mbtiles(file, 'AQ_ENCs', {
       onMessage: (m) => messages.push(m)
     });
@@ -102,27 +106,28 @@ describe('patchS57Mbtiles', () => {
 
   it('returns ok=false with attempts=0 when the target file does not exist', async () => {
     const file = path.join(tmp, 'definitely-not-here.mbtiles');
-    const messages = [];
+    const messages: string[] = [];
     const result = await patchS57Mbtiles(file, 'X', {
       onMessage: (m) => messages.push(m)
     });
 
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.attempts, 0);
-    assert.match(result.message, /does not exist/);
+    assert.match(result.message ?? '', /does not exist/);
     assert.strictEqual(messages.length, 1);
-    assert.match(messages[0], /does not exist/);
+    assert.match(messages[0]!, /does not exist/);
   });
 
   it('does not throw on patch failure (best-effort contract)', async () => {
     // Point at a directory rather than a file — sqlite open will fail.
     const dir = fs.mkdtempSync(path.join(tmp, 'as-dir-'));
-    let result;
+    let result: Awaited<ReturnType<typeof patchS57Mbtiles>> | undefined;
     await assert.doesNotReject(async () => {
-      result = await patchS57Mbtiles(dir, 'X', { sleep: async () => {} });
+      result = await patchS57Mbtiles(dir, 'X', { sleep: () => Promise.resolve() });
     });
+    assert.ok(result);
     assert.strictEqual(result.ok, false);
-    assert.match(result.message, /metadata patch/i);
+    assert.match(result.message ?? '', /metadata patch/i);
   });
 
   it('retries once on transient failure and logs the retry', async () => {
@@ -134,13 +139,14 @@ describe('patchS57Mbtiles', () => {
     // Start with a corrupt file so attempt 1 throws on open.
     fs.writeFileSync(file, 'not a sqlite database');
 
-    const messages = [];
+    const messages: string[] = [];
     const result = await patchS57Mbtiles(file, 'TR', {
       retryDelayMs: 5,
-      sleep: async () => {
+      sleep: () => {
         // Replace corrupt content with a real sqlite mbtiles before retry.
         fs.unlinkSync(file);
         makeFakeMbtiles(file, { type: 'overlay' });
+        return Promise.resolve();
       },
       onMessage: (m) => messages.push(m)
     });
@@ -157,12 +163,12 @@ describe('patchS57Mbtiles', () => {
     );
   });
 
-  it('reports verify-failure when the post-write read disagrees', async () => {
-    // We can't easily make the verify mismatch in real code, but the helper
-    // does support the failure path. Smoke test the normal path returned
-    // values match the wanted values — the verify path is structurally
-    // exercised on every successful run already (assertions in the helper
-    // explicitly compare gotType/gotName).
+  it('post-write read-back values match the written values (verify path smoke test)', async () => {
+    // The patcher's verify path runs on every successful invocation,
+    // comparing gotType/gotName against the wanted values. A real verify
+    // mismatch can't be triggered from outside the helper, so this just
+    // pins that on a normal run the read-back values agree with what we
+    // asked the patcher to write.
     const file = path.join(tmp, 'verify.mbtiles');
     makeFakeMbtiles(file, { type: 'overlay' });
     const result = await patchS57Mbtiles(file, 'V');
@@ -187,15 +193,18 @@ describe('patchS57Mbtiles', () => {
 
     await patchS57Mbtiles(file, 'BUNDLE');
 
-    const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(file);
     try {
-      const typeRows = db.prepare("SELECT value FROM metadata WHERE name = 'type'").all();
-      const nameRows = db.prepare("SELECT value FROM metadata WHERE name = 'name'").all();
+      const typeRows = db
+        .prepare("SELECT value FROM metadata WHERE name = 'type'")
+        .all() as unknown as { value: string }[];
+      const nameRows = db
+        .prepare("SELECT value FROM metadata WHERE name = 'name'")
+        .all() as unknown as { value: string }[];
       assert.strictEqual(typeRows.length, 1, 'exactly one `type` row');
-      assert.strictEqual(typeRows[0].value, 'S-57');
+      assert.strictEqual(typeRows[0]!.value, 'S-57');
       assert.strictEqual(nameRows.length, 1, 'exactly one `name` row');
-      assert.strictEqual(nameRows[0].value, 'S-57 BUNDLE');
+      assert.strictEqual(nameRows[0]!.value, 'S-57 BUNDLE');
     } finally {
       db.close();
     }
@@ -207,7 +216,7 @@ describe('patchS57Mbtiles', () => {
     const file = path.join(tmp, 'log-throws.mbtiles');
     makeFakeMbtiles(file, { type: 'overlay' });
 
-    let result;
+    let result: Awaited<ReturnType<typeof patchS57Mbtiles>> | undefined;
     await assert.doesNotReject(async () => {
       result = await patchS57Mbtiles(file, 'BOOM', {
         onMessage: () => {
@@ -215,6 +224,7 @@ describe('patchS57Mbtiles', () => {
         }
       });
     });
+    assert.ok(result);
     assert.strictEqual(result.ok, true, 'work still succeeds despite logger blowing up');
     assert.strictEqual(readMetadata(file).type, 'S-57');
   });
@@ -225,22 +235,23 @@ describe('patchS57Mbtiles', () => {
     const file = path.join(tmp, 'sleep-throws.mbtiles');
     fs.writeFileSync(file, 'not a sqlite database'); // attempt 1 fails on open
 
-    const messages = [];
-    let result;
+    const messages: string[] = [];
+    let result: Awaited<ReturnType<typeof patchS57Mbtiles>> | undefined;
     await assert.doesNotReject(async () => {
       result = await patchS57Mbtiles(file, 'X', {
         retryDelayMs: 1,
-        sleep: async () => {
+        sleep: () => {
           // Replace corrupt content with a real mbtiles AND throw — the
           // patcher should swallow the throw, log it, and still attempt the
           // retry which now succeeds.
           fs.unlinkSync(file);
           makeFakeMbtiles(file, { type: 'overlay' });
-          throw new Error('sleep boom');
+          return Promise.reject(new Error('sleep boom'));
         },
         onMessage: (m) => messages.push(m)
       });
     });
+    assert.ok(result);
     assert.strictEqual(result.ok, true, 'retry still happens after sleep throws');
     assert.ok(
       messages.some((m) => m.includes('Sleep before retry threw')),
@@ -248,19 +259,18 @@ describe('patchS57Mbtiles', () => {
     );
   });
 
-  it('rolls back if verify fails — does not leave the file in a worse state', async () => {
+  it('preserves unrelated metadata keys after a successful patch (pins transaction behaviour)', async () => {
     // Earlier draft ran DELETE outside a transaction, so a verify failure
     // could leave the file with NO type/name rows at all (worse than the
-    // pre-patch tippecanoe defaults). With the BEGIN/COMMIT wrapper a
-    // verify failure rolls back and the original rows are preserved.
+    // pre-patch tippecanoe defaults). The BEGIN/COMMIT wrapper now in
+    // place rolls back on verify failure.
     //
-    // We can't easily fail the verify in the production code path, so we
-    // simulate by injecting via an onMessage that mutates the file mid-flight
-    // — actually no, simpler: just confirm that a real successful run leaves
-    // the file with exactly the new values (no DELETE-without-INSERT
-    // intermediate state visible from another connection). The
-    // implementation now wraps everything in BEGIN/COMMIT; this test pins
-    // the documented behaviour.
+    // Verify failure can't be triggered from outside the helper, so we
+    // pin the next-best property: a normal successful run leaves the
+    // file with exactly the new values for the managed keys AND
+    // preserves any unrelated keys that were already there. This both
+    // confirms the transaction commits cleanly on success and guards
+    // against the helper accidentally widening its DELETE scope.
     const file = path.join(tmp, 'rollback-shape.mbtiles');
     makeFakeMbtiles(file, {
       type: 'overlay',
@@ -282,7 +292,6 @@ describe('patchS57Mbtiles', () => {
     // tippecanoe table without a UNIQUE constraint, the resulting file has
     // duplicate `type` rows. Re-running the patcher must collapse them.
     const file = path.join(tmp, 'self-heal.mbtiles');
-    const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(file);
     try {
       db.exec(`
@@ -305,12 +314,16 @@ describe('patchS57Mbtiles', () => {
 
     const db2 = new DatabaseSync(file);
     try {
-      const typeRows = db2.prepare("SELECT value FROM metadata WHERE name = 'type'").all();
-      const nameRows = db2.prepare("SELECT value FROM metadata WHERE name = 'name'").all();
+      const typeRows = db2
+        .prepare("SELECT value FROM metadata WHERE name = 'type'")
+        .all() as unknown as { value: string }[];
+      const nameRows = db2
+        .prepare("SELECT value FROM metadata WHERE name = 'name'")
+        .all() as unknown as { value: string }[];
       assert.strictEqual(typeRows.length, 1, 'duplicate `type` rows collapsed');
-      assert.strictEqual(typeRows[0].value, 'S-57');
+      assert.strictEqual(typeRows[0]!.value, 'S-57');
       assert.strictEqual(nameRows.length, 1, 'duplicate `name` rows collapsed');
-      assert.strictEqual(nameRows[0].value, 'S-57 NEW');
+      assert.strictEqual(nameRows[0]!.value, 'S-57 NEW');
     } finally {
       db2.close();
     }
@@ -318,7 +331,7 @@ describe('patchS57Mbtiles', () => {
 });
 
 describe('setMbtilesType', () => {
-  let tmp;
+  let tmp: string;
 
   before(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-mbtiles-settype-'));
@@ -350,12 +363,13 @@ describe('setMbtilesType', () => {
     const result = await setMbtilesType(file, 'tilelayer');
     assert.strictEqual(result.ok, true);
 
-    const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(file);
     try {
-      const rows = db.prepare("SELECT value FROM metadata WHERE name = 'type'").all();
+      const rows = db
+        .prepare("SELECT value FROM metadata WHERE name = 'type'")
+        .all() as unknown as { value: string }[];
       assert.strictEqual(rows.length, 1, 'no duplicate type rows');
-      assert.strictEqual(rows[0].value, 'tilelayer');
+      assert.strictEqual(rows[0]!.value, 'tilelayer');
     } finally {
       db.close();
     }
@@ -365,13 +379,13 @@ describe('setMbtilesType', () => {
     const result = await setMbtilesType(path.join(tmp, 'nope.mbtiles'), 'tilelayer');
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.attempts, 0);
-    assert.match(result.message, /does not exist/);
+    assert.match(result.message ?? '', /does not exist/);
   });
 
   it('forwards progress messages via onMessage', async () => {
     const file = path.join(tmp, 'logged.mbtiles');
     makeFakeMbtiles(file, {});
-    const messages = [];
+    const messages: string[] = [];
     await setMbtilesType(file, 'tilelayer', { onMessage: (m) => messages.push(m) });
     assert.ok(
       messages.some((m) => m.includes('Set MBTiles type=tilelayer')),
@@ -381,7 +395,7 @@ describe('setMbtilesType', () => {
 });
 
 describe('setMbtilesDisplayName', () => {
-  let tmp;
+  let tmp: string;
 
   before(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-displayname-'));
@@ -434,12 +448,13 @@ describe('setMbtilesDisplayName', () => {
     makeFakeMbtiles(file, {});
     await setMbtilesDisplayName(file, 'A', undefined);
     await setMbtilesDisplayName(file, 'B', undefined);
-    const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(file);
     try {
-      const rows = db.prepare("SELECT value FROM metadata WHERE name = 'name'").all();
+      const rows = db
+        .prepare("SELECT value FROM metadata WHERE name = 'name'")
+        .all() as unknown as { value: string }[];
       assert.strictEqual(rows.length, 1, 'no duplicate name rows');
-      assert.strictEqual(rows[0].value, 'B');
+      assert.strictEqual(rows[0]!.value, 'B');
     } finally {
       db.close();
     }
@@ -449,13 +464,13 @@ describe('setMbtilesDisplayName', () => {
     const result = await setMbtilesDisplayName(path.join(tmp, 'nope.mbtiles'), 'X', undefined);
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.attempts, 0);
-    assert.match(result.message, /does not exist/);
+    assert.match(result.message ?? '', /does not exist/);
   });
 
   it('forwards progress messages via onMessage', async () => {
     const file = path.join(tmp, 'logged.mbtiles');
     makeFakeMbtiles(file, {});
-    const messages = [];
+    const messages: string[] = [];
     await setMbtilesDisplayName(file, 'logged-name', undefined, {
       onMessage: (m) => messages.push(m)
     });

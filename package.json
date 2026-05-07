@@ -13,13 +13,14 @@
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
-    "pretest": "npm run build && npm run test:fixtures",
-    "test": "node --test --test-force-exit test/**/*.test.js",
+    "build:tests": "tsc -p tsconfig.test.json",
+    "pretest": "npm run build && npm run build:tests && npm run test:fixtures",
+    "test": "node --test --test-force-exit dist-test/**/*.test.js",
     "test:fixtures": "node test/fixtures/create-test-mbtiles.js",
     "lint": "eslint src test",
     "lint:fix": "eslint src test --fix",
-    "format": "prettier --write 'src/**/*.ts' 'test/**/*.js' && eslint src test --fix",
-    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.js' && eslint src test",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' && eslint src test --fix",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' && eslint src test",
     "prepublishOnly": "npm run build"
   },
   "license": "MIT",

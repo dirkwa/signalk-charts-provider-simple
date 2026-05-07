@@ -2,24 +2,28 @@
  * Tests for the MBTiles reader module
  */
 
-const { describe, it, before, after } = require('node:test');
-const assert = require('node:assert');
-const path = require('path');
-const { MBTilesReader, open } = require('../dist/utils/mbtiles-reader');
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert';
+import path from 'node:path';
 
-const TEST_MBTILES = path.join(__dirname, 'fixtures', 'test-chart.mbtiles');
+import { MBTilesReader, open } from '../dist/utils/mbtiles-reader';
+
+// Tests compile to `dist-test/`, so `__dirname` points there at runtime.
+// Fixtures live in `test/fixtures/`, one level up and over.
+const TEST_MBTILES = path.join(__dirname, '..', 'test', 'fixtures', 'test-chart.mbtiles');
 
 describe('MBTilesReader', () => {
-  let reader;
+  // Definitely-assigned in `before()`; the `after()` guards anyway in
+  // case `before()` throws (e.g., fixture not yet built) so a teardown
+  // crash doesn't mask the original failure.
+  let reader!: MBTilesReader;
 
   before(() => {
     reader = new MBTilesReader(TEST_MBTILES);
   });
 
   after(() => {
-    if (reader) {
-      reader.close();
-    }
+    reader?.close();
   });
 
   describe('getInfo()', () => {
@@ -76,6 +80,7 @@ describe('MBTilesReader', () => {
 
     it('should return correct content-type header for PNG', () => {
       const result = reader.getTile(0, 0, 0);
+      assert.ok(result);
       assert.strictEqual(result.headers['Content-Type'], 'image/png');
     });
 
@@ -91,15 +96,16 @@ describe('MBTilesReader', () => {
       // XYZ y=1 maps to TMS row=0 (at zoom 1: 2^1 - 1 - 1 = 0)
 
       // Both should exist since we inserted tiles at TMS (1,0,0), (1,0,1), (1,1,0), (1,1,1)
-      const tile_y0 = reader.getTile(1, 0, 0); // XYZ y=0 -> TMS row=1
-      const tile_y1 = reader.getTile(1, 0, 1); // XYZ y=1 -> TMS row=0
+      const tileY0 = reader.getTile(1, 0, 0); // XYZ y=0 -> TMS row=1
+      const tileY1 = reader.getTile(1, 0, 1); // XYZ y=1 -> TMS row=0
 
-      assert.ok(tile_y0, 'Tile at XYZ (1,0,0) should exist');
-      assert.ok(tile_y1, 'Tile at XYZ (1,0,1) should exist');
+      assert.ok(tileY0, 'Tile at XYZ (1,0,0) should exist');
+      assert.ok(tileY1, 'Tile at XYZ (1,0,1) should exist');
     });
 
     it('should return valid PNG data', () => {
       const result = reader.getTile(0, 0, 0);
+      assert.ok(result);
       // Check PNG magic bytes
       assert.strictEqual(result.data[0], 0x89);
       assert.strictEqual(result.data[1], 0x50); // P
