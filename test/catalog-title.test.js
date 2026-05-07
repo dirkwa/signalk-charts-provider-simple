@@ -1,7 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
 
-const { cleanCatalogTitle } = require('../dist/utils/catalog-title');
+const { cleanCatalogTitle, sanitizeChartFilename } = require('../dist/utils/catalog-title');
 
 describe('cleanCatalogTitle', () => {
   it('strips trailing size + index from a hyphen-separated NL IENC title', () => {
@@ -79,5 +79,64 @@ describe('cleanCatalogTitle', () => {
       cleanCatalogTitle('Chart (special edition) 2026'),
       'Chart (special edition) 2026'
     );
+  });
+});
+
+describe('sanitizeChartFilename', () => {
+  it('replaces spaces with underscores', () => {
+    assert.strictEqual(
+      sanitizeChartFilename('Waddenzee met Diepte 2026 - Week 18'),
+      'Waddenzee_met_Diepte_2026_-_Week_18'
+    );
+  });
+
+  it('collapses runs of whitespace', () => {
+    assert.strictEqual(sanitizeChartFilename('Foo   Bar\tBaz'), 'Foo_Bar_Baz');
+  });
+
+  it('replaces path separators with dashes', () => {
+    assert.strictEqual(sanitizeChartFilename('NL/Inland\\Foo'), 'NL-Inland-Foo');
+  });
+
+  it('replaces dots with dashes (no extension confusion mid-name)', () => {
+    assert.strictEqual(
+      sanitizeChartFilename('Port of Rotterdam 2026.04.21'),
+      'Port_of_Rotterdam_2026-04-21'
+    );
+  });
+
+  it('drops control characters', () => {
+    assert.strictEqual(sanitizeChartFilename('Foo\x00Bar\x1fBaz'), 'FooBarBaz');
+  });
+
+  it('preserves common safe punctuation (parens, dashes, brackets)', () => {
+    assert.strictEqual(
+      sanitizeChartFilename('Nederland (excl Zeeland, Waddenzee) 2026'),
+      'Nederland_(excl_Zeeland,_Waddenzee)_2026'
+    );
+  });
+
+  it('trims leading and trailing punctuation', () => {
+    assert.strictEqual(sanitizeChartFilename('  -.--__Foo Bar__--.-  '), 'Foo_Bar');
+  });
+
+  it('caps length at 100 chars and trims trailing punctuation after the cut', () => {
+    const long = 'A'.repeat(120);
+    const got = sanitizeChartFilename(long);
+    assert.strictEqual(got.length, 100);
+    assert.ok(got.endsWith('A'));
+  });
+
+  it('returns empty string for empty / whitespace / non-string', () => {
+    assert.strictEqual(sanitizeChartFilename(''), '');
+    assert.strictEqual(sanitizeChartFilename('   '), '');
+    assert.strictEqual(sanitizeChartFilename(undefined), '');
+    assert.strictEqual(sanitizeChartFilename(null), '');
+    assert.strictEqual(sanitizeChartFilename(42), '');
+  });
+
+  it('returns empty string when only unsafe characters remain after sanitization', () => {
+    // Just whitespace and control chars → nothing left after collapse + trim.
+    assert.strictEqual(sanitizeChartFilename('\x00 \x01\x02\x03'), '');
   });
 });

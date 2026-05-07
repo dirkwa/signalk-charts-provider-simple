@@ -11,6 +11,7 @@ import {
 import { getContainerManager } from './container-manager';
 import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
 import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata';
+import { sanitizeChartFilename } from './catalog-title';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -115,6 +116,64 @@ function setProgress(chartNumber: string, status: string, message: string): void
     conversionProgress[chartNumber].status = status;
     conversionProgress[chartNumber].message = message;
   }
+}
+
+/**
+ * Decide the on-disk `.mbtiles` filename for a freshly converted chart.
+ *
+ * Catalogs (NL_IENC, etc.) hand us sequential chart numbers like "1",
+ * "2", "3" — meaningless when the user later sees `1.mbtiles` in their
+ * chart directory.  When the catalog also supplied a human-friendly
+ * `displayName` (cleanCatalogTitle output, e.g. "Waddenzee met Diepte
+ * 2026 - Week 18"), use that as the filename basis instead.
+ *
+ * Falls back to `<chartNumber>.mbtiles` when no displayName is provided
+ * (manual upload path) or sanitizes to nothing.  Suffixes a numeric
+ * counter on collisions so re-running a conversion against the same
+ * catalog entry doesn't overwrite an existing chart silently.
+ */
+export function chooseOutputFilename(opts: {
+  chartsDir: string;
+  displayName: string | undefined;
+  chartNumber: string;
+  fileExists?: (path: string) => boolean;
+}): string {
+  const exists = opts.fileExists ?? fs.existsSync;
+  // Sanitize both inputs up-front: the chartNumber feeds both the base
+  // (when displayName is absent) and the collision suffix.  A malformed
+  // catalog with a chartNumber like "../../evil" would otherwise turn
+  // the candidate into a path-traversal escape and write the .mbtiles
+  // somewhere outside chartsDir.  Catalog values are typically integers
+  // and pass sanitization unchanged, so this is a safety net rather
+  // than a behaviour change.
+  const sanitized = opts.displayName ? sanitizeChartFilename(opts.displayName) : '';
+  const safeChartNumber = sanitizeChartFilename(opts.chartNumber);
+  const base = sanitized || safeChartNumber || 'enc-chart';
+
+  const candidate = `${base}.mbtiles`;
+  if (!exists(path.join(opts.chartsDir, candidate))) {
+    return candidate;
+  }
+
+  // Collision: try chartNumber-suffixed first (informative), then a counter.
+  // Catalog flow re-runs against the same chartNumber are the common case,
+  // so users immediately see "this is from chart entry 1, take 2" via
+  // the suffix instead of getting `Waddenzee_met_Diepte_2026-Week_18-2.mbtiles`.
+  if (sanitized && safeChartNumber && safeChartNumber !== sanitized) {
+    const numbered = `${base}-${safeChartNumber}.mbtiles`;
+    if (!exists(path.join(opts.chartsDir, numbered))) {
+      return numbered;
+    }
+  }
+  for (let i = 2; i < 1000; i += 1) {
+    const counted = `${base}-${i}.mbtiles`;
+    if (!exists(path.join(opts.chartsDir, counted))) {
+      return counted;
+    }
+  }
+  // Pathological: 1000 collisions.  Fall through to a timestamped name
+  // so we never silently overwrite.
+  return `${base}-${Date.now()}.mbtiles`;
 }
 
 interface ExportScriptOptions {
@@ -749,7 +808,11 @@ export async function processS57Zip(
     }
     const effectiveOptions: S57ConversionOptions = { ...options, maxzoom: clamp.effective };
 
-    const outputName = `${chartNumber || 'enc-chart'}.mbtiles`;
+    const outputName = chooseOutputFilename({
+      chartsDir,
+      displayName: options.displayName,
+      chartNumber
+    });
     const outputPath = path.join(chartsDir, outputName);
     await runTippecanoe(geojsonDir, outputPath, chartNumber, effectiveOptions);
 
