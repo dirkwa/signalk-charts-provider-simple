@@ -123,7 +123,7 @@ document.addEventListener('charts-changed', () => {
     // folders, and the download-folder <select> in expanded catalog
     // rows is rendered from catalogFolders. Without this call the
     // dropdown stayed stale until the next download or tab re-init.
-    await Promise.all([loadCatalogRegistry(), loadFolders()]);
+    const [registryOk] = await Promise.all([loadCatalogRegistry(), loadFolders()]);
     await Promise.all(
       wereExpanded.map(async (catalogFile) => {
         try {
@@ -139,7 +139,12 @@ document.addEventListener('charts-changed', () => {
         }
       })
     );
-    renderCatalogList();
+    // Don't overwrite the .catalog-error state loadCatalogRegistry
+    // wrote into #catalogList on failure; rendering would replace it
+    // with stale cards from whatever catalogRegistry held before.
+    if (registryOk) {
+      renderCatalogList();
+    }
   })();
 });
 
@@ -282,7 +287,13 @@ function wireCatalogClickHandlers(): void {
   }
 }
 
-async function loadCatalogRegistry(): Promise<void> {
+/**
+ * Returns true on a successful registry refresh, false on network/HTTP
+ * failure. Callers that chain follow-up renders need to skip them on
+ * failure so the .catalog-error message this function writes into
+ * #catalogList isn't overwritten with stale cards.
+ */
+async function loadCatalogRegistry(): Promise<boolean> {
   try {
     const response = await fetch(`${CATALOG_API_BASE}/catalog-registry`);
     if (!response.ok) {
@@ -301,12 +312,14 @@ async function loadCatalogRegistry(): Promise<void> {
     } else {
       renderCatalogList();
     }
+    return true;
   } catch (error) {
     console.error('Failed to load catalog registry:', error);
     const listEl = document.getElementById('catalogList');
     if (listEl) {
       listEl.innerHTML = `<div class="catalog-error">Failed to load catalog registry. You may be offline.</div>`;
     }
+    return false;
   }
 }
 
