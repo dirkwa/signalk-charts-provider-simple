@@ -1189,24 +1189,51 @@ export async function processShpBasemap(
   }
 
   try {
-    const runtime = await checkContainerRuntime();
-    if (!runtime.available) {
-      throw new Error('No Docker- or Podman-compatible socket reachable.');
+    const manager = getContainerManager();
+    if (!manager) {
+      throw new Error(
+        'signalk-container plugin is required for chart conversion. ' +
+          'Install it from the App Store and restart Signal K.'
+      );
     }
-    if (!(await runtimeImageExists(GDAL_IMAGE))) {
-      setProgress(chartNumber, 'pulling', 'Pulling GDAL image...');
-      await ensureImage(GDAL_IMAGE);
-    }
+    setProgress(chartNumber, 'pulling', 'Checking GDAL image...');
+    await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
 
     setProgress(chartNumber, 'extracting', 'Extracting shapefiles...');
     appendLog(chartNumber, 'Extracting .tar.xz archive...');
 
-    const tarResult = await runContainer({
+    // Resolve archive (input) and tmpDir (output) up-front; the rasterize/
+    // translate/overview steps reuse the latter as /work.  chartsDir gets
+    // resolved separately later because it's not needed by the tar step.
+    const archiveDir = path.dirname(tarPath);
+    const tarResolved = await resolveJobPaths(
+      { '/archive': archiveDir, '/output': tmpDir },
+      (cp, ap) =>
+        appendLog(
+          chartNumber,
+          `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+        )
+    );
+    if (!tarResolved) {
+      throw new Error(
+        'SHP basemap conversion paths are not reachable from the container runtime. ' +
+          'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+          'container bind/volume to cover it.'
+      );
+    }
+    const archivePrefix = tarResolved['/archive'].subPath
+      ? `/archive/${tarResolved['/archive'].subPath}`
+      : '/archive';
+    const tarOutputPrefix = tarResolved['/output'].subPath
+      ? `/output/${tarResolved['/output'].subPath}`
+      : '/output';
+
+    const tarResult = await runContainerJob({
       image: GDAL_IMAGE,
-      phase: 'tar-extract',
-      job: chartNumber,
-      cmd: ['tar', '-xf', `/archive/${path.basename(tarPath)}`, '-C', '/output'],
-      binds: [`${path.dirname(tarPath)}:/archive:ro`, `${tmpDir}:/output`],
+      label: `tar-extract-${chartNumber}`,
+      command: ['tar', '-xf', `${archivePrefix}/${path.basename(tarPath)}`, '-C', tarOutputPrefix],
+      inputs: { '/archive': tarResolved['/archive'].source },
+      outputs: { '/output': tarResolved['/output'].source },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
@@ -1256,12 +1283,38 @@ export async function processShpBasemap(
     const shpDir = path.dirname(landShp);
     const shpName = path.basename(landShp);
 
+    // Resolve the three remaining paths: shpDir (extracted shapefile parent),
+    // tmpDir (scratch /work for world.tif), chartsDir (final output).
+    const rasterResolved = await resolveJobPaths(
+      { '/input': shpDir, '/work': tmpDir, '/output': chartsDir },
+      (cp, ap) =>
+        appendLog(
+          chartNumber,
+          `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+        )
+    );
+    if (!rasterResolved) {
+      throw new Error(
+        'SHP basemap conversion paths are not reachable from the container runtime. ' +
+          'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+          'container bind/volume to cover it.'
+      );
+    }
+    const inputPrefix = rasterResolved['/input'].subPath
+      ? `/input/${rasterResolved['/input'].subPath}`
+      : '/input';
+    const workPrefix = rasterResolved['/work'].subPath
+      ? `/work/${rasterResolved['/work'].subPath}`
+      : '/work';
+    const outputPrefix = rasterResolved['/output'].subPath
+      ? `/output/${rasterResolved['/output'].subPath}`
+      : '/output';
+
     appendLog(chartNumber, 'Rasterizing...');
-    const rasterizeResult = await runContainer({
+    const rasterizeResult = await runContainerJob({
       image: GDAL_IMAGE,
-      phase: 'gdal-rasterize',
-      job: chartNumber,
-      cmd: [
+      label: `gdal-rasterize-${chartNumber}`,
+      command: [
         'gdal_rasterize',
         '-burn',
         '240',
@@ -1291,10 +1344,11 @@ export async function processShpBasemap(
         'GTiff',
         '-co',
         'COMPRESS=LZW',
-        `/input/${shpName}`,
-        '/work/world.tif'
+        `${inputPrefix}/${shpName}`,
+        `${workPrefix}/world.tif`
       ],
-      binds: [`${shpDir}:/input:ro`, `${tmpDir}:/work`],
+      inputs: { '/input': rasterResolved['/input'].source },
+      outputs: { '/work': rasterResolved['/work'].source },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
@@ -1303,20 +1357,20 @@ export async function processShpBasemap(
     }
 
     appendLog(chartNumber, 'Creating MBTiles...');
-    const translateResult = await runContainer({
+    const translateResult = await runContainerJob({
       image: GDAL_IMAGE,
-      phase: 'gdal-translate',
-      job: chartNumber,
-      cmd: [
+      label: `gdal-translate-${chartNumber}`,
+      command: [
         'gdal_translate',
         '-of',
         'MBTiles',
         '-co',
         'TILE_FORMAT=PNG',
-        '/work/world.tif',
-        `/output/${outputName}`
+        `${workPrefix}/world.tif`,
+        `${outputPrefix}/${outputName}`
       ],
-      binds: [`${tmpDir}:/work`, `${chartsDir}:/output`],
+      inputs: { '/work': rasterResolved['/work'].source },
+      outputs: { '/output': rasterResolved['/output'].source },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
@@ -1325,15 +1379,14 @@ export async function processShpBasemap(
     }
 
     appendLog(chartNumber, 'Adding zoom levels...');
-    const overviewResult = await runContainer({
+    const overviewResult = await runContainerJob({
       image: GDAL_IMAGE,
-      phase: 'gdaladdo',
-      job: chartNumber,
-      cmd: [
+      label: `gdaladdo-${chartNumber}`,
+      command: [
         'gdaladdo',
         '-r',
         'average',
-        `/output/${outputName}`,
+        `${outputPrefix}/${outputName}`,
         '2',
         '4',
         '8',
@@ -1343,7 +1396,7 @@ export async function processShpBasemap(
         '128',
         '256'
       ],
-      binds: [`${chartsDir}:/output`],
+      outputs: { '/output': rasterResolved['/output'].source },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
