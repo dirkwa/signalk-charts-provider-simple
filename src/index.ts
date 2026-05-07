@@ -45,7 +45,7 @@ import { getCpuBudget, setCpuBudget } from './utils/concurrency';
 import { writeChartPathMarker } from './utils/path-marker';
 import { parsePluginConfig } from './utils/plugin-config-schema';
 import { Type } from '@sinclair/typebox';
-import { parseBody } from './utils/rest-validation';
+import { parseBody, parseShape } from './utils/rest-validation';
 import { isWithinBase, arePairWithinBase } from './utils/path-safety';
 
 // Read at module load so the marker file always reflects the running build.
@@ -425,6 +425,33 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     name: Type.String({ minLength: 1 })
   });
 
+  // Multipart/header field schemas. Same domain rules as the JSON-body
+  // counterparts: zoom bounds, https?:// URL floor, non-empty chart
+  // names. parseShape (via Value.Convert) handles the busboy-string-only
+  // wire format so `'9'` validates as the integer 9.
+  const DownloadChartLockerFields = Type.Object({
+    url: Type.String({ minLength: 1, pattern: '^https?://' }),
+    targetFolder: Type.String({ minLength: 1 }),
+    chartName: Type.String({ minLength: 1 })
+  });
+
+  const UploadFields = Type.Object({
+    targetFolder: Type.Optional(Type.String())
+  });
+
+  const UploadChunkHeaders = Type.Object({
+    'x-upload-filename': Type.String({ minLength: 1, pattern: '\\.mbtiles$' }),
+    'x-chunk-index': Type.Integer({ minimum: 0 }),
+    'x-total-chunks': Type.Integer({ minimum: 1 }),
+    'x-target-folder': Type.Optional(Type.String())
+  });
+
+  const ConvertUploadFields = Type.Object({
+    type: Type.Union([Type.Literal('s57'), Type.Literal('rnc')]),
+    minzoom: Type.Optional(ZoomLevel),
+    maxzoom: Type.Optional(ZoomLevel)
+  });
+
   const registerRoutes = (router: IRouter): void => {
     app.debug('** Registering API paths via registerWithRouter **');
 
@@ -455,29 +482,29 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const Busboy = require('busboy') as typeof import('busboy');
       const bb = Busboy({ headers: req.headers });
 
-      let downloadUrl = '';
-      let targetFolder = '';
-      let chartName = '';
-
+      const fields: Record<string, string> = {};
       bb.on('field', (name: string, value: string) => {
-        if (name === 'url') {
-          downloadUrl = value;
-        }
-        if (name === 'targetFolder') {
-          targetFolder = value;
-        }
-        if (name === 'chartName') {
-          chartName = value;
-        }
+        fields[name] = value;
       });
 
       bb.on('finish', () => {
+        const parsed = parseShape(DownloadChartLockerFields, fields, res);
+        if (!parsed) {
+          return;
+        }
+        const { url: downloadUrl, targetFolder, chartName } = parsed;
+
         try {
           console.log(`Creating download job for: ${downloadUrl}`);
           console.log(`Target folder: ${targetFolder}`);
 
-          const targetDir =
-            targetFolder === '/' ? props.chartPath : path.join(props.chartPath, targetFolder);
+          const basePath = props.chartPath || defaultChartsPath;
+          const targetDir = targetFolder === '/' ? basePath : path.join(basePath, targetFolder);
+
+          if (!isWithinBase(targetDir, basePath)) {
+            res.status(403).json({ success: false, error: 'Access denied: Invalid target folder' });
+            return;
+          }
 
           if (!fs.existsSync(targetDir)) {
             fs.mkdirSync(targetDir, { recursive: true });
@@ -1114,12 +1141,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const basePath = props.chartPath || defaultChartsPath;
         const uploadedFiles: string[] = [];
         const writePromises: Promise<void>[] = [];
-        let targetFolder = '';
+        const fields: Record<string, string> = {};
+        let traversalRejected = false;
 
         bb.on('field', (fieldname: string, value: string) => {
-          if (fieldname === 'targetFolder') {
-            targetFolder = value;
-          }
+          fields[fieldname] = value;
         });
 
         bb.on(
@@ -1132,12 +1158,22 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               return;
             }
 
+            const targetFolder = fields.targetFolder ?? '';
             let uploadPath = basePath;
             if (targetFolder && targetFolder !== '/') {
               uploadPath = path.join(basePath, targetFolder);
             }
 
             const filepath = path.join(uploadPath, filename);
+
+            // Reject path-traversal in either the targetFolder or the
+            // upload's own filename (`filename: '../etc/passwd'`).
+            if (!isWithinBase(filepath, basePath)) {
+              traversalRejected = true;
+              (file as NodeJS.ReadableStream & { resume(): void }).resume();
+              return;
+            }
+
             app.debug(`Uploading chart file: ${filename} to ${filepath}`);
 
             const writeStream = fs.createWriteStream(filepath);
@@ -1162,6 +1198,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         bb.on('finish', () => {
           void (async () => {
+            // Validate fields here (after busboy has handed every one to
+            // us). The 'file' handler already used `fields.targetFolder`
+            // to decide upload paths; doing the schema check on `finish`
+            // also lets us include 'targetFolder' rules in the validator.
+            const parsed = parseShape(UploadFields, fields, res);
+            if (!parsed) {
+              return;
+            }
+            const { targetFolder = '' } = parsed;
+
+            if (traversalRejected) {
+              res.status(403).json({ success: false, error: 'Access denied: Invalid upload path' });
+              return;
+            }
+
             try {
               await Promise.all(writePromises);
 
@@ -1199,20 +1250,24 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // stays well within Node's server.requestTimeout (default 300s in Node 18+).
     router.put('/upload-chunk', (req: Request, res: Response) => {
       try {
-        const filename = req.headers['x-upload-filename'] as string;
-        const chunkIndex = parseInt(req.headers['x-chunk-index'] as string, 10);
-        const totalChunks = parseInt(req.headers['x-total-chunks'] as string, 10);
-        const targetFolder = (req.headers['x-target-folder'] as string) || '/';
-
-        if (
-          !filename ||
-          !filename.endsWith('.mbtiles') ||
-          isNaN(chunkIndex) ||
-          isNaN(totalChunks)
-        ) {
-          res.status(400).json({ error: 'Missing or invalid chunk upload headers' });
+        // Headers are pulled from req.headers as a plain object; node
+        // already lowercases the names, so picking the four we care
+        // about by-name is safe. parseShape coerces the numeric ones
+        // (`x-chunk-index`, `x-total-chunks`) from string to integer.
+        const headerFields = {
+          'x-upload-filename': req.headers['x-upload-filename'],
+          'x-chunk-index': req.headers['x-chunk-index'],
+          'x-total-chunks': req.headers['x-total-chunks'],
+          'x-target-folder': req.headers['x-target-folder']
+        };
+        const parsed = parseShape(UploadChunkHeaders, headerFields, res);
+        if (!parsed) {
           return;
         }
+        const filename = parsed['x-upload-filename'];
+        const chunkIndex = parsed['x-chunk-index'];
+        const totalChunks = parsed['x-total-chunks'];
+        const targetFolder = parsed['x-target-folder'] ?? '/';
 
         const basePath = props.chartPath || defaultChartsPath;
         let uploadPath = basePath;
@@ -1222,6 +1277,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         const partialPath = path.join(uploadPath, filename + '.partial');
         const finalPath = path.join(uploadPath, filename);
+
+        // Reject path-traversal via either header. Catches `'../foo.mbtiles'`
+        // as a filename and `'../etc'` as a target-folder, both of which
+        // would otherwise resolve outside the chart root.
+        if (!arePairWithinBase(partialPath, finalPath, basePath)) {
+          res.status(403).json({ error: 'Access denied: Invalid upload path' });
+          return;
+        }
 
         const writeStream = fs.createWriteStream(partialPath, {
           flags: chunkIndex === 0 ? 'w' : 'a'
@@ -1379,26 +1442,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const Busboy = require('busboy') as typeof import('busboy');
       const bb = Busboy({ headers: req.headers, limits: { fileSize: 500 * 1024 * 1024 } });
       const chartPath = props.chartPath || defaultChartsPath;
-      let convType = '';
-      let minzoom = 9;
-      let maxzoom = 16;
 
       const tmpDir = path.join(app.getDataDirPath(), `convert-upload-${Date.now()}`);
       fs.mkdirSync(tmpDir, { recursive: true });
 
       let uploadedFile: string | null = null;
       let uploadedFileName = '';
+      const fields: Record<string, string> = {};
 
       bb.on('field', (name: string, value: string) => {
-        if (name === 'type') {
-          convType = value;
-        }
-        if (name === 'minzoom') {
-          minzoom = parseInt(value) || 9;
-        }
-        if (name === 'maxzoom') {
-          maxzoom = parseInt(value) || 16;
-        }
+        fields[name] = value;
       });
 
       bb.on(
@@ -1423,9 +1476,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
-        if (!convType || !['s57', 'rnc'].includes(convType)) {
+        const parsed = parseShape(ConvertUploadFields, fields, res);
+        if (!parsed) {
           cleanupDir(tmpDir);
-          res.status(400).json({ success: false, error: 'Invalid conversion type' });
+          return;
+        }
+        const convType = parsed.type;
+        const minzoom = parsed.minzoom ?? 9;
+        const maxzoom = parsed.maxzoom ?? 16;
+
+        if (minzoom > maxzoom) {
+          cleanupDir(tmpDir);
+          res.status(400).json({ success: false, error: 'minzoom must be ≤ maxzoom' });
           return;
         }
 
