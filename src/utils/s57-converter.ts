@@ -554,12 +554,19 @@ function withTippecanoeMinzoom(feature: unknown, minzoom: number): unknown {
 // the consolidator (see `consolidateGeoJSONByLayer`), and tippecanoe honors
 // `feature.tippecanoe.minzoom` natively. This function is just the
 // container-relative path stitching.
-function buildLayerArgs(layers: readonly ConsolidatedLayer[]): string[] {
+//
+// `inputPrefix` defaults to `/input` for backwards compat with existing
+// tests; it changes to `/input/<subPath>` when SignalK is on a named
+// volume that covers a parent dir of the merged-GeoJSON scratch.
+function buildLayerArgs(
+  layers: readonly ConsolidatedLayer[],
+  inputPrefix: string = '/input'
+): string[] {
   const args: string[] = [];
   for (const { file } of layers) {
     const rel = path.basename(file);
     const layer = path.basename(rel, '.geojson');
-    args.push('-L', `${layer}:/input/${rel}`);
+    args.push('-L', `${layer}:${inputPrefix}/${rel}`);
   }
   return args;
 }
@@ -591,7 +598,33 @@ async function runTippecanoe(
     throw new Error('No valid GeoJSON layers to process');
   }
   const mergedDir = path.dirname(mergedLayers[0].file);
-  const layerArgs = buildLayerArgs(mergedLayers);
+  const outputDirHost = path.dirname(outputMbtiles);
+
+  // Translate the absolute host paths into (source, subPath) pairs
+  // that signalk-container can mount, regardless of how SignalK is
+  // deployed.  See exportAllLayersToGeoJSON for the same pattern.
+  const resolved = await resolveJobPaths(
+    { '/input': mergedDir, '/output': outputDirHost },
+    (cp, ap) =>
+      appendLog(
+        chartNumber,
+        `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+      )
+  );
+  if (!resolved) {
+    throw new Error(
+      'Tippecanoe input/output paths are not reachable from the container runtime. ' +
+        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+        'container bind/volume to cover it.'
+    );
+  }
+  const inputPrefix = resolved['/input'].subPath
+    ? `/input/${resolved['/input'].subPath}`
+    : '/input';
+  const outputPrefix = resolved['/output'].subPath
+    ? `/output/${resolved['/output'].subPath}`
+    : '/output';
+  const layerArgs = buildLayerArgs(mergedLayers, inputPrefix);
 
   // Log per-band layer breakdown so users can see why low-zoom features differ
   // by band. Counts plus a sample of layer names — full lists would be noisy
@@ -632,14 +665,13 @@ async function runTippecanoe(
     }
   };
 
-  const result = await runContainer({
+  const result = await runContainerJob({
     image: TIPPECANOE_IMAGE,
-    phase: 'tippecanoe',
-    job: chartNumber,
-    cmd: [
+    label: `tippecanoe-${chartNumber}`,
+    command: [
       'tippecanoe',
       '-o',
-      `/output/${path.basename(outputMbtiles)}`,
+      `${outputPrefix}/${path.basename(outputMbtiles)}`,
       '-z',
       String(maxzoom),
       '-Z',
@@ -661,8 +693,9 @@ async function runTippecanoe(
       '--force',
       ...layerArgs
     ],
-    binds: [`${mergedDir}:/input:ro`, `${path.dirname(outputMbtiles)}:/output`],
-    env: [`TIPPECANOE_MAX_THREADS=${tippecanoeThreads}`],
+    inputs: { '/input': resolved['/input'].source },
+    outputs: { '/output': resolved['/output'].source },
+    env: { TIPPECANOE_MAX_THREADS: String(tippecanoeThreads) },
     onStdoutLine: handleTippecanoeLine,
     onStderrLine: handleTippecanoeLine
   });
