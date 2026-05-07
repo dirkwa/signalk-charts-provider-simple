@@ -474,7 +474,12 @@
     display: block !important;
 }
 
-.progress-bar::after {
+/* Scoped to upload progress only. The earlier rule fired on every
+ * `.progress-bar` element on the page — the same class is rendered by
+ * download-simple, the catalog "downloading" pill, and chart cards —
+ * so an idle row would still show a shimmer crossing it left-to-right
+ * with nothing actually in flight. */
+.progress-bar-container .progress-bar::after {
     content: '';
     position: absolute;
     top: 0;
