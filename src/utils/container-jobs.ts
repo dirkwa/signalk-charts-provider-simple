@@ -19,7 +19,7 @@
  */
 
 import { getContainerManager } from './container-manager';
-import type { ContainerManagerApi } from './container-manager';
+import type { ContainerManagerApi, ContainerResourceLimits } from './container-manager';
 
 function requireManager(): ContainerManagerApi {
   const manager = getContainerManager();
@@ -57,6 +57,15 @@ export interface JobRunOptions {
   label?: string;
   onStdoutLine?: (line: string) => void;
   onStderrLine?: (line: string) => void;
+  /**
+   * Cgroup limits applied to the helper container — `--cpus`,
+   * `--memory`, etc.  Without this, jobs run with no kernel-enforced
+   * ceiling and CPU-bound workloads (tippecanoe, GDAL parallel
+   * exports) can saturate every core regardless of any in-process
+   * thread cap (e.g. TIPPECANOE_MAX_THREADS).  Honored by
+   * signalk-container >= 1.2.0; older versions silently ignore.
+   */
+  resources?: ContainerResourceLimits;
 }
 
 export interface JobRunResult {
@@ -122,7 +131,8 @@ export async function runJob(opts: JobRunOptions): Promise<JobRunResult> {
     env: opts.env,
     label: opts.label,
     onStdoutLine: opts.onStdoutLine,
-    onStderrLine: opts.onStderrLine
+    onStderrLine: opts.onStderrLine,
+    resources: opts.resources
   });
   return {
     exitCode: result.exitCode ?? 1,

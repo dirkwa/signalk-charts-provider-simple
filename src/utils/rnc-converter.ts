@@ -138,6 +138,8 @@ export async function convertKapToMbtiles(
     ],
     inputs: { '/input': resolved['/input'].source },
     outputs: { '/output': resolved['/output'].source },
+    // Single-process GDAL stage; one core is enough.
+    resources: { cpus: 1 },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -174,6 +176,8 @@ async function addOverviews(mbtilesFile: string, chartNumber: string): Promise<v
     label: `gdaladdo-${chartNumber || name}`,
     command: ['gdaladdo', '-r', 'average', `${dataPrefix}/${name}`, '2', '4', '8', '16'],
     outputs: { '/data': resolved['/data'].source },
+    // Single-process; one core is enough.
+    resources: { cpus: 1 },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -309,6 +313,8 @@ export async function processRncZip(
         ],
         inputs: { '/input': resolved['/input'].source },
         outputs: { '/output': resolved['/output'].source },
+        // Single-process GDAL stage; one core is enough.
+        resources: { cpus: 1 },
         onStdoutLine: (line) => appendLog(chartNumber, line),
         onStderrLine: (line) => appendLog(chartNumber, line)
       });
@@ -322,6 +328,8 @@ export async function processRncZip(
         label: `gdaladdo-${baseName}`,
         command: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
         outputs: { '/output': resolved['/output'].source },
+        // Single-process; one core is enough.
+        resources: { cpus: 1 },
         onStdoutLine: (line) => appendLog(chartNumber, line),
         onStderrLine: (line) => appendLog(chartNumber, line)
       });
@@ -439,6 +447,8 @@ export async function processPilotTar(
       command: ['tar', '-xf', `${archivePrefix}/${path.basename(tarPath)}`, '-C', tarOutputPrefix],
       inputs: { '/archive': tarResolved['/archive'].source },
       outputs: { '/output': tarResolved['/output'].source },
+      // Tar is single-process; one core is enough.
+      resources: { cpus: 1 },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
@@ -527,6 +537,8 @@ export async function processPilotTar(
         ],
         inputs: { '/input': convResolved['/input'].source },
         outputs: { '/output': convResolved['/output'].source },
+        // Single-process GDAL stage; one core is enough.
+        resources: { cpus: 1 },
         onStdoutLine: (line) => appendLog(chartNumber, line),
         onStderrLine: (line) => appendLog(chartNumber, line)
       });
@@ -540,6 +552,8 @@ export async function processPilotTar(
         label: `gdaladdo-${baseName}`,
         command: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
         outputs: { '/output': convResolved['/output'].source },
+        // Single-process; one core is enough.
+        resources: { cpus: 1 },
         onStdoutLine: (line) => appendLog(chartNumber, line),
         onStderrLine: (line) => appendLog(chartNumber, line)
       });

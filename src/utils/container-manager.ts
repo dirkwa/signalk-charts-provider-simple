@@ -25,6 +25,20 @@
  * in a backwards-incompatible way our peerDependencies range will
  * surface the mismatch.
  */
+/**
+ * Subset of signalk-container's ContainerResourceLimits we use.  The
+ * full type has more fields (cpuShares, cpusetCpus, memoryReservation,
+ * etc.); we only declare what chart-provider actually sets so the
+ * shim stays minimal.  Available in signalk-container >= 1.2.0 on
+ * ContainerJobConfig.
+ */
+export interface ContainerResourceLimits {
+  /** Hard CPU cap (CFS quota).  e.g. 1.5 = 1.5 cores. */
+  cpus?: number | null;
+  /** Hard memory cap, e.g. "512m", "2g". */
+  memory?: string | null;
+}
+
 export interface ContainerJobConfig {
   image: string;
   command: string[];
@@ -35,6 +49,13 @@ export interface ContainerJobConfig {
   onProgress?: (msg: string) => void;
   onStdoutLine?: (line: string) => void;
   onStderrLine?: (line: string) => void;
+  /**
+   * Cgroup limits applied to the helper container.  Available in
+   * signalk-container >= 1.2.0.  Without this, jobs run with no
+   * kernel-enforced ceiling and can saturate every core regardless
+   * of any in-process thread cap.
+   */
+  resources?: ContainerResourceLimits;
   label?: string;
 }
 

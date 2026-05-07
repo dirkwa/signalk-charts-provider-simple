@@ -277,6 +277,12 @@ async function exportAllLayersToGeoJSON(
     command: ['sh', '-c', script],
     inputs: { '/input': resolved['/input'].source },
     outputs: { '/output': resolved['/output'].source },
+    // Cap the helper at the budgeted parallelism — without this the
+    // xargs -P fan-out can saturate every core regardless of the
+    // budget setting.  gdalExportParallelism mirrors what we already
+    // pass to xargs, so this just enforces the same ceiling at the
+    // kernel cgroup level.
+    resources: { cpus: parallelism },
     onStdoutLine: (line) => {
       appendLog(chartNumber, line);
       const match = line.match(/PROGRESS: Processing (\S+)/);
@@ -632,6 +638,11 @@ async function runTippecanoe(
     inputs: { '/input': resolved['/input'].source },
     outputs: { '/output': resolved['/output'].source },
     env: { TIPPECANOE_MAX_THREADS: String(tippecanoeThreads) },
+    // Cap the helper at the budgeted thread count.  Without this the
+    // env var only limits tippecanoe's worker threads — the kernel
+    // scheduler still gives each worker its own core, so on a multi-
+    // core box "half" budget feels indistinguishable from "all".
+    resources: { cpus: tippecanoeThreads },
     onStdoutLine: handleTippecanoeLine,
     onStderrLine: handleTippecanoeLine
   });
@@ -989,6 +1000,8 @@ export async function processGshhg(
     ],
     inputs: { '/input': resolved['/input'].source },
     outputs: { '/work': resolved['/work'].source },
+    // gdal_rasterize is single-process; one core is enough.
+    resources: { cpus: 1 },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -1012,6 +1025,8 @@ export async function processGshhg(
     ],
     inputs: { '/work': resolved['/work'].source },
     outputs: { '/output': resolved['/output'].source },
+    // Single-process GDAL stage; one core is enough.
+    resources: { cpus: 1 },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -1039,6 +1054,8 @@ export async function processGshhg(
       '256'
     ],
     outputs: { '/output': resolved['/output'].source },
+    // Single-process; one core is enough.
+    resources: { cpus: 1 },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -1137,6 +1154,8 @@ export async function processShpBasemap(
       command: ['tar', '-xf', `${archivePrefix}/${path.basename(tarPath)}`, '-C', tarOutputPrefix],
       inputs: { '/archive': tarResolved['/archive'].source },
       outputs: { '/output': tarResolved['/output'].source },
+      // Tar is single-process; one core is enough.
+      resources: { cpus: 1 },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
@@ -1252,6 +1271,8 @@ export async function processShpBasemap(
       ],
       inputs: { '/input': rasterResolved['/input'].source },
       outputs: { '/work': rasterResolved['/work'].source },
+      // gdal_rasterize is single-process; one core is enough.
+      resources: { cpus: 1 },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
@@ -1274,6 +1295,8 @@ export async function processShpBasemap(
       ],
       inputs: { '/work': rasterResolved['/work'].source },
       outputs: { '/output': rasterResolved['/output'].source },
+      // Single-process GDAL stage; one core is enough.
+      resources: { cpus: 1 },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
@@ -1300,6 +1323,8 @@ export async function processShpBasemap(
         '256'
       ],
       outputs: { '/output': rasterResolved['/output'].source },
+      // Single-process; one core is enough.
+      resources: { cpus: 1 },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
