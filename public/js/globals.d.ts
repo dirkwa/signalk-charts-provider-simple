@@ -43,12 +43,14 @@ declare global {
     handleConvertFile?(input: HTMLInputElement, type: string): Promise<void>;
     showConvertLog?(chartNumber: string): void;
 
-    // download-simple.js (still .js until PR-B)
+    // download-simple.ts
+    startDownload(): Promise<void>;
+    cancelDownload(jobId: string): Promise<void>;
+
+    // manage-charts-enhanced.js (still .js until PR-D)
     triggerUpload?(): void;
     triggerUploadEmpty?(): void;
     handleFileUpload?(event: Event): Promise<void>;
-
-    // manage-charts-enhanced.js (still .js until PR-D)
     setViewMode?(mode: string): void;
     selectFolder?(folder: string): void;
     showCreateFolderDialog?(): void;

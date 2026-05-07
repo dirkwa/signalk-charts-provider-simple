@@ -13,6 +13,7 @@ dist-e2e/
 # still source. Add to this list as each file is converted in a follow-up.
 public/js/tabs.js
 public/js/emoji-utils.js
+public/js/download-simple.js
 
 # Playwright outputs
 playwright-report/
