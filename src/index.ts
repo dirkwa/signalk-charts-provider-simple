@@ -397,6 +397,33 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     maxzoom: Type.Optional(ZoomLevel)
   });
 
+  const FolderCreateBody = Type.Object({
+    folderPath: Type.String({ minLength: 1 })
+  });
+
+  const ChartToggleBody = Type.Object({
+    enabled: Type.Boolean()
+  });
+
+  const MoveChartBody = Type.Object({
+    chartPath: Type.String({ minLength: 1 }),
+    targetFolder: Type.String({ minLength: 1 })
+  });
+
+  // The schema enforces the .mbtiles suffix; the post-parse guard then
+  // rejects path-injection sequences (`..`, `/`, `\`) inside the stem.
+  // TypeBox regex can't express that as cleanly as a plain check, and
+  // mixing two patterns in one regex is the kind of subtle thing that
+  // gets misread later.
+  const RenameChartBody = Type.Object({
+    chartPath: Type.String({ minLength: 1 }),
+    newName: Type.String({ minLength: 1, pattern: '\\.mbtiles$' })
+  });
+
+  const ChartMetadataBody = Type.Object({
+    name: Type.String({ minLength: 1 })
+  });
+
   const registerRoutes = (router: IRouter): void => {
     app.debug('** Registering API paths via registerWithRouter **');
 
@@ -686,15 +713,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/folders', async (req: Request, res: Response) => {
-      const { folderPath } = req.body as { folderPath?: string };
-
-      app.debug(`Create folder request - folderPath: ${folderPath}`);
-
-      if (!folderPath || typeof folderPath !== 'string') {
-        app.debug('Create folder failed: folder path is required');
-        res.status(400).send('Folder path is required');
+      const body = parseBody(FolderCreateBody, req, res);
+      if (!body) {
         return;
       }
+      const { folderPath } = body;
+
+      app.debug(`Create folder request - folderPath: ${folderPath}`);
 
       try {
         const basePath = props.chartPath || defaultChartsPath;
@@ -765,12 +790,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     router.post('/charts/:chartPath/toggle', async (req: Request, res: Response) => {
       const chartPathParam = decodeURIComponent((req.params as Record<string, string>).chartPath);
-      const { enabled } = req.body as { enabled?: boolean };
-
-      if (typeof enabled !== 'boolean') {
-        res.status(400).send('enabled parameter must be a boolean');
+      const body = parseBody(ChartToggleBody, req, res);
+      if (!body) {
         return;
       }
+      const { enabled } = body;
 
       try {
         setChartEnabled(chartPathParam, enabled);
@@ -805,17 +829,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/move-chart', async (req: Request, res: Response) => {
-      const { chartPath: chartPathBody, targetFolder } = req.body as {
-        chartPath?: string;
-        targetFolder?: string;
-      };
-
-      app.debug(`Move chart request: chartPath=${chartPathBody}, targetFolder=${targetFolder}`);
-
-      if (!chartPathBody || !targetFolder) {
-        res.status(400).send('chartPath and targetFolder are required');
+      const body = parseBody(MoveChartBody, req, res);
+      if (!body) {
         return;
       }
+      const { chartPath: chartPathBody, targetFolder } = body;
+
+      app.debug(`Move chart request: chartPath=${chartPathBody}, targetFolder=${targetFolder}`);
 
       try {
         const basePath = props.chartPath || defaultChartsPath;
@@ -880,23 +900,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/rename-chart', async (req: Request, res: Response) => {
-      const { chartPath: chartPathBody, newName } = req.body as {
-        chartPath?: string;
-        newName?: string;
-      };
+      const body = parseBody(RenameChartBody, req, res);
+      if (!body) {
+        return;
+      }
+      const { chartPath: chartPathBody, newName } = body;
 
       app.debug(`Rename chart request: chartPath=${chartPathBody}, newName=${newName}`);
 
-      if (!chartPathBody || !newName) {
-        res.status(400).send('chartPath and newName are required');
-        return;
-      }
-
-      if (!newName.endsWith('.mbtiles')) {
-        res.status(400).send('Chart name must end with .mbtiles');
-        return;
-      }
-
+      // Schema enforced the .mbtiles suffix; this guard rejects path
+      // injection inside the stem (`../foo.mbtiles`, `a/b.mbtiles`, …).
       const nameWithoutExt = newName.replace(/\.mbtiles$/, '');
       if (
         nameWithoutExt.includes('..') ||
@@ -989,12 +1002,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     router.put('/chart-metadata/:chartPath', async (req: Request, res: Response) => {
       const chartPathParam = decodeURIComponent((req.params as Record<string, string>).chartPath);
-      const { name } = req.body as { name?: string };
-
-      if (!name || typeof name !== 'string') {
-        res.status(400).send('Chart name is required');
+      const body = parseBody(ChartMetadataBody, req, res);
+      if (!body) {
         return;
       }
+      const { name } = body;
 
       try {
         const basePath = props.chartPath || defaultChartsPath;
