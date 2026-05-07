@@ -61,7 +61,12 @@ export const CatalogInstallSchema = Type.Object({
   catalogFile: Type.String(),
   zipfile_datetime_iso8601: Type.String(),
   installedAt: Type.String(),
-  zipfile_location: Type.String()
+  zipfile_location: Type.String(),
+  // Relative path of the produced .mbtiles under chartPath. Optional
+  // because the install is recorded before the conversion finishes;
+  // the converter calls setInstallFilename() once the file is on disk
+  // so the delete flow can find this record by filename.
+  installedFilename: Type.Optional(Type.String())
 });
 
 export const CatalogInstallsMapSchema = Type.Record(Type.String(), CatalogInstallSchema);
