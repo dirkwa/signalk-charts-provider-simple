@@ -9,7 +9,12 @@ import {
   pullImage as runtimePullImage,
   runContainer
 } from './container-runtime';
-import { resolveJobPaths, runJob as runContainerJob } from './container-jobs';
+import {
+  ensureImage as ensureContainerImage,
+  resolveJobPaths,
+  runJob as runContainerJob
+} from './container-jobs';
+import { getContainerManager } from './container-manager';
 import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
 import { detectContainerRuntime } from './container-environment';
 import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata';
@@ -931,14 +936,15 @@ export async function processGshhg(
     throw new Error(`Invalid GSHHG resolution: ${resolution}`);
   }
 
-  const runtime = await checkContainerRuntime();
-  if (!runtime.available) {
-    throw new Error('No Docker- or Podman-compatible socket reachable.');
+  const manager = getContainerManager();
+  if (!manager) {
+    throw new Error(
+      'signalk-container plugin is required for chart conversion. ' +
+        'Install it from the App Store and restart Signal K.'
+    );
   }
-  if (!(await runtimeImageExists(GDAL_IMAGE))) {
-    setProgress(chartNumber, 'pulling', 'Pulling GDAL image...');
-    await ensureImage(GDAL_IMAGE);
-  }
+  setProgress(chartNumber, 'pulling', 'Checking GDAL image...');
+  await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
 
   setProgress(chartNumber, 'converting', 'Downloading GSHHG shapefiles from NOAA...');
   appendLog(
@@ -1012,12 +1018,40 @@ export async function processGshhg(
   const outputName = `gshhg-basemap-${resolution}.mbtiles`;
   const outputPath = path.join(chartsDir, outputName);
 
+  // Resolve all three host paths up front.  shpDir and tmpDir live under
+  // the temp tree (typically inside the data dir or a sibling); chartsDir
+  // is the user-configured chart output.  All three need to be reachable
+  // from the host runtime, otherwise we surface an actionable error rather
+  // than letting the helper container fail with a confusing "no input"
+  // exit.
+  const resolved = await resolveJobPaths(
+    { '/input': shpDir, '/work': tmpDir, '/output': chartsDir },
+    (cp, ap) =>
+      appendLog(
+        chartNumber,
+        `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+      )
+  );
+  if (!resolved) {
+    throw new Error(
+      'GSHHG conversion paths are not reachable from the container runtime. ' +
+        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+        'container bind/volume to cover it.'
+    );
+  }
+  const inputPrefix = resolved['/input'].subPath
+    ? `/input/${resolved['/input'].subPath}`
+    : '/input';
+  const workPrefix = resolved['/work'].subPath ? `/work/${resolved['/work'].subPath}` : '/work';
+  const outputPrefix = resolved['/output'].subPath
+    ? `/output/${resolved['/output'].subPath}`
+    : '/output';
+
   appendLog(chartNumber, 'Rasterizing shapefile...');
-  const rasterizeResult = await runContainer({
+  const rasterizeResult = await runContainerJob({
     image: GDAL_IMAGE,
-    phase: 'gdal-rasterize',
-    job: chartNumber,
-    cmd: [
+    label: `gdal-rasterize-${chartNumber}`,
+    command: [
       'gdal_rasterize',
       '-burn',
       '240',
@@ -1047,10 +1081,11 @@ export async function processGshhg(
       'GTiff',
       '-co',
       'COMPRESS=LZW',
-      `/input/GSHHS_shp/${resolution}/GSHHS_${resolution}_L1.shp`,
-      '/work/world.tif'
+      `${inputPrefix}/GSHHS_shp/${resolution}/GSHHS_${resolution}_L1.shp`,
+      `${workPrefix}/world.tif`
     ],
-    binds: [`${shpDir}:/input:ro`, `${tmpDir}:/work`],
+    inputs: { '/input': resolved['/input'].source },
+    outputs: { '/work': resolved['/work'].source },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -1060,20 +1095,20 @@ export async function processGshhg(
 
   setProgress(chartNumber, 'converting', 'Creating MBTiles...');
   appendLog(chartNumber, 'Creating MBTiles...');
-  const translateResult = await runContainer({
+  const translateResult = await runContainerJob({
     image: GDAL_IMAGE,
-    phase: 'gdal-translate',
-    job: chartNumber,
-    cmd: [
+    label: `gdal-translate-${chartNumber}`,
+    command: [
       'gdal_translate',
       '-of',
       'MBTiles',
       '-co',
       'TILE_FORMAT=PNG',
-      '/work/world.tif',
-      `/output/${outputName}`
+      `${workPrefix}/world.tif`,
+      `${outputPrefix}/${outputName}`
     ],
-    binds: [`${tmpDir}:/work`, `${chartsDir}:/output`],
+    inputs: { '/work': resolved['/work'].source },
+    outputs: { '/output': resolved['/output'].source },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -1083,15 +1118,14 @@ export async function processGshhg(
 
   setProgress(chartNumber, 'converting', 'Adding zoom levels...');
   appendLog(chartNumber, 'Adding overview zoom levels...');
-  const overviewResult = await runContainer({
+  const overviewResult = await runContainerJob({
     image: GDAL_IMAGE,
-    phase: 'gdaladdo',
-    job: chartNumber,
-    cmd: [
+    label: `gdaladdo-${chartNumber}`,
+    command: [
       'gdaladdo',
       '-r',
       'average',
-      `/output/${outputName}`,
+      `${outputPrefix}/${outputName}`,
       '2',
       '4',
       '8',
@@ -1101,7 +1135,7 @@ export async function processGshhg(
       '128',
       '256'
     ],
-    binds: [`${chartsDir}:/output`],
+    outputs: { '/output': resolved['/output'].source },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
