@@ -50,6 +50,18 @@ export interface ContainerRuntimeInfo {
   version: string;
 }
 
+export interface ContainerMountResolution {
+  /** Source for the `-v <source>:<dest>` flag: host path or volume name. */
+  source: string;
+  /**
+   * Path inside the mounted source where the original abs path lives.
+   * Empty string when the source already corresponds to absPath (the
+   * common bind-mount case).  Non-empty when SignalK is on a named
+   * volume and the consumer must navigate into it from the mount root.
+   */
+  subPath: string;
+}
+
 export interface ContainerManagerApi {
   getRuntime(): ContainerRuntimeInfo | null;
   pullImage(image: string, onProgress?: (msg: string) => void): Promise<void>;
@@ -65,6 +77,14 @@ export interface ContainerManagerApi {
    * been initialised yet.
    */
   resolveSignalkDataMount(): Promise<string | null>;
+  /**
+   * Translate an arbitrary absolute path into the `(source, subPath)`
+   * pair needed to mount it into a managed container.  See the
+   * signalk-container plugin-developer-guide for the resolution rules
+   * across bare-metal / bind / named-volume topologies.  Null when no
+   * mount covers the path.  Available in signalk-container >= 1.1.0.
+   */
+  resolveHostPath(absPath: string): Promise<ContainerMountResolution | null>;
 }
 
 let resolvedManager: ContainerManagerApi | null = null;

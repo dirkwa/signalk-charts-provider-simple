@@ -9,6 +9,7 @@ import {
   pullImage as runtimePullImage,
   runContainer
 } from './container-runtime';
+import { resolveJobPaths, runJob as runContainerJob } from './container-jobs';
 import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
 import { detectContainerRuntime } from './container-environment';
 import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata';
@@ -132,6 +133,17 @@ interface ExportScriptOptions {
   /** xargs -P fan-out for the per-layer ogr2ogr loop. 1 = sequential. */
   parallelism: number;
   skipLayers: string[];
+  /**
+   * Container path the input ENC files are reachable at.  Normally `/input`
+   * for bind-mounted SignalK deployments where signalk-container can
+   * subpath-bind the host filesystem.  When SignalK is on a named volume
+   * the runtime layer mounts the whole volume at `/input` and this prefix
+   * becomes `/input/<subPath>` to navigate to the actual ENC dir inside.
+   * Defaults to `/input` for backwards compat with existing tests.
+   */
+  inputPrefix?: string;
+  /** Container path the GeoJSON output dir is reachable at. */
+  outputPrefix?: string;
 }
 
 // Path inside the container where per-file ogr2ogr stderr is captured.
@@ -140,8 +152,15 @@ interface ExportScriptOptions {
 // indistinguishable from "every chart failed for the same reason".
 // Surfaced into the user-visible conversion log when zero output files
 // land in /output.
-export const EXPORT_ERRORS_LOG = '/output/.export-errors.log';
-const EXPORT_ERROR_FILE_BASENAME = path.basename(EXPORT_ERRORS_LOG);
+const EXPORT_ERROR_FILE_BASENAME = '.export-errors.log';
+/**
+ * Container path the export script writes per-file ogr2ogr stderr to,
+ * for the default `/output` mount.  The script computes the actual
+ * path from `outputPrefix` so it stays correct when SignalK is on a
+ * named volume that needs a `/output/<subPath>` prefix; this constant
+ * still reflects the bind-mount default and is exported for tests.
+ */
+export const EXPORT_ERRORS_LOG = `/output/${EXPORT_ERROR_FILE_BASENAME}`;
 const EXPORT_ERROR_SAMPLE_LINES = 10;
 
 // Build the shell script that runs inside the GDAL container. Extracted as a
@@ -156,15 +175,17 @@ export function buildExportScript(opts: ExportScriptOptions): string {
   const skipPattern = opts.skipLayers.join('|');
   const parallel = Math.max(1, Math.floor(opts.parallelism));
   const multiBranch = opts.multiFile ? '${layer}_${name}' : '${layer}';
-  const errLog = EXPORT_ERRORS_LOG;
+  const inDir = opts.inputPrefix ?? '/input';
+  const outDir = opts.outputPrefix ?? '/output';
+  const errLog = `${outDir}/${EXPORT_ERROR_FILE_BASENAME}`;
 
   if (parallel === 1) {
     return `
 set -e
 : > ${errLog}
-count=$(find /input -name '*.000' ! -name '._*' -type f | wc -l)
+count=$(find ${inDir} -name '*.000' ! -name '._*' -type f | wc -l)
 i=0
-find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
+find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
@@ -174,9 +195,9 @@ find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d 
     outname="${multiBranch}"
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "/output/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
+        "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
     else
-      ogr2ogr -f GeoJSON "/output/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
+      ogr2ogr -f GeoJSON "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
     fi
   done
 done
@@ -191,9 +212,9 @@ echo "PROGRESS: Export complete"
   return `
 set -e
 : > ${errLog}
-count=$(find /input -name '*.000' ! -name '._*' -type f | wc -l)
+count=$(find ${inDir} -name '*.000' ! -name '._*' -type f | wc -l)
 i=0
-find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
+find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
@@ -207,9 +228,9 @@ find /input -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d 
     if [ "$multi" = "1" ]; then outname="\${layer}_\${name}"; else outname="$layer"; fi
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "/output/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
+        "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
     else
-      ogr2ogr -f GeoJSON "/output/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
+      ogr2ogr -f GeoJSON "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
     fi
   ' _ '{}' "$enc" "$name" "${multiArg}"
 done
@@ -279,14 +300,46 @@ async function exportAllLayersToGeoJSON(
   const multiFile = encFiles.length > 1;
   const parallelism = getCpuBudget().gdalExportParallelism;
 
-  const script = buildExportScript({ multiFile, parallelism, skipLayers });
+  // Translate the absolute host paths into (source, subPath) pairs the
+  // signalk-container runtime layer can mount.  The subPath is non-empty
+  // when SignalK is on a named volume that covers a parent directory;
+  // in that case we mount the whole volume at /input or /output and the
+  // export script reads from /input/<subPath>, writes to /output/<subPath>.
+  const resolved = await resolveJobPaths({ '/input': encDir, '/output': geojsonDir }, (cp, ap) =>
+    appendLog(
+      chartNumber,
+      `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+    )
+  );
+  if (!resolved) {
+    throw new Error(
+      'Chart conversion paths are not reachable from the container runtime. ' +
+        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+        'container bind/volume to cover it.'
+    );
+  }
 
-  const result = await runContainer({
+  const inputPrefix = resolved['/input'].subPath
+    ? `/input/${resolved['/input'].subPath}`
+    : '/input';
+  const outputPrefix = resolved['/output'].subPath
+    ? `/output/${resolved['/output'].subPath}`
+    : '/output';
+
+  const script = buildExportScript({
+    multiFile,
+    parallelism,
+    skipLayers,
+    inputPrefix,
+    outputPrefix
+  });
+
+  const result = await runContainerJob({
     image: GDAL_IMAGE,
-    phase: 'gdal-export',
-    job: chartNumber,
-    cmd: ['sh', '-c', script],
-    binds: [`${encDir}:/input:ro`, `${geojsonDir}:/output`],
+    label: `gdal-export-${chartNumber}`,
+    command: ['sh', '-c', script],
+    inputs: { '/input': resolved['/input'].source },
+    outputs: { '/output': resolved['/output'].source },
     onStdoutLine: (line) => {
       appendLog(chartNumber, line);
       const match = line.match(/PROGRESS: Processing (\S+)/);

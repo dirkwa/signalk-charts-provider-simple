@@ -256,6 +256,35 @@ describe('buildExportScript', () => {
     const s = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
     assert.match(s, new RegExp(`: > ${EXPORT_ERRORS_LOG.replace(/\//g, '\\/')}`));
   });
+
+  it('threads inputPrefix / outputPrefix through both branches for named-volume deployments', () => {
+    // When SignalK is on a named volume that covers a parent directory,
+    // the runtime layer mounts the whole volume at /input and /output;
+    // the consumer points the script at the actual subpath inside.
+    // Both branches must read from inputPrefix and write to outputPrefix
+    // (including the per-file error log).
+    const seq = buildExportScript({
+      multiFile: false,
+      parallelism: 1,
+      skipLayers,
+      inputPrefix: '/input/charts/scratch',
+      outputPrefix: '/output/charts/scratch'
+    });
+    const par = buildExportScript({
+      multiFile: true,
+      parallelism: 4,
+      skipLayers,
+      inputPrefix: '/input/charts/scratch',
+      outputPrefix: '/output/charts/scratch'
+    });
+    for (const s of [seq, par]) {
+      assert.match(s, /find \/input\/charts\/scratch -name '\*\.000'/);
+      assert.match(s, /\/output\/charts\/scratch\/\$/);
+      assert.match(s, /2>>\/output\/charts\/scratch\/\.export-errors\.log/);
+      // Defaults must NOT leak through when prefixes are set.
+      assert.doesNotMatch(s, /find \/input -name/);
+    }
+  });
 });
 
 describe('surfaceExportErrorsIfEmpty', () => {
