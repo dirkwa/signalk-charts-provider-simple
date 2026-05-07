@@ -5,6 +5,19 @@
 
 import type { Page } from '@playwright/test';
 
+// Same default as playwright.config.ts. Used as a fallback when the
+// page hasn't navigated yet (`page.url()` returns `about:blank`, whose
+// origin is the literal string `"null"` — invalid for fetch).
+const DEFAULT_MOCK_ORIGIN = 'http://127.0.0.1:4567';
+
+function resolveMockOrigin(page: Page): string {
+  const current = page.url();
+  if (current && current !== 'about:blank') {
+    return new URL(current).origin;
+  }
+  return DEFAULT_MOCK_ORIGIN;
+}
+
 /**
  * Reset the mock server to its initial state, then merge `state` into
  * it.  Use at the start of every test that depends on a specific
@@ -13,10 +26,7 @@ import type { Page } from '@playwright/test';
  */
 export async function setMockState(page: Page, state: Record<string, unknown>): Promise<void> {
   // Always reset first so prior tests don't leak.
-  const baseURL = page.context().browser()?.contexts()[0]?.pages()[0]?.url() ?? '';
-  // Derive the harness origin from the page; baseURL on the context
-  // isn't always set up early enough.
-  const origin = new URL(page.url() || baseURL || 'http://127.0.0.1:4567').origin;
+  const origin = resolveMockOrigin(page);
   const resetRes = await page.request.post(`${origin}/__mock/reset`);
   if (!resetRes.ok()) {
     throw new Error(`mock reset failed: ${resetRes.status()} ${resetRes.statusText()}`);
@@ -33,7 +43,7 @@ export async function setMockState(page: Page, state: Record<string, unknown>): 
  * to verify the UI re-renders).
  */
 export async function patchMockState(page: Page, state: Record<string, unknown>): Promise<void> {
-  const origin = new URL(page.url()).origin;
+  const origin = resolveMockOrigin(page);
   const res = await page.request.put(`${origin}/__mock/state`, { data: state });
   if (!res.ok()) {
     throw new Error(`mock state PUT failed: ${res.status()} ${res.statusText()}`);
