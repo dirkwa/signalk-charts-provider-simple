@@ -44,6 +44,8 @@ import { processGshhg, processShpBasemap } from './utils/s57-converter';
 import { getCpuBudget, setCpuBudget } from './utils/concurrency';
 import { writeChartPathMarker } from './utils/path-marker';
 import { parsePluginConfig } from './utils/plugin-config-schema';
+import { Type } from '@sinclair/typebox';
+import { parseBody } from './utils/rest-validation';
 
 // Read at module load so the marker file always reflects the running build.
 // `require` keeps this synchronous and avoids dragging package.json into the
@@ -373,6 +375,27 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     }
   };
+
+  // Tippecanoe accepts zooms 0–22 in practice (anything beyond produces
+  // 4×4 pixel tiles per source feature; nothing useful comes out and the
+  // job runs much longer). Bound the inputs to that envelope so a typo
+  // (`minzoom: 100`) is rejected at the boundary instead of silently
+  // turning into a multi-hour conversion that produces unusable output.
+  const ZoomLevel = Type.Integer({ minimum: 0, maximum: 22 });
+
+  const CatalogDownloadBody = Type.Object({
+    // `^https?://` is the floor: rejecting `file://`, `gopher://`, and the
+    // bare-string SSRF case (e.g. supplying `169.254.169.254/...` as a
+    // path-relative URL). Per-host allowlisting is a bigger conversation
+    // — catalog charts come from many community-run hosts.
+    url: Type.String({ minLength: 1, pattern: '^https?://' }),
+    chartNumber: Type.String({ minLength: 1 }),
+    catalogFile: Type.String({ minLength: 1 }),
+    zipfileDatetime: Type.Optional(Type.String()),
+    targetFolder: Type.Optional(Type.String()),
+    minzoom: Type.Optional(ZoomLevel),
+    maxzoom: Type.Optional(ZoomLevel)
+  });
 
   const registerRoutes = (router: IRouter): void => {
     app.debug('** Registering API paths via registerWithRouter **');
@@ -1511,24 +1534,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/catalog/download', (req: Request, res: Response) => {
-      const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder, minzoom, maxzoom } =
-        req.body as {
-          url?: string;
-          chartNumber?: string;
-          catalogFile?: string;
-          zipfileDatetime?: string;
-          targetFolder?: string;
-          minzoom?: number;
-          maxzoom?: number;
-        };
-
-      if (!url || !chartNumber || !catalogFile) {
-        res.status(400).json({
-          success: false,
-          error: 'url, chartNumber, and catalogFile are required'
-        });
+      const body = parseBody(CatalogDownloadBody, req, res);
+      if (!body) {
         return;
       }
+      // TypeBox bounds each field independently; cross-field invariants
+      // (`minzoom <= maxzoom`) need a plain post-parse guard. A typo
+      // here would silently produce empty tile sets after a long run.
+      if (body.minzoom !== undefined && body.maxzoom !== undefined && body.minzoom > body.maxzoom) {
+        res.status(400).json({ success: false, error: 'minzoom must be ≤ maxzoom' });
+        return;
+      }
+      const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder, minzoom, maxzoom } =
+        body;
 
       const registryEntry = getCatalogRegistry().find((r) => r.file === catalogFile);
       const catalogCategory = registryEntry ? registryEntry.category : '';
@@ -1545,6 +1563,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const chartPath = props.chartPath || defaultChartsPath;
         const targetDir =
           !targetFolder || targetFolder === '/' ? chartPath : path.join(chartPath, targetFolder);
+
+        // Reject `targetFolder: '../etc'` etc. before mkdir/mkdirSync. Same
+        // guard the other mutating routes (/folders, /move-chart, /rename-chart)
+        // already use; the schema's String pattern can't catch every traversal
+        // vector (e.g. `valid/../escape`), so the canonical fix is here.
+        const normalizedTargetDir = path.normalize(targetDir);
+        const normalizedChartPath = path.normalize(chartPath);
+        if (
+          normalizedTargetDir !== normalizedChartPath &&
+          !normalizedTargetDir.startsWith(normalizedChartPath + path.sep)
+        ) {
+          res.status(403).json({ success: false, error: 'Access denied: Invalid target folder' });
+          return;
+        }
 
         if (!fs.existsSync(targetDir)) {
           fs.mkdirSync(targetDir, { recursive: true });
