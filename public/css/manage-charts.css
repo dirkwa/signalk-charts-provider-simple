@@ -1349,6 +1349,23 @@
     100% { transform: translateX(400%); }
 }
 
+/* Translate-based animations can trigger vestibular discomfort. Users
+ * with prefers-reduced-motion get a slow opacity pulse instead — still
+ * shows the bar is "active" without the panning motion, and not
+ * completely frozen (which would make the UI feel stuck). */
+@keyframes progress-indeterminate-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .progress-fill-indeterminate {
+        animation-name: progress-indeterminate-pulse;
+        animation-duration: 2s;
+        transform: none;
+    }
+}
+
 .progress-text {
     text-align: center;
     font-size: 0.9rem;

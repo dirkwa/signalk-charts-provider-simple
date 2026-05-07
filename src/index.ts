@@ -1822,7 +1822,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, { saveRaw: true });
 
     trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
+    // Don't flag converting yet — the download still has to finish.
+    // Setting it here made the catalog UI report "Converting…" all
+    // through the (slow!) download phase. Flip it to true inside the
+    // listener once the ZIP is on disk and processS57Zip is about to run.
 
     const s57Listener = async (job: DownloadJob): Promise<void> => {
       if (job.id !== jobId) {
@@ -1837,10 +1840,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       if (!zipPath || !fs.existsSync(zipPath)) {
         app.debug(`S-57: no ZIP file found after download for ${chartNumber}`);
         removeInstall(chartNumber);
-        setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
         return;
       }
+
+      setConvertingState(chartNumber, true);
 
       try {
         const displayName = chartTitle ? cleanCatalogTitle(chartTitle) : undefined;
@@ -1921,7 +1925,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, { saveRaw: true });
 
     trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
+    // Set converting state inside the listener once the download has
+    // finished — see the comment on the s57 path; same fix.
 
     const rncListener = async (job: DownloadJob): Promise<void> => {
       if (job.id !== jobId) {
@@ -1936,10 +1941,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       if (!zipPath || !fs.existsSync(zipPath)) {
         app.debug(`RNC: no file found after download for ${chartNumber}`);
         removeInstall(chartNumber);
-        setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
         return;
       }
+
+      setConvertingState(chartNumber, true);
 
       app.debug(`Starting RNC conversion for ${chartNumber}: ${zipPath}`);
 
@@ -2019,7 +2025,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, { saveRaw: true });
 
     trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
+    // Set converting state inside the listener once the download has
+    // finished — see the comment on the s57 path; same fix.
 
     const pilotListener = async (job: DownloadJob): Promise<void> => {
       if (job.id !== jobId) {
@@ -2033,10 +2040,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       if (!dlPath || !fs.existsSync(dlPath)) {
         removeInstall(chartNumber);
-        setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
         return;
       }
+
+      setConvertingState(chartNumber, true);
 
       try {
         const result = await processPilotTar(dlPath, targetDir, chartNumber, (status, message) => {
@@ -2104,7 +2112,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, { saveRaw: true });
 
     trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
+    // Set converting state inside the listener once the download has
+    // finished — see the comment on the s57 path; same fix.
 
     const shpListener = async (job: DownloadJob): Promise<void> => {
       if (job.id !== jobId) {
@@ -2118,10 +2127,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       if (!dlPath || !fs.existsSync(dlPath)) {
         removeInstall(chartNumber);
-        setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
         return;
       }
+
+      setConvertingState(chartNumber, true);
 
       try {
         const result = await processShpBasemap(

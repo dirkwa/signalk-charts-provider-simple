@@ -327,9 +327,15 @@ function renderDownloadJob(job: DownloadJob): string {
   const totalKnown = Number.isFinite(job.totalBytes) && job.totalBytes > 0;
   const fillClass = totalKnown ? 'progress-fill' : 'progress-fill progress-fill-indeterminate';
   const fillStyle = totalKnown ? `style="width: ${safeProgress}%"` : '';
-  const progressText = totalKnown
-    ? `${safeProgress}% - ${formatBytes(job.downloadedBytes)} / ${formatBytes(job.totalBytes)}`
-    : `${formatBytes(job.downloadedBytes)} downloaded`;
+  // 'extracting' uses the same indeterminate bar but its byte count is
+  // the now-stale download total — show an explicit label instead so
+  // we don't display "142 MB downloaded" while the bar spins on extract.
+  const progressText =
+    job.status === 'extracting'
+      ? 'Extracting...'
+      : totalKnown
+        ? `${safeProgress}% - ${formatBytes(job.downloadedBytes)} / ${formatBytes(job.totalBytes)}`
+        : `${formatBytes(job.downloadedBytes)} downloaded`;
 
   const progressBar =
     job.status === 'downloading' || job.status === 'extracting'

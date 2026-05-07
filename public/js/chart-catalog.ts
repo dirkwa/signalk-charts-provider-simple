@@ -61,6 +61,10 @@ interface CatalogUpdate {
 
 interface DownloadJobLite {
   id: string;
+  // chartName on the server side is the chartNumber the catalog
+  // download flow passes through createJob(). Used here to re-seed
+  // catalogDownloadJobs after a page reload.
+  chartName?: string;
   status: 'queued' | 'downloading' | 'extracting' | 'completed' | 'failed';
   progress?: number;
   downloadedBytes?: number;
@@ -188,6 +192,17 @@ async function initCatalogTab(): Promise<void> {
   await loadFolders();
   await checkS57Status();
   await refreshUpdateBadge();
+  // Re-seed catalogDownloadJobs from any in-flight server-side jobs.
+  // Without this, a page reload during download loses the local
+  // mapping and the catalog row renders the chart as "Download &
+  // Convert" again (or — once the server finally flips converting
+  // — as "Converting…" while the download is still running).
+  await seedCatalogDownloadJobs();
+  // Re-render now: loadCatalogRegistry rendered earlier when
+  // catalogDownloadJobs was still empty, so without this call the
+  // user briefly sees "Download & Convert" on actively-downloading
+  // rows until the first pollCatalogDownloads tick (~2s later).
+  renderCatalogList();
 
   // Wire delegated click handlers — every action that previously used
   // inline `onclick="X('${catalogEscapeAttr(value)}')"` now reads a data-*
@@ -700,6 +715,36 @@ async function downloadCatalogChart(
   } catch (error) {
     console.error('Failed to start catalog download:', error);
     alert('Failed to start download. Check your network connection.');
+  }
+}
+
+/**
+ * On tab init / page reload, fetch the server's current download jobs
+ * and rebuild `catalogDownloadJobs` from anything that's still in
+ * flight (queued / downloading / extracting). Without this the catalog
+ * loses its local mapping and the row re-renders without a download
+ * pill until the next user action.
+ */
+async function seedCatalogDownloadJobs(): Promise<void> {
+  try {
+    const response = await fetch(`${CATALOG_API_BASE}/download-jobs`);
+    if (!response.ok) {
+      return;
+    }
+    const jobs = (await response.json()) as DownloadJobLite[];
+    for (const job of jobs) {
+      if (
+        job.chartName &&
+        (job.status === 'queued' ||
+          job.status === 'downloading' ||
+          job.status === 'extracting')
+      ) {
+        catalogDownloadJobs[job.chartName] = job.id;
+      }
+    }
+  } catch {
+    // Network blip — first poll cycle will do the right thing once
+    // the user clicks something or 2s elapses.
   }
 }
 
