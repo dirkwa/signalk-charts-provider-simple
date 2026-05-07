@@ -197,8 +197,13 @@ export function startMockServer(
   // Some files are referenced without the plugin prefix (legacy).
   app.use(express.static(publicDir));
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const server = app.listen(port, '127.0.0.1', () => {
+      // Successful listen: detach the error listener so a later
+      // server-lifecycle error doesn't try to reject an already-resolved
+      // promise (and so a one-shot `EADDRINUSE` after a re-listen
+      // doesn't get swallowed silently elsewhere).
+      server.off('error', reject);
       const addr = server.address();
       const actualPort = typeof addr === 'object' && addr ? addr.port : port;
       const url = `http://127.0.0.1:${actualPort}${PLUGIN_BASE}/`;
@@ -216,6 +221,10 @@ export function startMockServer(
           })
       });
     });
+    // EADDRINUSE etc. surface as 'error' events on the server object.
+    // Without this listener Node would crash with an unhandled error
+    // and the Promise would never settle.
+    server.on('error', reject);
   });
 }
 
