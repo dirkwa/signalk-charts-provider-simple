@@ -878,16 +878,39 @@ async function pollConversions(): Promise<void> {
       }
       catalogInstalled = regData.installed ?? {};
 
-      // If any conversion just finished, invalidate cached catalog data and refresh
+      // If any conversion just finished, invalidate cached catalog
+      // data and refresh. For catalogs the user already has expanded
+      // we re-fetch so the card stays open with the new "Installed"
+      // badge — without this the card body's empty (cached data was
+      // dropped) but the .expanded class is still on, so the arrow
+      // points down with nothing visible underneath.
       justFinished = Object.keys(prevConverting).filter((k) => !catalogConverting[k]);
       if (justFinished.length > 0) {
+        const affectedCatalogs = new Set<string>();
         for (const chartNum of justFinished) {
           const install = catalogInstalled[chartNum];
           if (install?.catalogFile) {
             delete catalogChartData[install.catalogFile];
+            if (expandedCatalogs.has(install.catalogFile)) {
+              affectedCatalogs.add(install.catalogFile);
+            }
           }
         }
         await loadFolders();
+        await Promise.all(
+          [...affectedCatalogs].map(async (catalogFile) => {
+            try {
+              const resp = await fetch(
+                `${CATALOG_API_BASE}/catalog/${encodeURIComponent(catalogFile)}`
+              );
+              if (resp.ok) {
+                catalogChartData[catalogFile] = (await resp.json()) as CatalogData;
+              }
+            } catch {
+              // Network blip — the next user expand/collapse will retry.
+            }
+          })
+        );
       }
     }
 
