@@ -2,6 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
 import { checkContainerRuntime, imageExists, pullImage, runContainer } from './container-runtime';
+import {
+  ensureImage as ensureContainerImage,
+  resolveJobPaths,
+  runJob as runContainerJob
+} from './container-jobs';
+import { getContainerManager } from './container-manager';
 import { setMbtilesType } from './mbtiles-metadata';
 import type {
   ConversionProgress,
@@ -108,20 +114,40 @@ export async function convertKapToMbtiles(
   const outputFile = path.join(outputDir, `${baseName}.mbtiles`);
   const kapDir = path.dirname(kapFile);
 
-  const result = await runContainer({
+  const resolved = await resolveJobPaths({ '/input': kapDir, '/output': outputDir }, (cp, ap) =>
+    appendLog(
+      chartNumber,
+      `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+    )
+  );
+  if (!resolved) {
+    throw new Error(
+      'KAP conversion paths are not reachable from the container runtime. ' +
+        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+        'container bind/volume to cover it.'
+    );
+  }
+  const inputPrefix = resolved['/input'].subPath
+    ? `/input/${resolved['/input'].subPath}`
+    : '/input';
+  const outputPrefix = resolved['/output'].subPath
+    ? `/output/${resolved['/output'].subPath}`
+    : '/output';
+
+  const result = await runContainerJob({
     image: GDAL_IMAGE,
-    phase: 'gdal-translate',
-    job: chartNumber || baseName,
-    cmd: [
+    label: `gdal-translate-${chartNumber || baseName}`,
+    command: [
       'gdal_translate',
       '-of',
       'MBTiles',
       '-co',
       'TILE_FORMAT=PNG',
-      `/input/${path.basename(kapFile)}`,
-      `/output/${baseName}.mbtiles`
+      `${inputPrefix}/${path.basename(kapFile)}`,
+      `${outputPrefix}/${baseName}.mbtiles`
     ],
-    binds: [`${kapDir}:/input:ro`, `${outputDir}:/output`],
+    inputs: { '/input': resolved['/input'].source },
+    outputs: { '/output': resolved['/output'].source },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -147,12 +173,17 @@ async function addOverviews(mbtilesFile: string, chartNumber: string): Promise<v
 
   appendLog(chartNumber, `Adding overview zoom levels for ${name}...`);
 
-  const result = await runContainer({
+  const resolved = await resolveJobPaths({ '/data': dir });
+  if (!resolved) {
+    throw new Error(`gdaladdo: ${dir} is not reachable from the container runtime.`);
+  }
+  const dataPrefix = resolved['/data'].subPath ? `/data/${resolved['/data'].subPath}` : '/data';
+
+  const result = await runContainerJob({
     image: GDAL_IMAGE,
-    phase: 'gdaladdo',
-    job: chartNumber || name,
-    cmd: ['gdaladdo', '-r', 'average', `/data/${name}`, '2', '4', '8', '16'],
-    binds: [`${dir}:/data`],
+    label: `gdaladdo-${chartNumber || name}`,
+    command: ['gdaladdo', '-r', 'average', `${dataPrefix}/${name}`, '2', '4', '8', '16'],
+    outputs: { '/data': resolved['/data'].source },
     onStdoutLine: (line) => appendLog(chartNumber, line),
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
@@ -185,22 +216,20 @@ export async function processRncZip(
 
   try {
     statusFn('checking', 'Checking container runtime...');
-    const runtime = await checkContainerRuntime();
-    if (!runtime.available) {
+    const manager = getContainerManager();
+    if (!manager) {
       throw new Error(
-        'No Docker- or Podman-compatible socket reachable. RNC chart conversion needs a container runtime API.'
+        'signalk-container plugin is required for chart conversion. ' +
+          'Install it from the App Store and restart Signal K.'
       );
     }
 
     statusFn('pulling', 'Checking GDAL image...');
-    if (!(await imageExists(GDAL_IMAGE))) {
-      statusFn('pulling', 'Pulling GDAL image (first time only)...');
-      if (chartNumber) {
-        conversionProgress[chartNumber].status = 'pulling';
-        conversionProgress[chartNumber].message = 'Pulling GDAL image...';
-      }
-      await ensureGdalImage();
+    if (chartNumber) {
+      conversionProgress[chartNumber].status = 'pulling';
+      conversionProgress[chartNumber].message = 'Checking GDAL image...';
     }
+    await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
 
     statusFn('extracting', 'Extracting BSB chart files from ZIP...');
     if (chartNumber) {
@@ -237,6 +266,28 @@ export async function processRncZip(
       conversionProgress[chartNumber].status = 'converting';
     }
 
+    // Resolve the two host paths once for the whole loop — tmpDir and
+    // chartsDir don't change per-file.
+    const resolved = await resolveJobPaths({ '/input': tmpDir, '/output': chartsDir }, (cp, ap) =>
+      appendLog(
+        chartNumber,
+        `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+      )
+    );
+    if (!resolved) {
+      throw new Error(
+        'BSB conversion paths are not reachable from the container runtime. ' +
+          'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+          'container bind/volume to cover it.'
+      );
+    }
+    const inputPrefix = resolved['/input'].subPath
+      ? `/input/${resolved['/input'].subPath}`
+      : '/input';
+    const outputPrefix = resolved['/output'].subPath
+      ? `/output/${resolved['/output'].subPath}`
+      : '/output';
+
     const mbtilesFiles: string[] = [];
     let i = 0;
     for (const kap of kapFiles) {
@@ -244,8 +295,8 @@ export async function processRncZip(
       const relInput = path.relative(tmpDir, kap);
       const baseName = path.basename(kap, path.extname(kap));
       const outputName = `${baseName}.mbtiles`;
-      const containerInput = `/input/${relInput}`;
-      const containerOutput = `/output/${outputName}`;
+      const containerInput = `${inputPrefix}/${relInput}`;
+      const containerOutput = `${outputPrefix}/${outputName}`;
 
       const friendly = path.basename(kap);
       appendLog(chartNumber, `PROGRESS: Converting ${friendly} (${i}/${kapFiles.length})`);
@@ -254,11 +305,10 @@ export async function processRncZip(
           `Converting ${friendly} (${i}/${kapFiles.length})...`;
       }
 
-      const translateResult = await runContainer({
+      const translateResult = await runContainerJob({
         image: GDAL_IMAGE,
-        phase: 'gdal-translate',
-        job: baseName,
-        cmd: [
+        label: `gdal-translate-${baseName}`,
+        command: [
           'gdal_translate',
           '-of',
           'MBTiles',
@@ -267,7 +317,8 @@ export async function processRncZip(
           containerInput,
           containerOutput
         ],
-        binds: [`${tmpDir}:/input:ro`, `${chartsDir}:/output`],
+        inputs: { '/input': resolved['/input'].source },
+        outputs: { '/output': resolved['/output'].source },
         onStdoutLine: (line) => appendLog(chartNumber, line),
         onStderrLine: (line) => appendLog(chartNumber, line)
       });
@@ -276,12 +327,11 @@ export async function processRncZip(
         continue;
       }
 
-      const overviewResult = await runContainer({
+      const overviewResult = await runContainerJob({
         image: GDAL_IMAGE,
-        phase: 'gdaladdo',
-        job: baseName,
-        cmd: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
-        binds: [`${chartsDir}:/output`],
+        label: `gdaladdo-${baseName}`,
+        command: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
+        outputs: { '/output': resolved['/output'].source },
         onStdoutLine: (line) => appendLog(chartNumber, line),
         onStderrLine: (line) => appendLog(chartNumber, line)
       });
