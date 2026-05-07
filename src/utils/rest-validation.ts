@@ -40,3 +40,31 @@ export function parseBody<T extends TSchema>(
   });
   return null;
 }
+
+/**
+ * Validate `input` against `schema` and send a single 400 with a
+ * field-level error list on failure. Use when the source of fields is
+ * something other than `req.body` — busboy field collection, headers,
+ * or any other piecemeal-collected map.
+ *
+ * The input is first run through `Value.Convert`, which coerces
+ * compatible primitive types (e.g. the string `"9"` to the number `9`
+ * for `Type.Integer`). This matches the way busboy/header handlers
+ * receive everything as strings.
+ */
+export function parseShape<T extends TSchema>(
+  schema: T,
+  input: unknown,
+  res: Response
+): Static<T> | null {
+  const converted: unknown = Value.Convert(schema, input);
+  if (Value.Check(schema, converted)) {
+    return converted;
+  }
+  res.status(400).json({
+    success: false,
+    error: 'Invalid request fields',
+    details: formatErrors(schema, converted)
+  });
+  return null;
+}
