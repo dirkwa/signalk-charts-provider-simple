@@ -503,6 +503,13 @@ async function pollCatalogDownloads() {
 }
 
 async function pollConversions() {
+  // Declared at function scope: the previous version had it inside the
+  // `if (regResp.ok)` block, then referenced it on the outer-scope
+  // `hasActive` line, which silently threw a ReferenceError into the
+  // catch and left the UI stuck at "Generating tiles: 100%" after a
+  // successful conversion.
+  let justFinished = [];
+
   try {
     // Fetch conversion progress
     const statusResp = await fetch(`${CATALOG_API_BASE}/catalog-s57-status`);
@@ -531,7 +538,7 @@ async function pollConversions() {
       catalogInstalled = regData.installed || {};
 
       // If any conversion just finished, invalidate cached catalog data and refresh
-      const justFinished = Object.keys(prevConverting).filter((k) => !catalogConverting[k]);
+      justFinished = Object.keys(prevConverting).filter((k) => !catalogConverting[k]);
       if (justFinished.length > 0) {
         // Clear cached chart data for catalogs that had conversions finish
         // so the next expand re-fetches with updated installed status
