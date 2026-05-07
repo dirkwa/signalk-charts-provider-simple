@@ -1,7 +1,7 @@
-const { describe, it } = require('node:test');
-const assert = require('node:assert');
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
 
-const { _computeBudgetForTests, setCpuBudget, getCpuBudget } = require('../dist/utils/concurrency');
+import { _computeBudgetForTests, setCpuBudget, getCpuBudget } from '../dist/utils/concurrency';
 
 describe('cpu budget presets', () => {
   describe('_computeBudgetForTests (pure mapping)', () => {

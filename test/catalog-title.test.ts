@@ -1,7 +1,7 @@
-const { describe, it } = require('node:test');
-const assert = require('node:assert');
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
 
-const { cleanCatalogTitle, sanitizeChartFilename } = require('../dist/utils/catalog-title');
+import { cleanCatalogTitle, sanitizeChartFilename } from '../dist/utils/catalog-title';
 
 describe('cleanCatalogTitle', () => {
   it('strips trailing size + index from a hyphen-separated NL IENC title', () => {
@@ -69,9 +69,12 @@ describe('cleanCatalogTitle', () => {
   });
 
   it('returns empty string for non-string input (defensive)', () => {
-    assert.strictEqual(cleanCatalogTitle(undefined), '');
-    assert.strictEqual(cleanCatalogTitle(null), '');
-    assert.strictEqual(cleanCatalogTitle(42), '');
+    // Explicitly testing the runtime guard: TS callers can't pass
+    // these directly, but the helper still defends against parsed-JSON
+    // payloads where the type assertion was wrong upstream.
+    assert.strictEqual(cleanCatalogTitle(undefined as unknown as string), '');
+    assert.strictEqual(cleanCatalogTitle(null as unknown as string), '');
+    assert.strictEqual(cleanCatalogTitle(42 as unknown as string), '');
   });
 
   it('does not strip a (N) that appears mid-title', () => {
@@ -130,9 +133,9 @@ describe('sanitizeChartFilename', () => {
   it('returns empty string for empty / whitespace / non-string', () => {
     assert.strictEqual(sanitizeChartFilename(''), '');
     assert.strictEqual(sanitizeChartFilename('   '), '');
-    assert.strictEqual(sanitizeChartFilename(undefined), '');
-    assert.strictEqual(sanitizeChartFilename(null), '');
-    assert.strictEqual(sanitizeChartFilename(42), '');
+    assert.strictEqual(sanitizeChartFilename(undefined as unknown as string), '');
+    assert.strictEqual(sanitizeChartFilename(null as unknown as string), '');
+    assert.strictEqual(sanitizeChartFilename(42 as unknown as string), '');
   });
 
   it('returns empty string when only unsafe characters remain after sanitization', () => {

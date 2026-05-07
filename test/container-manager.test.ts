@@ -1,13 +1,22 @@
-const { describe, it, beforeEach, afterEach } = require('node:test');
-const assert = require('node:assert');
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert';
 
-const {
+import {
   waitForContainerManager,
   getContainerManager,
-  _resetContainerManagerForTests
-} = require('../dist/utils/container-manager');
+  _resetContainerManagerForTests,
+  type ContainerManagerApi,
+  type ContainerRuntimeInfo
+} from '../dist/utils/container-manager';
 
 const GLOBAL_KEY = '__signalk_containerManager';
+
+// Test harness types: tests need to write `globalThis.__signalk_containerManager`
+// without an extra `as any` cast on every line.  `var` is required by
+// `declare global` for the augmentation to actually attach to globalThis.
+declare global {
+  var __signalk_containerManager: ContainerManagerApi | undefined;
+}
 
 beforeEach(() => {
   _resetContainerManagerForTests();
@@ -19,13 +28,14 @@ afterEach(() => {
   delete globalThis[GLOBAL_KEY];
 });
 
-function makeManager(runtime) {
+function makeManager(runtime: ContainerRuntimeInfo | null): ContainerManagerApi {
   return {
     getRuntime: () => runtime,
-    pullImage: async () => {},
-    imageExists: async () => true,
-    runJob: async () => ({ status: 'completed', exitCode: 0, log: [] }),
-    resolveSignalkDataMount: async () => null
+    pullImage: () => Promise.resolve(),
+    imageExists: () => Promise.resolve(true),
+    runJob: () => Promise.resolve({ status: 'completed', exitCode: 0, log: [] }),
+    resolveSignalkDataMount: () => Promise.resolve(null),
+    resolveHostPath: () => Promise.resolve(null)
   };
 }
 

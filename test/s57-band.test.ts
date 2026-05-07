@@ -1,13 +1,13 @@
-const { describe, it } = require('node:test');
-const assert = require('node:assert');
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
 
-const {
+import {
   detectEncBand,
   BAND_MAX_ZOOM,
   BAND_MIN_ZOOM,
   bandClampedMaxzoom,
   highestBandForFiles
-} = require('../dist/utils/s57-band');
+} from '../dist/utils/s57-band';
 
 describe('detectEncBand (IHO Annex E filename convention)', () => {
   it('parses NOAA filenames', () => {
@@ -72,7 +72,7 @@ describe('BAND_MIN_ZOOM', () => {
   });
 
   it('every band has min < max so tippecanoe gets a non-empty zoom range', () => {
-    for (const band of [1, 2, 3, 4, 5, 6]) {
+    for (const band of [1, 2, 3, 4, 5, 6] as const) {
       assert.ok(BAND_MIN_ZOOM[band] < BAND_MAX_ZOOM[band], `band ${band}`);
     }
   });
