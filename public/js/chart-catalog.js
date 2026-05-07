@@ -577,13 +577,33 @@ async function pollConversions() {
       if (justFinished.length > 0) {
         // Clear cached chart data for catalogs that had conversions finish
         // so the next expand re-fetches with updated installed status
+        const catalogsToRefetch = new Set();
         for (const chartNum of justFinished) {
           const install = catalogInstalled[chartNum];
           if (install && install.catalogFile) {
             delete catalogChartData[install.catalogFile];
+            // If this catalog is currently expanded, queue it for immediate re-fetch
+            // so the "Installed" badge appears without requiring user interaction
+            if (expandedCatalogs.has(install.catalogFile)) {
+              catalogsToRefetch.add(install.catalogFile);
+            }
           }
         }
         await loadFolders();
+        // Re-fetch chart data for currently expanded catalogs so the updated
+        // status (Installed / Update available) is visible immediately
+        for (const catalogFile of catalogsToRefetch) {
+          try {
+            const resp = await fetch(
+              `${CATALOG_API_BASE}/catalog/${encodeURIComponent(catalogFile)}`
+            );
+            if (resp.ok) {
+              catalogChartData[catalogFile] = await resp.json();
+            }
+          } catch (_e) {
+            // ignore; body will be empty until user re-expands
+          }
+        }
       }
     }
 
