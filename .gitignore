@@ -14,6 +14,8 @@ dist-e2e/
 public/js/tabs.js
 public/js/emoji-utils.js
 public/js/download-simple.js
+public/js/chart-convert.js
+public/js/chart-catalog.js
 
 # Playwright outputs
 playwright-report/

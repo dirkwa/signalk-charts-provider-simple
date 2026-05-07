@@ -44,7 +44,7 @@ window.handleDownloadTabActive = function (): void {
 // error strings, job IDs etc. all originate outside our trust boundary.
 // Without this a malicious URL or compromised server can inject HTML or
 // run JS in the admin UI's origin.
-function escapeHtml(s: string): string {
+function downloadEscapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -119,7 +119,7 @@ function initDownloadInterface(): void {
   // Delegated click handler for the dynamically rendered Cancel buttons.
   // Avoids inline onclick="cancelDownload('${id}')" which would leave
   // job.id parsed twice (HTML-decoded into a JS string literal) — the
-  // second decode is the XSS vector escapeHtml can't close.
+  // second decode is the XSS vector downloadEscapeHtml can't close.
   const activeDownloads = document.getElementById('activeDownloads');
   if (activeDownloads && !activeDownloads.dataset['cancelHandlerWired']) {
     activeDownloads.addEventListener('click', (ev) => {
@@ -213,18 +213,18 @@ async function startDownload(): Promise<void> {
     const result = (await response.json()) as DownloadCreateResponse;
 
     if (result.success) {
-      statusDiv.innerHTML = `<div class="success-message">Download started! Job ID: ${escapeHtml(result.jobId ?? '')}</div>`;
+      statusDiv.innerHTML = `<div class="success-message">Download started! Job ID: ${downloadEscapeHtml(result.jobId ?? '')}</div>`;
       urlInput.value = '';
       setTimeout(() => {
         void loadActiveDownloads();
       }, 500);
     } else {
-      statusDiv.innerHTML = `<div class="error-message">Error: ${escapeHtml(result.error ?? 'Unknown error')}</div>`;
+      statusDiv.innerHTML = `<div class="error-message">Error: ${downloadEscapeHtml(result.error ?? 'Unknown error')}</div>`;
     }
   } catch (error) {
     console.error('Download error:', error);
     const message = error instanceof Error ? error.message : String(error);
-    statusDiv.innerHTML = `<div class="error-message">Failed to start download: ${escapeHtml(message)}</div>`;
+    statusDiv.innerHTML = `<div class="error-message">Failed to start download: ${downloadEscapeHtml(message)}</div>`;
   }
 }
 
@@ -278,7 +278,7 @@ async function loadActiveDownloads(): Promise<void> {
     if (needsRebuild) {
       container.innerHTML = `
         <h3>Download Jobs</h3>
-        ${recentJobs.map((job) => `<div id="job-${escapeHtml(job.id)}">${renderDownloadJob(job)}</div>`).join('')}
+        ${recentJobs.map((job) => `<div id="job-${downloadEscapeHtml(job.id)}">${renderDownloadJob(job)}</div>`).join('')}
       `;
       previousJobCount = recentJobs.length;
     } else {
@@ -329,12 +329,12 @@ function renderDownloadJob(job: DownloadJob): string {
       : '';
 
   const errorMessage = job.error
-    ? `<div class="error-text">Error: ${escapeHtml(job.error)}</div>`
+    ? `<div class="error-text">Error: ${downloadEscapeHtml(job.error)}</div>`
     : '';
 
   const extractedFiles =
     job.extractedFiles && job.extractedFiles.length > 0
-      ? `<div class="extracted-files">Files: ${job.extractedFiles.map(escapeHtml).join(', ')}</div>`
+      ? `<div class="extracted-files">Files: ${job.extractedFiles.map(downloadEscapeHtml).join(', ')}</div>`
       : '';
 
   // Job ID is server-supplied. The id flows into a `data-cancel-job-id`
@@ -343,10 +343,10 @@ function renderDownloadJob(job: DownloadJob): string {
   // event.target.dataset.cancelJobId and calls cancelDownload(). This
   // avoids the inline-onclick path where the browser HTML-decodes the
   // attribute into a JS literal, which would let `'); alert();//`
-  // escape escapeHtml's protection.
+  // escape downloadEscapeHtml's protection.
   const cancelButton =
     job.status === 'queued' || job.status === 'downloading' || job.status === 'extracting'
-      ? `<button class="btn btn-danger btn-sm" data-cancel-job-id="${escapeHtml(job.id)}">Cancel</button>`
+      ? `<button class="btn btn-danger btn-sm" data-cancel-job-id="${downloadEscapeHtml(job.id)}">Cancel</button>`
       : '';
 
   const urlFilename = job.url.split('/').pop()?.split('?')[0] || 'Download';
@@ -354,13 +354,13 @@ function renderDownloadJob(job: DownloadJob): string {
   return `
     <div class="download-job ${statusClass}">
       <div class="job-header">
-        <span class="job-name">${escapeHtml(urlFilename)}</span>
+        <span class="job-name">${downloadEscapeHtml(urlFilename)}</span>
         <div class="job-header-right">
           <span class="job-status">${statusText}</span>
           ${cancelButton}
         </div>
       </div>
-      <div class="job-url">${escapeHtml(truncateUrl(job.url))}</div>
+      <div class="job-url">${downloadEscapeHtml(truncateUrl(job.url))}</div>
       ${progressBar}
       ${errorMessage}
       ${extractedFiles}
