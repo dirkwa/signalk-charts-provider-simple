@@ -14,6 +14,7 @@ import {
   classifyUrl,
   trackInstall,
   setInstallFilename,
+  renameInstallFilename,
   removeInstall,
   removeInstallByFilename,
   getInstalledCatalogCharts,
@@ -917,6 +918,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         await fs.promises.rename(sourcePath, targetPath);
         app.debug(`Moved chart from ${sourcePath} to ${targetPath}`);
 
+        // Update any catalog-install record that points at the old
+        // path so a later delete still clears the catalog "Installed"
+        // badge by reverse-lookup.
+        const newRelative = path.relative(basePath, targetPath);
+        renameInstallFilename(chartPathBody, newRelative);
+
         await refreshChartProviders();
 
         const chartId = path.basename(chartPathBody).replace(/\.mbtiles$/, '');
@@ -1005,6 +1012,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             `rename-chart metadata patch threw: ${mdErr instanceof Error ? mdErr.message : String(mdErr)}`
           );
         }
+
+        // Update any catalog-install record that points at the old
+        // path so a later delete still clears the catalog "Installed"
+        // badge by reverse-lookup.
+        const newRelative = path.relative(basePath, targetPath);
+        renameInstallFilename(chartPathBody, newRelative);
 
         await refreshChartProviders();
 

@@ -528,6 +528,24 @@ export function removeInstallByFilename(filename: string): boolean {
   return false;
 }
 
+/**
+ * Update an install's tracked filename when the user moves or renames
+ * a chart. Matches the prior path's basename to find the right
+ * install record (chartPath-relative comparison). Returns true if an
+ * install was updated.
+ */
+export function renameInstallFilename(oldPath: string, newPath: string): boolean {
+  const oldBase = path.basename(oldPath);
+  for (const install of Object.values(installs)) {
+    if (install.installedFilename && path.basename(install.installedFilename) === oldBase) {
+      install.installedFilename = newPath;
+      saveInstalls();
+      return true;
+    }
+  }
+  return false;
+}
+
 export function setConvertingState(chartNumber: string, isConverting: boolean): void {
   if (isConverting) {
     converting[chartNumber] = true;
@@ -589,13 +607,39 @@ export function pruneStaleInstalls(chartIdentifiers: string[]): void {
   const ids = new Set(chartIdentifiers.map((id) => id.toLowerCase()));
   let pruned = false;
 
-  for (const key of Object.keys(installs)) {
+  for (const [key, install] of Object.entries(installs)) {
+    // Authoritative path: if we recorded the on-disk filename at
+    // conversion/move/rename time, the install key should match the
+    // chart whose chartId is the basename-without-extension. Anything
+    // else means the file is gone (deleted) and the install record
+    // should drop. Skips the legacy fuzzy-match that produced false
+    // positives — install key "2" was kept alive by any chartId
+    // containing the digit "2".
+    if (install.installedFilename) {
+      const expectedId = path
+        .basename(install.installedFilename)
+        .replace(/\.mbtiles$/i, '')
+        .toLowerCase();
+      if (!ids.has(expectedId)) {
+        console.log(
+          `[charts-provider] Pruning catalog install ${key}: file not found (${install.installedFilename})`
+        );
+        delete installs[key];
+        pruned = true;
+      }
+      continue;
+    }
+
     const keyLower = key.toLowerCase();
 
     if (ids.has(keyLower)) {
       continue;
     }
 
+    // Legacy fuzzy match for installs recorded before installedFilename
+    // existed. Kept conservative — substring match has produced false
+    // positives for short numeric chart numbers; the explicit-filename
+    // branch above is the right path going forward.
     let found = false;
     for (const id of ids) {
       if (
