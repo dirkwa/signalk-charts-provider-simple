@@ -6,6 +6,14 @@ dist/
 dist-test/
 dist-e2e/
 
+# Compiled frontend output: each .ts under public/js/ produces a sibling
+# .js. Once a JS file has a TS source, the .js becomes a build artifact.
+# Listed explicitly because the unmigrated *.js files (chart-catalog.js,
+# chart-convert.js, download-simple.js, manage-charts-enhanced.js) are
+# still source. Add to this list as each file is converted in a follow-up.
+public/js/tabs.js
+public/js/emoji-utils.js
+
 # Playwright outputs
 playwright-report/
 test-results/

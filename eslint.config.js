@@ -6,7 +6,10 @@ module.exports = [
   {
     ignores: [
       'node_modules/**',
-      'public/js/**',
+      // Ignore compiled frontend JS but keep .ts sources lintable.
+      // ** glob covers nested folders that may appear later under
+      // public/js/ (e.g. utils/) without revisiting this config.
+      'public/js/**/*.js',
       'dist/**',
       'dist-test/**',
       'dist-e2e/**',
@@ -23,16 +26,33 @@ module.exports = [
   // no implicit any, exhaustive switch, etc.
   ...tseslint.configs.strictTypeChecked.map((config) => ({
     ...config,
-    files: ['src/**/*.ts', 'test/**/*.ts', 'e2e/**/*.ts', 'playwright.config.ts']
+    files: [
+      'src/**/*.ts',
+      'test/**/*.ts',
+      'e2e/**/*.ts',
+      'public/js/**/*.ts',
+      'playwright.config.ts'
+    ]
   })),
   {
-    files: ['src/**/*.ts', 'test/**/*.ts', 'e2e/**/*.ts', 'playwright.config.ts'],
+    files: [
+      'src/**/*.ts',
+      'test/**/*.ts',
+      'e2e/**/*.ts',
+      'public/js/**/*.ts',
+      'playwright.config.ts'
+    ],
     languageOptions: {
       parserOptions: {
-        // Point at all three tsconfigs so test/**/*.ts (tsconfig.test.json)
-        // and e2e/**/*.ts (tsconfig.e2e.json) are accepted by the project
-        // service alongside src/**/*.ts (tsconfig.json).
-        project: ['./tsconfig.json', './tsconfig.test.json', './tsconfig.e2e.json'],
+        // Point at all four tsconfigs so each subtree is accepted by
+        // the project service: src/ (tsconfig.json), test/, e2e/, and
+        // public/js/ (tsconfig.public.json).
+        project: [
+          './tsconfig.json',
+          './tsconfig.test.json',
+          './tsconfig.e2e.json',
+          './tsconfig.public.json'
+        ],
         tsconfigRootDir: __dirname
       }
     },
@@ -94,6 +114,20 @@ module.exports = [
       '@typescript-eslint/restrict-template-expressions': 'off',
       // Tests intentionally compare for strict equality on numeric
       // boundary values where deepStrictEqual would over-restrict.
+      '@typescript-eslint/no-non-null-assertion': 'off'
+    }
+  },
+
+  // Frontend TS lives under public/js/ and runs as plain `<script>` tags
+  // in the browser (no bundler). It uses DOM-driven flows that strict-
+  // type-checked rules around floating promises and "unnecessary
+  // condition" trip on; the relaxations here mirror the test/e2e block.
+  {
+    files: ['public/js/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'off',
+      '@typescript-eslint/no-misused-promises': 'off',
+      '@typescript-eslint/no-unnecessary-condition': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off'
     }
   },
