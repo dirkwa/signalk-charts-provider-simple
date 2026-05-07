@@ -119,7 +119,11 @@ document.addEventListener('charts-changed', () => {
     delete catalogChartData[key];
   }
   void (async () => {
-    await loadCatalogRegistry();
+    // Run registry + folder list in parallel — a move can add/remove
+    // folders, and the download-folder <select> in expanded catalog
+    // rows is rendered from catalogFolders. Without this call the
+    // dropdown stayed stale until the next download or tab re-init.
+    await Promise.all([loadCatalogRegistry(), loadFolders()]);
     await Promise.all(
       wereExpanded.map(async (catalogFile) => {
         try {
