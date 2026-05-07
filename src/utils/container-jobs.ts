@@ -18,8 +18,8 @@
  * this file changes.
  */
 
-import { getContainerManager } from './container-manager';
-import type { ContainerManagerApi, ContainerResourceLimits } from './container-manager';
+import { getContainerManager } from './container-manager.js';
+import type { ContainerManagerApi, ContainerResourceLimits } from './container-manager.js';
 
 function requireManager(): ContainerManagerApi {
   const manager = getContainerManager();

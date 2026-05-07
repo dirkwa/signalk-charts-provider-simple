@@ -5,16 +5,16 @@ import {
   ensureImage as ensureContainerImage,
   resolveJobPaths,
   runJob as runContainerJob
-} from './container-jobs';
-import { getContainerManager } from './container-manager';
-import { setMbtilesType } from './mbtiles-metadata';
+} from './container-jobs.js';
+import { getContainerManager } from './container-manager.js';
+import { setMbtilesType } from './mbtiles-metadata.js';
 import type {
   ConversionProgress,
   ConversionProgressMap,
   RncConversionResult,
   StatusCallback,
   DebugFunction
-} from '../types';
+} from '../types.js';
 
 const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
 

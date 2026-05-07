@@ -2,10 +2,10 @@ import path from 'path';
 import fs from 'fs';
 import https from 'https';
 import type { Plugin, Path } from '@signalk/server-api';
-import { findCharts } from './charts-loader';
-import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner';
-import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state';
-import { downloadManager } from './utils/download-manager';
+import { findCharts } from './charts-loader.js';
+import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner.js';
+import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state.js';
+import { downloadManager } from './utils/download-manager.js';
 import {
   initCatalogManager,
   getCatalogRegistry,
@@ -21,17 +21,17 @@ import {
   getConvertingCount,
   checkForUpdates,
   getCatalogsWithInstalledCharts
-} from './utils/catalog-manager';
+} from './utils/catalog-manager.js';
 import {
   initS57Converter,
   processS57Zip,
   getAllConversionProgress as getAllS57Progress,
   getConversionProgress as getS57Progress,
   setConversionFailed as setS57Failed
-} from './utils/s57-converter';
-import { getContainerManager, waitForContainerManager } from './utils/container-manager';
-import { cleanCatalogTitle } from './utils/catalog-title';
-import { setMbtilesDisplayName } from './utils/mbtiles-metadata';
+} from './utils/s57-converter.js';
+import { getContainerManager, waitForContainerManager } from './utils/container-manager.js';
+import { cleanCatalogTitle } from './utils/catalog-title.js';
+import { setMbtilesDisplayName } from './utils/mbtiles-metadata.js';
 import {
   initRncConverter,
   processRncZip,
@@ -39,19 +39,21 @@ import {
   getAllConversionProgress as getAllRncProgress,
   getConversionProgress as getRncProgress,
   setConversionFailed as setRncFailed
-} from './utils/rnc-converter';
-import { processGshhg, processShpBasemap } from './utils/s57-converter';
-import { getCpuBudget, setCpuBudget } from './utils/concurrency';
-import { writeChartPathMarker } from './utils/path-marker';
-import { parsePluginConfig } from './utils/plugin-config-schema';
+} from './utils/rnc-converter.js';
+import { processGshhg, processShpBasemap } from './utils/s57-converter.js';
+import { getCpuBudget, setCpuBudget } from './utils/concurrency.js';
+import { writeChartPathMarker } from './utils/path-marker.js';
+import { parsePluginConfig } from './utils/plugin-config-schema.js';
 import { Type } from '@sinclair/typebox';
-import { parseBody, parseShape } from './utils/rest-validation';
-import { isWithinBase, arePairWithinBase } from './utils/path-safety';
+import { parseBody, parseShape } from './utils/rest-validation.js';
+import { isWithinBase, arePairWithinBase } from './utils/path-safety.js';
+import Busboy from 'busboy';
+import { DatabaseSync } from 'node:sqlite';
 
-// Read at module load so the marker file always reflects the running build.
-// `require` keeps this synchronous and avoids dragging package.json into the
-// emitted dist (tsc resolves it through CommonJS interop).
-const pluginVersion: string = (require('../package.json') as { version: string }).version;
+// JSON import with type attribute (NodeNext ESM). package.json's `version`
+// is what the marker file records so users can confirm the running build.
+import packageJson from '../package.json' with { type: 'json' };
+const pluginVersion: string = (packageJson as { version: string }).version;
 import type {
   ExtendedServerAPI,
   PluginConfig,
@@ -61,7 +63,7 @@ import type {
   Request,
   Response,
   DownloadJob
-} from './types';
+} from './types.js';
 
 const PLUGIN_ID = 'signalk-charts-provider-simple';
 const chartTilesPath = `/plugins/${PLUGIN_ID}`;
@@ -479,7 +481,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/download-chart-locker', (req: Request, res: Response) => {
-      const Busboy = require('busboy') as typeof import('busboy');
       const bb = Busboy({ headers: req.headers });
 
       const fields: Record<string, string> = {};
@@ -1035,7 +1036,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
-        const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
         const db = new DatabaseSync(fullPath);
 
         try {
@@ -1090,7 +1090,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
-        const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
         const db = new DatabaseSync(fullPath, { readOnly: true });
 
         try {
@@ -1136,7 +1135,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     router.post('/upload', (req: Request, res: Response) => {
       try {
-        const Busboy = require('busboy') as typeof import('busboy');
         const bb = Busboy({ headers: req.headers });
         const basePath = props.chartPath || defaultChartsPath;
         const uploadedFiles: string[] = [];
@@ -1439,7 +1437,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/convert-upload', (req: Request, res: Response) => {
-      const Busboy = require('busboy') as typeof import('busboy');
       const bb = Busboy({ headers: req.headers, limits: { fileSize: 500 * 1024 * 1024 } });
       const chartPath = props.chartPath || defaultChartsPath;
 
@@ -2424,4 +2421,4 @@ const serveTileFromMbtiles = (
   }
 };
 
-export = pluginConstructor;
+export default pluginConstructor;

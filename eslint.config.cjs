@@ -132,10 +132,11 @@ module.exports = [
     }
   },
 
-  // Test fixtures stay as JS — they're one-off setup scripts, not under
-  // test, and `node test/fixtures/create-test-mbtiles.js` runs raw JS.
+  // Test fixtures stay as CommonJS scripts — they're one-off setup
+  // scripts, not under test. The `.cjs` extension keeps them parseable
+  // as CJS now that the package is `"type": "module"`.
   {
-    files: ['test/fixtures/**/*.js'],
+    files: ['test/fixtures/**/*.cjs'],
     plugins: {
       prettier
     },

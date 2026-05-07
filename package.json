@@ -2,6 +2,7 @@
   "name": "signalk-charts-provider-simple",
   "version": "2.0.0-beta.1",
   "description": "Simple Signal K chart provider for local MBTiles with web and download management",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -18,7 +19,7 @@
     "build:public": "tsc -p tsconfig.public.json",
     "pretest": "npm run build && npm run build:tests && npm run test:fixtures",
     "test": "node --test --test-force-exit dist-test/**/*.test.js",
-    "test:fixtures": "node test/fixtures/create-test-mbtiles.js",
+    "test:fixtures": "node test/fixtures/create-test-mbtiles.cjs",
     "test:e2e": "npm run build && npm run build:e2e && playwright test",
     "lint": "eslint src test e2e public/js playwright.config.ts",
     "lint:fix": "eslint src test e2e public/js playwright.config.ts --fix",

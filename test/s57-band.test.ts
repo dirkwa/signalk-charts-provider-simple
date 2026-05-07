@@ -7,7 +7,7 @@ import {
   BAND_MIN_ZOOM,
   bandClampedMaxzoom,
   highestBandForFiles
-} from '../dist/utils/s57-band';
+} from '../dist/utils/s57-band.js';
 
 describe('detectEncBand (IHO Annex E filename convention)', () => {
   it('parses NOAA filenames', () => {

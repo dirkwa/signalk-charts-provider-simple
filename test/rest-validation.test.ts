@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { Type } from '@sinclair/typebox';
 
-import { parseBody, parseShape } from '../dist/utils/rest-validation';
+import { parseBody, parseShape } from '../dist/utils/rest-validation.js';
 
 interface FakeRes {
   statusCode: number;

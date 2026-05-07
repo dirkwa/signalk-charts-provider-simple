@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
 
-import { isWithinBase, arePairWithinBase } from '../dist/utils/path-safety';
+import { isWithinBase, arePairWithinBase } from '../dist/utils/path-safety.js';
 
 const BASE = '/srv/charts';
 

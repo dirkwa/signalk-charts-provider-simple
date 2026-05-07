@@ -12,14 +12,14 @@ import type {
   UrlClassification,
   CatalogUpdate,
   DebugFunction
-} from '../types';
+} from '../types.js';
 import {
   CatalogDataSchema,
   CatalogInstallsMapSchema,
   CatalogRegistryCacheSchema,
   GithubContentsListingSchema,
   safeParse
-} from './catalog-schemas';
+} from './catalog-schemas.js';
 
 const CATALOG_BASE_URL = 'https://raw.githubusercontent.com/chartcatalogs/catalogs/master/';
 const CATALOG_GITHUB_API = 'https://api.github.com/repos/chartcatalogs/catalogs/contents/';

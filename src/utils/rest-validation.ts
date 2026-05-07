@@ -15,7 +15,7 @@
  */
 
 import type { Response } from 'express';
-import type { Request } from '../types';
+import type { Request } from '../types.js';
 import { Value } from '@sinclair/typebox/value';
 import type { TSchema, Static } from '@sinclair/typebox';
 

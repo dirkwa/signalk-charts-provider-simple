@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { setMockState, patchMockState } from './helpers';
+import { setMockState, patchMockState } from './helpers.js';
 
 test.describe('Chart Catalog tab', () => {
   test('shows "No catalogs in this category" on an empty registry', async ({ page }) => {

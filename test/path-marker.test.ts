@@ -8,7 +8,7 @@ import {
   writeChartPathMarker,
   detectContainerHints,
   MARKER_FILENAME
-} from '../dist/utils/path-marker';
+} from '../dist/utils/path-marker.js';
 
 describe('writeChartPathMarker', () => {
   let tmp: string;

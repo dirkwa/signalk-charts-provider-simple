@@ -7,7 +7,7 @@ import {
   _resetContainerManagerForTests,
   type ContainerManagerApi,
   type ContainerRuntimeInfo
-} from '../dist/utils/container-manager';
+} from '../dist/utils/container-manager.js';
 
 const GLOBAL_KEY = '__signalk_containerManager';
 

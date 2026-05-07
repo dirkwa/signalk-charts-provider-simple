@@ -1,12 +1,12 @@
 import type { ServerAPI } from '@signalk/server-api';
 import type { Request, Response, IRouter } from 'express';
-import type { MBTilesReader } from './utils/mbtiles-reader';
+import type { MBTilesReader } from './utils/mbtiles-reader.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
-// Re-exported here so existing imports (`from './types'`) keep working.
+// Re-exported here so existing imports (`from './types.js'`) keep working.
 
-export type { CpuBudgetPreset, PluginConfig } from './utils/plugin-config-schema';
+export type { CpuBudgetPreset, PluginConfig } from './utils/plugin-config-schema.js';
 
 // ---- Extended ServerAPI ----
 // ServerAPI from @signalk/server-api does not expose app.config or app.get() for route registration.
@@ -131,7 +131,7 @@ export interface DownloadJob {
 // ---- Catalog Manager ----
 // Most catalog types are runtime-validated via TypeBox in
 // `utils/catalog-schemas.ts`. Re-exported here so existing imports
-// (`from './types'`) keep working. `CatalogRegistryInfo` is a UI-only
+// (`from './types.js'`) keep working. `CatalogRegistryInfo` is a UI-only
 // shape (built in-memory after registering, never parsed from JSON), so
 // it stays a plain interface.
 
@@ -143,9 +143,9 @@ export type {
   CatalogData,
   CatalogInstall,
   CatalogInstallsMap
-} from './utils/catalog-schemas';
+} from './utils/catalog-schemas.js';
 
-import type { CatalogRegistryEntry } from './utils/catalog-schemas';
+import type { CatalogRegistryEntry } from './utils/catalog-schemas.js';
 
 export interface CatalogRegistryInfo extends CatalogRegistryEntry {
   chartCount: number | null;

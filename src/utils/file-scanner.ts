@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import type { ScannedChart } from '../types';
+import { DatabaseSync } from 'node:sqlite';
+import type { ScannedChart } from '../types.js';
 
 interface ChartMetadata {
   name?: string;
@@ -10,7 +11,6 @@ interface ChartMetadata {
 
 function getChartName(filePath: string): string | null {
   try {
-    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
     const db = new DatabaseSync(filePath, { readOnly: true });
 
     try {

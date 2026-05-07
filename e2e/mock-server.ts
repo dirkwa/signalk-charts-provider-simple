@@ -19,7 +19,11 @@
 
 import express from 'express';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import type { Request, Response } from 'express';
+
+// ESM equivalent of CommonJS `__dirname` — resolved from the module URL.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Mock state.  Each top-level key is what the corresponding REST
 // endpoint returns.  Tests overwrite via PUT /__mock/state, partial
@@ -229,9 +233,12 @@ export function startMockServer(
 }
 
 // Standalone entry: `node e2e/mock-server.js` (compiled) starts the
-// harness on PORT (default 4567) and stays running.  Used by the
-// playwright `webServer` config.
-if (require.main === module) {
+// harness on PORT (default 4567) and stays running. Used by the
+// playwright `webServer` config. ESM equivalent of CommonJS
+// `require.main === module`: compare process.argv[1] to the module URL.
+const isMainModule =
+  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isMainModule) {
   const port = Number(process.env.PORT ?? '4567');
   void startMockServer(port).then(({ url }) => {
     console.log(`mock chart-provider frontend ready at ${url}`);

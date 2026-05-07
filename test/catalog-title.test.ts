@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 
-import { cleanCatalogTitle, sanitizeChartFilename } from '../dist/utils/catalog-title';
+import { cleanCatalogTitle, sanitizeChartFilename } from '../dist/utils/catalog-title.js';
 
 describe('cleanCatalogTitle', () => {
   it('strips trailing size + index from a hyphen-separated NL IENC title', () => {

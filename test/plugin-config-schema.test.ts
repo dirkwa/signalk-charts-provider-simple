@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 
-import { parsePluginConfig } from '../dist/utils/plugin-config-schema';
+import { parsePluginConfig } from '../dist/utils/plugin-config-schema.js';
 
 describe('parsePluginConfig', () => {
   it('accepts a minimal config with just chartPath', () => {

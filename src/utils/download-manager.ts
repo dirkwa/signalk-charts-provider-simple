@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
 import { EventEmitter } from 'events';
-import type { DownloadJob, DownloadJobOptions } from '../types';
+import type { DownloadJob, DownloadJobOptions } from '../types.js';
 
 interface DownloadManagerEvents {
   'job-created': [job: DownloadJob];

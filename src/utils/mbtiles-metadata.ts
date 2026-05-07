@@ -1,31 +1,19 @@
 import fs from 'fs';
+import { DatabaseSync } from 'node:sqlite';
 
 /**
- * Load `node:sqlite` lazily and report the precise failure mode if it isn't
- * available. The module was unflagged in Node 22.5; older Nodes throw a
- * different error than "module exists but DatabaseSync isn't there", and we
- * want both diagnosable from logs.
+ * `node:sqlite` is unflagged in Node ≥22.5, which `engines.node` already
+ * requires. The previous lazy-load + diagnostic shim was needed when
+ * older runtimes might silently lack the module; with ESM and the
+ * engines guard, an import-time failure is loud enough.
  */
 function loadSqlite():
-  | { ok: true; DatabaseSync: typeof import('node:sqlite').DatabaseSync }
+  | { ok: true; DatabaseSync: typeof DatabaseSync }
   | { ok: false; reason: string } {
-  let mod: typeof import('node:sqlite');
-  try {
-    mod = require('node:sqlite') as typeof import('node:sqlite');
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      reason: `node:sqlite module load failed (Node version <22.5 or experimental flag missing?): ${msg}`
-    };
+  if (typeof DatabaseSync !== 'function') {
+    return { ok: false, reason: 'node:sqlite DatabaseSync is not a function' };
   }
-  if (typeof mod.DatabaseSync !== 'function') {
-    return {
-      ok: false,
-      reason: 'node:sqlite loaded but DatabaseSync is not a function'
-    };
-  }
-  return { ok: true, DatabaseSync: mod.DatabaseSync };
+  return { ok: true, DatabaseSync };
 }
 
 export interface PatchResult {

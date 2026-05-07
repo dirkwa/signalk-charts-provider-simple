@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import type { MBTilesMetadata, TileResult } from '../types';
+import type { MBTilesMetadata, TileResult } from '../types.js';
 
 interface MetadataRow {
   name: string;

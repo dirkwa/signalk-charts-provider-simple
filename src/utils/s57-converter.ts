@@ -1,17 +1,18 @@
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
+import { DatabaseSync } from 'node:sqlite';
 import unzipper from 'unzipper';
-import { getCpuBudget } from './concurrency';
+import { getCpuBudget } from './concurrency.js';
 import {
   ensureImage as ensureContainerImage,
   resolveJobPaths,
   runJob as runContainerJob
-} from './container-jobs';
-import { getContainerManager } from './container-manager';
-import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band';
-import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata';
-import { sanitizeChartFilename } from './catalog-title';
+} from './container-jobs.js';
+import { getContainerManager } from './container-manager.js';
+import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band.js';
+import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata.js';
+import { sanitizeChartFilename } from './catalog-title.js';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -19,7 +20,7 @@ import type {
   S57ConversionOptions,
   StatusCallback,
   DebugFunction
-} from '../types';
+} from '../types.js';
 
 const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
 const TIPPECANOE_IMAGE = 'ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe';
@@ -1127,7 +1128,6 @@ export async function processGshhg(
   }
 
   try {
-    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
     const db = new DatabaseSync(outputPath);
     db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('name', ?)").run(
       `GSHHG World Basemap (${resLabels[resolution] ?? resolution})`
@@ -1396,7 +1396,6 @@ export async function processShpBasemap(
     }
 
     try {
-      const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
       const db = new DatabaseSync(outputPath);
       db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('name', ?)").run(
         `OSM Basemap (${res.label})`

@@ -7,7 +7,7 @@ import {
   CatalogRegistryCacheSchema,
   GithubContentsListingSchema,
   safeParse
-} from '../dist/utils/catalog-schemas';
+} from '../dist/utils/catalog-schemas.js';
 
 describe('catalog schemas (cache JSON validation)', () => {
   describe('CatalogDataSchema', () => {

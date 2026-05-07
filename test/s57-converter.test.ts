@@ -8,7 +8,7 @@ import {
   _testInternals,
   EXPORT_ERRORS_LOG,
   getConversionProgress
-} from '../dist/utils/s57-converter';
+} from '../dist/utils/s57-converter.js';
 
 const {
   consolidateGeoJSONByLayer,

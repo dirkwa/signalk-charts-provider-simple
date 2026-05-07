@@ -5,8 +5,12 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { MBTilesReader, open } from '../dist/utils/mbtiles-reader';
+import { MBTilesReader, open } from '../dist/utils/mbtiles-reader.js';
+
+// ESM equivalent of CJS `__dirname`.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Tests compile to `dist-test/`, so `__dirname` points there at runtime.
 // Fixtures live in `test/fixtures/`, one level up and over.
