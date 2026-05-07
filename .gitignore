@@ -1,22 +1,22 @@
 # Node modules
 node_modules/
 
+# Lockfile is intentionally not tracked — `~/.npmrc` has
+# `package-lock=false` so a committed lockfile would drift from
+# package.json on every dep change and break `npm ci` in CI.
+# CI's install step falls back to `npm install` when the lockfile
+# is absent, which is what we want.
+package-lock.json
+
 # TypeScript build output
 dist/
 dist-test/
 dist-e2e/
 
-# Compiled frontend output: each .ts under public/js/ produces a sibling
-# .js. Once a JS file has a TS source, the .js becomes a build artifact.
-# Listed explicitly because the unmigrated *.js files (chart-catalog.js,
-# chart-convert.js, download-simple.js, manage-charts-enhanced.js) are
-# still source. Add to this list as each file is converted in a follow-up.
-public/js/tabs.js
-public/js/emoji-utils.js
-public/js/download-simple.js
-public/js/chart-convert.js
-public/js/chart-catalog.js
-public/js/manage-charts-enhanced.js
+# Compiled frontend output: each .ts under public/js/ produces a
+# sibling .js. The whole frontend is TS now (see PRs #73–#76);
+# every emitted JS in this directory is a build artifact.
+public/js/*.js
 
 # Playwright outputs
 playwright-report/
