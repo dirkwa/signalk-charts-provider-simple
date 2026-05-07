@@ -4,7 +4,15 @@ const eslintJs = require('@eslint/js');
 
 module.exports = [
   {
-    ignores: ['node_modules/**', 'public/js/**', 'dist/**', 'dist-test/**']
+    ignores: [
+      'node_modules/**',
+      'public/js/**',
+      'dist/**',
+      'dist-test/**',
+      'dist-e2e/**',
+      'playwright-report/**',
+      'test-results/**'
+    ]
   },
 
   // Base recommended rules for all files
@@ -15,17 +23,16 @@ module.exports = [
   // no implicit any, exhaustive switch, etc.
   ...tseslint.configs.strictTypeChecked.map((config) => ({
     ...config,
-    files: ['src/**/*.ts', 'test/**/*.ts']
+    files: ['src/**/*.ts', 'test/**/*.ts', 'e2e/**/*.ts', 'playwright.config.ts']
   })),
   {
-    files: ['src/**/*.ts', 'test/**/*.ts'],
+    files: ['src/**/*.ts', 'test/**/*.ts', 'e2e/**/*.ts', 'playwright.config.ts'],
     languageOptions: {
       parserOptions: {
-        // Point at both tsconfigs explicitly so test/**/*.ts (in
-        // tsconfig.test.json) is accepted by the project service the
-        // same way src/**/*.ts (in tsconfig.json) is.  projectService:
-        // true alone only knows about tsconfig.json by default.
-        project: ['./tsconfig.json', './tsconfig.test.json'],
+        // Point at all three tsconfigs so test/**/*.ts (tsconfig.test.json)
+        // and e2e/**/*.ts (tsconfig.e2e.json) are accepted by the project
+        // service alongside src/**/*.ts (tsconfig.json).
+        project: ['./tsconfig.json', './tsconfig.test.json', './tsconfig.e2e.json'],
         tsconfigRootDir: __dirname
       }
     },
@@ -73,7 +80,7 @@ module.exports = [
   // intentional fire-and-forget setup call (setMbtilesType, etc.) where
   // we don't care about the return value, only the side effect.
   {
-    files: ['test/**/*.ts'],
+    files: ['test/**/*.ts', 'e2e/**/*.ts'],
     rules: {
       '@typescript-eslint/no-floating-promises': 'off',
       '@typescript-eslint/no-unnecessary-type-assertion': 'off',

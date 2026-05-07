@@ -4,6 +4,11 @@ node_modules/
 # TypeScript build output
 dist/
 dist-test/
+dist-e2e/
+
+# Playwright outputs
+playwright-report/
+test-results/
 
 # IDE files
 .vscode/
