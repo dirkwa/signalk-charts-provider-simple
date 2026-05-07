@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
-import { checkContainerRuntime, imageExists, pullImage, runContainer } from './container-runtime';
 import {
   ensureImage as ensureContainerImage,
   resolveJobPaths,
@@ -94,15 +93,6 @@ function setConvertProgress(chartNumber: string, status: string, message: string
     conversionProgress[chartNumber].status = status;
     conversionProgress[chartNumber].message = message;
   }
-}
-
-async function ensureGdalImage(): Promise<void> {
-  if (await imageExists(GDAL_IMAGE)) {
-    return;
-  }
-  debug('Pulling GDAL image...');
-  await pullImage(GDAL_IMAGE, (msg) => debug(msg));
-  debug('GDAL image pulled successfully');
 }
 
 export async function convertKapToMbtiles(
@@ -403,23 +393,52 @@ export async function processPilotTar(
   }
 
   try {
-    const runtime = await checkContainerRuntime();
-    if (!runtime.available) {
-      throw new Error('No Docker- or Podman-compatible socket reachable.');
+    const manager = getContainerManager();
+    if (!manager) {
+      throw new Error(
+        'signalk-container plugin is required for chart conversion. ' +
+          'Install it from the App Store and restart Signal K.'
+      );
     }
 
     statusFn('pulling', 'Checking GDAL image...');
-    await ensureGdalImage();
+    await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
 
     statusFn('extracting', 'Extracting pilot chart archive...');
     setConvertProgress(chartNumber, 'extracting', 'Extracting .tar.xz archive...');
 
-    const tarResult = await runContainer({
+    // Resolve the archive (input) and tmpDir (output) paths.  The
+    // per-file kap loop below resolves tmpDir + chartsDir separately
+    // so the tar step's mounts don't include chartsDir prematurely.
+    const archiveDir = path.dirname(tarPath);
+    const tarResolved = await resolveJobPaths(
+      { '/archive': archiveDir, '/output': tmpDir },
+      (cp, ap) =>
+        appendLog(
+          chartNumber,
+          `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+        )
+    );
+    if (!tarResolved) {
+      throw new Error(
+        'Pilot chart conversion paths are not reachable from the container runtime. ' +
+          'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+          'container bind/volume to cover it.'
+      );
+    }
+    const archivePrefix = tarResolved['/archive'].subPath
+      ? `/archive/${tarResolved['/archive'].subPath}`
+      : '/archive';
+    const tarOutputPrefix = tarResolved['/output'].subPath
+      ? `/output/${tarResolved['/output'].subPath}`
+      : '/output';
+
+    const tarResult = await runContainerJob({
       image: GDAL_IMAGE,
-      phase: 'tar-extract',
-      job: chartNumber,
-      cmd: ['tar', '-xf', `/archive/${path.basename(tarPath)}`, '-C', '/output'],
-      binds: [`${path.dirname(tarPath)}:/archive:ro`, `${tmpDir}:/output`],
+      label: `tar-extract-${chartNumber}`,
+      command: ['tar', '-xf', `${archivePrefix}/${path.basename(tarPath)}`, '-C', tarOutputPrefix],
+      inputs: { '/archive': tarResolved['/archive'].source },
+      outputs: { '/output': tarResolved['/output'].source },
       onStdoutLine: (line) => appendLog(chartNumber, line),
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
@@ -451,6 +470,31 @@ export async function processPilotTar(
     statusFn('converting', `Converting ${kapFiles.length} chart(s)...`);
     setConvertProgress(chartNumber, 'converting', `Converting ${kapFiles.length} chart(s)...`);
 
+    // Resolve once: tmpDir as the input mount, chartsDir as the output
+    // mount.  Same per-iteration prefix-substitution pattern used for
+    // BSB/KAP and S-57 processing.
+    const convResolved = await resolveJobPaths(
+      { '/input': tmpDir, '/output': chartsDir },
+      (cp, ap) =>
+        appendLog(
+          chartNumber,
+          `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+        )
+    );
+    if (!convResolved) {
+      throw new Error(
+        'Pilot chart conversion paths are not reachable from the container runtime. ' +
+          'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+          'container bind/volume to cover it.'
+      );
+    }
+    const inputPrefix = convResolved['/input'].subPath
+      ? `/input/${convResolved['/input'].subPath}`
+      : '/input';
+    const outputPrefix = convResolved['/output'].subPath
+      ? `/output/${convResolved['/output'].subPath}`
+      : '/output';
+
     const mbtilesFiles: string[] = [];
     let i = 0;
     for (const kap of kapFiles) {
@@ -458,8 +502,8 @@ export async function processPilotTar(
       const relInput = path.relative(tmpDir, kap);
       const baseName = path.basename(kap, path.extname(kap));
       const outputName = `${baseName}.mbtiles`;
-      const containerInput = `/input/${relInput}`;
-      const containerOutput = `/output/${outputName}`;
+      const containerInput = `${inputPrefix}/${relInput}`;
+      const containerOutput = `${outputPrefix}/${outputName}`;
       const friendly = path.basename(kap);
 
       appendLog(chartNumber, `PROGRESS: Converting ${friendly} (${i}/${kapFiles.length})`);
@@ -469,11 +513,10 @@ export async function processPilotTar(
         `Converting ${friendly} (${i}/${kapFiles.length})...`
       );
 
-      const translateResult = await runContainer({
+      const translateResult = await runContainerJob({
         image: GDAL_IMAGE,
-        phase: 'gdal-translate',
-        job: baseName,
-        cmd: [
+        label: `gdal-translate-${baseName}`,
+        command: [
           'gdal_translate',
           '-of',
           'MBTiles',
@@ -482,7 +525,8 @@ export async function processPilotTar(
           containerInput,
           containerOutput
         ],
-        binds: [`${tmpDir}:/input:ro`, `${chartsDir}:/output`],
+        inputs: { '/input': convResolved['/input'].source },
+        outputs: { '/output': convResolved['/output'].source },
         onStdoutLine: (line) => appendLog(chartNumber, line),
         onStderrLine: (line) => appendLog(chartNumber, line)
       });
@@ -491,12 +535,11 @@ export async function processPilotTar(
         continue;
       }
 
-      const overviewResult = await runContainer({
+      const overviewResult = await runContainerJob({
         image: GDAL_IMAGE,
-        phase: 'gdaladdo',
-        job: baseName,
-        cmd: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
-        binds: [`${chartsDir}:/output`],
+        label: `gdaladdo-${baseName}`,
+        command: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
+        outputs: { '/output': convResolved['/output'].source },
         onStdoutLine: (line) => appendLog(chartNumber, line),
         onStderrLine: (line) => appendLog(chartNumber, line)
       });
