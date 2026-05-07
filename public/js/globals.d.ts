@@ -47,38 +47,37 @@ declare global {
     startDownload(): Promise<void>;
     cancelDownload(jobId: string): Promise<void>;
 
-    // manage-charts-enhanced.js (still .js until PR-D)
-    triggerUpload?(): void;
-    triggerUploadEmpty?(): void;
-    handleFileUpload?(event: Event): Promise<void>;
-    setViewMode?(mode: string): void;
-    selectFolder?(folder: string): void;
-    showCreateFolderDialog?(): void;
-    closeCreateFolderModal?(event?: Event): void;
-    confirmCreateFolder?(): void;
-    deleteFolder?(folder: string): void;
-    deleteSelectedFolder?(): void;
-    closeDeleteModal?(event?: Event): void;
-    confirmDelete?(): void;
-    deleteChart?(relativePath: string, name: string): void;
-    showRenameDialog?(chartPath: string, currentName: string, folder: string): void;
-    closeRenameModal?(event?: Event): void;
-    confirmRename?(): Promise<void>;
-    closeDuplicateModal?(event?: Event): void;
-    confirmDuplicate?(): void;
-    toggleChart?(relativePath: string): Promise<void>;
-    handleDragStart?(event: DragEvent, chartPath: string): void;
-    handleDragOver?(event: DragEvent): void;
-    handleFolderDragOver?(event: DragEvent): void;
-    handleFolderDragLeave?(event: DragEvent): void;
-    handleDrop?(event: DragEvent, targetFolder: string): void;
-    handleDropOnFolder?(event: DragEvent, targetFolder: string): Promise<void>;
-    showChartInfo?(chartPath: string): Promise<void>;
-    closeChartInfoModal?(event?: Event): void;
-    editChartMetadata?(): void;
-    cancelEditMetadata?(): void;
-    saveChartMetadata?(): Promise<void>;
-    pendingDuplicateCancel?: (() => void) | null;
+    // manage-charts-enhanced.ts
+    triggerUpload(): void;
+    triggerUploadEmpty(): void;
+    handleFileUpload(event: Event): void;
+    setViewMode(mode: 'grid' | 'list'): void;
+    selectFolder(folder: string | null): void;
+    showCreateFolderDialog(): void;
+    closeCreateFolderModal(event?: Event): void;
+    confirmCreateFolder(): void;
+    deleteFolder(folder: string): void;
+    deleteSelectedFolder(): void;
+    closeDeleteModal(event?: Event): void;
+    confirmDelete(): void;
+    deleteChart(relativePath: string, name: string): void;
+    showRenameDialog(chartPath: string, currentName: string, folder: string): void;
+    closeRenameModal(event?: Event): void;
+    confirmRename(): Promise<void>;
+    closeDuplicateModal(event?: Event): void;
+    confirmDuplicate(): void;
+    toggleChart(relativePath: string): Promise<void>;
+    handleDragStart(event: DragEvent, chartPath: string): void;
+    handleDragOver(event: DragEvent): void;
+    handleFolderDragOver(event: DragEvent): void;
+    handleFolderDragLeave(event: DragEvent): void;
+    handleDrop(event: DragEvent, targetFolder: string): void;
+    handleDropOnFolder(event: DragEvent, targetFolder: string): Promise<void>;
+    showChartInfo(chartPath: string): Promise<void>;
+    closeChartInfoModal(event?: Event): void;
+    editChartMetadata(): void;
+    cancelEditMetadata(): void;
+    saveChartMetadata(): Promise<void>;
   }
 }
 
