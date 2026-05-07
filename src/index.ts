@@ -46,6 +46,7 @@ import { writeChartPathMarker } from './utils/path-marker';
 import { parsePluginConfig } from './utils/plugin-config-schema';
 import { Type } from '@sinclair/typebox';
 import { parseBody } from './utils/rest-validation';
+import { isWithinBase, arePairWithinBase } from './utils/path-safety';
 
 // Read at module load so the marker file always reflects the running build.
 // `require` keeps this synchronous and avoids dragging package.json into the
@@ -658,9 +659,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const basePath = props.chartPath || defaultChartsPath;
         const fullPath = path.join(basePath, chartPathParam);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -727,9 +726,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         app.debug(`Create folder - basePath: ${basePath}, fullPath: ${fullPath}`);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           app.debug('Create folder failed: path traversal attempt');
           res.status(403).send('Access denied: Invalid path');
           return;
@@ -757,14 +754,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const basePath = props.chartPath || defaultChartsPath;
         const fullPath = path.join(basePath, folderPathParam);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
 
-        if (normalizedFullPath === normalizedBasePath) {
+        if (path.normalize(fullPath) === path.normalize(basePath)) {
           res.status(403).send('Cannot delete the root chart directory');
           return;
         }
@@ -852,14 +847,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
         app.debug(`Target path: ${targetPath}`);
 
-        const normalizedSource = path.normalize(sourcePath);
-        const normalizedTarget = path.normalize(targetPath);
-        const normalizedBase = path.normalize(basePath);
-
-        if (
-          !normalizedSource.startsWith(normalizedBase) ||
-          !normalizedTarget.startsWith(normalizedBase)
-        ) {
+        if (!arePairWithinBase(sourcePath, targetPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -929,14 +917,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const targetPath = path.join(basePath, folder, newName);
         app.debug(`Target path: ${targetPath}`);
 
-        const normalizedSource = path.normalize(sourcePath);
-        const normalizedTarget = path.normalize(targetPath);
-        const normalizedBase = path.normalize(basePath);
-
-        if (
-          !normalizedSource.startsWith(normalizedBase) ||
-          !normalizedTarget.startsWith(normalizedBase)
-        ) {
+        if (!arePairWithinBase(sourcePath, targetPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -1012,9 +993,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const basePath = props.chartPath || defaultChartsPath;
         const fullPath = path.join(basePath, chartPathParam);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -1069,9 +1048,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const basePath = props.chartPath || defaultChartsPath;
         const fullPath = path.join(basePath, chartPathParam);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -1576,16 +1553,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const targetDir =
           !targetFolder || targetFolder === '/' ? chartPath : path.join(chartPath, targetFolder);
 
-        // Reject `targetFolder: '../etc'` etc. before mkdir/mkdirSync. Same
-        // guard the other mutating routes (/folders, /move-chart, /rename-chart)
-        // already use; the schema's String pattern can't catch every traversal
-        // vector (e.g. `valid/../escape`), so the canonical fix is here.
-        const normalizedTargetDir = path.normalize(targetDir);
-        const normalizedChartPath = path.normalize(chartPath);
-        if (
-          normalizedTargetDir !== normalizedChartPath &&
-          !normalizedTargetDir.startsWith(normalizedChartPath + path.sep)
-        ) {
+        // Reject `targetFolder: '../etc'` etc. before mkdir/mkdirSync. The
+        // schema's String pattern can't catch every traversal vector
+        // (e.g. `valid/../escape`); the helper does the normalize-and-
+        // startsWith check used by every other mutating route.
+        if (!isWithinBase(targetDir, chartPath)) {
           res.status(403).json({ success: false, error: 'Access denied: Invalid target folder' });
           return;
         }
