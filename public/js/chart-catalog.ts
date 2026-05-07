@@ -64,6 +64,7 @@ interface DownloadJobLite {
   status: 'queued' | 'downloading' | 'extracting' | 'completed' | 'failed';
   progress?: number;
   downloadedBytes?: number;
+  totalBytes?: number;
   url?: string;
   error?: string;
 }
@@ -789,13 +790,24 @@ async function pollCatalogDownloads(): Promise<void> {
         const safeProgress = Number.isFinite(job.progress)
           ? Math.max(0, Math.min(100, job.progress ?? 0))
           : 0;
+        // No Content-Length from the server → switch the fill into the
+        // animated barberpole (CSS class), drop the explicit width.
+        // Otherwise drive width by progress and clear the modifier.
+        const totalKnown =
+          Number.isFinite(job.totalBytes) && (job.totalBytes ?? 0) > 0;
         if (fillEl) {
-          fillEl.style.width = `${safeProgress}%`;
+          if (totalKnown) {
+            fillEl.classList.remove('progress-fill-indeterminate');
+            fillEl.style.width = `${safeProgress}%`;
+          } else {
+            fillEl.classList.add('progress-fill-indeterminate');
+            fillEl.style.width = '';
+          }
         }
         if (textEl) {
           if (job.status === 'extracting') {
             textEl.textContent = 'Extracting...';
-          } else if (safeProgress > 0) {
+          } else if (totalKnown && safeProgress > 0) {
             textEl.textContent = `Downloading ${safeProgress}%`;
           } else if ((job.downloadedBytes ?? 0) > 0) {
             const mb = ((job.downloadedBytes ?? 0) / (1024 * 1024)).toFixed(1);

@@ -1334,6 +1334,21 @@
     transition: width 0.3s ease;
 }
 
+/* Indeterminate progress: server didn't report Content-Length, so we
+ * don't know the total. A barberpole moving across an empty track is
+ * the standard cue for "something is happening, don't know how much
+ * is left." Used by the catalog row pill and the download-jobs card. */
+.progress-fill-indeterminate {
+    width: 30% !important;
+    transition: none !important;
+    animation: progress-indeterminate 1.5s linear infinite;
+}
+
+@keyframes progress-indeterminate {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
+
 .progress-text {
     text-align: center;
     font-size: 0.9rem;

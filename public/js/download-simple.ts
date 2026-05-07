@@ -320,12 +320,23 @@ function renderDownloadJob(job: DownloadJob): string {
     ? Math.max(0, Math.min(100, job.progress))
     : 0;
 
+  // Some servers (e.g. vaarweginformatie.nl) don't report Content-Length
+  // so totalBytes stays 0 and the percentage can't be computed. Switch
+  // to an indeterminate barberpole and show just the downloaded byte
+  // count instead of "0% - X MB / 0 B".
+  const totalKnown = Number.isFinite(job.totalBytes) && job.totalBytes > 0;
+  const fillClass = totalKnown ? 'progress-fill' : 'progress-fill progress-fill-indeterminate';
+  const fillStyle = totalKnown ? `style="width: ${safeProgress}%"` : '';
+  const progressText = totalKnown
+    ? `${safeProgress}% - ${formatBytes(job.downloadedBytes)} / ${formatBytes(job.totalBytes)}`
+    : `${formatBytes(job.downloadedBytes)} downloaded`;
+
   const progressBar =
     job.status === 'downloading' || job.status === 'extracting'
       ? `<div class="progress-bar">
-         <div class="progress-fill" style="width: ${safeProgress}%"></div>
+         <div class="${fillClass}" ${fillStyle}></div>
        </div>
-       <div class="progress-text">${safeProgress}% - ${formatBytes(job.downloadedBytes)} / ${formatBytes(job.totalBytes)}</div>`
+       <div class="progress-text">${progressText}</div>`
       : '';
 
   const errorMessage = job.error
