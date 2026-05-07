@@ -13,6 +13,13 @@ import type {
   CatalogUpdate,
   DebugFunction
 } from '../types';
+import {
+  CatalogDataSchema,
+  CatalogInstallsMapSchema,
+  CatalogRegistryCacheSchema,
+  GithubContentsListingSchema,
+  safeParse
+} from './catalog-schemas';
 
 const CATALOG_BASE_URL = 'https://raw.githubusercontent.com/chartcatalogs/catalogs/master/';
 const CATALOG_GITHUB_API = 'https://api.github.com/repos/chartcatalogs/catalogs/contents/';
@@ -110,10 +117,16 @@ function loadRegistryCache(): void {
   const cachePath = path.join(cacheDir, '_registry.json');
   try {
     if (fs.existsSync(cachePath)) {
-      catalogRegistry = JSON.parse(fs.readFileSync(cachePath, 'utf-8')) as CatalogRegistryEntry[];
+      const raw: unknown = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+      const parsed = safeParse(CatalogRegistryCacheSchema, raw);
+      if (parsed) {
+        catalogRegistry = parsed;
+      } else {
+        debug('Discarding registry cache — shape did not match schema');
+      }
     }
   } catch {
-    // ignore
+    // JSON parse error — file is corrupted, leave registry empty.
   }
 }
 
@@ -130,7 +143,14 @@ function loadInstalls(): void {
   try {
     if (fs.existsSync(installsFilePath)) {
       const data = fs.readFileSync(installsFilePath, 'utf-8');
-      installs = JSON.parse(data) as CatalogInstallsMap;
+      const raw: unknown = JSON.parse(data);
+      const parsed = safeParse(CatalogInstallsMapSchema, raw);
+      if (parsed) {
+        installs = parsed;
+      } else {
+        console.error('Discarding catalog installs file — shape did not match schema');
+        installs = {};
+      }
     }
   } catch (error) {
     console.error('Error loading catalog installs:', error);
@@ -151,7 +171,13 @@ function readCacheFile(catalogFile: string): CatalogData | null {
   try {
     if (fs.existsSync(cachePath)) {
       const data = fs.readFileSync(cachePath, 'utf-8');
-      return JSON.parse(data) as CatalogData;
+      const raw: unknown = JSON.parse(data);
+      const parsed = safeParse(CatalogDataSchema, raw);
+      if (!parsed) {
+        debug(`Discarding cache for ${catalogFile} — shape did not match schema`);
+        return null;
+      }
+      return parsed;
     }
   } catch (error) {
     debug(
@@ -268,7 +294,12 @@ export function fetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
 
           response.on('end', () => {
             try {
-              const files = JSON.parse(data) as Array<{ name: string }>;
+              const raw: unknown = JSON.parse(data);
+              const files = safeParse(GithubContentsListingSchema, raw);
+              if (!files) {
+                reject(new Error('GitHub API response did not match expected shape'));
+                return;
+              }
               const xmlFiles: CatalogRegistryEntry[] = files
                 .filter((f) => f.name.endsWith('_Catalog.xml'))
                 .map((f) => ({

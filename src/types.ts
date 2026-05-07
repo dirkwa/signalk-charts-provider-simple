@@ -129,49 +129,28 @@ export interface DownloadJob {
 }
 
 // ---- Catalog Manager ----
+// Most catalog types are runtime-validated via TypeBox in
+// `utils/catalog-schemas.ts`. Re-exported here so existing imports
+// (`from './types'`) keep working. `CatalogRegistryInfo` is a UI-only
+// shape (built in-memory after registering, never parsed from JSON), so
+// it stays a plain interface.
 
-export type CatalogCategory = 'mbtiles' | 'ienc' | 'rnc' | 'general';
+export type {
+  CatalogCategory,
+  CatalogRegistryEntry,
+  CatalogChart,
+  CatalogHeader,
+  CatalogData,
+  CatalogInstall,
+  CatalogInstallsMap
+} from './utils/catalog-schemas';
 
-export interface CatalogRegistryEntry {
-  file: string;
-  label: string;
-  category: CatalogCategory;
-}
+import type { CatalogRegistryEntry } from './utils/catalog-schemas';
 
 export interface CatalogRegistryInfo extends CatalogRegistryEntry {
   chartCount: number | null;
   cachedAt: string | null;
 }
-
-export interface CatalogChart {
-  number: string;
-  title: string;
-  format: string;
-  zipfile_location: string;
-  zipfile_datetime_iso8601: string;
-}
-
-export interface CatalogHeader {
-  title: string;
-  dateCreated: string;
-  dateValid: string;
-}
-
-export interface CatalogData {
-  fetchedAt: string;
-  catalogFile: string;
-  header: CatalogHeader;
-  charts: CatalogChart[];
-}
-
-export interface CatalogInstall {
-  catalogFile: string;
-  zipfile_datetime_iso8601: string;
-  installedAt: string;
-  zipfile_location: string;
-}
-
-export type CatalogInstallsMap = Record<string, CatalogInstall>;
 
 export type UrlFormat =
   | 'mbtiles'

@@ -304,7 +304,15 @@ describe('CatalogManager', () => {
         fetchedAt: '2020-01-01T00:00:00Z', // very old
         catalogFile: 'OLD_TEST_Catalog.xml',
         header: { title: 'Old Test' },
-        charts: [{ number: 'old1', title: 'Old Chart' }]
+        charts: [
+          {
+            number: 'old1',
+            title: 'Old Chart',
+            format: '',
+            zipfile_location: '',
+            zipfile_datetime_iso8601: ''
+          }
+        ]
       };
       fs.writeFileSync(
         path.join(cacheDir, 'OLD_TEST_Catalog.json'),
