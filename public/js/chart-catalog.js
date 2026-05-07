@@ -306,8 +306,12 @@ function renderChartList(catalogFile) {
       } else if (isConverting) {
         const progress = catalogConversionProgress[chart.number];
         const progressMsg = progress ? progress.message : 'Converting S-57 to vector tiles...';
+        // Stable ID so pollConversions can update the message text in
+        // place without re-rendering the surrounding row each tick (the
+        // re-render kills CSS animation continuity, scroll position, and
+        // the spinner's transform state).
         actionHtml = `
-          <div class="catalog-download-progress">
+          <div class="catalog-conversion-progress" id="catalog-conversion-${escapeId(chart.number)}">
             <div class="spinner" style="width:16px;height:16px;border-width:2px;"></div>
             <span>${escapeHtml(progressMsg)}</span>
             <button class="btn-catalog-log" onclick="showConversionLog('${escapeAttr(chart.number)}')">Logs</button>
@@ -502,6 +506,37 @@ async function pollCatalogDownloads() {
   }
 }
 
+/** Helper: serialize the current converting+error key set so we can
+ *  cheaply detect whether it changed since the last poll tick.  Sorted
+ *  to make {a,b} and {b,a} compare equal. */
+function catalogActiveStateKey() {
+  const conv = Object.keys(catalogConverting).sort().join(',');
+  const err = Object.keys(catalogConversionErrors).sort().join(',');
+  return `c=${conv}|e=${err}`;
+}
+
+let catalogPrevActiveStateKey = '';
+
+/** Walk currently-rendered conversion pills and update their message
+ *  text in place, without touching the surrounding DOM.  Avoids
+ *  destroying scroll position / spinner animation / progress-bar
+ *  state on every 3-second poll tick.  Only call when the
+ *  converting+error key set has not changed (the action-column shape
+ *  is the same; only the message inside it differs). */
+function updateConversionMessagesInPlace() {
+  for (const chartNumber of Object.keys(catalogConverting)) {
+    const pill = document.getElementById(`catalog-conversion-${escapeId(chartNumber)}`);
+    if (!pill) continue;
+    const span = pill.querySelector('span');
+    if (!span) continue;
+    const progress = catalogConversionProgress[chartNumber];
+    const msg = progress ? progress.message : 'Converting S-57 to vector tiles...';
+    if (span.textContent !== msg) {
+      span.textContent = msg;
+    }
+  }
+}
+
 async function pollConversions() {
   // Declared at function scope: the previous version had it inside the
   // `if (regResp.ok)` block, then referenced it on the outer-scope
@@ -552,11 +587,31 @@ async function pollConversions() {
       }
     }
 
-    const hasActive = Object.keys(catalogConverting).length > 0 ||
+    // Decide between full re-render (action-column shape changed:
+    // conversion started, finished, errored, or was dismissed) and
+    // in-place message update (same set of charts converting; only
+    // their progress message text differs).
+    //
+    // Doing a full innerHTML replace every 3 s during a long
+    // conversion was the root cause of three UX complaints: the
+    // shimmer animation restarted, the scrollbar flickered as the
+    // table re-laid-out, and the progress bar's CSS state got reset.
+    const activeStateKey = catalogActiveStateKey();
+    const stateChanged =
+      activeStateKey !== catalogPrevActiveStateKey || justFinished.length > 0;
+    catalogPrevActiveStateKey = activeStateKey;
+
+    const hasActive =
+      Object.keys(catalogConverting).length > 0 ||
       Object.keys(catalogConversionErrors).length > 0 ||
       justFinished.length > 0;
-    if (hasActive) {
+    if (!hasActive) {
+      return;
+    }
+    if (stateChanged) {
       renderCatalogList();
+    } else {
+      updateConversionMessagesInPlace();
     }
   } catch (_e) {
     // ignore

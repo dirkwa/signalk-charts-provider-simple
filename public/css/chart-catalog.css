@@ -443,8 +443,12 @@ select.catalog-folder-select:hover {
     font-size: 14px;
 }
 
-/* Inline download progress */
-.catalog-download-progress {
+/* Inline download / conversion progress.  Same flex/typography for both
+ * pills; conversion has no progress bar (just spinner + message), download
+ * has a thin bar.  Two separate classes so pollConversions can update the
+ * conversion pill without touching the download pill.  */
+.catalog-download-progress,
+.catalog-conversion-progress {
     display: flex;
     align-items: center;
     gap: var(--md-sys-spacing-2);
