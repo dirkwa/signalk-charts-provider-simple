@@ -100,6 +100,20 @@ let catalogDownloadPollInterval: ReturnType<typeof setInterval> | null = null;
 let catalogConversionPollInterval: ReturnType<typeof setInterval> | null = null;
 let catalogUpdateBadgeInterval: ReturnType<typeof setInterval> | null = null;
 
+// Cross-tab notification: Manage Charts dispatches `charts-changed` after
+// any operation that moves the on-disk chart inventory (delete, move,
+// rename). Drop our cached chart data and re-fetch the registry so the
+// "Installed" badges reflect server state without a hard browser reload.
+document.addEventListener('charts-changed', () => {
+  if (!catalogInitialized) {
+    return;
+  }
+  for (const key of Object.keys(catalogChartData)) {
+    delete catalogChartData[key];
+  }
+  void loadCatalogRegistry();
+});
+
 window.handleCatalogTabActive = function (): void {
   if (!catalogInitialized) {
     void initCatalogTab();

@@ -480,6 +480,11 @@ function deleteChart(relativePath: string, name: string): void {
         );
 
         if (response.ok) {
+          // Tell the Catalog tab to drop its cached chart data and
+          // re-fetch the registry; otherwise the "Installed" badge
+          // sticks until a hard browser reload even though the server
+          // already cleared the install record.
+          document.dispatchEvent(new CustomEvent('charts-changed'));
           void loadCharts();
         } else {
           const errorText = await response.text();
@@ -1043,6 +1048,7 @@ async function performChartMove(chartPath: string, targetFolder: string): Promis
     });
 
     if (response.ok) {
+      document.dispatchEvent(new CustomEvent('charts-changed'));
       void loadCharts();
     } else {
       const errorText = await response.text();
@@ -1263,6 +1269,7 @@ async function confirmRename(): Promise<void> {
     });
 
     if (response.ok) {
+      document.dispatchEvent(new CustomEvent('charts-changed'));
       void loadCharts();
       showRenameNotification(currentNameWithExtension, newNameWithExtension);
     } else {
