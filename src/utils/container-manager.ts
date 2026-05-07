@@ -57,6 +57,29 @@ export interface ContainerJobConfig {
    */
   resources?: ContainerResourceLimits;
   label?: string;
+  /**
+   * Owning plugin id; tags the container with `sk-job-owner=<id>`
+   * so `cleanupOrphanedJobs` can find and reap it after a Signal K
+   * crash.  Available in signalk-container >= 1.3.0.
+   */
+  ownerPluginId?: string;
+}
+
+/**
+ * One reaped orphan returned by `cleanupOrphanedJobs`.  The `label`
+ * field is whatever the caller passed into `runJob({ label })`; for
+ * this plugin we encode the chartNumber into it so a later rollback
+ * can identify which install record to clear.
+ */
+export interface OrphanJobInfo {
+  name: string;
+  image: string;
+  ownerPluginId: string;
+  label?: string;
+}
+
+export interface CleanupOrphansResult {
+  reaped: OrphanJobInfo[];
 }
 
 export interface ContainerJobResult {
@@ -106,6 +129,15 @@ export interface ContainerManagerApi {
    * mount covers the path.  Available in signalk-container >= 1.1.0.
    */
   resolveHostPath(absPath: string): Promise<ContainerMountResolution | null>;
+  /**
+   * Stop and remove every `sk-job-*` container labelled with the given
+   * `ownerPluginId`. Used at plugin start() to recover from a Signal K
+   * crash that left helpers running with no parent listener. Optional
+   * because we still support signalk-container 1.2.x at runtime — the
+   * plugin guards on `typeof manager.cleanupOrphanedJobs === 'function'`
+   * before calling. Available in signalk-container >= 1.3.0.
+   */
+  cleanupOrphanedJobs?(filter: { ownerPluginId: string }): Promise<CleanupOrphansResult>;
 }
 
 let resolvedManager: ContainerManagerApi | null = null;

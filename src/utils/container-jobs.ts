@@ -121,6 +121,8 @@ export async function resolveJobPaths(
  * import the manager type or re-implement exit-code extraction.  Throws
  * when the manager is missing — caller should have checked at startup.
  */
+export const PLUGIN_OWNER_ID = 'signalk-charts-provider-simple';
+
 export async function runJob(opts: JobRunOptions): Promise<JobRunResult> {
   const manager = requireManager();
   const result = await manager.runJob({
@@ -132,7 +134,12 @@ export async function runJob(opts: JobRunOptions): Promise<JobRunResult> {
     label: opts.label,
     onStdoutLine: opts.onStdoutLine,
     onStderrLine: opts.onStderrLine,
-    resources: opts.resources
+    resources: opts.resources,
+    // Required by signalk-container 1.3.0+ for cleanupOrphanedJobs to
+    // find and reap our containers after a Signal K crash. Single
+    // source of truth for the owner id; all of this plugin's helper
+    // jobs go through this wrapper.
+    ownerPluginId: PLUGIN_OWNER_ID
   });
   return {
     exitCode: result.exitCode ?? 1,

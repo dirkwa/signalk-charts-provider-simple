@@ -33,6 +33,7 @@ import {
   setConversionFailed as setS57Failed
 } from './utils/s57-converter.js';
 import { getContainerManager, waitForContainerManager } from './utils/container-manager.js';
+import { PLUGIN_OWNER_ID } from './utils/container-jobs.js';
 import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { setMbtilesDisplayName } from './utils/mbtiles-metadata.js';
 import {
@@ -245,6 +246,39 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       app.debug(
         `signalk-container detected: ${runtime?.runtime ?? 'unknown'} ${runtime?.version ?? ''}`.trim()
       );
+
+      // Reap any helper containers leaked by a previous Signal K
+      // crash mid-conversion. Each reaped orphan clears the
+      // matching install record and converting flag so the catalog
+      // UI doesn't show "Installed" or "Converting…" for a job
+      // that no longer exists. Requires signalk-container >= 1.3.0;
+      // older versions don't have the API and we just skip.
+      if (typeof containerManager.cleanupOrphanedJobs === 'function') {
+        try {
+          const cleanup = await containerManager.cleanupOrphanedJobs({
+            ownerPluginId: PLUGIN_OWNER_ID
+          });
+          for (const orphan of cleanup.reaped) {
+            const chartNumber = orphan.label ? orphan.label.replace(/^[a-z-]+-/, '') : null;
+            app.debug(
+              `Reaped orphan job ${orphan.name} (${orphan.label ?? 'no label'}); ` +
+                `rolling back chart ${chartNumber ?? '<unknown>'}`
+            );
+            if (chartNumber) {
+              setConvertingState(chartNumber, false);
+              removeInstall(chartNumber);
+            }
+          }
+          if (cleanup.reaped.length > 0) {
+            console.log(
+              `[charts-provider] Reaped ${cleanup.reaped.length} orphan job(s) ` +
+                `from a previous Signal K lifecycle`
+            );
+          }
+        } catch (err) {
+          app.debug(`Orphan cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
 
     startCatalogUpdateChecker();
