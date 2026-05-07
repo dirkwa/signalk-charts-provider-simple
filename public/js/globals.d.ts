@@ -26,22 +26,22 @@ declare global {
     handleConvertTabActive(): void;
     handleCatalogTabActive(): void;
 
-    // chart-catalog.js (still .js until PR-C)
-    setCatalogFilter?(category: string): void;
-    toggleCatalog?(catalogFile: string): Promise<void>;
-    downloadCatalogChart?(
+    // chart-catalog.ts
+    setCatalogFilter(category: string): void;
+    toggleCatalog(catalogFile: string): Promise<void>;
+    downloadCatalogChart(
       chartNumber: string,
       catalogFile: string,
       url: string,
       zipfileDatetime: string
     ): Promise<void>;
-    showConversionLog?(chartNumber: string): Promise<void>;
-    closeConversionLog?(): void;
-    dismissConversionError?(chartNumber: string): void;
+    showConversionLog(chartNumber: string): Promise<void>;
+    closeConversionLog(): void;
+    dismissConversionError(chartNumber: string): void;
 
-    // chart-convert.js (still .js until PR-C)
-    handleConvertFile?(input: HTMLInputElement, type: string): Promise<void>;
-    showConvertLog?(chartNumber: string): void;
+    // chart-convert.ts
+    handleConvertFile(input: HTMLInputElement, type: string): Promise<void>;
+    showConvertLog(chartNumber: string): void;
 
     // download-simple.ts
     startDownload(): Promise<void>;
