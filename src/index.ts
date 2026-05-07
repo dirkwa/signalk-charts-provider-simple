@@ -13,7 +13,9 @@ import {
   getCachedCatalog,
   classifyUrl,
   trackInstall,
+  setInstallFilename,
   removeInstall,
+  removeInstallByFilename,
   getInstalledCatalogCharts,
   pruneStaleInstalls,
   setConvertingState,
@@ -713,10 +715,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
           emitChartDelta(chartId, null);
 
-          removeInstall(chartId);
-          const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
-          if (chartNumberPart !== chartId) {
-            removeInstall(chartNumberPart);
+          // Primary path: reverse-lookup by the on-disk filename. The
+          // converter records this in the install record after a
+          // successful conversion, so a chart whose filename was
+          // rewritten by catalog title (chartNumber=2 →
+          // Port_of_Rotterdam_…mbtiles) still gets its catalog
+          // "Installed" badge cleared.
+          if (!removeInstallByFilename(chartPathParam)) {
+            // Fall back to the legacy chartId/chartNumber heuristics
+            // for charts installed before setInstallFilename existed.
+            removeInstall(chartId);
+            const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
+            if (chartNumberPart !== chartId) {
+              removeInstall(chartNumberPart);
+            }
           }
 
           res.status(200).send('Chart deleted successfully');
@@ -725,10 +737,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
           emitChartDelta(chartId, null);
 
-          removeInstall(chartId);
-          const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
-          if (chartNumberPart !== chartId) {
-            removeInstall(chartNumberPart);
+          // Primary path: reverse-lookup by the on-disk filename. The
+          // converter records this in the install record after a
+          // successful conversion, so a chart whose filename was
+          // rewritten by catalog title (chartNumber=2 →
+          // Port_of_Rotterdam_…mbtiles) still gets its catalog
+          // "Installed" badge cleared.
+          if (!removeInstallByFilename(chartPathParam)) {
+            // Fall back to the legacy chartId/chartNumber heuristics
+            // for charts installed before setInstallFilename existed.
+            removeInstall(chartId);
+            const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
+            if (chartNumberPart !== chartId) {
+              removeInstall(chartNumberPart);
+            }
           }
 
           res.status(200).send('Chart deletion processed');
@@ -1726,6 +1748,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               if (!job.extractedFiles || job.extractedFiles.length === 0) {
                 removeInstall(chartNumber);
                 app.debug(`Removed catalog tracking for ${chartNumber}: no .mbtiles extracted`);
+              } else {
+                // Record the produced filename so the delete flow can
+                // clear this install record by reverse-lookup. Same
+                // pattern as the S-57 / RNC conversion completion paths.
+                const firstFile = job.extractedFiles[0];
+                if (firstFile) {
+                  const targetFolderRel = path.relative(chartPath, targetDir);
+                  const relativePath = targetFolderRel
+                    ? path.join(targetFolderRel, firstFile)
+                    : firstFile;
+                  setInstallFilename(chartNumber, relativePath);
+                }
               }
               downloadManager.removeListener('job-failed', cleanupListener);
               downloadManager.removeListener('job-completed', cleanupListener);
@@ -1817,6 +1851,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         const relativePath = path.relative(chartPath, path.join(targetDir, result.mbtilesFile));
         setChartEnabled(relativePath, true);
+        // Record the produced filename so the delete flow can find this
+        // install record even when the converter renamed the file by
+        // catalog title (e.g. chartNumber=2 → Port_of_Rotterdam_….mbtiles).
+        setInstallFilename(chartNumber, relativePath);
         await refreshChartProviders();
 
         const chartId = result.mbtilesFile.replace(/\.mbtiles$/, '');
@@ -1900,9 +1938,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
 
+        const firstRelative = result.mbtilesFiles[0]
+          ? path.relative(chartPath, path.join(targetDir, result.mbtilesFiles[0]))
+          : null;
         for (const mbtilesFile of result.mbtilesFiles) {
           const relativePath = path.relative(chartPath, path.join(targetDir, mbtilesFile));
           setChartEnabled(relativePath, true);
+        }
+        // Record the produced filename so the delete flow can clear
+        // this install record by matching the filename. RNC catalogs
+        // can produce multiple files per chart number; we track the
+        // first — deleting any one of them clears the catalog badge.
+        if (firstRelative) {
+          setInstallFilename(chartNumber, firstRelative);
         }
         await refreshChartProviders();
         for (const mbtilesFile of result.mbtilesFiles) {

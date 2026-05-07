@@ -495,6 +495,39 @@ export function getInstalledCatalogCharts(): CatalogInstallsMap {
   return { ...installs };
 }
 
+/**
+ * Record the on-disk filename produced by a successful conversion.
+ * Lets the delete flow find this install record by the filename the
+ * user actually sees in Manage Charts (which can differ from the
+ * chartNumber when the converter renamed by catalog title).
+ */
+export function setInstallFilename(chartNumber: string, filename: string): void {
+  const install = installs[chartNumber];
+  if (!install) {
+    return;
+  }
+  install.installedFilename = filename;
+  saveInstalls();
+}
+
+/**
+ * Reverse-lookup: clear any install record whose tracked filename
+ * matches `filename` (basename match — chartPath is stripped before
+ * comparison). Returns true if a record was removed. Called from the
+ * chart-delete flow.
+ */
+export function removeInstallByFilename(filename: string): boolean {
+  const base = path.basename(filename);
+  for (const [key, install] of Object.entries(installs)) {
+    if (install.installedFilename && path.basename(install.installedFilename) === base) {
+      delete installs[key];
+      saveInstalls();
+      return true;
+    }
+  }
+  return false;
+}
+
 export function setConvertingState(chartNumber: string, isConverting: boolean): void {
   if (isConverting) {
     converting[chartNumber] = true;
