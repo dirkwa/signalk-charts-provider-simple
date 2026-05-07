@@ -104,14 +104,39 @@ let catalogUpdateBadgeInterval: ReturnType<typeof setInterval> | null = null;
 // any operation that moves the on-disk chart inventory (delete, move,
 // rename). Drop our cached chart data and re-fetch the registry so the
 // "Installed" badges reflect server state without a hard browser reload.
+//
+// Catalog rows the user had expanded need their chart data re-fetched
+// too — otherwise renderCatalogCard sees `expandedCatalogs.has(file)`
+// is true but `catalogChartData[file]` is missing and renders an empty
+// body. Snapshot the expanded set, clear the cache, then re-fetch in
+// parallel for those catalogs.
 document.addEventListener('charts-changed', () => {
   if (!catalogInitialized) {
     return;
   }
+  const wereExpanded = Array.from(expandedCatalogs);
   for (const key of Object.keys(catalogChartData)) {
     delete catalogChartData[key];
   }
-  void loadCatalogRegistry();
+  void (async () => {
+    await loadCatalogRegistry();
+    await Promise.all(
+      wereExpanded.map(async (catalogFile) => {
+        try {
+          const resp = await fetch(
+            `${CATALOG_API_BASE}/catalog/${encodeURIComponent(catalogFile)}`
+          );
+          if (resp.ok) {
+            catalogChartData[catalogFile] = (await resp.json()) as CatalogData;
+          }
+        } catch {
+          // Network blip — leave the entry empty; the user can
+          // collapse/expand to retry.
+        }
+      })
+    );
+    renderCatalogList();
+  })();
 });
 
 window.handleCatalogTabActive = function (): void {
