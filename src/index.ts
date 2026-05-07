@@ -29,9 +29,7 @@ import {
   getConversionProgress as getS57Progress,
   setConversionFailed as setS57Failed
 } from './utils/s57-converter';
-import { checkContainerRuntime } from './utils/container-runtime';
-import { detectContainerRuntime } from './utils/container-environment';
-import { waitForContainerManager } from './utils/container-manager';
+import { getContainerManager, waitForContainerManager } from './utils/container-manager';
 import { cleanCatalogTitle } from './utils/catalog-title';
 import { setMbtilesDisplayName } from './utils/mbtiles-metadata';
 import {
@@ -180,34 +178,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       console.log(`[charts-provider] chartPath resolved to ${chartPath} (marker: ${marker})`);
     } else {
       console.log(`[charts-provider] chartPath resolved to ${chartPath} (marker write failed)`);
-    }
-
-    // When Signal K runs in a container and talks to the host container
-    // runtime via socket pass-through, every bind path we hand the
-    // runtime is a container-internal path that the runtime resolves
-    // against the host filesystem. If the host doesn't have the same
-    // paths, GDAL exports see an empty /input (silent conversion failure)
-    // OR tippecanoe exits with "unable to open database file" because
-    // /output isn't writable. Both failure modes hit users who only
-    // bind-mounted the data dir — the chart output dir is a SIBLING of
-    // the data dir, so the same bind doesn't cover it unless their
-    // common parent is mounted.
-    const containerKind = detectContainerRuntime();
-    if (containerKind) {
-      const dirs: string[] = [`data dir '${pluginDataDir}'`];
-      if (!chartPath.startsWith(pluginDataDir)) {
-        dirs.push(`chart output dir '${chartPath}'`);
-      }
-      const dirList = dirs.join(' and the ');
-      const warning =
-        `[charts-provider] Signal K appears to be running in a ${containerKind} container. ` +
-        `Chart conversions launch GDAL/tippecanoe via the host container runtime, so the ${dirList} ` +
-        `must resolve to the SAME path on the host. A non-matching bind (e.g. -v /opt/signalk:/home/node/.signalk) ` +
-        `will let conversions start but produce no output, or fail with "unable to open database file" when ` +
-        `tippecanoe can't write to /output. Use identical bind paths on both sides ` +
-        `(e.g. -v /opt/signalk:/opt/signalk) — and bind a common parent if the data dir and chart output ` +
-        `dir aren't nested.`;
-      console.warn(warning);
     }
 
     initChartState(pluginDataDir);
@@ -1290,30 +1260,28 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/catalog-s57-status', async (_req: Request, res: Response) => {
-      try {
-        const runtime = await checkContainerRuntime();
-        res.json({
-          containerRuntimeAvailable: runtime.available,
-          containerRuntimeVersion: runtime.version,
-          containerRuntimeEngine: runtime.engine,
-          containerRuntimeSocketPath: runtime.socketPath,
-          // legacy aliases (kept until next breaking release)
-          podmanAvailable: runtime.available,
-          podmanVersion: runtime.version,
-          conversions: { ...getAllS57Progress(), ...getAllRncProgress() }
-        });
-      } catch {
-        res.json({
-          containerRuntimeAvailable: false,
-          containerRuntimeVersion: null,
-          containerRuntimeEngine: null,
-          containerRuntimeSocketPath: null,
-          podmanAvailable: false,
-          podmanVersion: null,
-          conversions: {}
-        });
-      }
+    router.get('/catalog-s57-status', (_req: Request, res: Response) => {
+      // Runtime info is owned by signalk-container in 2.0+; we report
+      // whatever its manager exposes.  Available = manager present AND
+      // its runtime detection has succeeded.  socketPath is no longer a
+      // first-class concept (signalk-container shells out to the
+      // podman/docker CLI rather than the daemon socket), so we emit
+      // null for that field — the UI uses it for display only.
+      const containerManager = getContainerManager();
+      const rt = containerManager?.getRuntime() ?? null;
+      const available = rt !== null;
+      const version = rt ? `${rt.runtime} version ${rt.version}` : null;
+      const engine = rt?.runtime ?? null;
+      res.json({
+        containerRuntimeAvailable: available,
+        containerRuntimeVersion: version,
+        containerRuntimeEngine: engine,
+        containerRuntimeSocketPath: null,
+        // legacy aliases (kept until next breaking release)
+        podmanAvailable: available,
+        podmanVersion: version,
+        conversions: { ...getAllS57Progress(), ...getAllRncProgress() }
+      });
     });
 
     router.get('/catalog-s57-log/:chartNumber', (req: Request, res: Response) => {
@@ -1439,13 +1407,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         const validatedFile = uploadedFile;
         void (async () => {
-          const runtimeStatus = await checkContainerRuntime();
-          if (!runtimeStatus.available) {
+          const cm = getContainerManager();
+          if (!cm?.getRuntime()) {
             cleanupDir(tmpDir);
             res.status(503).json({
               success: false,
               error:
-                'No Docker- or Podman-compatible socket reachable. See docs/running-in-docker.md.'
+                'signalk-container plugin not available. Install it from the App Store and restart Signal K.'
             });
             return;
           }
@@ -1530,7 +1498,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       req.pipe(bb);
     });
 
-    router.post('/catalog/download', async (req: Request, res: Response) => {
+    router.post('/catalog/download', (req: Request, res: Response) => {
       const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder, minzoom, maxzoom } =
         req.body as {
           url?: string;
@@ -1575,12 +1543,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
 
         if (needsRuntime) {
-          const runtimeStatus = await checkContainerRuntime();
-          if (!runtimeStatus.available) {
+          const cm = getContainerManager();
+          if (!cm?.getRuntime()) {
             res.status(503).json({
               success: false,
               error:
-                'No Docker- or Podman-compatible socket reachable. See docs/running-in-docker.md.'
+                'signalk-container plugin not available. Install it from the App Store and restart Signal K.'
             });
             return;
           }

@@ -14,8 +14,7 @@ const {
   buildExportScript,
   bandClampedMaxzoom,
   buildLayerArgs,
-  surfaceExportErrorsIfEmpty,
-  parseProbeOutput
+  surfaceExportErrorsIfEmpty
 } = _testInternals;
 
 function writeFC(p, features) {
@@ -491,35 +490,5 @@ describe('per-feature tippecanoe.minzoom stamping (band-aware consolidation)', (
     assert.strictEqual(out.tippecanoe.minzoom, 12, 'minzoom added');
     assert.strictEqual(out.tippecanoe.maxzoom, 18, 'pre-existing maxzoom preserved');
     assert.strictEqual(out.tippecanoe.layer, 'override', 'pre-existing layer preserved');
-  });
-});
-
-describe('parseProbeOutput', () => {
-  it('returns the integer wc -l emitted on stdout', () => {
-    assert.strictEqual(parseProbeOutput(['61']), 61);
-  });
-
-  it('returns 0 when the probe saw an empty bind (the headline mismatch case)', () => {
-    // This is the value that triggers "Bind-mount mismatch" in the
-    // caller — the host runtime mounted nothing at the source path.
-    assert.strictEqual(parseProbeOutput(['0']), 0);
-  });
-
-  it('strips surrounding whitespace around the count', () => {
-    assert.strictEqual(parseProbeOutput(['   42   ']), 42);
-  });
-
-  it('skips non-numeric lines and finds the count further down', () => {
-    // Some GDAL images print a startup banner / xdebug line before the
-    // count appears. The pure-numeric line still wins.
-    assert.strictEqual(parseProbeOutput(['Loading...', 'tip: ...', '7']), 7);
-  });
-
-  it('returns -1 on no output (probe failed before producing a count)', () => {
-    assert.strictEqual(parseProbeOutput([]), -1);
-  });
-
-  it('returns -1 when no line is purely numeric', () => {
-    assert.strictEqual(parseProbeOutput(['Error: cannot stat /probe', 'twelve']), -1);
   });
 });
