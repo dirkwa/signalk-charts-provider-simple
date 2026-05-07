@@ -400,6 +400,17 @@ describe('buildLayerArgs (simple -L NAME:FILE form)', () => {
     const layers = [{ file: '/anywhere/M_COVR.geojson', sourceFiles: ['M_COVR_US5MA1SK.geojson'] }];
     assert.deepStrictEqual(buildLayerArgs(layers), ['-L', 'M_COVR:/input/M_COVR.geojson']);
   });
+
+  it('uses a custom inputPrefix for named-volume deployments', () => {
+    // signalk-container resolves a named-volume mount: the whole volume is
+    // mounted at /input and the consumer must navigate to the merged-GeoJSON
+    // dir via its subPath.  buildLayerArgs threads that into the -L args.
+    const layers = [
+      { file: '/some/host/path/HRBFAC.geojson', sourceFiles: ['HRBFAC_US5MA1SK.geojson'] }
+    ];
+    const args = buildLayerArgs(layers, '/input/charts/scratch/.merged');
+    assert.deepStrictEqual(args, ['-L', 'HRBFAC:/input/charts/scratch/.merged/HRBFAC.geojson']);
+  });
 });
 
 describe('per-feature tippecanoe.minzoom stamping (band-aware consolidation)', () => {
