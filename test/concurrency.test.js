@@ -29,18 +29,28 @@ describe('cpu budget presets', () => {
       });
     });
 
-    it('half preserves the historical cpus/2 × cpus/2 budget', () => {
-      // 4 cpus → 2 jobs × 2 threads each = 4-thread peak (== cpus, no oversubscription)
+    it('half: one job using half the host (per-job, not aggregate)', () => {
+      // 2.0 redefinition: "half" caps a SINGLE conversion to half the
+      // host's cores.  Most users run one chart at a time, and the old
+      // "half = N parallel jobs each using 2 cores" semantics confused
+      // people who saw their 6-core host barely warm up on "half".
+      // 4 cpus → 1 job × 2 threads
       assert.deepStrictEqual(_computeBudgetForTests('half', 4), {
-        maxConcurrentConversions: 2,
+        maxConcurrentConversions: 1,
         tippecanoeThreadsPerJob: 2,
         gdalExportParallelism: 2
       });
-      // 8 cpus → 4 jobs × 2 threads each
+      // 6 cpus → 1 job × 3 threads
+      assert.deepStrictEqual(_computeBudgetForTests('half', 6), {
+        maxConcurrentConversions: 1,
+        tippecanoeThreadsPerJob: 3,
+        gdalExportParallelism: 3
+      });
+      // 8 cpus → 1 job × 4 threads
       assert.deepStrictEqual(_computeBudgetForTests('half', 8), {
-        maxConcurrentConversions: 4,
-        tippecanoeThreadsPerJob: 2,
-        gdalExportParallelism: 2
+        maxConcurrentConversions: 1,
+        tippecanoeThreadsPerJob: 4,
+        gdalExportParallelism: 4
       });
     });
 
@@ -52,11 +62,11 @@ describe('cpu budget presets', () => {
       });
     });
 
-    it('half on a 2-core box gives 1 job × 2 threads (uses both cores in one job)', () => {
+    it('half on a 2-core box gives 1 job × 1 thread (half of 2 = 1)', () => {
       assert.deepStrictEqual(_computeBudgetForTests('half', 2), {
         maxConcurrentConversions: 1,
-        tippecanoeThreadsPerJob: 2,
-        gdalExportParallelism: 2
+        tippecanoeThreadsPerJob: 1,
+        gdalExportParallelism: 1
       });
     });
   });

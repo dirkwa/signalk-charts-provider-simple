@@ -32,12 +32,17 @@ function resolveBudget(preset: CpuBudgetPreset, cpus: number): ResolvedBudget {
       };
     case 'half':
     default: {
-      // Today's behaviour: cpus/2 jobs in parallel, each tippecanoe gets
-      // floor(cpus / max-jobs) threads. GDAL export reuses the per-job ceiling.
-      const max = Math.max(1, Math.floor(safe / 2));
-      const perJob = Math.max(1, Math.floor(safe / max));
+      // One job at a time, using half the host's cores.  Most sailors run
+      // a single conversion at a time; if someone fires off two in parallel
+      // they're knowingly overprovisioning.  Pre-2.0 this preset was
+      // "ceil(cpus/2) parallel jobs × 2 threads each", which was confusing
+      // because a single conversion never saw more than 2 cores even on
+      // a 6-core box, and the kernel scheduler still let those 2 threads
+      // each take a full core anyway.  New definition matches user
+      // intuition: "half" = "this conversion uses half the host."
+      const perJob = Math.max(1, Math.floor(safe / 2));
       return {
-        maxConcurrentConversions: max,
+        maxConcurrentConversions: 1,
         tippecanoeThreadsPerJob: perJob,
         gdalExportParallelism: perJob
       };
