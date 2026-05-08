@@ -35,6 +35,12 @@ import {
 } from './utils/s57-converter.js';
 import { getContainerManager, waitForContainerManager } from './utils/container-manager.js';
 import { PLUGIN_OWNER_ID } from './utils/container-jobs.js';
+import {
+  cleanupQuarantineDir,
+  makeQuarantineDir,
+  promoteQuarantine,
+  sweepStaleQuarantineDirs
+} from './utils/quarantine.js';
 import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { setMbtilesDisplayName } from './utils/mbtiles-metadata.js';
 import {
@@ -239,6 +245,24 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // up.  A missing manager surfaces as setPluginError but does NOT abort
     // startup — chart *display* (serving tiles for already-converted
     // .mbtiles) doesn't need the runtime layer and remains functional.
+    // Wipe any quarantine subdirs left behind by a previous server
+    // lifecycle. Conversions write into <dataDir>/in-progress/<chartNumber>/
+    // and only promote to chartPath on success — if Signal K crashed
+    // mid-conversion the partial .mbtiles is in the quarantine and
+    // safe to drop. Runs unconditionally (independent of whether
+    // signalk-container is reachable) because it only touches our
+    // own filesystem state.
+    try {
+      const swept = sweepStaleQuarantineDirs(app.getDataDirPath());
+      if (swept > 0) {
+        console.log(
+          `[charts-provider] Swept ${swept} stale conversion quarantine dir(s) from a previous lifecycle`
+        );
+      }
+    } catch (err) {
+      app.debug(`Quarantine sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     const containerManager = await waitForContainerManager({
       onWaitingStatus: () => app.setPluginStatus('Waiting for signalk-container...')
     });
@@ -1623,17 +1647,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
           setConvertingState(chartNumber, true);
 
+          const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+
           try {
             if (convType === 's57') {
               const result = await processS57Zip(
                 validatedFile,
-                chartPath,
+                quarantineDir,
                 chartNumber,
                 (status, message) => {
                   app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
                 },
                 { minzoom, maxzoom }
               );
+
+              await promoteQuarantine(quarantineDir, [result.mbtilesFile], chartPath);
 
               const relativePath = path.relative(
                 chartPath,
@@ -1650,12 +1678,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             } else if (convType === 'rnc') {
               const result = await processRncZip(
                 validatedFile,
-                chartPath,
+                quarantineDir,
                 chartNumber,
                 (status, message) => {
                   app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
                 }
               );
+
+              await promoteQuarantine(quarantineDir, result.mbtilesFiles, chartPath);
 
               for (const mbtilesFile of result.mbtilesFiles) {
                 const relativePath = path.relative(chartPath, path.join(chartPath, mbtilesFile));
@@ -1677,6 +1707,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             );
           } finally {
             setConvertingState(chartNumber, false);
+            cleanupQuarantineDir(quarantineDir);
             cleanupDir(tmpDir);
           }
         })();
@@ -1915,11 +1946,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       setConvertingState(chartNumber, true);
 
+      // Convert into a quarantine dir under getDataDirPath() so a
+      // mid-conversion crash leaves a stale .mbtiles there, NOT in
+      // the user's live chart library. Promote to targetDir only
+      // after a successful conversion. trackInstall is already
+      // tracked above (eager — needed so the catalog can show
+      // "Converting…" while we run); the install record gets
+      // cleared on failure or rolled back on next-restart sweep.
+      const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+
       try {
         const displayName = chartTitle ? cleanCatalogTitle(chartTitle) : undefined;
         const result = await processS57Zip(
           zipPath,
-          targetDir,
+          quarantineDir,
           chartNumber,
           (status, message) => {
             app.debug(`S-57 [${chartNumber}] ${status}: ${message}`);
@@ -1932,7 +1972,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           }
         );
 
+        // Atomic move into the live chart library. If this throws
+        // the catch below clears state — the install record gets
+        // dropped and the user sees the catalog row return to
+        // "Download & Convert".
+        await promoteQuarantine(quarantineDir, [result.mbtilesFile], targetDir);
+
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
 
         const relativePath = path.relative(chartPath, path.join(targetDir, result.mbtilesFile));
@@ -1955,6 +2002,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2018,12 +2066,22 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       app.debug(`Starting RNC conversion for ${chartNumber}: ${zipPath}`);
 
+      const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+
       try {
-        const result = await processRncZip(zipPath, targetDir, chartNumber, (status, message) => {
-          app.debug(`RNC [${chartNumber}] ${status}: ${message}`);
-        });
+        const result = await processRncZip(
+          zipPath,
+          quarantineDir,
+          chartNumber,
+          (status, message) => {
+            app.debug(`RNC [${chartNumber}] ${status}: ${message}`);
+          }
+        );
+
+        await promoteQuarantine(quarantineDir, result.mbtilesFiles, targetDir);
 
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
 
         const firstRelative = result.mbtilesFiles[0]
@@ -2055,6 +2113,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2115,12 +2174,22 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       setConvertingState(chartNumber, true);
 
+      const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+
       try {
-        const result = await processPilotTar(dlPath, targetDir, chartNumber, (status, message) => {
-          app.debug(`Pilot [${chartNumber}] ${status}: ${message}`);
-        });
+        const result = await processPilotTar(
+          dlPath,
+          quarantineDir,
+          chartNumber,
+          (status, message) => {
+            app.debug(`Pilot [${chartNumber}] ${status}: ${message}`);
+          }
+        );
+
+        await promoteQuarantine(quarantineDir, result.mbtilesFiles, targetDir);
 
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
 
         for (const mbtilesFile of result.mbtilesFiles) {
@@ -2142,6 +2211,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2202,17 +2272,22 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       setConvertingState(chartNumber, true);
 
+      const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+
       try {
         const result = await processShpBasemap(
           dlPath,
-          targetDir,
+          quarantineDir,
           chartNumber,
           (status, message) => {
             app.debug(`ShpBasemap [${chartNumber}] ${status}: ${message}`);
           }
         );
 
+        await promoteQuarantine(quarantineDir, [result.mbtilesFile], targetDir);
+
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
 
         const relativePath = path.relative(chartPath, path.join(targetDir, result.mbtilesFile));
@@ -2231,6 +2306,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2269,14 +2345,24 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     const tmpDir = path.join(app.getDataDirPath(), `gshhg-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });
+    const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
 
     void (async () => {
       try {
-        await processGshhg(tmpDir, targetDir, resolution, chartNumber, (status, message) => {
-          app.debug(`GSHHG [${chartNumber}] ${status}: ${message}`);
-        });
+        const result = await processGshhg(
+          tmpDir,
+          quarantineDir,
+          resolution,
+          chartNumber,
+          (status, message) => {
+            app.debug(`GSHHG [${chartNumber}] ${status}: ${message}`);
+          }
+        );
+
+        await promoteQuarantine(quarantineDir, [result.mbtilesFile], targetDir);
 
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         await refreshChartProviders();
 
         const chartId = `gshhg-basemap-${resolution}`;
@@ -2291,6 +2377,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
       } finally {
         cleanupDir(tmpDir);
       }
