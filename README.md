@@ -138,6 +138,18 @@ The plugin uses standard images that `signalk-container` pulls automatically on 
 
 Conversion concurrency is configurable — see the [CPU budget](#cpu-budget-for-chart-conversion) section. MBTiles charts (display only, no conversion) work without any container runtime, and without `signalk-container`.
 
+### Standalone container image (third-party use)
+
+This repository also publishes a self-contained `charts-toolbox` image bundling GDAL + tippecanoe + tile-join in a single image. It's available for anyone who wants to run the same converter outside Signal K — overnight NOAA region pipelines, ad-hoc shell-script automation, GitHub Actions workflows under your own account, etc.
+
+Pull it directly from GHCR:
+
+```bash
+docker pull ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0
+```
+
+See [docs/charts-toolbox-image.md](docs/charts-toolbox-image.md) for a quickstart, the `--user` / `--userns=keep-id` flag forms per runtime, and reproducibility notes.
+
 ## Legal Notice
 
 ### Chart Metadata Editing
