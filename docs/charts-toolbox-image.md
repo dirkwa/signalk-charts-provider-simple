@@ -51,16 +51,22 @@ docker run --rm \
         done
     '
 
-# 2. tippecanoe — band-aware ranges per the IHO/IENC scale system
+# 2. tippecanoe — band-aware ranges per the IHO/IENC scale system.
+# Wrap in sh -c so the /data/*.geojsonl glob expands inside the
+# container; passed as a bare argv arg, the runtime would hand
+# tippecanoe a literal "*.geojsonl" string and it would error with
+# "No such file or directory".
 docker run --rm \
     -v "$PWD:/data" \
     --user "$(id -u):$(id -g)" \
     ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0 \
-    tippecanoe \
-        -o /data/MyChart.mbtiles \
-        -Z 9 -z 14 \
-        --layer=enc \
-        /data/*.geojsonl
+    sh -c '
+        tippecanoe \
+            -o /data/MyChart.mbtiles \
+            -Z 9 -z 14 \
+            --layer=enc \
+            /data/*.geojsonl
+    '
 ```
 
 Result: `/tmp/charts/MyChart.mbtiles`, ready to drop into a Signal K chart directory or serve directly.
