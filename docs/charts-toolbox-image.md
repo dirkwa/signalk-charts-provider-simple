@@ -2,18 +2,18 @@
 
 This repository publishes a self-contained container image with **GDAL** and **tippecanoe** preinstalled, for use outside the Signal K plugin context — overnight conversion pipelines, ad-hoc CLI experiments, third-party automation, etc.
 
-The image is the same one this plugin's converter uses internally (or will use, once the plugin is migrated to it — track [PR #93](https://github.com/dirkwa/signalk-charts-provider-simple/pull/93) for that), so behaviour stays in lockstep with what the plugin produces.
+This is also the image the plugin's converter is being migrated to use internally, so behaviour will stay in lockstep with what the plugin produces.
 
 ## Image reference
 
-```
+```text
 ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0
 ```
 
 Tags:
 - `:latest` — rolls automatically with each `main` build. Fine for dev. Don't pin scripts to it.
-- `:1.0.0` — version-pinned, content-addressable, never re-pushed (the build workflow refuses to overwrite an existing version tag). Use this for any reproducible script.
-- `:<commit-sha>` — also published, for absolute pinning.
+- `:1.0.0` — **policy-immutable**: the build workflow refuses to overwrite an existing version tag, so once a `:VERSION` is published it never moves. Use this for any reproducible script. For absolute reproducibility — i.e. content-addressable, byte-identical-on-pull — pin to the digest form `…@sha256:<hash>` instead, which you can read off the GHCR UI or via `docker manifest inspect`.
+- `:<commit-sha>` — also published, for pinning to a specific build of this repo.
 
 Multi-arch (`linux/amd64` + `linux/arm64`).
 
@@ -43,7 +43,7 @@ docker run --rm \
     --user "$(id -u):$(id -g)" \
     ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0 \
     sh -c '
-        for cell in $(find /data/ENC_ROOT -name "*.000"); do
+        find /data/ENC_ROOT -name "*.000" -print0 | while IFS= read -r -d "" cell; do
             name=$(basename "$cell" .000)
             ogr2ogr -f GeoJSONSeq -skipfailures \
                 -mapFieldType DateTime=String \
