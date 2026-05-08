@@ -6,6 +6,7 @@ import {
   BAND_MAX_ZOOM,
   BAND_MIN_ZOOM,
   bandClampedMaxzoom,
+  groupCellsByBand,
   highestBandForFiles
 } from '../dist/utils/s57-band.js';
 
@@ -171,5 +172,58 @@ describe('bandClampedMaxzoom', () => {
     const r = bandClampedMaxzoom([], 16);
     assert.strictEqual(r.effective, 16);
     assert.strictEqual(r.highestBand, null);
+  });
+});
+
+describe('groupCellsByBand', () => {
+  it('partitions cells into per-band buckets and returns sorted band list', () => {
+    const g = groupCellsByBand([
+      '/tmp/enc/US3CO100.000',
+      '/tmp/enc/US5MA1SK.000',
+      '/tmp/enc/US3CO200.000',
+      '/tmp/enc/US5NY1SK.000'
+    ]);
+    assert.deepStrictEqual(g.bands, [3, 5]);
+    assert.deepStrictEqual(g.byBand.get(3), ['/tmp/enc/US3CO100.000', '/tmp/enc/US3CO200.000']);
+    assert.deepStrictEqual(g.byBand.get(5), ['/tmp/enc/US5MA1SK.000', '/tmp/enc/US5NY1SK.000']);
+    assert.deepStrictEqual(g.unbanded, []);
+  });
+
+  it('puts non-conforming filenames in the unbanded bucket', () => {
+    const g = groupCellsByBand([
+      '/tmp/enc/US3CO100.000',
+      '/tmp/enc/1V7VAR01.000', // IENC: producer "1V" doesn't match [A-Z]{2}
+      '/tmp/enc/weird-name.000'
+    ]);
+    assert.deepStrictEqual(g.bands, [3]);
+    assert.deepStrictEqual(g.byBand.get(3), ['/tmp/enc/US3CO100.000']);
+    assert.deepStrictEqual(g.unbanded, ['/tmp/enc/1V7VAR01.000', '/tmp/enc/weird-name.000']);
+  });
+
+  it('returns empty bands and one unbanded bucket for a fully non-conforming bundle', () => {
+    const g = groupCellsByBand(['/tmp/enc/IENC_PASS_001.000', '/tmp/enc/weird.000']);
+    assert.deepStrictEqual(g.bands, []);
+    assert.strictEqual(g.byBand.size, 0);
+    assert.deepStrictEqual(g.unbanded, ['/tmp/enc/IENC_PASS_001.000', '/tmp/enc/weird.000']);
+  });
+
+  it('handles an empty input', () => {
+    const g = groupCellsByBand([]);
+    assert.deepStrictEqual(g.bands, []);
+    assert.strictEqual(g.byBand.size, 0);
+    assert.deepStrictEqual(g.unbanded, []);
+  });
+
+  it('preserves the original cell-path order within each bucket', () => {
+    const g = groupCellsByBand([
+      '/tmp/enc/US5MA1SK.000',
+      '/tmp/enc/US5NY1SK.000',
+      '/tmp/enc/US5CA1SK.000'
+    ]);
+    assert.deepStrictEqual(g.byBand.get(5), [
+      '/tmp/enc/US5MA1SK.000',
+      '/tmp/enc/US5NY1SK.000',
+      '/tmp/enc/US5CA1SK.000'
+    ]);
   });
 });

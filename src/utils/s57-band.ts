@@ -129,3 +129,44 @@ export function bandClampedMaxzoom(
     bandCeiling !== undefined ? Math.min(userRequestedMaxzoom, bandCeiling) : userRequestedMaxzoom;
   return { effective, highestBand, bands };
 }
+
+/**
+ * A bundle of ENC cells partitioned by IHO band, ready for the per-band
+ * tippecanoe pipeline. The `unbanded` bucket holds any cell whose
+ * filename doesn't match the IHO Annex E convention — IENC inland cells,
+ * hand-named test files, custom producers. The single-pass code path is
+ * still available for that bucket so a non-conforming bundle isn't
+ * regressed by the per-band rewrite.
+ */
+export interface BandGrouping {
+  /** Map from band number (1..6) to the list of cell paths in that band. */
+  byBand: Map<number, string[]>;
+  /** Cells whose filename didn't yield a band — feed these to the legacy single-pass code path. */
+  unbanded: string[];
+  /** Sorted list of bands actually present (excludes unbanded). */
+  bands: number[];
+}
+
+/**
+ * Partition ENC cell paths into per-band buckets. Cells whose filename
+ * doesn't match the IHO Annex E convention land in `unbanded` — the
+ * caller should run those through the existing single-pass tippecanoe
+ * pipeline (which respects the user-requested -Z/-z directly) so we
+ * don't regress IENC/hand-named bundles.
+ */
+export function groupCellsByBand(encFiles: readonly string[]): BandGrouping {
+  const byBand = new Map<number, string[]>();
+  const unbanded: string[] = [];
+  for (const file of encFiles) {
+    const band = detectEncBand(path.basename(file));
+    if (band === null) {
+      unbanded.push(file);
+    } else {
+      const list = byBand.get(band) ?? [];
+      list.push(file);
+      byBand.set(band, list);
+    }
+  }
+  const bands = [...byBand.keys()].sort((a, b) => a - b);
+  return { byBand, unbanded, bands };
+}

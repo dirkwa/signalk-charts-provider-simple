@@ -10,7 +10,13 @@ import {
   runJob as runContainerJob
 } from './container-jobs.js';
 import { getContainerManager } from './container-manager.js';
-import { BAND_MIN_ZOOM, bandClampedMaxzoom, highestBandForFiles } from './s57-band.js';
+import {
+  BAND_MAX_ZOOM,
+  BAND_MIN_ZOOM,
+  bandClampedMaxzoom,
+  groupCellsByBand,
+  highestBandForFiles
+} from './s57-band.js';
 import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata.js';
 import { sanitizeChartFilename } from './catalog-title.js';
 import type {
@@ -719,6 +725,294 @@ async function runTippecanoe(
   }
 }
 
+/**
+ * Run `tile-join` over a list of per-band intermediate `.mbtiles` files
+ * to produce the final, single output `.mbtiles`. Layers with the same
+ * name across inputs are merged (default tile-join behaviour); per-band
+ * minzoom regimes are preserved because each input was tippecanoe'd
+ * with its own `-Z` so its tiles only exist at zooms ≥ that band's
+ * floor.
+ *
+ * `--no-tile-size-limit` mirrors the per-band tippecanoe flag so a
+ * mid-zoom band with bursty feature density doesn't get its tiles
+ * truncated post-hoc by tile-join.
+ */
+async function runTileJoin(
+  inputMbtiles: readonly string[],
+  outputMbtiles: string,
+  chartNumber: string
+): Promise<void> {
+  if (inputMbtiles.length === 0) {
+    throw new Error('runTileJoin called with no inputs');
+  }
+  if (inputMbtiles.length === 1) {
+    // Degenerate case — runPerBandPipeline can legitimately end up
+    // here when every band but one was skipped (user maxzoom below the
+    // remaining bands' floors). Move the single intermediate into
+    // place so the rest of the pipeline doesn't have to special-case.
+    // Fall back to copy+unlink across filesystems (chartPath on a USB
+    // mount is the realistic case where rename returns EXDEV).
+    try {
+      fs.renameSync(inputMbtiles[0], outputMbtiles);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EXDEV') {
+        throw err;
+      }
+      fs.copyFileSync(inputMbtiles[0], outputMbtiles);
+      fs.unlinkSync(inputMbtiles[0]);
+    }
+    return;
+  }
+
+  // All intermediate `.mbtiles` live in the per-conversion tmpDir; the
+  // final output lands in `chartsDir` (in-progress quarantine subdir).
+  // These are always distinct, so we mount `/input` (intermediates,
+  // read-only) and `/output` (final mbtiles) separately.
+  const inputDir = path.dirname(inputMbtiles[0]);
+  const outputDir = path.dirname(outputMbtiles);
+  for (const f of inputMbtiles) {
+    if (path.dirname(f) !== inputDir) {
+      throw new Error(`tile-join inputs must share a parent dir: ${f}`);
+    }
+  }
+
+  const resolved = await resolveJobPaths({ '/input': inputDir, '/output': outputDir }, (cp, ap) =>
+    appendLog(
+      chartNumber,
+      `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
+    )
+  );
+  if (!resolved) {
+    throw new Error(
+      'tile-join paths are not reachable from the container runtime. ' +
+        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
+        'container bind/volume to cover it.'
+    );
+  }
+  const inputPrefix = resolved['/input'].subPath
+    ? `/input/${resolved['/input'].subPath}`
+    : '/input';
+  const outputPrefix = resolved['/output'].subPath
+    ? `/output/${resolved['/output'].subPath}`
+    : '/output';
+
+  const inputArgs = inputMbtiles.map((f) => `${inputPrefix}/${path.basename(f)}`);
+  const tippecanoeThreads = getCpuBudget().tippecanoeThreadsPerJob;
+
+  appendLog(
+    chartNumber,
+    `Joining ${inputMbtiles.length} per-band tile sets into ${path.basename(outputMbtiles)}...`
+  );
+  debug(`Running tile-join on ${inputMbtiles.length} inputs`);
+
+  const handleTileJoinLine = (line: string): void => {
+    appendLog(chartNumber, line);
+  };
+
+  const result = await runContainerJob({
+    image: TIPPECANOE_IMAGE,
+    label: `tile-join-${chartNumber}`,
+    command: [
+      'tile-join',
+      '-o',
+      `${outputPrefix}/${path.basename(outputMbtiles)}`,
+      '--no-tile-size-limit',
+      '--force',
+      ...inputArgs
+    ],
+    inputs: { '/input': resolved['/input'].source },
+    outputs: { '/output': resolved['/output'].source },
+    env: { TIPPECANOE_MAX_THREADS: String(tippecanoeThreads) },
+    resources: { cpus: tippecanoeThreads },
+    onStdoutLine: handleTileJoinLine,
+    onStderrLine: handleTileJoinLine
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error(`tile-join failed with exit code ${result.exitCode}`);
+  }
+}
+
+/**
+ * Per-band orchestrator: bucket the cells, run a separate
+ * export → consolidate → tippecanoe pipeline for each band into its
+ * own intermediate `.mbtiles`, then `tile-join` them into the final
+ * output. Bands with no cells in the bundle are skipped.
+ *
+ * For the unbanded bucket (cells whose filenames don't match the IHO
+ * Annex E convention — IENC, hand-named, custom producers) we run the
+ * same single-pass tippecanoe the legacy code path used, with the
+ * user-requested -Z/-z; that intermediate joins the rest at the end.
+ *
+ * The win over single-pass is that each band's tippecanoe drop /
+ * coalesce / simplification heuristics see only same-scale features:
+ * a sparse band-3 cell can no longer push a dense band-5 harbour cell
+ * into the drop-densest pass, and per-band tile-size budgets stop
+ * one band from squeezing another's tiles.
+ */
+async function runPerBandPipeline(
+  encDir: string,
+  encFiles: readonly string[],
+  tmpDir: string,
+  chartNumber: string,
+  options: S57ConversionOptions,
+  outputMbtiles: string
+): Promise<void> {
+  const grouping = groupCellsByBand(encFiles);
+  const userMinzoom = options.minzoom ?? 9;
+  const userMaxzoom = options.maxzoom ?? 16;
+
+  appendLog(
+    chartNumber,
+    `Per-band pipeline: bands=[${grouping.bands.join(', ')}]` +
+      (grouping.unbanded.length > 0 ? ` + ${grouping.unbanded.length} unbanded cell(s)` : '')
+  );
+
+  const intermediates: string[] = [];
+  let bandIndex = 0;
+  const totalBuckets = grouping.bands.length + (grouping.unbanded.length > 0 ? 1 : 0);
+
+  for (const band of grouping.bands) {
+    bandIndex += 1;
+    const cells = grouping.byBand.get(band) ?? [];
+    const bandFloor = BAND_MIN_ZOOM[band] ?? userMinzoom;
+    const bandCeiling = BAND_MAX_ZOOM[band] ?? userMaxzoom;
+    const bandMinzoom = Math.max(userMinzoom, bandFloor);
+    const bandMaxzoom = Math.min(userMaxzoom, bandCeiling);
+
+    if (bandMinzoom > bandMaxzoom) {
+      // User asked for z<bandFloor, which leaves this band with an
+      // empty zoom range. Skip — tippecanoe would error and the band
+      // wouldn't contribute anything visible anyway.
+      appendLog(
+        chartNumber,
+        `Band ${band}: skipped (user maxzoom z${userMaxzoom} below band floor z${bandFloor})`
+      );
+      continue;
+    }
+
+    const bandEncDir = path.join(tmpDir, `enc-band-${band}`);
+    const bandGeojsonDir = path.join(tmpDir, `geojson-band-${band}`);
+    fs.mkdirSync(bandEncDir, { recursive: true });
+    fs.mkdirSync(bandGeojsonDir, { recursive: true });
+
+    // Symlink each cell into the band-scoped dir so the export script
+    // (which walks `find <inDir> -name '*.000'`) only sees this band's
+    // cells. Symlinks keep IO cheap; the per-conversion tmpDir is
+    // wiped in the outer finally regardless.
+    for (const cellPath of cells) {
+      const cellRel = path.relative(encDir, cellPath);
+      const linkPath = path.join(bandEncDir, cellRel);
+      fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+      try {
+        fs.symlinkSync(cellPath, linkPath);
+      } catch (err) {
+        // Some filesystems (FAT/exFAT on USB chart drives) don't
+        // support symlinks; fall back to a hardlink, then to a copy.
+        try {
+          fs.linkSync(cellPath, linkPath);
+        } catch {
+          fs.copyFileSync(cellPath, linkPath);
+        }
+        debug(
+          `Symlink unsupported for band ${band}, fell back: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    const bucketProgressPrefix = `[band ${band} ${bandIndex}/${totalBuckets}]`;
+    setProgress(
+      chartNumber,
+      'converting',
+      `${bucketProgressPrefix} Exporting ${cells.length} cell(s)...`
+    );
+    appendLog(
+      chartNumber,
+      `${bucketProgressPrefix} Exporting ${cells.length} cell(s) to GeoJSON...`
+    );
+    await exportAllLayersToGeoJSON(bandEncDir, cells, bandGeojsonDir, chartNumber);
+
+    setProgress(
+      chartNumber,
+      'converting',
+      `${bucketProgressPrefix} Generating tiles z${bandMinzoom}-z${bandMaxzoom}...`
+    );
+    appendLog(chartNumber, `${bucketProgressPrefix} Tippecanoe z${bandMinzoom}-z${bandMaxzoom}`);
+    const bandMbtiles = path.join(tmpDir, `band-${band}.mbtiles`);
+    await runTippecanoe(bandGeojsonDir, bandMbtiles, chartNumber, {
+      ...options,
+      minzoom: bandMinzoom,
+      maxzoom: bandMaxzoom
+    });
+    intermediates.push(bandMbtiles);
+  }
+
+  if (grouping.unbanded.length > 0) {
+    bandIndex += 1;
+    const unbandedEncDir = path.join(tmpDir, 'enc-unbanded');
+    const unbandedGeojsonDir = path.join(tmpDir, 'geojson-unbanded');
+    fs.mkdirSync(unbandedEncDir, { recursive: true });
+    fs.mkdirSync(unbandedGeojsonDir, { recursive: true });
+    for (const cellPath of grouping.unbanded) {
+      const cellRel = path.relative(encDir, cellPath);
+      const linkPath = path.join(unbandedEncDir, cellRel);
+      fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+      try {
+        fs.symlinkSync(cellPath, linkPath);
+      } catch {
+        try {
+          fs.linkSync(cellPath, linkPath);
+        } catch {
+          fs.copyFileSync(cellPath, linkPath);
+        }
+      }
+    }
+
+    const bucketProgressPrefix = `[unbanded ${bandIndex}/${totalBuckets}]`;
+    setProgress(
+      chartNumber,
+      'converting',
+      `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s)...`
+    );
+    appendLog(
+      chartNumber,
+      `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s) to GeoJSON...`
+    );
+    await exportAllLayersToGeoJSON(
+      unbandedEncDir,
+      grouping.unbanded,
+      unbandedGeojsonDir,
+      chartNumber
+    );
+
+    setProgress(
+      chartNumber,
+      'converting',
+      `${bucketProgressPrefix} Generating tiles z${userMinzoom}-z${userMaxzoom}...`
+    );
+    appendLog(
+      chartNumber,
+      `${bucketProgressPrefix} Tippecanoe z${userMinzoom}-z${userMaxzoom} (user-requested)`
+    );
+    const unbandedMbtiles = path.join(tmpDir, 'band-unbanded.mbtiles');
+    await runTippecanoe(unbandedGeojsonDir, unbandedMbtiles, chartNumber, {
+      ...options,
+      minzoom: userMinzoom,
+      maxzoom: userMaxzoom
+    });
+    intermediates.push(unbandedMbtiles);
+  }
+
+  if (intermediates.length === 0) {
+    throw new Error(
+      'Per-band pipeline produced no intermediate tile sets — every band was skipped.'
+    );
+  }
+
+  setProgress(chartNumber, 'converting', 'Joining per-band tile sets...');
+  await runTileJoin(intermediates, outputMbtiles, chartNumber);
+}
+
 export async function processS57Zip(
   zipPath: string,
   chartsDir: string,
@@ -780,34 +1074,21 @@ export async function processS57Zip(
     debug(`Found ${encFiles.length} ENC files`);
     appendLog(chartNumber, `Found ${encFiles.length} ENC files`);
 
-    statusFn('converting', 'Converting S-57 layers to GeoJSON...');
-    setProgress(chartNumber, 'converting', `Exporting ${encFiles.length} ENC files...`);
-    appendLog(chartNumber, `Exporting ${encFiles.length} ENC files in single GDAL container...`);
+    // Choose pipeline. Per-band runs a separate tippecanoe per IHO band
+    // and tile-joins the result — each band's drop / coalesce /
+    // tile-size budget heuristics see only same-scale features instead
+    // of competing across mixed-scale bundles. Triggers when the bundle
+    // actually has more than one bucket (≥2 bands, or a band+unbanded
+    // mix); single-bucket bundles (one band only, or all-unbanded) fall
+    // through to the legacy single-pass code path so we don't pay the
+    // tile-join cost when there's nothing to fan out.
+    const grouping = groupCellsByBand(encFiles);
+    const bucketCount = grouping.bands.length + (grouping.unbanded.length > 0 ? 1 : 0);
+    const usePerBand = bucketCount >= 2;
 
-    await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber);
-
-    statusFn('converting', 'Generating vector tiles...');
-    setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');
-
-    // Clamp tippecanoe's maxzoom to the IHO band ceiling. Most tippecanoe time
-    // is spent at the highest zooms; if the source charts only have band-3
-    // (coastal) precision, asking for z16 emits 4 zoom levels of tiles that
-    // can't be backed by real feature precision.
     const userMaxzoom = options.maxzoom ?? 16;
     const encBasenames = encFiles.map((f) => path.basename(f));
     const clamp = bandClampedMaxzoom(encBasenames, userMaxzoom);
-    if (clamp.highestBand !== null && clamp.effective < userMaxzoom) {
-      const msg =
-        `Detected IHO bands [${clamp.bands.join(', ')}] (highest = ${clamp.highestBand}) ` +
-        `→ tippecanoe maxzoom clamped to z${clamp.effective} (was z${userMaxzoom})`;
-      debug(msg);
-      appendLog(chartNumber, msg);
-    } else if (clamp.highestBand === null) {
-      const msg = `No IHO band detected (likely IENC or non-conforming filenames); using user maxzoom z${userMaxzoom}`;
-      debug(msg);
-      appendLog(chartNumber, msg);
-    }
-    const effectiveOptions: S57ConversionOptions = { ...options, maxzoom: clamp.effective };
 
     const outputName = chooseOutputFilename({
       chartsDir,
@@ -815,7 +1096,47 @@ export async function processS57Zip(
       chartNumber
     });
     const outputPath = path.join(chartsDir, outputName);
-    await runTippecanoe(geojsonDir, outputPath, chartNumber, effectiveOptions);
+
+    if (usePerBand) {
+      statusFn('converting', 'Running per-band conversion pipeline...');
+      appendLog(
+        chartNumber,
+        `Per-band pipeline selected: ${bucketCount} bucket(s) ` +
+          `[bands ${grouping.bands.join(', ') || '(none)'}` +
+          `${grouping.unbanded.length > 0 ? ` + ${grouping.unbanded.length} unbanded` : ''}]`
+      );
+      await runPerBandPipeline(encDir, encFiles, tmpDir, chartNumber, options, outputPath);
+    } else {
+      statusFn('converting', 'Converting S-57 layers to GeoJSON...');
+      setProgress(chartNumber, 'converting', `Exporting ${encFiles.length} ENC files...`);
+      appendLog(
+        chartNumber,
+        `Single-pass pipeline: ${encFiles.length} ENC file(s) in one GDAL container`
+      );
+
+      await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber);
+
+      statusFn('converting', 'Generating vector tiles...');
+      setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');
+
+      // Clamp tippecanoe's maxzoom to the IHO band ceiling. Most
+      // tippecanoe time is spent at the highest zooms; if the only
+      // bucket is band-3 (coastal), asking for z16 emits 4 zoom levels
+      // of tiles that can't be backed by real feature precision.
+      if (clamp.highestBand !== null && clamp.effective < userMaxzoom) {
+        const msg =
+          `Detected IHO bands [${clamp.bands.join(', ')}] (highest = ${clamp.highestBand}) ` +
+          `→ tippecanoe maxzoom clamped to z${clamp.effective} (was z${userMaxzoom})`;
+        debug(msg);
+        appendLog(chartNumber, msg);
+      } else if (clamp.highestBand === null) {
+        const msg = `No IHO band detected (likely IENC or non-conforming filenames); using user maxzoom z${userMaxzoom}`;
+        debug(msg);
+        appendLog(chartNumber, msg);
+      }
+      const effectiveOptions: S57ConversionOptions = { ...options, maxzoom: clamp.effective };
+      await runTippecanoe(geojsonDir, outputPath, chartNumber, effectiveOptions);
+    }
 
     if (!fs.existsSync(outputPath)) {
       throw new Error('tippecanoe completed but output file not found');
