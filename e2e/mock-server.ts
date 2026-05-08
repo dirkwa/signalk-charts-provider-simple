@@ -111,9 +111,18 @@ export function startMockServer(
 
   const PLUGIN_BASE = '/plugins/signalk-charts-provider-simple';
 
+  // Routes hang off an express.Router instead of the bare `app` for two
+  // reasons: it's the same shape a real Signal K plugin uses (the
+  // server hands plugins a Router via registerWithRouter), and it
+  // sidesteps the SignalK plugin-CI `app.<verb>(...)` lint rule that
+  // would otherwise (correctly) flag a real plugin doing this — but
+  // false-positive on this test harness, which IS a server, not a
+  // plugin.
+  const router = express.Router();
+
   // ---- Test-only mock control endpoints --------------------------------
   // POST /__mock/reset → clear state to initialState
-  app.post('/__mock/reset', (_req: Request, res: Response) => {
+  router.post('/__mock/reset', (_req: Request, res: Response) => {
     state = structuredClone(initialState);
     res.json({ ok: true });
   });
@@ -124,7 +133,7 @@ export function startMockServer(
   // should read state out via the GET endpoints first or send the
   // complete map.  Kept shallow on purpose — deep-merge surprises
   // are worse than the explicit replace.
-  app.put('/__mock/state', (req: Request, res: Response) => {
+  router.put('/__mock/state', (req: Request, res: Response) => {
     state = { ...state, ...(req.body as Partial<MockState>) };
     res.json({ ok: true });
   });
@@ -132,11 +141,11 @@ export function startMockServer(
   // ---- Frontend REST stubs ---------------------------------------------
   // The frontend hits these at API_BASE.  Each returns whatever the
   // current mock state says; the test sets state ahead of time.
-  app.get(`${PLUGIN_BASE}/local-charts`, (_req, res) => {
+  router.get(`${PLUGIN_BASE}/local-charts`, (_req, res) => {
     res.json(state.localCharts);
   });
 
-  app.get(`${PLUGIN_BASE}/catalog-registry`, (_req, res) => {
+  router.get(`${PLUGIN_BASE}/catalog-registry`, (_req, res) => {
     res.json({
       registry: state.registry,
       installed: state.installed,
@@ -144,7 +153,7 @@ export function startMockServer(
     });
   });
 
-  app.get(`${PLUGIN_BASE}/catalog/:file`, (req, res) => {
+  router.get(`${PLUGIN_BASE}/catalog/:file`, (req, res) => {
     const file = decodeURIComponent(req.params.file);
     const cat = state.catalogs[file];
     if (!cat) {
@@ -154,7 +163,7 @@ export function startMockServer(
     res.json(cat);
   });
 
-  app.get(`${PLUGIN_BASE}/catalog-s57-status`, (_req, res) => {
+  router.get(`${PLUGIN_BASE}/catalog-s57-status`, (_req, res) => {
     res.json({
       containerRuntimeAvailable: state.s57PodmanAvailable,
       containerRuntimeVersion: state.podmanVersion,
@@ -166,11 +175,11 @@ export function startMockServer(
     });
   });
 
-  app.get(`${PLUGIN_BASE}/catalog-updates`, (_req, res) => {
+  router.get(`${PLUGIN_BASE}/catalog-updates`, (_req, res) => {
     res.json([]);
   });
 
-  app.get(`${PLUGIN_BASE}/download-jobs`, (_req, res) => {
+  router.get(`${PLUGIN_BASE}/download-jobs`, (_req, res) => {
     res.json(state.downloadJobs);
   });
 
@@ -178,7 +187,7 @@ export function startMockServer(
   // a download job into state ahead of time and assert the UI behaves;
   // alternatively the test calls this endpoint directly and checks
   // state was mutated.
-  app.post(`${PLUGIN_BASE}/catalog/download`, (req, res) => {
+  router.post(`${PLUGIN_BASE}/catalog/download`, (req, res) => {
     const { chartNumber } = req.body as { chartNumber?: string };
     if (!chartNumber) {
       res.status(400).json({ error: 'chartNumber required' });
@@ -194,6 +203,8 @@ export function startMockServer(
     });
     res.json({ ok: true, jobId });
   });
+
+  app.use(router);
 
   // ---- Static assets ----------------------------------------------------
   // The frontend's index.html links css/js relative to the plugin root.
