@@ -5,50 +5,77 @@ import path from 'path';
  * IHO Annex E filename convention `<CC><band><area>` followed by all
  * official national hydrographic offices (NOAA, UKHO, BSH, CHS, AHO, …).
  *
- * Returns 1..6 when the filename conforms, or `null` otherwise (IENC inland
- * charts and ad-hoc files don't follow this convention; callers fall back
- * to the user-requested maxzoom in that case).
+ * Returns 1..6 for maritime ENC bands (Overview..Berthing) and 7..9 for
+ * IENC inland-extension bands (River, River Harbour, River Berth) per
+ * the IEHG Inland ENC Encoding Guide. Returns `null` when the filename
+ * doesn't match the convention — hand-named test files, custom producers
+ * — so callers can fall back to the user-requested zoom range.
+ *
+ * The producer code is two characters of `[A-Z0-9]`. NHOs use letters
+ * (`US`, `GB`, `DE`); IENC producers occasionally lead with a digit
+ * (RWS Dutch IENC `1V`), which is why this isn't restricted to letters.
  */
 export function detectEncBand(filename: string): number | null {
   const base = filename.replace(/\.[^.]+$/, '');
-  const m = base.match(/^[A-Z]{2}(\d)/);
+  // Producer code must be 2 alphanumeric chars *with at least one letter*
+  // among them. Letter-only (`US`, `DE`) is the maritime case; mixed
+  // letter+digit / digit+letter covers IENC producers like RWS `1V`.
+  // Pure-digit prefixes (`12`, `00`) are excluded so a degenerate string
+  // like `001` (which can fall out of the per-chart `extractChartId`
+  // lookup on weird-named files) doesn't get parsed as a band.
+  const m = base.match(/^(?:[A-Z][A-Z0-9]|[A-Z0-9][A-Z])(\d)/);
   if (!m) {
     return null;
   }
   const band = parseInt(m[1], 10);
-  return band >= 1 && band <= 6 ? band : null;
+  return band >= 1 && band <= 9 ? band : null;
 }
 
 /**
- * Sensible tippecanoe maxzoom for each IHO band. Mirrors the documented
- * native chart scales: emitting tiles past these zoom levels produces
- * output that has no underlying feature precision to back it up. Renderers
- * (Freeboard-SK, MapLibre, OpenLayers) handle higher zooms by overzooming
- * the captured top-zoom tile, which is correct for chart data.
+ * Sensible tippecanoe maxzoom for each IHO/IENC band. Mirrors the
+ * documented native chart scales: emitting tiles past these zoom levels
+ * produces output that has no underlying feature precision to back it
+ * up. Renderers (Freeboard-SK, MapLibre, OpenLayers) handle higher
+ * zooms by overzooming the captured top-zoom tile, which is correct
+ * for chart data.
+ *
+ * Bands 7..9 are IENC inland extensions (River / River Harbour / River
+ * Berth) — narrower native scales than maritime bands.
  */
 export const BAND_MAX_ZOOM: Record<number, number> = {
-  1: 8, // Overview  ~1:3,500,000
-  2: 10, // General   ~1:700,000
-  3: 12, // Coastal   ~1:90,000
-  4: 14, // Approach  ~1:22,000
-  5: 16, // Harbour   ~1:8,000
-  6: 18 // Berthing  ~1:3,000   (rare — only major commercial ports)
+  1: 8, // Overview      ~1:3,500,000
+  2: 10, // General       ~1:700,000
+  3: 12, // Coastal       ~1:90,000
+  4: 14, // Approach      ~1:22,000
+  5: 16, // Harbour       ~1:8,000
+  6: 18, // Berthing      ~1:3,000
+  7: 14, // River         ~1:10,000
+  8: 16, // River Harbour ~1:5,000–10,000
+  9: 18 // River Berth   ~1:5,000
 };
 
 /**
- * Sensible tippecanoe minzoom for each IHO band: each band's ceiling minus 4.
- * Band-3 features start emitting at z8 (~150 km tile), band-5 at z12 (~10 km
- * tile), band-6 at z14. Below these zooms the features overplot into
- * illegible blobs anyway, so emitting tiles there only wastes bytes and CPU
- * without adding navigational value.
+ * Sensible tippecanoe minzoom for each band. For maritime bands 1..6
+ * each floor is the ceiling minus 4 — below that, features overplot
+ * into illegible blobs and emitting tiles only wastes bytes and CPU.
+ *
+ * IENC bands 7..9 use a lower floor than the IEHG plan suggests
+ * (z9 / z13 / z15 instead of z11 / z13 / z15) because RWS publishes
+ * the Waddenzee — tidal coastal water with genuine z9 visibility
+ * needs — as IENC band 7. A higher floor would make the chart blank
+ * out at coastal-overview zooms, which matters more than the modest
+ * overplotting cost on actual rivers at z9–z10.
  */
 export const BAND_MIN_ZOOM: Record<number, number> = {
-  1: 4, // Overview  ceiling z8
-  2: 6, // General   ceiling z10
-  3: 8, // Coastal   ceiling z12
-  4: 10, // Approach ceiling z14
-  5: 12, // Harbour  ceiling z16
-  6: 14 // Berthing  ceiling z18
+  1: 4, // Overview       ceiling z8
+  2: 6, // General        ceiling z10
+  3: 8, // Coastal        ceiling z12
+  4: 10, // Approach      ceiling z14
+  5: 12, // Harbour       ceiling z16
+  6: 14, // Berthing      ceiling z18
+  7: 9, // River          ceiling z14
+  8: 13, // River Harbour ceiling z16
+  9: 15 // River Berth    ceiling z18
 };
 
 /**
@@ -139,7 +166,7 @@ export function bandClampedMaxzoom(
  * regressed by the per-band rewrite.
  */
 export interface BandGrouping {
-  /** Map from band number (1..6) to the list of cell paths in that band. */
+  /** Map from band number (1..9, with 7..9 being IENC inland) to the list of cell paths in that band. */
   byBand: Map<number, string[]>;
   /** Cells whose filename didn't yield a band — feed these to the legacy single-pass code path. */
   unbanded: string[];
