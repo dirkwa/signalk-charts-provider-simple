@@ -218,7 +218,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     initCatalogManager(dataDir, app.debug.bind(app));
 
     const tempDirPattern =
-      /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-)\d+$/;
+      /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-)\d+$/;
     try {
       const dataDirEntries = fs.readdirSync(dataDir, { withFileTypes: true });
       for (const entry of dataDirEntries) {
@@ -607,7 +607,42 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             fs.mkdirSync(targetDir, { recursive: true });
           }
 
-          const jobId = downloadManager.createJob(downloadUrl, targetDir, chartName);
+          // Stage the download in the quarantine dir; promote on
+          // job-completed so a crash mid-fetch never leaves a partial
+          // .mbtiles in the live chart library.
+          const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartName);
+          const jobId = downloadManager.createJob(downloadUrl, quarantineDir, chartName);
+
+          const promoteListener = (job: DownloadJob): void => {
+            if (job.id !== jobId) {
+              return;
+            }
+            void (async () => {
+              try {
+                if (
+                  job.status === 'completed' &&
+                  job.extractedFiles &&
+                  job.extractedFiles.length > 0
+                ) {
+                  try {
+                    await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
+                  } catch (promoteErr) {
+                    app.error(
+                      `Promotion failed for ${chartName}: ${
+                        promoteErr instanceof Error ? promoteErr.message : String(promoteErr)
+                      }`
+                    );
+                  }
+                }
+              } finally {
+                cleanupQuarantineDir(quarantineDir);
+                downloadManager.removeListener('job-completed', promoteListener);
+                downloadManager.removeListener('job-failed', promoteListener);
+              }
+            })();
+          };
+          downloadManager.on('job-completed', promoteListener);
+          downloadManager.on('job-failed', promoteListener);
 
           res.json({
             success: true,
@@ -1265,6 +1300,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       try {
         const bb = Busboy({ headers: req.headers });
         const basePath = props.chartPath || defaultChartsPath;
+        // Per-request quarantine dir: every uploaded `.mbtiles` is
+        // streamed here first, then atomically promoted on `finish`.
+        // A crashed/aborted request leaves the partial files in the
+        // quarantine for the startup sweep to wipe, never in basePath.
+        const quarantineDir = makeQuarantineDir(
+          app.getDataDirPath(),
+          `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        );
         const uploadedFiles: string[] = [];
         const writePromises: Promise<void>[] = [];
         const fields: Record<string, string> = {};
@@ -1290,30 +1333,35 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               uploadPath = path.join(basePath, targetFolder);
             }
 
-            const filepath = path.join(uploadPath, filename);
-
             // Reject path-traversal in either the targetFolder or the
             // upload's own filename (`filename: '../etc/passwd'`).
-            if (!isWithinBase(filepath, basePath)) {
+            // Resolve against basePath even though we stage in the
+            // quarantine — the *intended* destination is what matters
+            // for the access-control check.
+            if (
+              !isWithinBase(path.join(uploadPath, filename), basePath) ||
+              path.basename(filename) !== filename
+            ) {
               traversalRejected = true;
               (file as NodeJS.ReadableStream & { resume(): void }).resume();
               return;
             }
 
-            app.debug(`Uploading chart file: ${filename} to ${filepath}`);
+            const stagedPath = path.join(quarantineDir, filename);
+            app.debug(`Staging upload: ${filename} -> ${stagedPath}`);
 
-            const writeStream = fs.createWriteStream(filepath);
+            const writeStream = fs.createWriteStream(stagedPath);
             file.pipe(writeStream);
 
             const writePromise = new Promise<void>((resolve, reject) => {
               writeStream.on('finish', () => {
                 uploadedFiles.push(filename);
-                app.debug(`Chart file uploaded successfully: ${filename}`);
+                app.debug(`Upload staged successfully: ${filename}`);
                 resolve();
               });
 
               writeStream.on('error', (err: Error) => {
-                app.error(`Error writing file ${filename}: ${err.message}`);
+                app.error(`Error staging file ${filename}: ${err.message}`);
                 reject(err);
               });
             });
@@ -1330,11 +1378,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             // also lets us include 'targetFolder' rules in the validator.
             const parsed = parseShape(UploadFields, fields, res);
             if (!parsed) {
+              cleanupQuarantineDir(quarantineDir);
               return;
             }
             const { targetFolder = '' } = parsed;
 
             if (traversalRejected) {
+              cleanupQuarantineDir(quarantineDir);
               res.status(403).json({ success: false, error: 'Access denied: Invalid upload path' });
               return;
             }
@@ -1343,6 +1393,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               await Promise.all(writePromises);
 
               if (uploadedFiles.length > 0) {
+                const promoteTarget =
+                  targetFolder && targetFolder !== '/'
+                    ? path.join(basePath, targetFolder)
+                    : basePath;
+                await promoteQuarantine(quarantineDir, uploadedFiles, promoteTarget);
+
                 await finalizeUploadedFiles(uploadedFiles, targetFolder, basePath);
 
                 res.status(200).json({
@@ -1359,6 +1415,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   (error instanceof Error ? error.message : String(error))
               );
               res.status(500).send('Error completing file uploads');
+            } finally {
+              cleanupQuarantineDir(quarantineDir);
             }
           })();
         });
@@ -1401,18 +1459,32 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           uploadPath = path.join(basePath, targetFolder);
         }
 
-        const partialPath = path.join(uploadPath, filename + '.partial');
         const finalPath = path.join(uploadPath, filename);
 
         // Reject path-traversal via either header. Catches `'../foo.mbtiles'`
         // as a filename and `'../etc'` as a target-folder, both of which
-        // would otherwise resolve outside the chart root.
-        if (!arePairWithinBase(partialPath, finalPath, basePath)) {
+        // would otherwise resolve outside the chart root. Re-check
+        // basename to catch any traversal in the filename header itself
+        // even though arePairWithinBase already handled the resolved
+        // path — defense in depth before we use it as a path segment
+        // inside the quarantine dir.
+        if (
+          !arePairWithinBase(finalPath, finalPath, basePath) ||
+          path.basename(filename) !== filename
+        ) {
           res.status(403).json({ error: 'Access denied: Invalid upload path' });
           return;
         }
 
-        const writeStream = fs.createWriteStream(partialPath, {
+        // Stage chunked uploads in a per-filename quarantine dir.  All
+        // chunks append to a single staged file there; only the final
+        // chunk promotes it to the live `uploadPath`. A crash mid-upload
+        // therefore can never leave a half-built `.mbtiles` in the
+        // chart library — the startup sweep wipes the quarantine.
+        const quarantineDir = makeQuarantineDir(app.getDataDirPath(), `chunk-${filename}`);
+        const stagedPath = path.join(quarantineDir, filename);
+
+        const writeStream = fs.createWriteStream(stagedPath, {
           flags: chunkIndex === 0 ? 'w' : 'a'
         });
 
@@ -1427,17 +1499,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 return;
               }
 
-              // Final chunk — rename partial to final
+              // Final chunk — promote the staged file out of quarantine.
               app.debug(`Final chunk ${totalChunks}/${totalChunks} for ${filename}, assembling`);
-              fs.renameSync(partialPath, finalPath);
-
-              await finalizeUploadedFiles([filename], targetFolder, basePath);
-
-              res.json({
-                success: true,
-                message: `${filename} uploaded successfully`,
-                files: [filename]
-              });
+              try {
+                await promoteQuarantine(quarantineDir, [filename], uploadPath);
+                await finalizeUploadedFiles([filename], targetFolder, basePath);
+                res.json({
+                  success: true,
+                  message: `${filename} uploaded successfully`,
+                  files: [filename]
+                });
+              } finally {
+                cleanupQuarantineDir(quarantineDir);
+              }
             } catch (error) {
               app.error(
                 `Error finalizing chunked upload: ${error instanceof Error ? error.message : String(error)}`
@@ -1647,9 +1721,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
           setConvertingState(chartNumber, true);
 
-          const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+          // makeQuarantineDir can throw on permission/disk errors;
+          // build it inside the guarded try so a failure goes
+          // through the same converting-flag rollback as a
+          // conversion error. Null until the assignment succeeds
+          // so the finally branch knows whether to clean up.
+          let quarantineDir: string | null = null;
 
           try {
+            quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
             if (convType === 's57') {
               const result = await processS57Zip(
                 validatedFile,
@@ -1707,7 +1787,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             );
           } finally {
             setConvertingState(chartNumber, false);
-            cleanupQuarantineDir(quarantineDir);
+            if (quarantineDir !== null) {
+              cleanupQuarantineDir(quarantineDir);
+            }
             cleanupDir(tmpDir);
           }
         })();
@@ -1852,16 +1934,43 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             chartPath
           );
         } else {
-          const jobId = downloadManager.createJob(url, targetDir, chartNumber);
+          // Direct .mbtiles download (or ZIP-of-.mbtiles): stage into the
+          // quarantine dir so a crash mid-download/extract never leaves a
+          // half-built file in the live chart library. Promotion runs on
+          // job-completed; failure / no-files paths drop the quarantine.
+          const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+          const jobId = downloadManager.createJob(url, quarantineDir, chartNumber);
 
           trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
 
           const cleanupListener = (job: DownloadJob): void => {
-            if (job.id === jobId) {
-              if (!job.extractedFiles || job.extractedFiles.length === 0) {
-                removeInstall(chartNumber);
-                app.debug(`Removed catalog tracking for ${chartNumber}: no .mbtiles extracted`);
-              } else {
+            if (job.id !== jobId) {
+              return;
+            }
+            void (async () => {
+              try {
+                if (!job.extractedFiles || job.extractedFiles.length === 0) {
+                  removeInstall(chartNumber);
+                  app.debug(`Removed catalog tracking for ${chartNumber}: no .mbtiles extracted`);
+                  return;
+                }
+                if (job.status !== 'completed') {
+                  // Failed downloads leak nothing into the live target;
+                  // the quarantine wipe in `finally` handles cleanup.
+                  removeInstall(chartNumber);
+                  return;
+                }
+                try {
+                  await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
+                } catch (promoteErr) {
+                  app.error(
+                    `Promotion failed for ${chartNumber}: ${
+                      promoteErr instanceof Error ? promoteErr.message : String(promoteErr)
+                    }`
+                  );
+                  removeInstall(chartNumber);
+                  return;
+                }
                 // Record the produced filename so the delete flow can
                 // clear this install record by reverse-lookup. Same
                 // pattern as the S-57 / RNC conversion completion paths.
@@ -1873,10 +1982,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     : firstFile;
                   setInstallFilename(chartNumber, relativePath);
                 }
+              } finally {
+                cleanupQuarantineDir(quarantineDir);
+                downloadManager.removeListener('job-failed', cleanupListener);
+                downloadManager.removeListener('job-completed', cleanupListener);
               }
-              downloadManager.removeListener('job-failed', cleanupListener);
-              downloadManager.removeListener('job-completed', cleanupListener);
-            }
+            })();
           };
           downloadManager.on('job-failed', cleanupListener);
           downloadManager.on('job-completed', cleanupListener);
@@ -1949,13 +2060,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // Convert into a quarantine dir under getDataDirPath() so a
       // mid-conversion crash leaves a stale .mbtiles there, NOT in
       // the user's live chart library. Promote to targetDir only
-      // after a successful conversion. trackInstall is already
-      // tracked above (eager — needed so the catalog can show
-      // "Converting…" while we run); the install record gets
-      // cleared on failure or rolled back on next-restart sweep.
-      const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+      // after a successful conversion. The mkdir is inside the
+      // guarded try so a sync throw (perms, disk full) goes through
+      // the same cleanup as a conversion failure.
+      let quarantineDir: string | null = null;
 
       try {
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
         const displayName = chartTitle ? cleanCatalogTitle(chartTitle) : undefined;
         const result = await processS57Zip(
           zipPath,
@@ -2002,7 +2113,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
-        cleanupQuarantineDir(quarantineDir);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2066,9 +2179,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       app.debug(`Starting RNC conversion for ${chartNumber}: ${zipPath}`);
 
-      const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+      let quarantineDir: string | null = null;
 
       try {
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processRncZip(
           zipPath,
           quarantineDir,
@@ -2113,7 +2227,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
-        cleanupQuarantineDir(quarantineDir);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2174,9 +2290,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       setConvertingState(chartNumber, true);
 
-      const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+      let quarantineDir: string | null = null;
 
       try {
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processPilotTar(
           dlPath,
           quarantineDir,
@@ -2211,7 +2328,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
-        cleanupQuarantineDir(quarantineDir);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2272,9 +2391,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       setConvertingState(chartNumber, true);
 
-      const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+      let quarantineDir: string | null = null;
 
       try {
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processShpBasemap(
           dlPath,
           quarantineDir,
@@ -2306,7 +2426,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
-        cleanupQuarantineDir(quarantineDir);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2345,10 +2467,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     const tmpDir = path.join(app.getDataDirPath(), `gshhg-${Date.now()}`);
     fs.mkdirSync(tmpDir, { recursive: true });
-    const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
 
     void (async () => {
+      let quarantineDir: string | null = null;
       try {
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processGshhg(
           tmpDir,
           quarantineDir,
@@ -2377,7 +2500,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
-        cleanupQuarantineDir(quarantineDir);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
       } finally {
         cleanupDir(tmpDir);
       }

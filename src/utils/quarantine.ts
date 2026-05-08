@@ -40,37 +40,79 @@ export function makeQuarantineDir(dataDir: string, chartNumber: string): string 
 }
 
 /**
- * Atomically move every file the converter produced from the quarantine
- * dir into `targetDir` (subfolder under chartPath). Returns the array of
- * absolute paths the files now live at — converters that report a
- * `mbtilesFile` / `mbtilesFiles[]` field can map back through this.
+ * Promote every file the converter produced from the quarantine
+ * dir into `targetDir` (subfolder under chartPath). Failure is
+ * **all-or-nothing**: if any file fails to move, every file that
+ * was already moved this call is rolled back to the quarantine and
+ * the error propagates. Without that, a multi-file RNC/Pilot batch
+ * could end up half-promoted — a partial chart set in chartPath
+ * defeats the quarantine guarantee.
  *
- * On promotion failure (rename + copy both fail), the quarantine is
- * left in place — the next startup sweep cleans it up. The error
- * propagates so the catalog flow records the conversion as failed.
+ * Each `filename` must be a plain basename (no `..`, no separators,
+ * not absolute). The helper is the trust boundary between converter
+ * output and the live chart directory; a converter that returns
+ * `../foo.mbtiles` would otherwise write outside `targetDir`.
  */
 export async function promoteQuarantine(
   quarantineDir: string,
   filenames: string[],
   targetDir: string
 ): Promise<void> {
-  await fs.promises.mkdir(targetDir, { recursive: true });
+  // Validate first: refuse to start any moves if any name is unsafe.
   for (const filename of filenames) {
-    const from = path.join(quarantineDir, filename);
-    const to = path.join(targetDir, filename);
-    try {
-      await fs.promises.rename(from, to);
-    } catch (err) {
-      // EXDEV = cross-device link. Different filesystems → copy+unlink.
-      // Other errors (EBUSY, EACCES) re-raise; the caller turns it
-      // into a conversion failure.
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'EXDEV') {
-        throw err;
-      }
-      await fs.promises.copyFile(from, to);
-      await fs.promises.unlink(from);
+    if (
+      filename === '' ||
+      path.basename(filename) !== filename ||
+      filename.includes('..') ||
+      path.isAbsolute(filename)
+    ) {
+      throw new Error(`Invalid promoted filename: ${JSON.stringify(filename)}`);
     }
+  }
+
+  await fs.promises.mkdir(targetDir, { recursive: true });
+
+  const moved: { from: string; to: string }[] = [];
+  try {
+    for (const filename of filenames) {
+      const from = path.join(quarantineDir, filename);
+      const to = path.join(targetDir, filename);
+      try {
+        await fs.promises.rename(from, to);
+      } catch (err) {
+        // EXDEV = cross-device link. Different filesystems → copy+unlink.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'EXDEV') {
+          throw err;
+        }
+        await fs.promises.copyFile(from, to);
+        await fs.promises.unlink(from);
+      }
+      moved.push({ from, to });
+    }
+  } catch (err) {
+    // Roll back: move every successfully promoted file back to the
+    // quarantine dir so the live chart library doesn't keep a
+    // partial set. Best-effort — a rollback failure is logged but
+    // we still throw the original error so the caller knows the
+    // promotion didn't succeed.
+    for (const { from, to } of moved) {
+      try {
+        await fs.promises.rename(to, from);
+      } catch {
+        try {
+          await fs.promises.copyFile(to, from);
+          await fs.promises.unlink(to);
+        } catch (rollbackErr) {
+          console.warn(
+            `[charts-provider] promoteQuarantine rollback failed for ${to}: ${
+              rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+            }`
+          );
+        }
+      }
+    }
+    throw err;
   }
 }
 
