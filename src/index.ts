@@ -69,7 +69,11 @@ import type {
   DownloadJob
 } from './types.js';
 
-const PLUGIN_ID = 'signalk-charts-provider-simple';
+// Single source of truth lives in container-jobs.ts as PLUGIN_OWNER_ID
+// (used as the `ownerPluginId` label on every runJob call). The plugin
+// id Signal K uses must match exactly so `cleanupOrphanedJobs` reaps
+// the right containers — alias rather than duplicate the literal.
+const PLUGIN_ID = PLUGIN_OWNER_ID;
 const chartTilesPath = `/plugins/${PLUGIN_ID}`;
 
 const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
@@ -2392,12 +2396,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   ): void => {
     try {
       const chartNames = updates.map((u) => u.title ?? u.chartNumber ?? '').join(', ');
-      app.handleMessage('signalk-charts-provider-simple', {
+      app.handleMessage(PLUGIN_ID, {
         updates: [
           {
             values: [
               {
-                path: 'notifications.plugins.signalk-charts-provider-simple.chartCatalogUpdate' as Path,
+                path: `notifications.plugins.${PLUGIN_ID}.chartCatalogUpdate` as Path,
                 value: {
                   state: 'warn',
                   method: ['visual'],
@@ -2419,7 +2423,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const emitChartDelta = (chartId: string, chartValue: SanitizedChart | null): void => {
     try {
       app.handleMessage(
-        'signalk-charts-provider-simple',
+        PLUGIN_ID,
         {
           updates: [
             {
