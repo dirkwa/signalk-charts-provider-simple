@@ -258,8 +258,38 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const cleanup = await containerManager.cleanupOrphanedJobs({
             ownerPluginId: PLUGIN_OWNER_ID
           });
+          // Labels we set on runJob calls have the form
+          // `<stage>-<chartNumber>`, where <stage> is one of a fixed
+          // set of strings (gdal-export, tippecanoe, gdal-translate,
+          // gdaladdo, tar-extract, gdal-rasterize). The naïve
+          // `replace(/^[a-z-]+-/, '')` was greedy — it would strip
+          // every hyphenated prefix and corrupt chartNumbers that
+          // themselves contain hyphens (e.g. `tippecanoe-abc-def`
+          // would yield `def` instead of `abc-def`). Match the
+          // longest known prefix and take everything after.
+          const STAGES = [
+            'gdal-export',
+            'gdal-translate',
+            'gdal-rasterize',
+            'tar-extract',
+            'tippecanoe',
+            'gdaladdo'
+          ];
+          const extractChartNumber = (label: string | undefined): string | null => {
+            if (!label) {
+              return null;
+            }
+            for (const stage of STAGES) {
+              const prefix = `${stage}-`;
+              if (label.startsWith(prefix)) {
+                return label.slice(prefix.length) || null;
+              }
+            }
+            return null;
+          };
+
           for (const orphan of cleanup.reaped) {
-            const chartNumber = orphan.label ? orphan.label.replace(/^[a-z-]+-/, '') : null;
+            const chartNumber = extractChartNumber(orphan.label);
             app.debug(
               `Reaped orphan job ${orphan.name} (${orphan.label ?? 'no label'}); ` +
                 `rolling back chart ${chartNumber ?? '<unknown>'}`
