@@ -26,6 +26,25 @@
 # this file.
 FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64 AS tippecanoe-builder
 
+# Build-stage apt installs are deliberately NOT version-pinned and
+# do NOT use a snapshot mirror.  The reproducibility we care about
+# is "the published `:VERSION` image is content-addressed" — which
+# the FROM digest pins above and the tippecanoe SHA pin below already
+# enforce — and "the published image's runtime behaviour is stable"
+# — which the Stage 2 GDAL base's own digest-pinned libsqlite3-0 /
+# zlib1g / libstdc++6 enforce, since tippecanoe links dynamically
+# against those at runtime, not against the builder stage's copies.
+#
+# A `libsqlite3-dev` minor bump in 26.04's apt repo lifecycle would
+# at worst produce slightly different builder-stage object files; the
+# resulting tippecanoe binaries still link cleanly against Stage 2's
+# digest-pinned `libsqlite3-0` (SQLite is ABI-stable across point
+# releases within a major version, and so are zlib and libstdc++).
+# Apt-snapshot mirrors and per-package version pins would buy
+# byte-identical rebuilds in exchange for a real maintenance burden
+# (track and update each pin / snapshot ID on every refresh).  Until
+# we have a SLSA provenance requirement that demands byte identity,
+# the cost outweighs the marginal gain.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
