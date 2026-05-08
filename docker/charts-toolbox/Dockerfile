@@ -17,7 +17,14 @@
 
 # ── Stage 1: build tippecanoe binaries from felt/tippecanoe ──────────
 # Ubuntu 26.04 builder so the linkage matches the runtime stage.
-FROM ubuntu:26.04 AS tippecanoe-builder
+#
+# Pinned to an explicit image digest, not just `:26.04`.  Tags can
+# be re-published by Canonical when they rebuild for security
+# patches; the digest is content-addressed and never moves.  Bump
+# both this builder image and the runtime image (Stage 2) together
+# when refreshing — see "Bumping image digests" at the bottom of
+# this file.
+FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64 AS tippecanoe-builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -28,20 +35,28 @@ RUN apt-get update \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Pin the felt/tippecanoe revision via tag rather than a floating master
-# so rebuilds of this image at a different time produce identical
-# binaries.  Bump deliberately by editing the tag below; not via a
-# `:latest` redirect.
-ARG TIPPECANOE_REF=2.79.0
-RUN git clone --depth 1 --branch ${TIPPECANOE_REF} \
-        https://github.com/felt/tippecanoe.git /src/tippecanoe
+# Pin the felt/tippecanoe checkout to an exact commit SHA instead of
+# a tag.  Tags are mutable — anyone with push rights can move them
+# — so even though `2.79.0` and this SHA point at the same content
+# today, the SHA is the only form that gives true reproducibility.
+# The TIPPECANOE_REF arg name is kept for readability; the value is
+# a 40-char commit hash.
+ARG TIPPECANOE_REF=68ab8dcc229f95b8b25877697d5e8d66783af503
+RUN git clone https://github.com/felt/tippecanoe.git /src/tippecanoe \
+    && cd /src/tippecanoe \
+    && git checkout --quiet ${TIPPECANOE_REF}
 WORKDIR /src/tippecanoe
 RUN make -j"$(nproc)" \
     && make install PREFIX=/usr/local \
     && strip /usr/local/bin/tippecanoe* /usr/local/bin/tile-join
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────
-FROM ghcr.io/osgeo/gdal:ubuntu-small-3.13.0
+# Pinned to the digest of `osgeo/gdal:ubuntu-small-3.13.0` at the
+# time of writing.  OSGeo doesn't publish a floating
+# `:ubuntu-small-latest` tag, but they *do* re-tag `:3.13.0` when
+# they rebuild the underlying Ubuntu base for security patches.
+# The digest pin makes our image truly content-addressed.
+FROM ghcr.io/osgeo/gdal:ubuntu-small-3.13.0@sha256:e0fedbcc5b51bd12617d6a6cf8b7c3244d98cbd29b266925fd9061f40081b351
 
 # `libsqlite3-0`, `zlib1g`, `libstdc++6` are already present in the
 # GDAL base — verified via `dpkg -l` against the upstream image.
@@ -66,14 +81,35 @@ COPY --from=tippecanoe-builder /usr/local/bin/tippecanoe-json-tool /usr/local/bi
 #
 # Callers that need the container to write into a host-owned bind
 # mount with matching UID should pass `--user $(id -u):$(id -g)` at
-# run-time — that override beats this default and keeps file
-# ownership predictable for the host.  The plugin's `signalk-container`
-# manager will gain that flag automatically in 1.4.0; until then,
-# in-plugin use of this image needs the manager bump (the converter's
-# image swap is gated on it via peer-dep).
+# run-time on Docker / rootful Podman, or
+# `--userns=keep-id:uid=1001,gid=1001` on rootless Podman.  The
+# `signalk-container` manager (>= 1.4.0) emits the right form for
+# the detected runtime automatically; consumer plugins just declare
+# `user: { inImageUid: 1001, inImageGid: 1001 }` in their `runJob`
+# call.
 RUN groupadd --gid 1001 toolbox \
     && useradd --uid 1001 --gid 1001 \
          --home-dir /home/toolbox --create-home \
          --shell /sbin/nologin toolbox
 USER toolbox
 WORKDIR /home/toolbox
+
+# ─────────────────────────────────────────────────────────────────────
+# Bumping image digests
+# ─────────────────────────────────────────────────────────────────────
+# When refreshing the bases (security patches, GDAL major bumps, new
+# tippecanoe release):
+#
+#   1. `docker pull ubuntu:26.04` (or the new tag), then
+#      `docker images ubuntu:26.04 --format '{{.Digest}}'` and paste
+#      that into the Stage 1 FROM line.
+#   2. Same for the GDAL base — pull the new
+#      `osgeo/gdal:ubuntu-small-X.Y.Z` and read its digest.
+#   3. For tippecanoe: `git ls-remote --tags
+#      https://github.com/felt/tippecanoe` to find the new tag's
+#      commit SHA, then update TIPPECANOE_REF.
+#   4. Bump `docker/charts-toolbox/VERSION` deliberately — the
+#      build-charts-toolbox.yml workflow refuses to push an image
+#      tag that already exists in the registry, so a digest update
+#      without a VERSION bump fails the build.
+# ─────────────────────────────────────────────────────────────────────
