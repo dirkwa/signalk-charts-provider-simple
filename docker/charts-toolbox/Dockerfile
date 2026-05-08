@@ -57,3 +57,23 @@ COPY --from=tippecanoe-builder /usr/local/bin/tile-join /usr/local/bin/
 COPY --from=tippecanoe-builder /usr/local/bin/tippecanoe-enumerate /usr/local/bin/
 COPY --from=tippecanoe-builder /usr/local/bin/tippecanoe-overzoom /usr/local/bin/
 COPY --from=tippecanoe-builder /usr/local/bin/tippecanoe-json-tool /usr/local/bin/
+
+# Run as a fixed non-root user.  Defense-in-depth: even though every
+# `runJob` invocation is a short-lived helper with no network and no
+# privileged capabilities, root-by-default in helper containers is a
+# bad smell that doesn't pay rent.  UID 1001 is `nogroup`-friendly
+# and avoids the well-known UID 1000 collision on many host distros.
+#
+# Callers that need the container to write into a host-owned bind
+# mount with matching UID should pass `--user $(id -u):$(id -g)` at
+# run-time — that override beats this default and keeps file
+# ownership predictable for the host.  The plugin's `signalk-container`
+# manager will gain that flag automatically in 1.4.0; until then,
+# in-plugin use of this image needs the manager bump (the converter's
+# image swap is gated on it via peer-dep).
+RUN groupadd --gid 1001 toolbox \
+    && useradd --uid 1001 --gid 1001 \
+         --home-dir /home/toolbox --create-home \
+         --shell /sbin/nologin toolbox
+USER toolbox
+WORKDIR /home/toolbox

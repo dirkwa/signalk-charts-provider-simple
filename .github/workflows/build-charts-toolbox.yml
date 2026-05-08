@@ -46,6 +46,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Refuse to overwrite a published :VERSION tag.  Consumers
+      # (notably the plugin's converter, which pins to a specific
+      # version) rely on a given tag pointing at a fixed image
+      # forever.  A `docker/charts-toolbox/**` change without a
+      # matching VERSION bump would otherwise silently re-push the
+      # same tag with different content; this guard fails the build
+      # so the maintainer has to bump VERSION deliberately.
+      - name: Verify VERSION tag is unique
+        run: |
+          tag="${{ env.IMAGE }}:${{ steps.version.outputs.value }}"
+          if docker manifest inspect "$tag" >/dev/null 2>&1; then
+            echo "::error::Image tag $tag already exists in the registry."
+            echo "::error::Bump docker/charts-toolbox/VERSION before pushing changes to docker/charts-toolbox/**."
+            exit 1
+          fi
+          echo "Tag $tag is unpublished — proceeding with build."
+
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
