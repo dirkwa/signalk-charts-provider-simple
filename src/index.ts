@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs';
 import https from 'https';
 import type { Plugin, Path } from '@signalk/server-api';
+import { SKVersion } from '@signalk/server-api';
 import { findCharts } from './charts-loader.js';
 import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner.js';
 import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state.js';
@@ -2436,7 +2437,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             }
           ]
         },
-        2 as unknown as import('@signalk/server-api').SKVersion
+        SKVersion.v2
       );
       app.debug(`Delta emitted for chart: ${chartId}, value: ${chartValue ? 'data' : 'null'}`);
     } catch (error) {
