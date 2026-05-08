@@ -44,9 +44,18 @@ export function makeQuarantineDir(dataDir: string, chartNumber: string): string 
  * dir into `targetDir` (subfolder under chartPath). Failure is
  * **all-or-nothing**: if any file fails to move, every file that
  * was already moved this call is rolled back to the quarantine and
- * the error propagates. Without that, a multi-file RNC/Pilot batch
- * could end up half-promoted — a partial chart set in chartPath
- * defeats the quarantine guarantee.
+ * any pre-existing live file we displaced is restored. Without that,
+ * a multi-file RNC/Pilot batch could end up half-promoted — a
+ * partial chart set in chartPath defeats the quarantine guarantee.
+ *
+ * Pre-existing files in `targetDir` whose names collide with a
+ * promoted filename are preserved by moving the original aside to a
+ * sibling `<filename>.replaced-<ts>` first; on success those backups
+ * are removed, on failure they're moved back into place. Without
+ * this step, a failed multi-file promotion could leave the user's
+ * previously working chart deleted with no replacement (the new file
+ * was rolled back to quarantine, but the old file we overwrote en
+ * route is gone).
  *
  * Each `filename` must be a plain basename (no `..`, no separators,
  * not absolute). The helper is the trust boundary between converter
@@ -72,6 +81,28 @@ export async function promoteQuarantine(
 
   await fs.promises.mkdir(targetDir, { recursive: true });
 
+  // Phase 1: for any target filename that already exists, move the
+  // current live file aside to a backup path in the same dir. Same-dir
+  // keeps the rename atomic (no EXDEV), and on success we just rm the
+  // backup; on failure we rename it back into place.
+  const backupSuffix = `.replaced-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const backups: { live: string; backup: string }[] = [];
+  for (const filename of filenames) {
+    const livePath = path.join(targetDir, filename);
+    let exists = false;
+    try {
+      await fs.promises.access(livePath, fs.constants.F_OK);
+      exists = true;
+    } catch {
+      exists = false;
+    }
+    if (exists) {
+      const backupPath = `${livePath}${backupSuffix}`;
+      await fs.promises.rename(livePath, backupPath);
+      backups.push({ live: livePath, backup: backupPath });
+    }
+  }
+
   const moved: { from: string; to: string }[] = [];
   try {
     for (const filename of filenames) {
@@ -91,11 +122,15 @@ export async function promoteQuarantine(
       moved.push({ from, to });
     }
   } catch (err) {
-    // Roll back: move every successfully promoted file back to the
-    // quarantine dir so the live chart library doesn't keep a
-    // partial set. Best-effort — a rollback failure is logged but
-    // we still throw the original error so the caller knows the
-    // promotion didn't succeed.
+    // Roll back in two phases:
+    //   1) Move each successfully promoted file back to the quarantine
+    //      dir so the live chart library doesn't keep a partial set.
+    //   2) Restore any pre-existing originals from `backups` so an
+    //      attempted upgrade that failed doesn't take out the working
+    //      chart the user had before.
+    // Best-effort throughout — a rollback failure is logged but we
+    // still throw the original error so the caller knows the promotion
+    // didn't succeed.
     for (const { from, to } of moved) {
       try {
         await fs.promises.rename(to, from);
@@ -112,7 +147,33 @@ export async function promoteQuarantine(
         }
       }
     }
+    for (const { live, backup } of backups) {
+      try {
+        await fs.promises.rename(backup, live);
+      } catch (restoreErr) {
+        console.warn(
+          `[charts-provider] promoteQuarantine could not restore pre-existing ${live} from ${backup}: ${
+            restoreErr instanceof Error ? restoreErr.message : String(restoreErr)
+          }`
+        );
+      }
+    }
     throw err;
+  }
+
+  // Promotion succeeded — drop the backups of replaced originals.
+  // Best-effort: a leftover .replaced-* file is cosmetic, never
+  // load-bearing for the live chart library.
+  for (const { backup } of backups) {
+    try {
+      await fs.promises.unlink(backup);
+    } catch (cleanupErr) {
+      console.warn(
+        `[charts-provider] promoteQuarantine could not delete backup ${backup}: ${
+          cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+        }`
+      );
+    }
   }
 }
 

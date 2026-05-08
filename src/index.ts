@@ -632,6 +632,28 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                         promoteErr instanceof Error ? promoteErr.message : String(promoteErr)
                       }`
                     );
+                    return;
+                  }
+                  // The global job-completed handler runs against
+                  // job.targetDir (the quarantine), so the chart it
+                  // tried to enable is at a path that no longer
+                  // exists. Re-do enable + refresh against the live
+                  // target so the chart actually shows up.
+                  const basePath = props.chartPath || defaultChartsPath;
+                  const targetFolderRel = path.relative(basePath, targetDir);
+                  for (const fileName of job.extractedFiles) {
+                    const relativePath = targetFolderRel
+                      ? path.join(targetFolderRel, fileName)
+                      : fileName;
+                    setChartEnabled(relativePath, true);
+                  }
+                  await refreshChartProviders();
+                  for (const fileName of job.extractedFiles) {
+                    const chartId = fileName.replace(/\.mbtiles$/, '');
+                    if (chartProviders[chartId]) {
+                      const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                      emitChartDelta(chartId, chartData);
+                    }
                   }
                 }
               } finally {
@@ -1397,6 +1419,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   targetFolder && targetFolder !== '/'
                     ? path.join(basePath, targetFolder)
                     : basePath;
+                // The earlier per-file `isWithinBase` check ran against
+                // each filename joined with the *raw* `fields.targetFolder`,
+                // before busboy had handed us every field. The actual
+                // promotion target is computed here from the *parsed*
+                // value, so re-check containment before we move staged
+                // files anywhere — a malformed targetFolder mustn't be
+                // able to slip through and direct the promotion outside
+                // basePath.
+                if (!isWithinBase(promoteTarget, basePath)) {
+                  cleanupQuarantineDir(quarantineDir);
+                  res
+                    .status(403)
+                    .json({ success: false, error: 'Access denied: Invalid upload path' });
+                  return;
+                }
                 await promoteQuarantine(quarantineDir, uploadedFiles, promoteTarget);
 
                 await finalizeUploadedFiles(uploadedFiles, targetFolder, basePath);
@@ -1717,19 +1754,27 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             .basename(uploadedFileName, '.zip')
             .replace(/[^a-zA-Z0-9_-]/g, '_');
 
-          res.json({ success: true, chartNumber, message: 'Conversion started' });
-
-          setConvertingState(chartNumber, true);
-
-          // makeQuarantineDir can throw on permission/disk errors;
-          // build it inside the guarded try so a failure goes
-          // through the same converting-flag rollback as a
-          // conversion error. Null until the assignment succeeds
-          // so the finally branch knows whether to clean up.
-          let quarantineDir: string | null = null;
-
+          // Order matters: defer the success response until
+          // makeQuarantineDir has actually returned. A permission /
+          // disk error there used to surface AFTER the client had
+          // already been told the conversion was running, leaving
+          // the UI stuck waiting for status it would never get.
+          let quarantineDir: string;
           try {
             quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+          } catch (err) {
+            res.status(500).json({
+              success: false,
+              error: `Failed to prepare conversion workspace: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            });
+            return;
+          }
+          setConvertingState(chartNumber, true);
+          res.json({ success: true, chartNumber, message: 'Conversion started' });
+
+          try {
             if (convType === 's57') {
               const result = await processS57Zip(
                 validatedFile,
@@ -1787,9 +1832,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             );
           } finally {
             setConvertingState(chartNumber, false);
-            if (quarantineDir !== null) {
-              cleanupQuarantineDir(quarantineDir);
-            }
+            cleanupQuarantineDir(quarantineDir);
             cleanupDir(tmpDir);
           }
         })();
@@ -1971,12 +2014,34 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   removeInstall(chartNumber);
                   return;
                 }
+                // The global `job-completed` handler enables charts and
+                // refreshes providers against `job.targetDir`, but with
+                // quarantine that's the staging dir under
+                // `<dataDir>/in-progress/`, not the live target. So
+                // run the same enable + refresh + delta-emit cycle
+                // ourselves now that the files are actually in place.
+                const targetFolderRel = path.relative(chartPath, targetDir);
+                for (const fileName of job.extractedFiles) {
+                  const relativePath = targetFolderRel
+                    ? path.join(targetFolderRel, fileName)
+                    : fileName;
+                  setChartEnabled(relativePath, true);
+                  app.debug(`Enabled promoted chart: ${relativePath}`);
+                }
+                await refreshChartProviders();
+                for (const fileName of job.extractedFiles) {
+                  const chartId = fileName.replace(/\.mbtiles$/, '');
+                  if (chartProviders[chartId]) {
+                    const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                    emitChartDelta(chartId, chartData);
+                    app.debug(`Delta emitted for promoted chart: ${chartId}`);
+                  }
+                }
                 // Record the produced filename so the delete flow can
                 // clear this install record by reverse-lookup. Same
                 // pattern as the S-57 / RNC conversion completion paths.
                 const firstFile = job.extractedFiles[0];
                 if (firstFile) {
-                  const targetFolderRel = path.relative(chartPath, targetDir);
                   const relativePath = targetFolderRel
                     ? path.join(targetFolderRel, firstFile)
                     : firstFile;

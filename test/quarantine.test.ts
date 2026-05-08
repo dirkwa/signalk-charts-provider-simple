@@ -103,6 +103,44 @@ describe('quarantine helpers', () => {
     assert.strictEqual(fs.readFileSync(path.join(q, 'second.mbtiles'), 'utf8'), 'B');
   });
 
+  it('promoteQuarantine overwrites a pre-existing live file on success and removes the backup', async () => {
+    const q = makeQuarantineDir(dataDir, 'overwrite-1');
+    fs.writeFileSync(path.join(q, 'chart.mbtiles'), 'NEW');
+
+    const subTarget = path.join(chartPath, 'overwrite-target');
+    fs.mkdirSync(subTarget, { recursive: true });
+    fs.writeFileSync(path.join(subTarget, 'chart.mbtiles'), 'OLD');
+
+    await promoteQuarantine(q, ['chart.mbtiles'], subTarget);
+
+    assert.strictEqual(fs.readFileSync(path.join(subTarget, 'chart.mbtiles'), 'utf8'), 'NEW');
+    // No backup left behind once the promotion succeeded.
+    const leftover = fs.readdirSync(subTarget).filter((f) => f.includes('.replaced-'));
+    assert.deepStrictEqual(leftover, []);
+  });
+
+  it('promoteQuarantine restores a pre-existing live file when a later promotion fails', async () => {
+    const q = makeQuarantineDir(dataDir, 'restore-1');
+    fs.writeFileSync(path.join(q, 'first.mbtiles'), 'NEW1');
+    // 'second.mbtiles' missing → second move will fail with ENOENT,
+    // triggering rollback after first.mbtiles has already overwritten
+    // a pre-existing live file.
+
+    const subTarget = path.join(chartPath, 'restore-target');
+    fs.mkdirSync(subTarget, { recursive: true });
+    fs.writeFileSync(path.join(subTarget, 'first.mbtiles'), 'OLD1');
+
+    await assert.rejects(promoteQuarantine(q, ['first.mbtiles', 'second.mbtiles'], subTarget));
+
+    // Pre-existing file restored from backup.
+    assert.strictEqual(fs.readFileSync(path.join(subTarget, 'first.mbtiles'), 'utf8'), 'OLD1');
+    // New file rolled back to quarantine.
+    assert.strictEqual(fs.readFileSync(path.join(q, 'first.mbtiles'), 'utf8'), 'NEW1');
+    // No leftover backup entries.
+    const leftover = fs.readdirSync(subTarget).filter((f) => f.includes('.replaced-'));
+    assert.deepStrictEqual(leftover, []);
+  });
+
   it('promoteQuarantine creates the target dir recursively', async () => {
     const q = makeQuarantineDir(dataDir, 'promote-2');
     fs.writeFileSync(path.join(q, 'x.mbtiles'), 'xxx');
