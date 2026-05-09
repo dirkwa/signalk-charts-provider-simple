@@ -4,6 +4,7 @@ import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import unzipper from 'unzipper';
 import { getCpuBudget } from './concurrency.js';
+import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
 import {
   ensureImage as ensureContainerImage,
   resolveJobPaths,
@@ -27,16 +28,6 @@ import type {
   StatusCallback,
   DebugFunction
 } from '../types.js';
-
-// Single combined image: GDAL + tippecanoe + tile-join + helpers.
-// Replaced two upstream-pulled images (`osgeo/gdal:alpine-small-latest`
-// + `ghcr.io/dirkwa/.../tippecanoe`) with one toolbox image so a fresh
-// `signalk-container` host pays one image pull instead of two.  Pinned
-// to an explicit `:VERSION` tag (the toolbox build workflow refuses to
-// overwrite it), so the tag is permanent for any host that pulled it.
-// Bumping = bump `docker/charts-toolbox/VERSION` AND this constant
-// together; one-step refresh.
-const CHARTS_TOOLBOX_IMAGE = 'ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0';
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;

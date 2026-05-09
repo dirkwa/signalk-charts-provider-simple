@@ -125,7 +125,7 @@ systemctl --user enable --now podman.socket
 
 The plugin uses one combined image that `signalk-container` pulls automatically on first conversion:
 
-- `ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox` — GDAL + tippecanoe + tile-join + helpers in a single image (multi-arch: amd64 + arm64).
+- `ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0` — GDAL + tippecanoe + tile-join + helpers in a single image (multi-arch: amd64 + arm64). The plugin pins to a specific `:VERSION` tag rather than `:latest` so a published image tag is permanent for any host that pulled it; bumping the toolbox image is a co-ordinated edit of `docker/charts-toolbox/VERSION` and the matching constant in `src/utils/container-images.ts`.
 
 **Why `signalk-container`?** It transparently handles the three deployment topologies that 1.x got wrong:
 

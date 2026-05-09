@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
+import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
 import {
   ensureImage as ensureContainerImage,
   resolveJobPaths,
@@ -15,14 +16,6 @@ import type {
   StatusCallback,
   DebugFunction
 } from '../types.js';
-
-// Single combined toolbox image (GDAL + tippecanoe + tile-join +
-// helpers).  RNC conversion only uses GDAL, but sharing the same
-// image with s57-converter means a fresh `signalk-container` host
-// pays one image pull total, not one per converter module.  See
-// `src/utils/s57-converter.ts` for the matching constant — bumping
-// the toolbox version is a single co-ordinated edit.
-const CHARTS_TOOLBOX_IMAGE = 'ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0';
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
