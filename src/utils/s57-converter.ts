@@ -912,27 +912,23 @@ async function runPerBandPipeline(
     fs.mkdirSync(bandEncDir, { recursive: true });
     fs.mkdirSync(bandGeojsonDir, { recursive: true });
 
-    // Symlink each cell into the band-scoped dir so the export script
-    // (which walks `find <inDir> -name '*.000'`) only sees this band's
-    // cells. Symlinks keep IO cheap; the per-conversion tmpDir is
-    // wiped in the outer finally regardless.
+    // Hardlink each cell into the band-scoped dir so the export
+    // script (which walks `find <inDir> -name '*.000'`) only sees
+    // this band's cells.  Hardlinks keep IO cheap (no data copy)
+    // and — unlike symlinks — survive being bind-mounted into a
+    // container: a symlink target pointing at an absolute host
+    // path doesn't exist inside the container's filesystem
+    // namespace, so `find` would silently miss every cell.  Copy
+    // is the fallback for the rare case where tmpDir spans
+    // filesystems (e.g. /tmp on tmpfs but the encDir on disk).
     for (const cellPath of cells) {
       const cellRel = path.relative(encDir, cellPath);
       const linkPath = path.join(bandEncDir, cellRel);
       fs.mkdirSync(path.dirname(linkPath), { recursive: true });
       try {
-        fs.symlinkSync(cellPath, linkPath);
-      } catch (err) {
-        // Some filesystems (FAT/exFAT on USB chart drives) don't
-        // support symlinks; fall back to a hardlink, then to a copy.
-        try {
-          fs.linkSync(cellPath, linkPath);
-        } catch {
-          fs.copyFileSync(cellPath, linkPath);
-        }
-        debug(
-          `Symlink unsupported for band ${band}, fell back: ${err instanceof Error ? err.message : String(err)}`
-        );
+        fs.linkSync(cellPath, linkPath);
+      } catch {
+        fs.copyFileSync(cellPath, linkPath);
       }
     }
 
@@ -969,18 +965,17 @@ async function runPerBandPipeline(
     const unbandedGeojsonDir = path.join(tmpDir, 'geojson-unbanded');
     fs.mkdirSync(unbandedEncDir, { recursive: true });
     fs.mkdirSync(unbandedGeojsonDir, { recursive: true });
+    // Hardlink (not symlink) — see the band-loop above for the
+    // why: bind-mounted absolute symlink targets don't resolve
+    // inside the helper container.
     for (const cellPath of grouping.unbanded) {
       const cellRel = path.relative(encDir, cellPath);
       const linkPath = path.join(unbandedEncDir, cellRel);
       fs.mkdirSync(path.dirname(linkPath), { recursive: true });
       try {
-        fs.symlinkSync(cellPath, linkPath);
+        fs.linkSync(cellPath, linkPath);
       } catch {
-        try {
-          fs.linkSync(cellPath, linkPath);
-        } catch {
-          fs.copyFileSync(cellPath, linkPath);
-        }
+        fs.copyFileSync(cellPath, linkPath);
       }
     }
 
