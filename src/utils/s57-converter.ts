@@ -347,7 +347,16 @@ async function exportAllLayersToGeoJSON(
   const result = await runContainerJob({
     image: CHARTS_TOOLBOX_IMAGE,
     label: `gdal-export-${chartNumber}`,
-    command: ['sh', '-c', script],
+    // bash, not sh.  The toolbox image's `/bin/sh` is dash on
+    // Ubuntu, which doesn't accept `read -r -d ''` (a bash-ism we
+    // use to consume `find -print0` output safely).  Earlier alpine
+    // images linked `/bin/sh` to BusyBox `ash`, which did accept
+    // `-d` — that's why the script worked there and silently
+    // failed here with `sh: read: Illegal option -d` once the
+    // converter switched to the toolbox image.  The toolbox image
+    // ships bash 5.x at `/usr/bin/bash`; invoking via PATH lookup
+    // works the same way `sh` did.
+    command: ['bash', '-c', script],
     inputs: { '/input': resolved['/input'].source },
     outputs: { '/output': resolved['/output'].source },
     // Cap the helper at the budgeted parallelism — without this the
