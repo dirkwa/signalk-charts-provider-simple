@@ -16,7 +16,13 @@ import type {
   DebugFunction
 } from '../types.js';
 
-const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
+// Single combined toolbox image (GDAL + tippecanoe + tile-join +
+// helpers).  RNC conversion only uses GDAL, but sharing the same
+// image with s57-converter means a fresh `signalk-container` host
+// pays one image pull total, not one per converter module.  See
+// `src/utils/s57-converter.ts` for the matching constant — bumping
+// the toolbox version is a single co-ordinated edit.
+const CHARTS_TOOLBOX_IMAGE = 'ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0';
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
@@ -125,7 +131,7 @@ export async function convertKapToMbtiles(
     : '/output';
 
   const result = await runContainerJob({
-    image: GDAL_IMAGE,
+    image: CHARTS_TOOLBOX_IMAGE,
     label: `gdal-translate-${chartNumber || baseName}`,
     command: [
       'gdal_translate',
@@ -172,7 +178,7 @@ async function addOverviews(mbtilesFile: string, chartNumber: string): Promise<v
   const dataPrefix = resolved['/data'].subPath ? `/data/${resolved['/data'].subPath}` : '/data';
 
   const result = await runContainerJob({
-    image: GDAL_IMAGE,
+    image: CHARTS_TOOLBOX_IMAGE,
     label: `gdaladdo-${chartNumber || name}`,
     command: ['gdaladdo', '-r', 'average', `${dataPrefix}/${name}`, '2', '4', '8', '16'],
     outputs: { '/data': resolved['/data'].source },
@@ -218,12 +224,12 @@ export async function processRncZip(
       );
     }
 
-    statusFn('pulling', 'Checking GDAL image...');
+    statusFn('pulling', 'Checking charts-toolbox image...');
     if (chartNumber) {
       conversionProgress[chartNumber].status = 'pulling';
-      conversionProgress[chartNumber].message = 'Checking GDAL image...';
+      conversionProgress[chartNumber].message = 'Checking charts-toolbox image...';
     }
-    await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
+    await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
 
     statusFn('extracting', 'Extracting BSB chart files from ZIP...');
     if (chartNumber) {
@@ -300,7 +306,7 @@ export async function processRncZip(
       }
 
       const translateResult = await runContainerJob({
-        image: GDAL_IMAGE,
+        image: CHARTS_TOOLBOX_IMAGE,
         label: `gdal-translate-${baseName}`,
         command: [
           'gdal_translate',
@@ -324,7 +330,7 @@ export async function processRncZip(
       }
 
       const overviewResult = await runContainerJob({
-        image: GDAL_IMAGE,
+        image: CHARTS_TOOLBOX_IMAGE,
         label: `gdaladdo-${baseName}`,
         command: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
         outputs: { '/output': resolved['/output'].source },
@@ -409,8 +415,8 @@ export async function processPilotTar(
       );
     }
 
-    statusFn('pulling', 'Checking GDAL image...');
-    await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
+    statusFn('pulling', 'Checking charts-toolbox image...');
+    await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
 
     statusFn('extracting', 'Extracting pilot chart archive...');
     setConvertProgress(chartNumber, 'extracting', 'Extracting .tar.xz archive...');
@@ -442,7 +448,7 @@ export async function processPilotTar(
       : '/output';
 
     const tarResult = await runContainerJob({
-      image: GDAL_IMAGE,
+      image: CHARTS_TOOLBOX_IMAGE,
       label: `tar-extract-${chartNumber}`,
       command: ['tar', '-xf', `${archivePrefix}/${path.basename(tarPath)}`, '-C', tarOutputPrefix],
       inputs: { '/archive': tarResolved['/archive'].source },
@@ -524,7 +530,7 @@ export async function processPilotTar(
       );
 
       const translateResult = await runContainerJob({
-        image: GDAL_IMAGE,
+        image: CHARTS_TOOLBOX_IMAGE,
         label: `gdal-translate-${baseName}`,
         command: [
           'gdal_translate',
@@ -548,7 +554,7 @@ export async function processPilotTar(
       }
 
       const overviewResult = await runContainerJob({
-        image: GDAL_IMAGE,
+        image: CHARTS_TOOLBOX_IMAGE,
         label: `gdaladdo-${baseName}`,
         command: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
         outputs: { '/output': convResolved['/output'].source },

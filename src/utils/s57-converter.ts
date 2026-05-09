@@ -28,8 +28,15 @@ import type {
   DebugFunction
 } from '../types.js';
 
-const GDAL_IMAGE = 'ghcr.io/osgeo/gdal:alpine-small-latest';
-const TIPPECANOE_IMAGE = 'ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe';
+// Single combined image: GDAL + tippecanoe + tile-join + helpers.
+// Replaced two upstream-pulled images (`osgeo/gdal:alpine-small-latest`
+// + `ghcr.io/dirkwa/.../tippecanoe`) with one toolbox image so a fresh
+// `signalk-container` host pays one image pull instead of two.  Pinned
+// to an explicit `:VERSION` tag (the toolbox build workflow refuses to
+// overwrite it), so the tag is permanent for any host that pulled it.
+// Bumping = bump `docker/charts-toolbox/VERSION` AND this constant
+// together; one-step refresh.
+const CHARTS_TOOLBOX_IMAGE = 'ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0';
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
@@ -338,7 +345,7 @@ async function exportAllLayersToGeoJSON(
   });
 
   const result = await runContainerJob({
-    image: GDAL_IMAGE,
+    image: CHARTS_TOOLBOX_IMAGE,
     label: `gdal-export-${chartNumber}`,
     command: ['sh', '-c', script],
     inputs: { '/input': resolved['/input'].source },
@@ -674,7 +681,7 @@ async function runTippecanoe(
   };
 
   const result = await runContainerJob({
-    image: TIPPECANOE_IMAGE,
+    image: CHARTS_TOOLBOX_IMAGE,
     label: `tippecanoe-${chartNumber}`,
     command: [
       'tippecanoe',
@@ -810,7 +817,7 @@ async function runTileJoin(
   };
 
   const result = await runContainerJob({
-    image: TIPPECANOE_IMAGE,
+    image: CHARTS_TOOLBOX_IMAGE,
     label: `tile-join-${chartNumber}`,
     command: [
       'tile-join',
@@ -1045,11 +1052,9 @@ export async function processS57Zip(
       );
     }
 
-    statusFn('pulling', 'Checking container images...');
-    setProgress(chartNumber, 'pulling', 'Checking GDAL image...');
-    await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
-    setProgress(chartNumber, 'pulling', 'Checking tippecanoe image...');
-    await ensureContainerImage(TIPPECANOE_IMAGE, (msg) => debug(msg));
+    statusFn('pulling', 'Checking container image...');
+    setProgress(chartNumber, 'pulling', 'Checking charts-toolbox image...');
+    await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
 
     statusFn('extracting', 'Extracting ENC files...');
     setProgress(chartNumber, 'extracting', 'Extracting ENC files...');
@@ -1242,8 +1247,8 @@ export async function processGshhg(
         'Install it from the App Store and restart Signal K.'
     );
   }
-  setProgress(chartNumber, 'pulling', 'Checking GDAL image...');
-  await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
+  setProgress(chartNumber, 'pulling', 'Checking charts-toolbox image...');
+  await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
 
   setProgress(chartNumber, 'converting', 'Downloading GSHHG shapefiles from NOAA...');
   appendLog(
@@ -1348,7 +1353,7 @@ export async function processGshhg(
 
   appendLog(chartNumber, 'Rasterizing shapefile...');
   const rasterizeResult = await runContainerJob({
-    image: GDAL_IMAGE,
+    image: CHARTS_TOOLBOX_IMAGE,
     label: `gdal-rasterize-${chartNumber}`,
     command: [
       'gdal_rasterize',
@@ -1397,7 +1402,7 @@ export async function processGshhg(
   setProgress(chartNumber, 'converting', 'Creating MBTiles...');
   appendLog(chartNumber, 'Creating MBTiles...');
   const translateResult = await runContainerJob({
-    image: GDAL_IMAGE,
+    image: CHARTS_TOOLBOX_IMAGE,
     label: `gdal-translate-${chartNumber}`,
     command: [
       'gdal_translate',
@@ -1422,7 +1427,7 @@ export async function processGshhg(
   setProgress(chartNumber, 'converting', 'Adding zoom levels...');
   appendLog(chartNumber, 'Adding overview zoom levels...');
   const overviewResult = await runContainerJob({
-    image: GDAL_IMAGE,
+    image: CHARTS_TOOLBOX_IMAGE,
     label: `gdaladdo-${chartNumber}`,
     command: [
       'gdaladdo',
@@ -1500,8 +1505,8 @@ export async function processShpBasemap(
           'Install it from the App Store and restart Signal K.'
       );
     }
-    setProgress(chartNumber, 'pulling', 'Checking GDAL image...');
-    await ensureContainerImage(GDAL_IMAGE, (msg) => debug(msg));
+    setProgress(chartNumber, 'pulling', 'Checking charts-toolbox image...');
+    await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
 
     setProgress(chartNumber, 'extracting', 'Extracting shapefiles...');
     appendLog(chartNumber, 'Extracting .tar.xz archive...');
@@ -1533,7 +1538,7 @@ export async function processShpBasemap(
       : '/output';
 
     const tarResult = await runContainerJob({
-      image: GDAL_IMAGE,
+      image: CHARTS_TOOLBOX_IMAGE,
       label: `tar-extract-${chartNumber}`,
       command: ['tar', '-xf', `${archivePrefix}/${path.basename(tarPath)}`, '-C', tarOutputPrefix],
       inputs: { '/archive': tarResolved['/archive'].source },
@@ -1618,7 +1623,7 @@ export async function processShpBasemap(
 
     appendLog(chartNumber, 'Rasterizing...');
     const rasterizeResult = await runContainerJob({
-      image: GDAL_IMAGE,
+      image: CHARTS_TOOLBOX_IMAGE,
       label: `gdal-rasterize-${chartNumber}`,
       command: [
         'gdal_rasterize',
@@ -1666,7 +1671,7 @@ export async function processShpBasemap(
 
     appendLog(chartNumber, 'Creating MBTiles...');
     const translateResult = await runContainerJob({
-      image: GDAL_IMAGE,
+      image: CHARTS_TOOLBOX_IMAGE,
       label: `gdal-translate-${chartNumber}`,
       command: [
         'gdal_translate',
@@ -1690,7 +1695,7 @@ export async function processShpBasemap(
 
     appendLog(chartNumber, 'Adding zoom levels...');
     const overviewResult = await runContainerJob({
-      image: GDAL_IMAGE,
+      image: CHARTS_TOOLBOX_IMAGE,
       label: `gdaladdo-${chartNumber}`,
       command: [
         'gdaladdo',

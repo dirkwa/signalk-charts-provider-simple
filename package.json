@@ -44,9 +44,6 @@
     "unzipper": "^0.12.3",
     "xml2js": "^0.6.2"
   },
-  "peerDependencies": {
-    "signalk-container": ">=1.2.1"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dirkwa/signalk-charts-provider-simple"
