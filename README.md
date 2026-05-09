@@ -123,10 +123,9 @@ sudo dnf install podman
 systemctl --user enable --now podman.socket
 ```
 
-The plugin uses standard images that `signalk-container` pulls automatically on first use:
+The plugin uses one combined image that `signalk-container` pulls automatically on first conversion:
 
-- `ghcr.io/osgeo/gdal:alpine-small-latest` — GDAL for format conversion
-- `ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe` — tippecanoe for vector tile generation (multi-arch: amd64 + arm64)
+- `ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox` — GDAL + tippecanoe + tile-join + helpers in a single image (multi-arch: amd64 + arm64).
 
 **Why `signalk-container`?** It transparently handles the three deployment topologies that 1.x got wrong:
 
@@ -140,7 +139,7 @@ Conversion concurrency is configurable — see the [CPU budget](#cpu-budget-for-
 
 ### Standalone container image (third-party use)
 
-This repository also publishes a self-contained `charts-toolbox` image bundling GDAL + tippecanoe + tile-join in a single image. It's available for anyone who wants to run the same converter outside Signal K — overnight NOAA region pipelines, ad-hoc shell-script automation, GitHub Actions workflows under your own account, etc.
+The same `charts-toolbox` image the plugin uses internally is also available for use **outside** Signal K — overnight NOAA region pipelines, ad-hoc shell-script automation, GitHub Actions workflows under your own account, etc.
 
 Pull it directly from GHCR:
 

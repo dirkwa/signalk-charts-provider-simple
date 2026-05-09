@@ -63,6 +63,25 @@ export interface ContainerJobConfig {
    * crash.  Available in signalk-container >= 1.3.0.
    */
   ownerPluginId?: string;
+  /**
+   * Align the container's UID/GID with the host caller's so files
+   * written into bind-mounted output dirs land owned by the host
+   * signalk-server process.  signalk-container >= 1.4.0 emits the
+   * right flag form per detected runtime — `--user <hostUID>:<hostGID>`
+   * for Docker / rootful Podman, `--userns=keep-id:uid=<inImageUID>,gid=<inImageGID>`
+   * for rootless Podman.
+   *
+   * - `undefined` (default in signalk-container) auto-aligns assuming
+   *   in-image UID 0; matches every helper image shipped before this
+   *   field existed.
+   * - `{ inImageUid, inImageGid }` for non-root images — chart-provider
+   *   passes `{1001, 1001}` to align with the charts-toolbox image's
+   *   `USER toolbox` (UID/GID 1001).
+   * - `false` opts out entirely (debug only).
+   *
+   * Available in signalk-container >= 1.4.0.
+   */
+  user?: { inImageUid?: number; inImageGid?: number } | false;
 }
 
 /**

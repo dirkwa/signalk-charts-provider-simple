@@ -66,6 +66,18 @@ export interface JobRunOptions {
    * signalk-container >= 1.2.0; older versions silently ignore.
    */
   resources?: ContainerResourceLimits;
+  /**
+   * Override the default in-image UID/GID alignment.  Almost no
+   * caller needs to set this — the wrapper hard-codes
+   * `{ inImageUid: 1001, inImageGid: 1001 }` for the charts-toolbox
+   * image's `USER toolbox` (UID/GID 1001), and every job from this
+   * plugin uses that image.  Pass `false` here to opt out (debug
+   * only); pass an object to override for a hypothetical future
+   * non-toolbox image.
+   *
+   * Available in signalk-container >= 1.4.0.
+   */
+  user?: { inImageUid?: number; inImageGid?: number } | false;
 }
 
 export interface JobRunResult {
@@ -123,6 +135,18 @@ export async function resolveJobPaths(
  */
 export const PLUGIN_OWNER_ID = 'signalk-charts-provider-simple';
 
+/**
+ * In-image UID/GID for the charts-toolbox image's `USER toolbox`
+ * directive.  Threaded into every `runJob` call so signalk-container
+ * (>= 1.4.0) emits `--userns=keep-id:uid=1001,gid=1001` on rootless
+ * Podman — without it, the rootless toolbox image's writes into
+ * bind-mounted output dirs would land owned by the wrong UID and the
+ * plugin's `promoteQuarantine` rename would fail with EACCES.  Single
+ * source of truth: bumping the toolbox image's USER directive (rare)
+ * means changing this constant.
+ */
+const TOOLBOX_USER = { inImageUid: 1001, inImageGid: 1001 };
+
 export async function runJob(opts: JobRunOptions): Promise<JobRunResult> {
   const manager = requireManager();
   const result = await manager.runJob({
@@ -139,7 +163,11 @@ export async function runJob(opts: JobRunOptions): Promise<JobRunResult> {
     // find and reap our containers after a Signal K crash. Single
     // source of truth for the owner id; all of this plugin's helper
     // jobs go through this wrapper.
-    ownerPluginId: PLUGIN_OWNER_ID
+    ownerPluginId: PLUGIN_OWNER_ID,
+    // Default to the toolbox image's USER directive; callers can
+    // override with `false` (opt out) or a different `{inImageUid,
+    // inImageGid}` if they ever swap to a non-toolbox image.
+    user: opts.user ?? TOOLBOX_USER
   });
   return {
     exitCode: result.exitCode ?? 1,
