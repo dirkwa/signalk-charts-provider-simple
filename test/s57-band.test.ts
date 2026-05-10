@@ -171,6 +171,15 @@ describe('bandClampedMaxzoom', () => {
     assert.strictEqual(r.highestBand, 5);
   });
 
+  it('clamps to band ceiling even when user requests the schema max (z22)', () => {
+    // Tony's NOAA case: dropdown now exposes z22, but a Band-5-only bundle
+    // still tops out at z16 — the new tippecanoe envelope must not bypass
+    // the band ceiling.
+    const r = bandClampedMaxzoom(['US5MA1SK.000', 'US5NY1SK.000'], 22);
+    assert.strictEqual(r.effective, 16);
+    assert.strictEqual(r.highestBand, 5);
+  });
+
   it('handles paths with directory components by taking the basename', () => {
     const r = bandClampedMaxzoom(
       ['/tmp/enc/US3CO100/US3CO100.000', '/tmp/enc/US3CO200/US3CO200.000'],
