@@ -898,6 +898,21 @@ async function runPerBandPipeline(
       continue;
     }
 
+    // Surface the per-band clamp: an all-Band-5 NOAA bundle with the
+    // user asking for z22 used to silently produce z16 tiles. The
+    // single-pass branch already logged this; the per-band branch did
+    // not.
+    const clampNote =
+      bandMaxzoom < userMaxzoom
+        ? `, clamped to band ceiling z${bandCeiling}`
+        : bandMinzoom > userMinzoom
+          ? `, raised to band floor z${bandFloor}`
+          : '';
+    appendLog(
+      chartNumber,
+      `Band ${band}: z${bandMinzoom}-z${bandMaxzoom} (user requested z${userMinzoom}-z${userMaxzoom}${clampNote})`
+    );
+
     const bandEncDir = path.join(tmpDir, `enc-band-${band}`);
     const bandGeojsonDir = path.join(tmpDir, `geojson-band-${band}`);
     fs.mkdirSync(bandEncDir, { recursive: true });

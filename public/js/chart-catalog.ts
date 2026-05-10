@@ -614,8 +614,8 @@ function renderChartList(catalogFile: string): string {
           </select>
           <span class="catalog-zoom-dash">-</span>
           <select class="catalog-zoom-select" id="catalog-maxzoom-${catalogEscapeId(chart.number)}">
-            ${[12, 13, 14, 15, 16, 17, 18]
-              .map((z) => `<option value="${z}" ${z === 16 ? 'selected' : ''}>${z}</option>`)
+            ${[12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+              .map((z) => `<option value="${z}" ${z === 18 ? 'selected' : ''}>${z}</option>`)
               .join('')}
           </select>
         `
