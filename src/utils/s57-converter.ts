@@ -901,13 +901,17 @@ async function runPerBandPipeline(
     // Surface the per-band clamp: an all-Band-5 NOAA bundle with the
     // user asking for z22 used to silently produce z16 tiles. The
     // single-pass branch already logged this; the per-band branch did
-    // not.
-    const clampNote =
-      bandMaxzoom < userMaxzoom
-        ? `, clamped to band ceiling z${bandCeiling}`
-        : bandMinzoom > userMinzoom
-          ? `, raised to band floor z${bandFloor}`
-          : '';
+    // not. With the wide z4-z22 default range, both a floor-raise and
+    // a ceiling-clamp can apply to the same band — report each side
+    // independently rather than picking one.
+    const clampNotes: string[] = [];
+    if (bandMinzoom > userMinzoom) {
+      clampNotes.push(`raised to band floor z${bandFloor}`);
+    }
+    if (bandMaxzoom < userMaxzoom) {
+      clampNotes.push(`clamped to band ceiling z${bandCeiling}`);
+    }
+    const clampNote = clampNotes.length > 0 ? `, ${clampNotes.join('; ')}` : '';
     appendLog(
       chartNumber,
       `Band ${band}: z${bandMinzoom}-z${bandMaxzoom} (user requested z${userMinzoom}-z${userMaxzoom}${clampNote})`
