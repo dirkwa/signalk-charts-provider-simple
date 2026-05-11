@@ -207,11 +207,16 @@ export async function waitForContainerManager(opts: {
           opts.onWaitingStatus?.();
           signalledWait = true;
         }
-        // Swallow whenReady() rejections: callers rely on the documented
-        // contract that this function resolves (with manager or null) and
-        // never rejects, so a misbehaving shim can't crash plugin startup.
+        // Swallow whenReady() rejections AND synchronous throws: callers
+        // rely on the documented contract that this function resolves
+        // (with manager or null) and never rejects, so a misbehaving shim
+        // can't crash plugin startup. The `Promise.resolve().then(...)`
+        // wrapper converts a sync throw into a rejected promise that
+        // `.catch()` can handle.
         await Promise.race([
-          Promise.resolve(candidate.whenReady()).catch(() => undefined),
+          Promise.resolve()
+            .then(() => candidate.whenReady!())
+            .catch(() => undefined),
           new Promise((resolve) => setTimeout(resolve, Math.max(0, remaining)))
         ]);
         if (candidate.getRuntime()) {

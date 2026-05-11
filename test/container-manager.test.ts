@@ -207,4 +207,23 @@ describe('waitForContainerManager', () => {
     assert.strictEqual(resolved, null);
     assert.strictEqual(getContainerManager(), null);
   });
+
+  it('swallows synchronous throws from whenReady() and returns null', async () => {
+    // Even a shim that throws synchronously (before returning a Promise) must
+    // not break the non-throwing contract of waitForContainerManager.
+    const manager = makeManager(null, {
+      whenReady: () => {
+        throw new Error('synchronous detection failure');
+      }
+    });
+    globalThis[GLOBAL_KEY] = manager;
+
+    const resolved = await waitForContainerManager({
+      budgetMs: 2000,
+      pollIntervalMs: 50
+    });
+
+    assert.strictEqual(resolved, null);
+    assert.strictEqual(getContainerManager(), null);
+  });
 });
