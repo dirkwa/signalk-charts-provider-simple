@@ -194,6 +194,11 @@ export async function waitForContainerManager(opts: {
     const candidate = (globalThis as { __signalk_containerManager?: ContainerManagerApi })
       .__signalk_containerManager;
     if (candidate) {
+      // Fast path: detection already settled successfully, no need to wait.
+      if (candidate.getRuntime()) {
+        resolvedManager = candidate;
+        return candidate;
+      }
       // signalk-container >= 1.6.0 publishes whenReady(); race it against the
       // remaining budget so a stuck runtime detection doesn't hang us past it.
       if (typeof candidate.whenReady === 'function') {
@@ -202,8 +207,11 @@ export async function waitForContainerManager(opts: {
           opts.onWaitingStatus?.();
           signalledWait = true;
         }
+        // Swallow whenReady() rejections: callers rely on the documented
+        // contract that this function resolves (with manager or null) and
+        // never rejects, so a misbehaving shim can't crash plugin startup.
         await Promise.race([
-          candidate.whenReady(),
+          Promise.resolve(candidate.whenReady()).catch(() => undefined),
           new Promise((resolve) => setTimeout(resolve, Math.max(0, remaining)))
         ]);
         if (candidate.getRuntime()) {
@@ -211,10 +219,6 @@ export async function waitForContainerManager(opts: {
           return candidate;
         }
         return null;
-      }
-      if (candidate.getRuntime()) {
-        resolvedManager = candidate;
-        return candidate;
       }
     }
     if (!signalledWait) {

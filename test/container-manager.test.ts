@@ -158,4 +158,53 @@ describe('waitForContainerManager', () => {
     assert.strictEqual(resolved, null);
     assert.strictEqual(getContainerManager(), null);
   });
+
+  it('returns immediately without awaiting whenReady when getRuntime() already non-null', async () => {
+    // Belt-and-braces: even though whenReady is published, an already-ready
+    // manager should short-circuit and not fire onWaitingStatus.
+    let whenReadyCalled = false;
+    const manager: ContainerManagerApi = {
+      getRuntime: () => ({ runtime: 'docker', version: '28.0' }),
+      whenReady: () => {
+        whenReadyCalled = true;
+        return new Promise(() => undefined);
+      },
+      pullImage: () => Promise.resolve(),
+      imageExists: () => Promise.resolve(true),
+      runJob: () => Promise.resolve({ status: 'completed', exitCode: 0, log: [] }),
+      resolveSignalkDataMount: () => Promise.resolve(null),
+      resolveHostPath: () => Promise.resolve(null)
+    };
+    globalThis[GLOBAL_KEY] = manager;
+
+    let waitingFired = false;
+    const resolved = await waitForContainerManager({
+      budgetMs: 2000,
+      pollIntervalMs: 50,
+      onWaitingStatus: () => {
+        waitingFired = true;
+      }
+    });
+
+    assert.strictEqual(resolved, manager);
+    assert.strictEqual(whenReadyCalled, false, 'must not call whenReady when already ready');
+    assert.strictEqual(waitingFired, false, 'must not signal waiting when already ready');
+  });
+
+  it('swallows whenReady() rejections and returns null without throwing', async () => {
+    // Contract: waitForContainerManager never rejects, so a misbehaving shim
+    // that returns a rejected promise from whenReady() must not crash startup.
+    const manager = makeManager(null, {
+      whenReady: () => Promise.reject(new Error('detection blew up'))
+    });
+    globalThis[GLOBAL_KEY] = manager;
+
+    const resolved = await waitForContainerManager({
+      budgetMs: 2000,
+      pollIntervalMs: 50
+    });
+
+    assert.strictEqual(resolved, null);
+    assert.strictEqual(getContainerManager(), null);
+  });
 });
