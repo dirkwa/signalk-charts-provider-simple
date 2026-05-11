@@ -127,6 +127,14 @@ export interface ContainerMountResolution {
 
 export interface ContainerManagerApi {
   getRuntime(): ContainerRuntimeInfo | null;
+  /**
+   * Resolves once signalk-container's runtime detection has settled —
+   * succeeded or failed. After this awaits, `getRuntime()` returns the
+   * resolved value (or stays null if detection failed). Lets callers
+   * skip the polling loop. Available in signalk-container >= 1.6.0;
+   * optional so we keep working against earlier versions.
+   */
+  whenReady?(): Promise<void>;
   pullImage(image: string, onProgress?: (msg: string) => void): Promise<void>;
   imageExists(image: string): Promise<boolean>;
   runJob(config: ContainerJobConfig): Promise<ContainerJobResult>;
@@ -185,9 +193,29 @@ export async function waitForContainerManager(opts: {
   while (Date.now() < deadline) {
     const candidate = (globalThis as { __signalk_containerManager?: ContainerManagerApi })
       .__signalk_containerManager;
-    if (candidate && candidate.getRuntime()) {
-      resolvedManager = candidate;
-      return candidate;
+    if (candidate) {
+      // signalk-container >= 1.6.0 publishes whenReady(); race it against the
+      // remaining budget so a stuck runtime detection doesn't hang us past it.
+      if (typeof candidate.whenReady === 'function') {
+        const remaining = deadline - Date.now();
+        if (!signalledWait) {
+          opts.onWaitingStatus?.();
+          signalledWait = true;
+        }
+        await Promise.race([
+          candidate.whenReady(),
+          new Promise((resolve) => setTimeout(resolve, Math.max(0, remaining)))
+        ]);
+        if (candidate.getRuntime()) {
+          resolvedManager = candidate;
+          return candidate;
+        }
+        return null;
+      }
+      if (candidate.getRuntime()) {
+        resolvedManager = candidate;
+        return candidate;
+      }
     }
     if (!signalledWait) {
       opts.onWaitingStatus?.();

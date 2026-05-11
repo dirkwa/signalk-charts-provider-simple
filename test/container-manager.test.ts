@@ -28,8 +28,11 @@ afterEach(() => {
   delete globalThis[GLOBAL_KEY];
 });
 
-function makeManager(runtime: ContainerRuntimeInfo | null): ContainerManagerApi {
-  return {
+function makeManager(
+  runtime: ContainerRuntimeInfo | null,
+  opts: { whenReady?: () => Promise<void> } = {}
+): ContainerManagerApi {
+  const manager: ContainerManagerApi = {
     getRuntime: () => runtime,
     pullImage: () => Promise.resolve(),
     imageExists: () => Promise.resolve(true),
@@ -37,6 +40,10 @@ function makeManager(runtime: ContainerRuntimeInfo | null): ContainerManagerApi 
     resolveSignalkDataMount: () => Promise.resolve(null),
     resolveHostPath: () => Promise.resolve(null)
   };
+  if (opts.whenReady) {
+    manager.whenReady = opts.whenReady;
+  }
+  return manager;
 }
 
 describe('waitForContainerManager', () => {
@@ -104,5 +111,51 @@ describe('waitForContainerManager', () => {
 
     assert.strictEqual(resolved, manager);
     assert.strictEqual(getContainerManager(), manager);
+  });
+
+  it('uses whenReady() when the manager exposes it (signalk-container >= 1.6.0)', async () => {
+    // Manager is published with whenReady. getRuntime() starts null and
+    // flips to non-null only after whenReady() resolves — the
+    // 1.6.0 contract (detection is settled when whenReady() resolves).
+    let detected: ContainerRuntimeInfo | null = null;
+    const manager: ContainerManagerApi = {
+      getRuntime: () => detected,
+      whenReady: () =>
+        new Promise((resolve) =>
+          setTimeout(() => {
+            detected = { runtime: 'podman', version: '5.4' };
+            resolve();
+          }, 100)
+        ),
+      pullImage: () => Promise.resolve(),
+      imageExists: () => Promise.resolve(true),
+      runJob: () => Promise.resolve({ status: 'completed', exitCode: 0, log: [] }),
+      resolveSignalkDataMount: () => Promise.resolve(null),
+      resolveHostPath: () => Promise.resolve(null)
+    };
+    globalThis[GLOBAL_KEY] = manager;
+
+    const resolved = await waitForContainerManager({
+      budgetMs: 2000,
+      pollIntervalMs: 50
+    });
+
+    assert.strictEqual(resolved, manager);
+    assert.strictEqual(getContainerManager(), manager);
+  });
+
+  it('returns null when whenReady() resolves but runtime detection failed', async () => {
+    const manager = makeManager(null, {
+      whenReady: () => Promise.resolve()
+    });
+    globalThis[GLOBAL_KEY] = manager;
+
+    const resolved = await waitForContainerManager({
+      budgetMs: 2000,
+      pollIntervalMs: 50
+    });
+
+    assert.strictEqual(resolved, null);
+    assert.strictEqual(getContainerManager(), null);
   });
 });
