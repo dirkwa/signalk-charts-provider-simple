@@ -208,6 +208,40 @@ describe('waitForContainerManager', () => {
     assert.strictEqual(getContainerManager(), null);
   });
 
+  it('returns null when whenReady() never settles and budget expires', async () => {
+    // Regression guard for the Promise.race against the remaining budget:
+    // a permanently pending whenReady() must not hang waitForContainerManager
+    // past its budgetMs. The outer race against a longer wall-clock timeout
+    // proves the call returned within budget rather than hanging forever.
+    const manager = makeManager(null, {
+      whenReady: () => new Promise(() => undefined)
+    });
+    globalThis[GLOBAL_KEY] = manager;
+
+    const TIMEOUT_SENTINEL: unique symbol = Symbol('timeout');
+    const resolved = await Promise.race<
+      Awaited<ReturnType<typeof waitForContainerManager>> | typeof TIMEOUT_SENTINEL
+    >([
+      waitForContainerManager({
+        budgetMs: 100,
+        pollIntervalMs: 20
+      }),
+      new Promise((resolve) => {
+        setTimeout(() => {
+          resolve(TIMEOUT_SENTINEL);
+        }, 1000);
+      })
+    ]);
+
+    assert.notStrictEqual(
+      resolved,
+      TIMEOUT_SENTINEL,
+      'waitForContainerManager must return within budget, not hang on whenReady'
+    );
+    assert.strictEqual(resolved, null);
+    assert.strictEqual(getContainerManager(), null);
+  });
+
   it('swallows synchronous throws from whenReady() and returns null', async () => {
     // Even a shim that throws synchronously (before returning a Promise) must
     // not break the non-throwing contract of waitForContainerManager.
