@@ -1,8 +1,8 @@
 import path from 'path';
 import { promises as fs } from 'fs';
 import { parseStringPromise } from 'xml2js';
-import { open as openMbtiles } from './utils/mbtiles-reader';
-import type { ChartProvider, TilemapXml, VectorLayer } from './types';
+import { open as openMbtiles } from './utils/mbtiles-reader.js';
+import type { ChartProvider, TilemapXml, VectorLayer } from './types.js';
 
 const KNOWN_CHART_TYPES = new Set(['tilelayer', 's-57', 'mapstylejson', 'tilejson', 'wms', 'wmts']);
 

@@ -12,7 +12,14 @@ import type {
   UrlClassification,
   CatalogUpdate,
   DebugFunction
-} from '../types';
+} from '../types.js';
+import {
+  CatalogDataSchema,
+  CatalogInstallsMapSchema,
+  CatalogRegistryCacheSchema,
+  GithubContentsListingSchema,
+  safeParse
+} from './catalog-schemas.js';
 
 const CATALOG_BASE_URL = 'https://raw.githubusercontent.com/chartcatalogs/catalogs/master/';
 const CATALOG_GITHUB_API = 'https://api.github.com/repos/chartcatalogs/catalogs/contents/';
@@ -110,10 +117,16 @@ function loadRegistryCache(): void {
   const cachePath = path.join(cacheDir, '_registry.json');
   try {
     if (fs.existsSync(cachePath)) {
-      catalogRegistry = JSON.parse(fs.readFileSync(cachePath, 'utf-8')) as CatalogRegistryEntry[];
+      const raw: unknown = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+      const parsed = safeParse(CatalogRegistryCacheSchema, raw);
+      if (parsed) {
+        catalogRegistry = parsed;
+      } else {
+        debug('Discarding registry cache — shape did not match schema');
+      }
     }
   } catch {
-    // ignore
+    // JSON parse error — file is corrupted, leave registry empty.
   }
 }
 
@@ -130,7 +143,14 @@ function loadInstalls(): void {
   try {
     if (fs.existsSync(installsFilePath)) {
       const data = fs.readFileSync(installsFilePath, 'utf-8');
-      installs = JSON.parse(data) as CatalogInstallsMap;
+      const raw: unknown = JSON.parse(data);
+      const parsed = safeParse(CatalogInstallsMapSchema, raw);
+      if (parsed) {
+        installs = parsed;
+      } else {
+        console.error('Discarding catalog installs file — shape did not match schema');
+        installs = {};
+      }
     }
   } catch (error) {
     console.error('Error loading catalog installs:', error);
@@ -151,7 +171,13 @@ function readCacheFile(catalogFile: string): CatalogData | null {
   try {
     if (fs.existsSync(cachePath)) {
       const data = fs.readFileSync(cachePath, 'utf-8');
-      return JSON.parse(data) as CatalogData;
+      const raw: unknown = JSON.parse(data);
+      const parsed = safeParse(CatalogDataSchema, raw);
+      if (!parsed) {
+        debug(`Discarding cache for ${catalogFile} — shape did not match schema`);
+        return null;
+      }
+      return parsed;
     }
   } catch (error) {
     debug(
@@ -268,7 +294,12 @@ export function fetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
 
           response.on('end', () => {
             try {
-              const files = JSON.parse(data) as Array<{ name: string }>;
+              const raw: unknown = JSON.parse(data);
+              const files = safeParse(GithubContentsListingSchema, raw);
+              if (!files) {
+                reject(new Error('GitHub API response did not match expected shape'));
+                return;
+              }
               const xmlFiles: CatalogRegistryEntry[] = files
                 .filter((f) => f.name.endsWith('_Catalog.xml'))
                 .map((f) => ({
@@ -464,6 +495,57 @@ export function getInstalledCatalogCharts(): CatalogInstallsMap {
   return { ...installs };
 }
 
+/**
+ * Record the on-disk filename produced by a successful conversion.
+ * Lets the delete flow find this install record by the filename the
+ * user actually sees in Manage Charts (which can differ from the
+ * chartNumber when the converter renamed by catalog title).
+ */
+export function setInstallFilename(chartNumber: string, filename: string): void {
+  const install = installs[chartNumber];
+  if (!install) {
+    return;
+  }
+  install.installedFilename = filename;
+  saveInstalls();
+}
+
+/**
+ * Reverse-lookup: clear any install record whose tracked filename
+ * matches `filename` (basename match — chartPath is stripped before
+ * comparison). Returns true if a record was removed. Called from the
+ * chart-delete flow.
+ */
+export function removeInstallByFilename(filename: string): boolean {
+  const base = path.basename(filename);
+  for (const [key, install] of Object.entries(installs)) {
+    if (install.installedFilename && path.basename(install.installedFilename) === base) {
+      delete installs[key];
+      saveInstalls();
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Update an install's tracked filename when the user moves or renames
+ * a chart. Matches the prior path's basename to find the right
+ * install record (chartPath-relative comparison). Returns true if an
+ * install was updated.
+ */
+export function renameInstallFilename(oldPath: string, newPath: string): boolean {
+  const oldBase = path.basename(oldPath);
+  for (const install of Object.values(installs)) {
+    if (install.installedFilename && path.basename(install.installedFilename) === oldBase) {
+      install.installedFilename = newPath;
+      saveInstalls();
+      return true;
+    }
+  }
+  return false;
+}
+
 export function setConvertingState(chartNumber: string, isConverting: boolean): void {
   if (isConverting) {
     converting[chartNumber] = true;
@@ -525,13 +607,39 @@ export function pruneStaleInstalls(chartIdentifiers: string[]): void {
   const ids = new Set(chartIdentifiers.map((id) => id.toLowerCase()));
   let pruned = false;
 
-  for (const key of Object.keys(installs)) {
+  for (const [key, install] of Object.entries(installs)) {
+    // Authoritative path: if we recorded the on-disk filename at
+    // conversion/move/rename time, the install key should match the
+    // chart whose chartId is the basename-without-extension. Anything
+    // else means the file is gone (deleted) and the install record
+    // should drop. Skips the legacy fuzzy-match that produced false
+    // positives — install key "2" was kept alive by any chartId
+    // containing the digit "2".
+    if (install.installedFilename) {
+      const expectedId = path
+        .basename(install.installedFilename)
+        .replace(/\.mbtiles$/i, '')
+        .toLowerCase();
+      if (!ids.has(expectedId)) {
+        console.log(
+          `[charts-provider] Pruning catalog install ${key}: file not found (${install.installedFilename})`
+        );
+        delete installs[key];
+        pruned = true;
+      }
+      continue;
+    }
+
     const keyLower = key.toLowerCase();
 
     if (ids.has(keyLower)) {
       continue;
     }
 
+    // Legacy fuzzy match for installs recorded before installedFilename
+    // existed. Kept conservative — substring match has produced false
+    // positives for short numeric chart numbers; the explicit-filename
+    // branch above is the right path going forward.
     let found = false;
     for (const id of ids) {
       if (

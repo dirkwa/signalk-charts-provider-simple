@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import {
   _testInternals,
   EXPORT_ERRORS_LOG,
   getConversionProgress
-} from '../dist/utils/s57-converter';
+} from '../dist/utils/s57-converter.js';
 
 const {
   consolidateGeoJSONByLayer,
@@ -295,6 +296,44 @@ describe('buildExportScript', () => {
       assert.match(s, /2>>\/output\/charts\/scratch\/\.export-errors\.log/);
       // Defaults must NOT leak through when prefixes are set.
       assert.doesNotMatch(s, /find \/input -name/);
+    }
+  });
+
+  it('parses cleanly under `bash -n` (regression: read -d is bash-only)', () => {
+    // The script uses `read -r -d ''` to consume `find -print0` output
+    // safely, which is a bash-ism; dash (Ubuntu's /bin/sh) rejects
+    // `-d` as illegal.  This test runs `bash -n` on both branches as
+    // a parse check — catches a regression where someone changes the
+    // converter back to invoke `sh -c` instead of `bash -c`, or
+    // introduces a different bash-only construct.  Skip if the test
+    // host has no bash (rare; CI runners and dev boxes all have it).
+    const which = spawnSync('bash', ['--version']);
+    if (which.status !== 0) {
+      // No bash on this host; skip rather than fail.
+      return;
+    }
+    for (const params of [
+      { multiFile: false, parallelism: 1 },
+      { multiFile: true, parallelism: 4 },
+      { multiFile: true, parallelism: 1, inputPrefix: '/input/sub', outputPrefix: '/output/sub' }
+    ]) {
+      const script = buildExportScript({ ...params, skipLayers });
+      const tmp = path.join(os.tmpdir(), `s57-export-script-${Date.now()}-${Math.random()}.sh`);
+      fs.writeFileSync(tmp, script);
+      try {
+        const result = spawnSync('bash', ['-n', tmp]);
+        assert.strictEqual(
+          result.status,
+          0,
+          `bash -n failed for params=${JSON.stringify(params)}:\n${result.stderr.toString()}`
+        );
+      } finally {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          // ignore
+        }
+      }
     }
   });
 });

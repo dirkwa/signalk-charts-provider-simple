@@ -6,6 +6,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   initCatalogManager,
@@ -17,10 +18,13 @@ import {
   checkForUpdates,
   getCatalogsWithInstalledCharts,
   getCachedCatalog
-} from '../dist/utils/catalog-manager';
+} from '../dist/utils/catalog-manager.js';
+
+// ESM equivalent of CJS `__dirname`.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Test data dir is created on demand; doesn't need to live in the
-// shared fixtures tree.  Compiled tests resolve __dirname to dist-test/,
+// shared fixtures tree. Compiled tests resolve __dirname to dist-test/,
 // so the data dir ends up at dist-test/fixtures/catalog-test-data —
 // gets cleaned in the test's after hook so no commit-time leakage.
 const TEST_DATA_DIR = path.join(__dirname, 'fixtures', 'catalog-test-data');
@@ -304,7 +308,15 @@ describe('CatalogManager', () => {
         fetchedAt: '2020-01-01T00:00:00Z', // very old
         catalogFile: 'OLD_TEST_Catalog.xml',
         header: { title: 'Old Test' },
-        charts: [{ number: 'old1', title: 'Old Chart' }]
+        charts: [
+          {
+            number: 'old1',
+            title: 'Old Chart',
+            format: '',
+            zipfile_location: '',
+            zipfile_datetime_iso8601: ''
+          }
+        ]
       };
       fs.writeFileSync(
         path.join(cacheDir, 'OLD_TEST_Catalog.json'),

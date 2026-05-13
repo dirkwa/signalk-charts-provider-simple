@@ -6,12 +6,7 @@
     "declaration": false,
     "declarationMap": false,
     "noEmit": false,
-    "lib": ["ES2022", "DOM"],
-    // The e2e tree includes Playwright specs that run in Playwright's
-    // own runner, plus the mock server that runs as a child Node
-    // process.  Module resolution stays CJS so the compiled output
-    // lines up with the rest of the repo.
-    "module": "commonjs"
+    "lib": ["ES2023", "DOM"]
   },
   "include": ["e2e/**/*.ts", "playwright.config.ts"],
   "exclude": ["node_modules", "dist", "dist-test", "dist-e2e", "test"]

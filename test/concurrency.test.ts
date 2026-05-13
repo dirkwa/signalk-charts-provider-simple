@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 
-import { _computeBudgetForTests, setCpuBudget, getCpuBudget } from '../dist/utils/concurrency';
+import { _computeBudgetForTests, setCpuBudget, getCpuBudget } from '../dist/utils/concurrency.js';
 
 describe('cpu budget presets', () => {
   describe('_computeBudgetForTests (pure mapping)', () => {

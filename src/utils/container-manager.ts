@@ -57,6 +57,48 @@ export interface ContainerJobConfig {
    */
   resources?: ContainerResourceLimits;
   label?: string;
+  /**
+   * Owning plugin id; tags the container with `sk-job-owner=<id>`
+   * so `cleanupOrphanedJobs` can find and reap it after a Signal K
+   * crash.  Available in signalk-container >= 1.3.0.
+   */
+  ownerPluginId?: string;
+  /**
+   * Align the container's UID/GID with the host caller's so files
+   * written into bind-mounted output dirs land owned by the host
+   * signalk-server process.  signalk-container >= 1.4.0 emits the
+   * right flag form per detected runtime — `--user <hostUID>:<hostGID>`
+   * for Docker / rootful Podman, `--userns=keep-id:uid=<inImageUID>,gid=<inImageGID>`
+   * for rootless Podman.
+   *
+   * - `undefined` (default in signalk-container) auto-aligns assuming
+   *   in-image UID 0; matches every helper image shipped before this
+   *   field existed.
+   * - `{ inImageUid, inImageGid }` for non-root images — chart-provider
+   *   passes `{1001, 1001}` to align with the charts-toolbox image's
+   *   `USER toolbox` (UID/GID 1001).
+   * - `false` opts out entirely (debug only).
+   *
+   * Available in signalk-container >= 1.4.0.
+   */
+  user?: { inImageUid?: number; inImageGid?: number } | false;
+}
+
+/**
+ * One reaped orphan returned by `cleanupOrphanedJobs`.  The `label`
+ * field is whatever the caller passed into `runJob({ label })`; for
+ * this plugin we encode the chartNumber into it so a later rollback
+ * can identify which install record to clear.
+ */
+export interface OrphanJobInfo {
+  name: string;
+  image: string;
+  ownerPluginId: string;
+  label?: string;
+}
+
+export interface CleanupOrphansResult {
+  reaped: OrphanJobInfo[];
 }
 
 export interface ContainerJobResult {
@@ -85,6 +127,14 @@ export interface ContainerMountResolution {
 
 export interface ContainerManagerApi {
   getRuntime(): ContainerRuntimeInfo | null;
+  /**
+   * Resolves once signalk-container's runtime detection has settled —
+   * succeeded or failed. After this awaits, `getRuntime()` returns the
+   * resolved value (or stays null if detection failed). Lets callers
+   * skip the polling loop. Available in signalk-container >= 1.6.0;
+   * optional so we keep working against earlier versions.
+   */
+  whenReady?(): Promise<void>;
   pullImage(image: string, onProgress?: (msg: string) => void): Promise<void>;
   imageExists(image: string): Promise<boolean>;
   runJob(config: ContainerJobConfig): Promise<ContainerJobResult>;
@@ -106,6 +156,15 @@ export interface ContainerManagerApi {
    * mount covers the path.  Available in signalk-container >= 1.1.0.
    */
   resolveHostPath(absPath: string): Promise<ContainerMountResolution | null>;
+  /**
+   * Stop and remove every `sk-job-*` container labelled with the given
+   * `ownerPluginId`. Used at plugin start() to recover from a Signal K
+   * crash that left helpers running with no parent listener. Optional
+   * because we still support signalk-container 1.2.x at runtime — the
+   * plugin guards on `typeof manager.cleanupOrphanedJobs === 'function'`
+   * before calling. Available in signalk-container >= 1.3.0.
+   */
+  cleanupOrphanedJobs?(filter: { ownerPluginId: string }): Promise<CleanupOrphansResult>;
 }
 
 let resolvedManager: ContainerManagerApi | null = null;
@@ -134,9 +193,38 @@ export async function waitForContainerManager(opts: {
   while (Date.now() < deadline) {
     const candidate = (globalThis as { __signalk_containerManager?: ContainerManagerApi })
       .__signalk_containerManager;
-    if (candidate && candidate.getRuntime()) {
-      resolvedManager = candidate;
-      return candidate;
+    if (candidate) {
+      // Fast path: detection already settled successfully, no need to wait.
+      if (candidate.getRuntime()) {
+        resolvedManager = candidate;
+        return candidate;
+      }
+      // signalk-container >= 1.6.0 publishes whenReady(); race it against the
+      // remaining budget so a stuck runtime detection doesn't hang us past it.
+      if (typeof candidate.whenReady === 'function') {
+        const remaining = deadline - Date.now();
+        if (!signalledWait) {
+          opts.onWaitingStatus?.();
+          signalledWait = true;
+        }
+        // Swallow whenReady() rejections AND synchronous throws: callers
+        // rely on the documented contract that this function resolves
+        // (with manager or null) and never rejects, so a misbehaving shim
+        // can't crash plugin startup. The `Promise.resolve().then(...)`
+        // wrapper converts a sync throw into a rejected promise that
+        // `.catch()` can handle.
+        await Promise.race([
+          Promise.resolve()
+            .then(() => candidate.whenReady!())
+            .catch(() => undefined),
+          new Promise((resolve) => setTimeout(resolve, Math.max(0, remaining)))
+        ]);
+        if (candidate.getRuntime()) {
+          resolvedManager = candidate;
+          return candidate;
+        }
+        return null;
+      }
     }
     if (!signalledWait) {
       opts.onWaitingStatus?.();

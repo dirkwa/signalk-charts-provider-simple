@@ -6,8 +6,9 @@ import {
   BAND_MAX_ZOOM,
   BAND_MIN_ZOOM,
   bandClampedMaxzoom,
+  groupCellsByBand,
   highestBandForFiles
-} from '../dist/utils/s57-band';
+} from '../dist/utils/s57-band.js';
 
 describe('detectEncBand (IHO Annex E filename convention)', () => {
   it('parses NOAA filenames', () => {
@@ -35,18 +36,30 @@ describe('detectEncBand (IHO Annex E filename convention)', () => {
     assert.strictEqual(detectEncBand('chart.000'), null);
     assert.strictEqual(detectEncBand('weird-name.000'), null);
     assert.strictEqual(detectEncBand('ENC_AREA1.000'), null);
-    assert.strictEqual(detectEncBand('123ABC.000'), null); // starts with digits
+    assert.strictEqual(detectEncBand('123ABC.000'), null); // pure-digit producer code
+    assert.strictEqual(detectEncBand('001.000'), null); // pure-digit producer code (extractChartId artifact)
+  });
+
+  it('parses IENC inland bands 7..9', () => {
+    // IEHG inland-extension bands. RWS Dutch IENC producer code is `1V`,
+    // which leads with a digit — explicitly supported.
+    assert.strictEqual(detectEncBand('1V7VAR01.000'), 7);
+    assert.strictEqual(detectEncBand('DE7AKxxx.000'), 7);
+    assert.strictEqual(detectEncBand('1V8HARB01.000'), 8);
+    assert.strictEqual(detectEncBand('1V9BERTH1.000'), 9);
   });
 
   it('returns null for out-of-range band digits', () => {
     assert.strictEqual(detectEncBand('US0CO100.000'), null);
-    assert.strictEqual(detectEncBand('US7CO100.000'), null);
-    assert.strictEqual(detectEncBand('US9CO100.000'), null);
+    // Note: bands 7..9 are valid IENC bands now (see test above).
   });
 
-  it('requires uppercase country code (S-57 spec)', () => {
+  it('requires uppercase or numeric producer code (S-57 / IENC)', () => {
+    // S-57 + IENC both spec uppercase letters; IENC additionally allows
+    // a leading digit (RWS `1V`). Lowercase or mixed case is invalid.
     assert.strictEqual(detectEncBand('us3CO100.000'), null);
     assert.strictEqual(detectEncBand('Us3CO100.000'), null);
+    assert.strictEqual(detectEncBand('1v7VAR01.000'), null);
   });
 });
 
@@ -59,10 +72,16 @@ describe('BAND_MAX_ZOOM', () => {
     assert.strictEqual(BAND_MAX_ZOOM[5], 16);
     assert.strictEqual(BAND_MAX_ZOOM[6], 18);
   });
+
+  it('covers IENC inland bands 7..9 with IEHG-tuned ceilings', () => {
+    assert.strictEqual(BAND_MAX_ZOOM[7], 14); // River
+    assert.strictEqual(BAND_MAX_ZOOM[8], 16); // River Harbour
+    assert.strictEqual(BAND_MAX_ZOOM[9], 18); // River Berth
+  });
 });
 
 describe('BAND_MIN_ZOOM', () => {
-  it('uses ceiling-minus-4 for every band', () => {
+  it('uses ceiling-minus-4 for every maritime band', () => {
     assert.strictEqual(BAND_MIN_ZOOM[1], 4);
     assert.strictEqual(BAND_MIN_ZOOM[2], 6);
     assert.strictEqual(BAND_MIN_ZOOM[3], 8);
@@ -71,8 +90,18 @@ describe('BAND_MIN_ZOOM', () => {
     assert.strictEqual(BAND_MIN_ZOOM[6], 14);
   });
 
+  it('uses a lower floor on band 7 than the IEHG plan suggests so Waddenzee renders at coastal-overview zooms', () => {
+    // RWS publishes the Waddenzee — tidal coastal water — as IENC band 7.
+    // A z11 floor (ceiling-minus-3 per IEHG) would blank out the chart at
+    // z9–z10 where users plan coastal navigation; z9 keeps it visible at
+    // a modest overplotting cost on actual rivers.
+    assert.strictEqual(BAND_MIN_ZOOM[7], 9);
+    assert.strictEqual(BAND_MIN_ZOOM[8], 13);
+    assert.strictEqual(BAND_MIN_ZOOM[9], 15);
+  });
+
   it('every band has min < max so tippecanoe gets a non-empty zoom range', () => {
-    for (const band of [1, 2, 3, 4, 5, 6] as const) {
+    for (const band of [1, 2, 3, 4, 5, 6, 7, 8, 9] as const) {
       assert.ok(BAND_MIN_ZOOM[band] < BAND_MAX_ZOOM[band], `band ${band}`);
     }
   });
@@ -142,6 +171,15 @@ describe('bandClampedMaxzoom', () => {
     assert.strictEqual(r.highestBand, 5);
   });
 
+  it('clamps to band ceiling even when user requests the schema max (z22)', () => {
+    // Tony's NOAA case: dropdown now exposes z22, but a Band-5-only bundle
+    // still tops out at z16 — the new tippecanoe envelope must not bypass
+    // the band ceiling.
+    const r = bandClampedMaxzoom(['US5MA1SK.000', 'US5NY1SK.000'], 22);
+    assert.strictEqual(r.effective, 16);
+    assert.strictEqual(r.highestBand, 5);
+  });
+
   it('handles paths with directory components by taking the basename', () => {
     const r = bandClampedMaxzoom(
       ['/tmp/enc/US3CO100/US3CO100.000', '/tmp/enc/US3CO200/US3CO200.000'],
@@ -171,5 +209,78 @@ describe('bandClampedMaxzoom', () => {
     const r = bandClampedMaxzoom([], 16);
     assert.strictEqual(r.effective, 16);
     assert.strictEqual(r.highestBand, null);
+  });
+});
+
+describe('groupCellsByBand', () => {
+  it('partitions cells into per-band buckets and returns sorted band list', () => {
+    const g = groupCellsByBand([
+      '/tmp/enc/US3CO100.000',
+      '/tmp/enc/US5MA1SK.000',
+      '/tmp/enc/US3CO200.000',
+      '/tmp/enc/US5NY1SK.000'
+    ]);
+    assert.deepStrictEqual(g.bands, [3, 5]);
+    assert.deepStrictEqual(g.byBand.get(3), ['/tmp/enc/US3CO100.000', '/tmp/enc/US3CO200.000']);
+    assert.deepStrictEqual(g.byBand.get(5), ['/tmp/enc/US5MA1SK.000', '/tmp/enc/US5NY1SK.000']);
+    assert.deepStrictEqual(g.unbanded, []);
+  });
+
+  it('puts non-conforming filenames in the unbanded bucket', () => {
+    const g = groupCellsByBand([
+      '/tmp/enc/US3CO100.000',
+      '/tmp/enc/IENC_PASS_001.000', // hand-named test cell, no convention
+      '/tmp/enc/weird-name.000'
+    ]);
+    assert.deepStrictEqual(g.bands, [3]);
+    assert.deepStrictEqual(g.byBand.get(3), ['/tmp/enc/US3CO100.000']);
+    assert.deepStrictEqual(g.unbanded, ['/tmp/enc/IENC_PASS_001.000', '/tmp/enc/weird-name.000']);
+  });
+
+  it('routes IENC cells into bands 7..9 (no longer unbanded)', () => {
+    // RWS Dutch IENC and German WSV inland follow the IHO Annex E
+    // convention with bands 7..9 — they belong in their own per-band
+    // buckets, not the legacy unbanded fallback.
+    const g = groupCellsByBand([
+      '/tmp/enc/1V7VAR01.000',
+      '/tmp/enc/1V7WAD05.000',
+      '/tmp/enc/DE7AKxxx.000',
+      '/tmp/enc/1V8HARB01.000'
+    ]);
+    assert.deepStrictEqual(g.bands, [7, 8]);
+    assert.deepStrictEqual(g.byBand.get(7), [
+      '/tmp/enc/1V7VAR01.000',
+      '/tmp/enc/1V7WAD05.000',
+      '/tmp/enc/DE7AKxxx.000'
+    ]);
+    assert.deepStrictEqual(g.byBand.get(8), ['/tmp/enc/1V8HARB01.000']);
+    assert.deepStrictEqual(g.unbanded, []);
+  });
+
+  it('returns empty bands and one unbanded bucket for a fully non-conforming bundle', () => {
+    const g = groupCellsByBand(['/tmp/enc/IENC_PASS_001.000', '/tmp/enc/weird.000']);
+    assert.deepStrictEqual(g.bands, []);
+    assert.strictEqual(g.byBand.size, 0);
+    assert.deepStrictEqual(g.unbanded, ['/tmp/enc/IENC_PASS_001.000', '/tmp/enc/weird.000']);
+  });
+
+  it('handles an empty input', () => {
+    const g = groupCellsByBand([]);
+    assert.deepStrictEqual(g.bands, []);
+    assert.strictEqual(g.byBand.size, 0);
+    assert.deepStrictEqual(g.unbanded, []);
+  });
+
+  it('preserves the original cell-path order within each bucket', () => {
+    const g = groupCellsByBand([
+      '/tmp/enc/US5MA1SK.000',
+      '/tmp/enc/US5NY1SK.000',
+      '/tmp/enc/US5CA1SK.000'
+    ]);
+    assert.deepStrictEqual(g.byBand.get(5), [
+      '/tmp/enc/US5MA1SK.000',
+      '/tmp/enc/US5NY1SK.000',
+      '/tmp/enc/US5CA1SK.000'
+    ]);
   });
 });

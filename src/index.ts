@@ -2,10 +2,11 @@ import path from 'path';
 import fs from 'fs';
 import https from 'https';
 import type { Plugin, Path } from '@signalk/server-api';
-import { findCharts } from './charts-loader';
-import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner';
-import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state';
-import { downloadManager } from './utils/download-manager';
+import { SKVersion } from '@signalk/server-api';
+import { findCharts } from './charts-loader.js';
+import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner.js';
+import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state.js';
+import { downloadManager } from './utils/download-manager.js';
 import {
   initCatalogManager,
   getCatalogRegistry,
@@ -13,7 +14,10 @@ import {
   getCachedCatalog,
   classifyUrl,
   trackInstall,
+  setInstallFilename,
+  renameInstallFilename,
   removeInstall,
+  removeInstallByFilename,
   getInstalledCatalogCharts,
   pruneStaleInstalls,
   setConvertingState,
@@ -21,17 +25,24 @@ import {
   getConvertingCount,
   checkForUpdates,
   getCatalogsWithInstalledCharts
-} from './utils/catalog-manager';
+} from './utils/catalog-manager.js';
 import {
   initS57Converter,
   processS57Zip,
   getAllConversionProgress as getAllS57Progress,
   getConversionProgress as getS57Progress,
   setConversionFailed as setS57Failed
-} from './utils/s57-converter';
-import { getContainerManager, waitForContainerManager } from './utils/container-manager';
-import { cleanCatalogTitle } from './utils/catalog-title';
-import { setMbtilesDisplayName } from './utils/mbtiles-metadata';
+} from './utils/s57-converter.js';
+import { getContainerManager, waitForContainerManager } from './utils/container-manager.js';
+import { PLUGIN_OWNER_ID } from './utils/container-jobs.js';
+import {
+  cleanupQuarantineDir,
+  makeQuarantineDir,
+  promoteQuarantine,
+  sweepStaleQuarantineDirs
+} from './utils/quarantine.js';
+import { cleanCatalogTitle } from './utils/catalog-title.js';
+import { setMbtilesDisplayName } from './utils/mbtiles-metadata.js';
 import {
   initRncConverter,
   processRncZip,
@@ -39,15 +50,21 @@ import {
   getAllConversionProgress as getAllRncProgress,
   getConversionProgress as getRncProgress,
   setConversionFailed as setRncFailed
-} from './utils/rnc-converter';
-import { processGshhg, processShpBasemap } from './utils/s57-converter';
-import { getCpuBudget, setCpuBudget } from './utils/concurrency';
-import { writeChartPathMarker } from './utils/path-marker';
+} from './utils/rnc-converter.js';
+import { processGshhg, processShpBasemap } from './utils/s57-converter.js';
+import { getCpuBudget, setCpuBudget } from './utils/concurrency.js';
+import { writeChartPathMarker } from './utils/path-marker.js';
+import { parsePluginConfig } from './utils/plugin-config-schema.js';
+import { Type } from '@sinclair/typebox';
+import { parseBody, parseShape } from './utils/rest-validation.js';
+import { isWithinBase, arePairWithinBase } from './utils/path-safety.js';
+import Busboy from 'busboy';
+import { DatabaseSync } from 'node:sqlite';
 
-// Read at module load so the marker file always reflects the running build.
-// `require` keeps this synchronous and avoids dragging package.json into the
-// emitted dist (tsc resolves it through CommonJS interop).
-const pluginVersion: string = (require('../package.json') as { version: string }).version;
+// JSON import with type attribute (NodeNext ESM). package.json's `version`
+// is what the marker file records so users can confirm the running build.
+import packageJson from '../package.json' with { type: 'json' };
+const pluginVersion: string = (packageJson as { version: string }).version;
 import type {
   ExtendedServerAPI,
   PluginConfig,
@@ -57,9 +74,13 @@ import type {
   Request,
   Response,
   DownloadJob
-} from './types';
+} from './types.js';
 
-const PLUGIN_ID = 'signalk-charts-provider-simple';
+// Single source of truth lives in container-jobs.ts as PLUGIN_OWNER_ID
+// (used as the `ownerPluginId` label on every runJob call). The plugin
+// id Signal K uses must match exactly so `cleanupOrphanedJobs` reaps
+// the right containers — alias rather than duplicate the literal.
+const PLUGIN_ID = PLUGIN_OWNER_ID;
 const chartTilesPath = `/plugins/${PLUGIN_ID}`;
 
 const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
@@ -111,10 +132,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }),
     uiSchema: () => ({}),
     start: (settings) => {
+      // Validate the saved config against the TypeBox schema before doing
+      // anything with it. Bad shapes show up as a clear plugin error in
+      // the admin UI instead of crashing several frames into doStartup.
+      let config: PluginConfig;
+      try {
+        config = parsePluginConfig(settings);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        app.setPluginError(msg);
+        return;
+      }
       // Signal K does not await start(); run async init in a self-contained
       // promise that handles its own errors so a setPluginError surfaces
       // anything we couldn't recover from (e.g. signalk-container missing).
-      doStartup(settings as PluginConfig).catch((err: unknown) => {
+      doStartup(config).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         app.setPluginError(`Startup failed: ${msg}`);
       });
@@ -186,7 +218,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     initCatalogManager(dataDir, app.debug.bind(app));
 
     const tempDirPattern =
-      /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-)\d+$/;
+      /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-)\d+$/;
     try {
       const dataDirEntries = fs.readdirSync(dataDir, { withFileTypes: true });
       for (const entry of dataDirEntries) {
@@ -213,6 +245,24 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // up.  A missing manager surfaces as setPluginError but does NOT abort
     // startup — chart *display* (serving tiles for already-converted
     // .mbtiles) doesn't need the runtime layer and remains functional.
+    // Wipe any quarantine subdirs left behind by a previous server
+    // lifecycle. Conversions write into <dataDir>/in-progress/<chartNumber>/
+    // and only promote to chartPath on success — if Signal K crashed
+    // mid-conversion the partial .mbtiles is in the quarantine and
+    // safe to drop. Runs unconditionally (independent of whether
+    // signalk-container is reachable) because it only touches our
+    // own filesystem state.
+    try {
+      const swept = sweepStaleQuarantineDirs(app.getDataDirPath());
+      if (swept > 0) {
+        console.log(
+          `[charts-provider] Swept ${swept} stale conversion quarantine dir(s) from a previous lifecycle`
+        );
+      }
+    } catch (err) {
+      app.debug(`Quarantine sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     const containerManager = await waitForContainerManager({
       onWaitingStatus: () => app.setPluginStatus('Waiting for signalk-container...')
     });
@@ -225,6 +275,69 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       app.debug(
         `signalk-container detected: ${runtime?.runtime ?? 'unknown'} ${runtime?.version ?? ''}`.trim()
       );
+
+      // Reap any helper containers leaked by a previous Signal K
+      // crash mid-conversion. Each reaped orphan clears the
+      // matching install record and converting flag so the catalog
+      // UI doesn't show "Installed" or "Converting…" for a job
+      // that no longer exists. Requires signalk-container >= 1.3.0;
+      // older versions don't have the API and we just skip.
+      if (typeof containerManager.cleanupOrphanedJobs === 'function') {
+        try {
+          const cleanup = await containerManager.cleanupOrphanedJobs({
+            ownerPluginId: PLUGIN_OWNER_ID
+          });
+          // Labels we set on runJob calls have the form
+          // `<stage>-<chartNumber>`, where <stage> is one of a fixed
+          // set of strings (gdal-export, tippecanoe, gdal-translate,
+          // gdaladdo, tar-extract, gdal-rasterize). The naïve
+          // `replace(/^[a-z-]+-/, '')` was greedy — it would strip
+          // every hyphenated prefix and corrupt chartNumbers that
+          // themselves contain hyphens (e.g. `tippecanoe-abc-def`
+          // would yield `def` instead of `abc-def`). Match the
+          // longest known prefix and take everything after.
+          const STAGES = [
+            'gdal-export',
+            'gdal-translate',
+            'gdal-rasterize',
+            'tar-extract',
+            'tippecanoe',
+            'gdaladdo'
+          ];
+          const extractChartNumber = (label: string | undefined): string | null => {
+            if (!label) {
+              return null;
+            }
+            for (const stage of STAGES) {
+              const prefix = `${stage}-`;
+              if (label.startsWith(prefix)) {
+                return label.slice(prefix.length) || null;
+              }
+            }
+            return null;
+          };
+
+          for (const orphan of cleanup.reaped) {
+            const chartNumber = extractChartNumber(orphan.label);
+            app.debug(
+              `Reaped orphan job ${orphan.name} (${orphan.label ?? 'no label'}); ` +
+                `rolling back chart ${chartNumber ?? '<unknown>'}`
+            );
+            if (chartNumber) {
+              setConvertingState(chartNumber, false);
+              removeInstall(chartNumber);
+            }
+          }
+          if (cleanup.reaped.length > 0) {
+            console.log(
+              `[charts-provider] Reaped ${cleanup.reaped.length} orphan job(s) ` +
+                `from a previous Signal K lifecycle`
+            );
+          }
+        } catch (err) {
+          app.debug(`Orphan cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     }
 
     startCatalogUpdateChecker();
@@ -362,6 +475,81 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
   };
 
+  // Tippecanoe accepts zooms 0–22 in practice (anything beyond produces
+  // 4×4 pixel tiles per source feature; nothing useful comes out and the
+  // job runs much longer). Bound the inputs to that envelope so a typo
+  // (`minzoom: 100`) is rejected at the boundary instead of silently
+  // turning into a multi-hour conversion that produces unusable output.
+  const ZoomLevel = Type.Integer({ minimum: 0, maximum: 22 });
+
+  const CatalogDownloadBody = Type.Object({
+    // `^https?://` is the floor: rejecting `file://`, `gopher://`, and the
+    // bare-string SSRF case (e.g. supplying `169.254.169.254/...` as a
+    // path-relative URL). Per-host allowlisting is a bigger conversation
+    // — catalog charts come from many community-run hosts.
+    url: Type.String({ minLength: 1, pattern: '^https?://' }),
+    chartNumber: Type.String({ minLength: 1 }),
+    catalogFile: Type.String({ minLength: 1 }),
+    zipfileDatetime: Type.Optional(Type.String()),
+    targetFolder: Type.Optional(Type.String()),
+    minzoom: Type.Optional(ZoomLevel),
+    maxzoom: Type.Optional(ZoomLevel)
+  });
+
+  const FolderCreateBody = Type.Object({
+    folderPath: Type.String({ minLength: 1 })
+  });
+
+  const ChartToggleBody = Type.Object({
+    enabled: Type.Boolean()
+  });
+
+  const MoveChartBody = Type.Object({
+    chartPath: Type.String({ minLength: 1 }),
+    targetFolder: Type.String({ minLength: 1 })
+  });
+
+  // The schema enforces the .mbtiles suffix; the post-parse guard then
+  // rejects path-injection sequences (`..`, `/`, `\`) inside the stem.
+  // TypeBox regex can't express that as cleanly as a plain check, and
+  // mixing two patterns in one regex is the kind of subtle thing that
+  // gets misread later.
+  const RenameChartBody = Type.Object({
+    chartPath: Type.String({ minLength: 1 }),
+    newName: Type.String({ minLength: 1, pattern: '\\.mbtiles$' })
+  });
+
+  const ChartMetadataBody = Type.Object({
+    name: Type.String({ minLength: 1 })
+  });
+
+  // Multipart/header field schemas. Same domain rules as the JSON-body
+  // counterparts: zoom bounds, https?:// URL floor, non-empty chart
+  // names. parseShape (via Value.Convert) handles the busboy-string-only
+  // wire format so `'9'` validates as the integer 9.
+  const DownloadChartLockerFields = Type.Object({
+    url: Type.String({ minLength: 1, pattern: '^https?://' }),
+    targetFolder: Type.String({ minLength: 1 }),
+    chartName: Type.String({ minLength: 1 })
+  });
+
+  const UploadFields = Type.Object({
+    targetFolder: Type.Optional(Type.String())
+  });
+
+  const UploadChunkHeaders = Type.Object({
+    'x-upload-filename': Type.String({ minLength: 1, pattern: '\\.mbtiles$' }),
+    'x-chunk-index': Type.Integer({ minimum: 0 }),
+    'x-total-chunks': Type.Integer({ minimum: 1 }),
+    'x-target-folder': Type.Optional(Type.String())
+  });
+
+  const ConvertUploadFields = Type.Object({
+    type: Type.Union([Type.Literal('s57'), Type.Literal('rnc')]),
+    minzoom: Type.Optional(ZoomLevel),
+    maxzoom: Type.Optional(ZoomLevel)
+  });
+
   const registerRoutes = (router: IRouter): void => {
     app.debug('** Registering API paths via registerWithRouter **');
 
@@ -389,38 +577,94 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/download-chart-locker', (req: Request, res: Response) => {
-      const Busboy = require('busboy') as typeof import('busboy');
       const bb = Busboy({ headers: req.headers });
 
-      let downloadUrl = '';
-      let targetFolder = '';
-      let chartName = '';
-
+      const fields: Record<string, string> = {};
       bb.on('field', (name: string, value: string) => {
-        if (name === 'url') {
-          downloadUrl = value;
-        }
-        if (name === 'targetFolder') {
-          targetFolder = value;
-        }
-        if (name === 'chartName') {
-          chartName = value;
-        }
+        fields[name] = value;
       });
 
       bb.on('finish', () => {
+        const parsed = parseShape(DownloadChartLockerFields, fields, res);
+        if (!parsed) {
+          return;
+        }
+        const { url: downloadUrl, targetFolder, chartName } = parsed;
+
         try {
           console.log(`Creating download job for: ${downloadUrl}`);
           console.log(`Target folder: ${targetFolder}`);
 
-          const targetDir =
-            targetFolder === '/' ? props.chartPath : path.join(props.chartPath, targetFolder);
+          const basePath = props.chartPath || defaultChartsPath;
+          const targetDir = targetFolder === '/' ? basePath : path.join(basePath, targetFolder);
+
+          if (!isWithinBase(targetDir, basePath)) {
+            res.status(403).json({ success: false, error: 'Access denied: Invalid target folder' });
+            return;
+          }
 
           if (!fs.existsSync(targetDir)) {
             fs.mkdirSync(targetDir, { recursive: true });
           }
 
-          const jobId = downloadManager.createJob(downloadUrl, targetDir, chartName);
+          // Stage the download in the quarantine dir; promote on
+          // job-completed so a crash mid-fetch never leaves a partial
+          // .mbtiles in the live chart library.
+          const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartName);
+          const jobId = downloadManager.createJob(downloadUrl, quarantineDir, chartName);
+
+          const promoteListener = (job: DownloadJob): void => {
+            if (job.id !== jobId) {
+              return;
+            }
+            void (async () => {
+              try {
+                if (
+                  job.status === 'completed' &&
+                  job.extractedFiles &&
+                  job.extractedFiles.length > 0
+                ) {
+                  try {
+                    await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
+                  } catch (promoteErr) {
+                    app.error(
+                      `Promotion failed for ${chartName}: ${
+                        promoteErr instanceof Error ? promoteErr.message : String(promoteErr)
+                      }`
+                    );
+                    return;
+                  }
+                  // The global job-completed handler runs against
+                  // job.targetDir (the quarantine), so the chart it
+                  // tried to enable is at a path that no longer
+                  // exists. Re-do enable + refresh against the live
+                  // target so the chart actually shows up.
+                  const basePath = props.chartPath || defaultChartsPath;
+                  const targetFolderRel = path.relative(basePath, targetDir);
+                  for (const fileName of job.extractedFiles) {
+                    const relativePath = targetFolderRel
+                      ? path.join(targetFolderRel, fileName)
+                      : fileName;
+                    setChartEnabled(relativePath, true);
+                  }
+                  await refreshChartProviders();
+                  for (const fileName of job.extractedFiles) {
+                    const chartId = fileName.replace(/\.mbtiles$/, '');
+                    if (chartProviders[chartId]) {
+                      const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                      emitChartDelta(chartId, chartData);
+                    }
+                  }
+                }
+              } finally {
+                cleanupQuarantineDir(quarantineDir);
+                downloadManager.removeListener('job-completed', promoteListener);
+                downloadManager.removeListener('job-failed', promoteListener);
+              }
+            })();
+          };
+          downloadManager.on('job-completed', promoteListener);
+          downloadManager.on('job-failed', promoteListener);
 
           res.json({
             success: true,
@@ -596,9 +840,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const basePath = props.chartPath || defaultChartsPath;
         const fullPath = path.join(basePath, chartPathParam);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -624,10 +866,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
           emitChartDelta(chartId, null);
 
-          removeInstall(chartId);
-          const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
-          if (chartNumberPart !== chartId) {
-            removeInstall(chartNumberPart);
+          // Primary path: reverse-lookup by the on-disk filename. The
+          // converter records this in the install record after a
+          // successful conversion, so a chart whose filename was
+          // rewritten by catalog title (chartNumber=2 →
+          // Port_of_Rotterdam_…mbtiles) still gets its catalog
+          // "Installed" badge cleared.
+          if (!removeInstallByFilename(chartPathParam)) {
+            // Fall back to the legacy chartId/chartNumber heuristics
+            // for charts installed before setInstallFilename existed.
+            removeInstall(chartId);
+            const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
+            if (chartNumberPart !== chartId) {
+              removeInstall(chartNumberPart);
+            }
           }
 
           res.status(200).send('Chart deleted successfully');
@@ -636,10 +888,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
           emitChartDelta(chartId, null);
 
-          removeInstall(chartId);
-          const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
-          if (chartNumberPart !== chartId) {
-            removeInstall(chartNumberPart);
+          // Primary path: reverse-lookup by the on-disk filename. The
+          // converter records this in the install record after a
+          // successful conversion, so a chart whose filename was
+          // rewritten by catalog title (chartNumber=2 →
+          // Port_of_Rotterdam_…mbtiles) still gets its catalog
+          // "Installed" badge cleared.
+          if (!removeInstallByFilename(chartPathParam)) {
+            // Fall back to the legacy chartId/chartNumber heuristics
+            // for charts installed before setInstallFilename existed.
+            removeInstall(chartId);
+            const chartNumberPart = chartId.replace(/^[A-Z]+-/, '');
+            if (chartNumberPart !== chartId) {
+              removeInstall(chartNumberPart);
+            }
           }
 
           res.status(200).send('Chart deletion processed');
@@ -651,15 +913,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/folders', async (req: Request, res: Response) => {
-      const { folderPath } = req.body as { folderPath?: string };
-
-      app.debug(`Create folder request - folderPath: ${folderPath}`);
-
-      if (!folderPath || typeof folderPath !== 'string') {
-        app.debug('Create folder failed: folder path is required');
-        res.status(400).send('Folder path is required');
+      const body = parseBody(FolderCreateBody, req, res);
+      if (!body) {
         return;
       }
+      const { folderPath } = body;
+
+      app.debug(`Create folder request - folderPath: ${folderPath}`);
 
       try {
         const basePath = props.chartPath || defaultChartsPath;
@@ -667,9 +927,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         app.debug(`Create folder - basePath: ${basePath}, fullPath: ${fullPath}`);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           app.debug('Create folder failed: path traversal attempt');
           res.status(403).send('Access denied: Invalid path');
           return;
@@ -697,14 +955,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const basePath = props.chartPath || defaultChartsPath;
         const fullPath = path.join(basePath, folderPathParam);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
 
-        if (normalizedFullPath === normalizedBasePath) {
+        if (path.normalize(fullPath) === path.normalize(basePath)) {
           res.status(403).send('Cannot delete the root chart directory');
           return;
         }
@@ -730,12 +986,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     router.post('/charts/:chartPath/toggle', async (req: Request, res: Response) => {
       const chartPathParam = decodeURIComponent((req.params as Record<string, string>).chartPath);
-      const { enabled } = req.body as { enabled?: boolean };
-
-      if (typeof enabled !== 'boolean') {
-        res.status(400).send('enabled parameter must be a boolean');
+      const body = parseBody(ChartToggleBody, req, res);
+      if (!body) {
         return;
       }
+      const { enabled } = body;
 
       try {
         setChartEnabled(chartPathParam, enabled);
@@ -770,17 +1025,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/move-chart', async (req: Request, res: Response) => {
-      const { chartPath: chartPathBody, targetFolder } = req.body as {
-        chartPath?: string;
-        targetFolder?: string;
-      };
-
-      app.debug(`Move chart request: chartPath=${chartPathBody}, targetFolder=${targetFolder}`);
-
-      if (!chartPathBody || !targetFolder) {
-        res.status(400).send('chartPath and targetFolder are required');
+      const body = parseBody(MoveChartBody, req, res);
+      if (!body) {
         return;
       }
+      const { chartPath: chartPathBody, targetFolder } = body;
+
+      app.debug(`Move chart request: chartPath=${chartPathBody}, targetFolder=${targetFolder}`);
 
       try {
         const basePath = props.chartPath || defaultChartsPath;
@@ -797,14 +1048,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
         app.debug(`Target path: ${targetPath}`);
 
-        const normalizedSource = path.normalize(sourcePath);
-        const normalizedTarget = path.normalize(targetPath);
-        const normalizedBase = path.normalize(basePath);
-
-        if (
-          !normalizedSource.startsWith(normalizedBase) ||
-          !normalizedTarget.startsWith(normalizedBase)
-        ) {
+        if (!arePairWithinBase(sourcePath, targetPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -823,6 +1067,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         await fs.promises.rename(sourcePath, targetPath);
         app.debug(`Moved chart from ${sourcePath} to ${targetPath}`);
+
+        // Update any catalog-install record that points at the old
+        // path so a later delete still clears the catalog "Installed"
+        // badge by reverse-lookup.
+        const newRelative = path.relative(basePath, targetPath);
+        renameInstallFilename(chartPathBody, newRelative);
 
         await refreshChartProviders();
 
@@ -845,23 +1095,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/rename-chart', async (req: Request, res: Response) => {
-      const { chartPath: chartPathBody, newName } = req.body as {
-        chartPath?: string;
-        newName?: string;
-      };
+      const body = parseBody(RenameChartBody, req, res);
+      if (!body) {
+        return;
+      }
+      const { chartPath: chartPathBody, newName } = body;
 
       app.debug(`Rename chart request: chartPath=${chartPathBody}, newName=${newName}`);
 
-      if (!chartPathBody || !newName) {
-        res.status(400).send('chartPath and newName are required');
-        return;
-      }
-
-      if (!newName.endsWith('.mbtiles')) {
-        res.status(400).send('Chart name must end with .mbtiles');
-        return;
-      }
-
+      // Schema enforced the .mbtiles suffix; this guard rejects path
+      // injection inside the stem (`../foo.mbtiles`, `a/b.mbtiles`, …).
       const nameWithoutExt = newName.replace(/\.mbtiles$/, '');
       if (
         nameWithoutExt.includes('..') ||
@@ -881,14 +1124,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const targetPath = path.join(basePath, folder, newName);
         app.debug(`Target path: ${targetPath}`);
 
-        const normalizedSource = path.normalize(sourcePath);
-        const normalizedTarget = path.normalize(targetPath);
-        const normalizedBase = path.normalize(basePath);
-
-        if (
-          !normalizedSource.startsWith(normalizedBase) ||
-          !normalizedTarget.startsWith(normalizedBase)
-        ) {
+        if (!arePairWithinBase(sourcePath, targetPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -927,6 +1163,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           );
         }
 
+        // Update any catalog-install record that points at the old
+        // path so a later delete still clears the catalog "Installed"
+        // badge by reverse-lookup.
+        const newRelative = path.relative(basePath, targetPath);
+        renameInstallFilename(chartPathBody, newRelative);
+
         await refreshChartProviders();
 
         const oldChartId = path.basename(chartPathBody).replace(/\.mbtiles$/, '');
@@ -954,20 +1196,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     router.put('/chart-metadata/:chartPath', async (req: Request, res: Response) => {
       const chartPathParam = decodeURIComponent((req.params as Record<string, string>).chartPath);
-      const { name } = req.body as { name?: string };
-
-      if (!name || typeof name !== 'string') {
-        res.status(400).send('Chart name is required');
+      const body = parseBody(ChartMetadataBody, req, res);
+      if (!body) {
         return;
       }
+      const { name } = body;
 
       try {
         const basePath = props.chartPath || defaultChartsPath;
         const fullPath = path.join(basePath, chartPathParam);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -982,7 +1221,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
-        const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
         const db = new DatabaseSync(fullPath);
 
         try {
@@ -1022,9 +1260,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const basePath = props.chartPath || defaultChartsPath;
         const fullPath = path.join(basePath, chartPathParam);
 
-        const normalizedFullPath = path.normalize(fullPath);
-        const normalizedBasePath = path.normalize(basePath);
-        if (!normalizedFullPath.startsWith(normalizedBasePath)) {
+        if (!isWithinBase(fullPath, basePath)) {
           res.status(403).send('Access denied: Invalid path');
           return;
         }
@@ -1039,7 +1275,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
-        const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
         const db = new DatabaseSync(fullPath, { readOnly: true });
 
         try {
@@ -1085,17 +1320,23 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     router.post('/upload', (req: Request, res: Response) => {
       try {
-        const Busboy = require('busboy') as typeof import('busboy');
         const bb = Busboy({ headers: req.headers });
         const basePath = props.chartPath || defaultChartsPath;
+        // Per-request quarantine dir: every uploaded `.mbtiles` is
+        // streamed here first, then atomically promoted on `finish`.
+        // A crashed/aborted request leaves the partial files in the
+        // quarantine for the startup sweep to wipe, never in basePath.
+        const quarantineDir = makeQuarantineDir(
+          app.getDataDirPath(),
+          `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        );
         const uploadedFiles: string[] = [];
         const writePromises: Promise<void>[] = [];
-        let targetFolder = '';
+        const fields: Record<string, string> = {};
+        let traversalRejected = false;
 
         bb.on('field', (fieldname: string, value: string) => {
-          if (fieldname === 'targetFolder') {
-            targetFolder = value;
-          }
+          fields[fieldname] = value;
         });
 
         bb.on(
@@ -1108,26 +1349,41 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               return;
             }
 
+            const targetFolder = fields.targetFolder ?? '';
             let uploadPath = basePath;
             if (targetFolder && targetFolder !== '/') {
               uploadPath = path.join(basePath, targetFolder);
             }
 
-            const filepath = path.join(uploadPath, filename);
-            app.debug(`Uploading chart file: ${filename} to ${filepath}`);
+            // Reject path-traversal in either the targetFolder or the
+            // upload's own filename (`filename: '../etc/passwd'`).
+            // Resolve against basePath even though we stage in the
+            // quarantine — the *intended* destination is what matters
+            // for the access-control check.
+            if (
+              !isWithinBase(path.join(uploadPath, filename), basePath) ||
+              path.basename(filename) !== filename
+            ) {
+              traversalRejected = true;
+              (file as NodeJS.ReadableStream & { resume(): void }).resume();
+              return;
+            }
 
-            const writeStream = fs.createWriteStream(filepath);
+            const stagedPath = path.join(quarantineDir, filename);
+            app.debug(`Staging upload: ${filename} -> ${stagedPath}`);
+
+            const writeStream = fs.createWriteStream(stagedPath);
             file.pipe(writeStream);
 
             const writePromise = new Promise<void>((resolve, reject) => {
               writeStream.on('finish', () => {
                 uploadedFiles.push(filename);
-                app.debug(`Chart file uploaded successfully: ${filename}`);
+                app.debug(`Upload staged successfully: ${filename}`);
                 resolve();
               });
 
               writeStream.on('error', (err: Error) => {
-                app.error(`Error writing file ${filename}: ${err.message}`);
+                app.error(`Error staging file ${filename}: ${err.message}`);
                 reject(err);
               });
             });
@@ -1138,10 +1394,48 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         bb.on('finish', () => {
           void (async () => {
+            // Validate fields here (after busboy has handed every one to
+            // us). The 'file' handler already used `fields.targetFolder`
+            // to decide upload paths; doing the schema check on `finish`
+            // also lets us include 'targetFolder' rules in the validator.
+            const parsed = parseShape(UploadFields, fields, res);
+            if (!parsed) {
+              cleanupQuarantineDir(quarantineDir);
+              return;
+            }
+            const { targetFolder = '' } = parsed;
+
+            if (traversalRejected) {
+              cleanupQuarantineDir(quarantineDir);
+              res.status(403).json({ success: false, error: 'Access denied: Invalid upload path' });
+              return;
+            }
+
             try {
               await Promise.all(writePromises);
 
               if (uploadedFiles.length > 0) {
+                const promoteTarget =
+                  targetFolder && targetFolder !== '/'
+                    ? path.join(basePath, targetFolder)
+                    : basePath;
+                // The earlier per-file `isWithinBase` check ran against
+                // each filename joined with the *raw* `fields.targetFolder`,
+                // before busboy had handed us every field. The actual
+                // promotion target is computed here from the *parsed*
+                // value, so re-check containment before we move staged
+                // files anywhere — a malformed targetFolder mustn't be
+                // able to slip through and direct the promotion outside
+                // basePath.
+                if (!isWithinBase(promoteTarget, basePath)) {
+                  cleanupQuarantineDir(quarantineDir);
+                  res
+                    .status(403)
+                    .json({ success: false, error: 'Access denied: Invalid upload path' });
+                  return;
+                }
+                await promoteQuarantine(quarantineDir, uploadedFiles, promoteTarget);
+
                 await finalizeUploadedFiles(uploadedFiles, targetFolder, basePath);
 
                 res.status(200).json({
@@ -1158,6 +1452,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   (error instanceof Error ? error.message : String(error))
               );
               res.status(500).send('Error completing file uploads');
+            } finally {
+              cleanupQuarantineDir(quarantineDir);
             }
           })();
         });
@@ -1175,20 +1471,24 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // stays well within Node's server.requestTimeout (default 300s in Node 18+).
     router.put('/upload-chunk', (req: Request, res: Response) => {
       try {
-        const filename = req.headers['x-upload-filename'] as string;
-        const chunkIndex = parseInt(req.headers['x-chunk-index'] as string, 10);
-        const totalChunks = parseInt(req.headers['x-total-chunks'] as string, 10);
-        const targetFolder = (req.headers['x-target-folder'] as string) || '/';
-
-        if (
-          !filename ||
-          !filename.endsWith('.mbtiles') ||
-          isNaN(chunkIndex) ||
-          isNaN(totalChunks)
-        ) {
-          res.status(400).json({ error: 'Missing or invalid chunk upload headers' });
+        // Headers are pulled from req.headers as a plain object; node
+        // already lowercases the names, so picking the four we care
+        // about by-name is safe. parseShape coerces the numeric ones
+        // (`x-chunk-index`, `x-total-chunks`) from string to integer.
+        const headerFields = {
+          'x-upload-filename': req.headers['x-upload-filename'],
+          'x-chunk-index': req.headers['x-chunk-index'],
+          'x-total-chunks': req.headers['x-total-chunks'],
+          'x-target-folder': req.headers['x-target-folder']
+        };
+        const parsed = parseShape(UploadChunkHeaders, headerFields, res);
+        if (!parsed) {
           return;
         }
+        const filename = parsed['x-upload-filename'];
+        const chunkIndex = parsed['x-chunk-index'];
+        const totalChunks = parsed['x-total-chunks'];
+        const targetFolder = parsed['x-target-folder'] ?? '/';
 
         const basePath = props.chartPath || defaultChartsPath;
         let uploadPath = basePath;
@@ -1196,10 +1496,32 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           uploadPath = path.join(basePath, targetFolder);
         }
 
-        const partialPath = path.join(uploadPath, filename + '.partial');
         const finalPath = path.join(uploadPath, filename);
 
-        const writeStream = fs.createWriteStream(partialPath, {
+        // Reject path-traversal via either header. Catches `'../foo.mbtiles'`
+        // as a filename and `'../etc'` as a target-folder, both of which
+        // would otherwise resolve outside the chart root. Re-check
+        // basename to catch any traversal in the filename header itself
+        // even though arePairWithinBase already handled the resolved
+        // path — defense in depth before we use it as a path segment
+        // inside the quarantine dir.
+        if (
+          !arePairWithinBase(finalPath, finalPath, basePath) ||
+          path.basename(filename) !== filename
+        ) {
+          res.status(403).json({ error: 'Access denied: Invalid upload path' });
+          return;
+        }
+
+        // Stage chunked uploads in a per-filename quarantine dir.  All
+        // chunks append to a single staged file there; only the final
+        // chunk promotes it to the live `uploadPath`. A crash mid-upload
+        // therefore can never leave a half-built `.mbtiles` in the
+        // chart library — the startup sweep wipes the quarantine.
+        const quarantineDir = makeQuarantineDir(app.getDataDirPath(), `chunk-${filename}`);
+        const stagedPath = path.join(quarantineDir, filename);
+
+        const writeStream = fs.createWriteStream(stagedPath, {
           flags: chunkIndex === 0 ? 'w' : 'a'
         });
 
@@ -1214,17 +1536,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 return;
               }
 
-              // Final chunk — rename partial to final
+              // Final chunk — promote the staged file out of quarantine.
               app.debug(`Final chunk ${totalChunks}/${totalChunks} for ${filename}, assembling`);
-              fs.renameSync(partialPath, finalPath);
-
-              await finalizeUploadedFiles([filename], targetFolder, basePath);
-
-              res.json({
-                success: true,
-                message: `${filename} uploaded successfully`,
-                files: [filename]
-              });
+              try {
+                await promoteQuarantine(quarantineDir, [filename], uploadPath);
+                await finalizeUploadedFiles([filename], targetFolder, basePath);
+                res.json({
+                  success: true,
+                  message: `${filename} uploaded successfully`,
+                  files: [filename]
+                });
+              } finally {
+                cleanupQuarantineDir(quarantineDir);
+              }
             } catch (error) {
               app.error(
                 `Error finalizing chunked upload: ${error instanceof Error ? error.message : String(error)}`
@@ -1352,29 +1676,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/convert-upload', (req: Request, res: Response) => {
-      const Busboy = require('busboy') as typeof import('busboy');
       const bb = Busboy({ headers: req.headers, limits: { fileSize: 500 * 1024 * 1024 } });
       const chartPath = props.chartPath || defaultChartsPath;
-      let convType = '';
-      let minzoom = 9;
-      let maxzoom = 16;
 
       const tmpDir = path.join(app.getDataDirPath(), `convert-upload-${Date.now()}`);
       fs.mkdirSync(tmpDir, { recursive: true });
 
       let uploadedFile: string | null = null;
       let uploadedFileName = '';
+      const fields: Record<string, string> = {};
 
       bb.on('field', (name: string, value: string) => {
-        if (name === 'type') {
-          convType = value;
-        }
-        if (name === 'minzoom') {
-          minzoom = parseInt(value) || 9;
-        }
-        if (name === 'maxzoom') {
-          maxzoom = parseInt(value) || 16;
-        }
+        fields[name] = value;
       });
 
       bb.on(
@@ -1399,9 +1712,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
-        if (!convType || !['s57', 'rnc'].includes(convType)) {
+        const parsed = parseShape(ConvertUploadFields, fields, res);
+        if (!parsed) {
           cleanupDir(tmpDir);
-          res.status(400).json({ success: false, error: 'Invalid conversion type' });
+          return;
+        }
+        const convType = parsed.type;
+        const minzoom = parsed.minzoom ?? 9;
+        const maxzoom = parsed.maxzoom ?? 16;
+
+        if (minzoom > maxzoom) {
+          cleanupDir(tmpDir);
+          res.status(400).json({ success: false, error: 'minzoom must be ≤ maxzoom' });
           return;
         }
 
@@ -1432,21 +1754,39 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             .basename(uploadedFileName, '.zip')
             .replace(/[^a-zA-Z0-9_-]/g, '_');
 
-          res.json({ success: true, chartNumber, message: 'Conversion started' });
-
+          // Order matters: defer the success response until
+          // makeQuarantineDir has actually returned. A permission /
+          // disk error there used to surface AFTER the client had
+          // already been told the conversion was running, leaving
+          // the UI stuck waiting for status it would never get.
+          let quarantineDir: string;
+          try {
+            quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+          } catch (err) {
+            res.status(500).json({
+              success: false,
+              error: `Failed to prepare conversion workspace: ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            });
+            return;
+          }
           setConvertingState(chartNumber, true);
+          res.json({ success: true, chartNumber, message: 'Conversion started' });
 
           try {
             if (convType === 's57') {
               const result = await processS57Zip(
                 validatedFile,
-                chartPath,
+                quarantineDir,
                 chartNumber,
                 (status, message) => {
                   app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
                 },
                 { minzoom, maxzoom }
               );
+
+              await promoteQuarantine(quarantineDir, [result.mbtilesFile], chartPath);
 
               const relativePath = path.relative(
                 chartPath,
@@ -1463,12 +1803,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             } else if (convType === 'rnc') {
               const result = await processRncZip(
                 validatedFile,
-                chartPath,
+                quarantineDir,
                 chartNumber,
                 (status, message) => {
                   app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
                 }
               );
+
+              await promoteQuarantine(quarantineDir, result.mbtilesFiles, chartPath);
 
               for (const mbtilesFile of result.mbtilesFiles) {
                 const relativePath = path.relative(chartPath, path.join(chartPath, mbtilesFile));
@@ -1490,6 +1832,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             );
           } finally {
             setConvertingState(chartNumber, false);
+            cleanupQuarantineDir(quarantineDir);
             cleanupDir(tmpDir);
           }
         })();
@@ -1499,24 +1842,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     router.post('/catalog/download', (req: Request, res: Response) => {
-      const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder, minzoom, maxzoom } =
-        req.body as {
-          url?: string;
-          chartNumber?: string;
-          catalogFile?: string;
-          zipfileDatetime?: string;
-          targetFolder?: string;
-          minzoom?: number;
-          maxzoom?: number;
-        };
-
-      if (!url || !chartNumber || !catalogFile) {
-        res.status(400).json({
-          success: false,
-          error: 'url, chartNumber, and catalogFile are required'
-        });
+      const body = parseBody(CatalogDownloadBody, req, res);
+      if (!body) {
         return;
       }
+      // TypeBox bounds each field independently; cross-field invariants
+      // (`minzoom <= maxzoom`) need a plain post-parse guard. A typo
+      // here would silently produce empty tile sets after a long run.
+      if (body.minzoom !== undefined && body.maxzoom !== undefined && body.minzoom > body.maxzoom) {
+        res.status(400).json({ success: false, error: 'minzoom must be ≤ maxzoom' });
+        return;
+      }
+      const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder, minzoom, maxzoom } =
+        body;
 
       const registryEntry = getCatalogRegistry().find((r) => r.file === catalogFile);
       const catalogCategory = registryEntry ? registryEntry.category : '';
@@ -1533,6 +1871,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const chartPath = props.chartPath || defaultChartsPath;
         const targetDir =
           !targetFolder || targetFolder === '/' ? chartPath : path.join(chartPath, targetFolder);
+
+        // Reject `targetFolder: '../etc'` etc. before mkdir/mkdirSync. The
+        // schema's String pattern can't catch every traversal vector
+        // (e.g. `valid/../escape`); the helper does the normalize-and-
+        // startsWith check used by every other mutating route.
+        if (!isWithinBase(targetDir, chartPath)) {
+          res.status(403).json({ success: false, error: 'Access denied: Invalid target folder' });
+          return;
+        }
 
         if (!fs.existsSync(targetDir)) {
           fs.mkdirSync(targetDir, { recursive: true });
@@ -1630,19 +1977,82 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             chartPath
           );
         } else {
-          const jobId = downloadManager.createJob(url, targetDir, chartNumber);
+          // Direct .mbtiles download (or ZIP-of-.mbtiles): stage into the
+          // quarantine dir so a crash mid-download/extract never leaves a
+          // half-built file in the live chart library. Promotion runs on
+          // job-completed; failure / no-files paths drop the quarantine.
+          const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+          const jobId = downloadManager.createJob(url, quarantineDir, chartNumber);
 
           trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
 
           const cleanupListener = (job: DownloadJob): void => {
-            if (job.id === jobId) {
-              if (!job.extractedFiles || job.extractedFiles.length === 0) {
-                removeInstall(chartNumber);
-                app.debug(`Removed catalog tracking for ${chartNumber}: no .mbtiles extracted`);
-              }
-              downloadManager.removeListener('job-failed', cleanupListener);
-              downloadManager.removeListener('job-completed', cleanupListener);
+            if (job.id !== jobId) {
+              return;
             }
+            void (async () => {
+              try {
+                if (!job.extractedFiles || job.extractedFiles.length === 0) {
+                  removeInstall(chartNumber);
+                  app.debug(`Removed catalog tracking for ${chartNumber}: no .mbtiles extracted`);
+                  return;
+                }
+                if (job.status !== 'completed') {
+                  // Failed downloads leak nothing into the live target;
+                  // the quarantine wipe in `finally` handles cleanup.
+                  removeInstall(chartNumber);
+                  return;
+                }
+                try {
+                  await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
+                } catch (promoteErr) {
+                  app.error(
+                    `Promotion failed for ${chartNumber}: ${
+                      promoteErr instanceof Error ? promoteErr.message : String(promoteErr)
+                    }`
+                  );
+                  removeInstall(chartNumber);
+                  return;
+                }
+                // The global `job-completed` handler enables charts and
+                // refreshes providers against `job.targetDir`, but with
+                // quarantine that's the staging dir under
+                // `<dataDir>/in-progress/`, not the live target. So
+                // run the same enable + refresh + delta-emit cycle
+                // ourselves now that the files are actually in place.
+                const targetFolderRel = path.relative(chartPath, targetDir);
+                for (const fileName of job.extractedFiles) {
+                  const relativePath = targetFolderRel
+                    ? path.join(targetFolderRel, fileName)
+                    : fileName;
+                  setChartEnabled(relativePath, true);
+                  app.debug(`Enabled promoted chart: ${relativePath}`);
+                }
+                await refreshChartProviders();
+                for (const fileName of job.extractedFiles) {
+                  const chartId = fileName.replace(/\.mbtiles$/, '');
+                  if (chartProviders[chartId]) {
+                    const chartData = sanitizeProvider(chartProviders[chartId], 2);
+                    emitChartDelta(chartId, chartData);
+                    app.debug(`Delta emitted for promoted chart: ${chartId}`);
+                  }
+                }
+                // Record the produced filename so the delete flow can
+                // clear this install record by reverse-lookup. Same
+                // pattern as the S-57 / RNC conversion completion paths.
+                const firstFile = job.extractedFiles[0];
+                if (firstFile) {
+                  const relativePath = targetFolderRel
+                    ? path.join(targetFolderRel, firstFile)
+                    : firstFile;
+                  setInstallFilename(chartNumber, relativePath);
+                }
+              } finally {
+                cleanupQuarantineDir(quarantineDir);
+                downloadManager.removeListener('job-failed', cleanupListener);
+                downloadManager.removeListener('job-completed', cleanupListener);
+              }
+            })();
           };
           downloadManager.on('job-failed', cleanupListener);
           downloadManager.on('job-completed', cleanupListener);
@@ -1688,7 +2098,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, { saveRaw: true });
 
     trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
+    // Don't flag converting yet — the download still has to finish.
+    // Setting it here made the catalog UI report "Converting…" all
+    // through the (slow!) download phase. Flip it to true inside the
+    // listener once the ZIP is on disk and processS57Zip is about to run.
 
     const s57Listener = async (job: DownloadJob): Promise<void> => {
       if (job.id !== jobId) {
@@ -1703,16 +2116,26 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       if (!zipPath || !fs.existsSync(zipPath)) {
         app.debug(`S-57: no ZIP file found after download for ${chartNumber}`);
         removeInstall(chartNumber);
-        setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
         return;
       }
 
+      setConvertingState(chartNumber, true);
+
+      // Convert into a quarantine dir under getDataDirPath() so a
+      // mid-conversion crash leaves a stale .mbtiles there, NOT in
+      // the user's live chart library. Promote to targetDir only
+      // after a successful conversion. The mkdir is inside the
+      // guarded try so a sync throw (perms, disk full) goes through
+      // the same cleanup as a conversion failure.
+      let quarantineDir: string | null = null;
+
       try {
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
         const displayName = chartTitle ? cleanCatalogTitle(chartTitle) : undefined;
         const result = await processS57Zip(
           zipPath,
-          targetDir,
+          quarantineDir,
           chartNumber,
           (status, message) => {
             app.debug(`S-57 [${chartNumber}] ${status}: ${message}`);
@@ -1725,11 +2148,22 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           }
         );
 
+        // Atomic move into the live chart library. If this throws
+        // the catch below clears state — the install record gets
+        // dropped and the user sees the catalog row return to
+        // "Download & Convert".
+        await promoteQuarantine(quarantineDir, [result.mbtilesFile], targetDir);
+
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
 
         const relativePath = path.relative(chartPath, path.join(targetDir, result.mbtilesFile));
         setChartEnabled(relativePath, true);
+        // Record the produced filename so the delete flow can find this
+        // install record even when the converter renamed the file by
+        // catalog title (e.g. chartNumber=2 → Port_of_Rotterdam_….mbtiles).
+        setInstallFilename(chartNumber, relativePath);
         await refreshChartProviders();
 
         const chartId = result.mbtilesFile.replace(/\.mbtiles$/, '');
@@ -1744,6 +2178,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -1783,7 +2220,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, { saveRaw: true });
 
     trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
+    // Set converting state inside the listener once the download has
+    // finished — see the comment on the s57 path; same fix.
 
     const rncListener = async (job: DownloadJob): Promise<void> => {
       if (job.id !== jobId) {
@@ -1798,24 +2236,46 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       if (!zipPath || !fs.existsSync(zipPath)) {
         app.debug(`RNC: no file found after download for ${chartNumber}`);
         removeInstall(chartNumber);
-        setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
         return;
       }
 
+      setConvertingState(chartNumber, true);
+
       app.debug(`Starting RNC conversion for ${chartNumber}: ${zipPath}`);
 
+      let quarantineDir: string | null = null;
+
       try {
-        const result = await processRncZip(zipPath, targetDir, chartNumber, (status, message) => {
-          app.debug(`RNC [${chartNumber}] ${status}: ${message}`);
-        });
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+        const result = await processRncZip(
+          zipPath,
+          quarantineDir,
+          chartNumber,
+          (status, message) => {
+            app.debug(`RNC [${chartNumber}] ${status}: ${message}`);
+          }
+        );
+
+        await promoteQuarantine(quarantineDir, result.mbtilesFiles, targetDir);
 
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
 
+        const firstRelative = result.mbtilesFiles[0]
+          ? path.relative(chartPath, path.join(targetDir, result.mbtilesFiles[0]))
+          : null;
         for (const mbtilesFile of result.mbtilesFiles) {
           const relativePath = path.relative(chartPath, path.join(targetDir, mbtilesFile));
           setChartEnabled(relativePath, true);
+        }
+        // Record the produced filename so the delete flow can clear
+        // this install record by matching the filename. RNC catalogs
+        // can produce multiple files per chart number; we track the
+        // first — deleting any one of them clears the catalog badge.
+        if (firstRelative) {
+          setInstallFilename(chartNumber, firstRelative);
         }
         await refreshChartProviders();
         for (const mbtilesFile of result.mbtilesFiles) {
@@ -1832,6 +2292,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -1871,7 +2334,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, { saveRaw: true });
 
     trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
+    // Set converting state inside the listener once the download has
+    // finished — see the comment on the s57 path; same fix.
 
     const pilotListener = async (job: DownloadJob): Promise<void> => {
       if (job.id !== jobId) {
@@ -1885,17 +2349,29 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       if (!dlPath || !fs.existsSync(dlPath)) {
         removeInstall(chartNumber);
-        setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
         return;
       }
 
+      setConvertingState(chartNumber, true);
+
+      let quarantineDir: string | null = null;
+
       try {
-        const result = await processPilotTar(dlPath, targetDir, chartNumber, (status, message) => {
-          app.debug(`Pilot [${chartNumber}] ${status}: ${message}`);
-        });
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+        const result = await processPilotTar(
+          dlPath,
+          quarantineDir,
+          chartNumber,
+          (status, message) => {
+            app.debug(`Pilot [${chartNumber}] ${status}: ${message}`);
+          }
+        );
+
+        await promoteQuarantine(quarantineDir, result.mbtilesFiles, targetDir);
 
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
 
         for (const mbtilesFile of result.mbtilesFiles) {
@@ -1917,6 +2393,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -1956,7 +2435,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const jobId = downloadManager.createJob(url, tmpDownloadDir, chartNumber, { saveRaw: true });
 
     trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
+    // Set converting state inside the listener once the download has
+    // finished — see the comment on the s57 path; same fix.
 
     const shpListener = async (job: DownloadJob): Promise<void> => {
       if (job.id !== jobId) {
@@ -1970,22 +2450,29 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       if (!dlPath || !fs.existsSync(dlPath)) {
         removeInstall(chartNumber);
-        setConvertingState(chartNumber, false);
         cleanupDir(tmpDownloadDir);
         return;
       }
 
+      setConvertingState(chartNumber, true);
+
+      let quarantineDir: string | null = null;
+
       try {
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processShpBasemap(
           dlPath,
-          targetDir,
+          quarantineDir,
           chartNumber,
           (status, message) => {
             app.debug(`ShpBasemap [${chartNumber}] ${status}: ${message}`);
           }
         );
 
+        await promoteQuarantine(quarantineDir, [result.mbtilesFile], targetDir);
+
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         cleanupDir(tmpDownloadDir);
 
         const relativePath = path.relative(chartPath, path.join(targetDir, result.mbtilesFile));
@@ -2004,6 +2491,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
         cleanupDir(tmpDownloadDir);
       }
     };
@@ -2044,12 +2534,23 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     fs.mkdirSync(tmpDir, { recursive: true });
 
     void (async () => {
+      let quarantineDir: string | null = null;
       try {
-        await processGshhg(tmpDir, targetDir, resolution, chartNumber, (status, message) => {
-          app.debug(`GSHHG [${chartNumber}] ${status}: ${message}`);
-        });
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+        const result = await processGshhg(
+          tmpDir,
+          quarantineDir,
+          resolution,
+          chartNumber,
+          (status, message) => {
+            app.debug(`GSHHG [${chartNumber}] ${status}: ${message}`);
+          }
+        );
+
+        await promoteQuarantine(quarantineDir, [result.mbtilesFile], targetDir);
 
         setConvertingState(chartNumber, false);
+        cleanupQuarantineDir(quarantineDir);
         await refreshChartProviders();
 
         const chartId = `gshhg-basemap-${resolution}`;
@@ -2064,6 +2565,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         );
         removeInstall(chartNumber);
         setConvertingState(chartNumber, false);
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
       } finally {
         cleanupDir(tmpDir);
       }
@@ -2170,12 +2674,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   ): void => {
     try {
       const chartNames = updates.map((u) => u.title ?? u.chartNumber ?? '').join(', ');
-      app.handleMessage('signalk-charts-provider-simple', {
+      app.handleMessage(PLUGIN_ID, {
         updates: [
           {
             values: [
               {
-                path: 'notifications.plugins.signalk-charts-provider-simple.chartCatalogUpdate' as Path,
+                path: `notifications.plugins.${PLUGIN_ID}.chartCatalogUpdate` as Path,
                 value: {
                   state: 'warn',
                   method: ['visual'],
@@ -2197,7 +2701,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const emitChartDelta = (chartId: string, chartValue: SanitizedChart | null): void => {
     try {
       app.handleMessage(
-        'signalk-charts-provider-simple',
+        PLUGIN_ID,
         {
           updates: [
             {
@@ -2210,7 +2714,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             }
           ]
         },
-        2 as unknown as import('@signalk/server-api').SKVersion
+        SKVersion.v2
       );
       app.debug(`Delta emitted for chart: ${chartId}, value: ${chartValue ? 'data' : 'null'}`);
     } catch (error) {
@@ -2334,4 +2838,4 @@ const serveTileFromMbtiles = (
   }
 };
 
-export = pluginConstructor;
+export default pluginConstructor;

@@ -1,7 +1,8 @@
 {
   "name": "signalk-charts-provider-simple",
-  "version": "2.0.0-beta.1",
+  "version": "2.0.0",
   "description": "Simple Signal K chart provider for local MBTiles with web and download management",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -11,18 +12,19 @@
     "docs/screenshots"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:public",
     "build:watch": "tsc --watch",
     "build:tests": "tsc -p tsconfig.test.json",
     "build:e2e": "tsc -p tsconfig.e2e.json",
+    "build:public": "tsc -p tsconfig.public.json",
     "pretest": "npm run build && npm run build:tests && npm run test:fixtures",
     "test": "node --test --test-force-exit dist-test/**/*.test.js",
-    "test:fixtures": "node test/fixtures/create-test-mbtiles.js",
+    "test:fixtures": "node test/fixtures/create-test-mbtiles.cjs",
     "test:e2e": "npm run build && npm run build:e2e && playwright test",
-    "lint": "eslint src test e2e playwright.config.ts",
-    "lint:fix": "eslint src test e2e playwright.config.ts --fix",
-    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'playwright.config.ts' && eslint src test e2e playwright.config.ts --fix",
-    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'playwright.config.ts' && eslint src test e2e playwright.config.ts",
+    "lint": "eslint src test e2e public/js playwright.config.ts",
+    "lint:fix": "eslint src test e2e public/js playwright.config.ts --fix",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' && eslint src test e2e public/js playwright.config.ts --fix",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' && eslint src test e2e public/js playwright.config.ts",
     "prepublishOnly": "npm run build"
   },
   "license": "MIT",
@@ -37,12 +39,10 @@
   },
   "dependencies": {
     "@signalk/server-api": "^2.0.0",
+    "@sinclair/typebox": "^0.34.49",
     "busboy": "^1.6.0",
     "unzipper": "^0.12.3",
     "xml2js": "^0.6.2"
-  },
-  "peerDependencies": {
-    "signalk-container": ">=1.2.1"
   },
   "repository": {
     "type": "git",

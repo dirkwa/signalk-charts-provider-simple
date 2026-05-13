@@ -29,13 +29,25 @@ This is a Signal K server plugin. The single entry is `src/index.ts`, which expo
    - `ChartProvider` exposes both `v1` and `v2` shapes (see `src/types.ts`) so the plugin works on Signal K v1 and v2 servers; `serverMajorVersion` is sniffed from `app.config.version`.
    - `utils/chart-state.ts` persists per-chart enable/disable in the plugin data dir; `utils/file-scanner.ts` enumerates folders for the management UI.
 
-2. **Convert charts on demand** (write path, requires Docker/Podman).
-   - `utils/container-runtime.ts` probes `DOCKER_HOST`, `/var/run/docker.sock`, and rootless Podman sockets (`/run/user/<uid>/podman/podman.sock`) and returns the first that pings. All conversion stages run as containers via `dockerode`.
+2. **Convert charts on demand** (write path, requires Docker/Podman via the `signalk-container` plugin — see the integration section below for the API contract).
+   - `utils/container-manager.ts` is the discovery + waiting layer for the `signalk-container` plugin's manager API. Converters call `getContainerManager()` after `start()` has resolved it; they never import `dockerode` directly.
    - `utils/s57-converter.ts` runs GDAL → tippecanoe pipelines for S-57 ENC, GSHHG, and SHP basemaps. `utils/s57-band.ts` sorts S-57 cells by chart-band and feeds tippecanoe per-band layers.
    - `utils/rnc-converter.ts` runs GDAL pipelines for BSB/KAP raster (`processRncZip`) and Pilot tarballs (`processPilotTar`).
    - `utils/concurrency.ts` is the **single source of truth for CPU usage**. The plugin config exposes a `cpuBudget` enum (`single-core` / `half` / `all`); `setCpuBudget` is called from `start()` and `getCpuBudget()` returns the live `{ maxConcurrentConversions, tippecanoeThreadsPerJob, gdalExportParallelism }` so converters pick up changes between jobs without a restart. Don't reimplement CPU/concurrency logic elsewhere — read it from this module.
    - `utils/catalog-manager.ts` fetches and caches catalogs from `chartcatalogs.github.io` and tracks installed catalog charts so update notifications can fire.
    - `utils/download-manager.ts` is a queue with progress for direct-URL downloads and ZIP extraction.
+
+### `signalk-container` integration
+
+From 2.0 onward, every container-runtime call (image pulls, helper-job execution, mount resolution, orphan cleanup) goes through the `signalk-container` plugin instead of `dockerode`. `utils/container-manager.ts` is a thin shim:
+
+- Defines a local `ContainerManagerApi` type that is a **subset** of `signalk-container`'s published API — only the methods chart-provider calls (`runJob`, `resolveSignalkDataMount`, `resolveHostPath`, `cleanupOrphanedJobs`, `getRuntime`, `pullImage`, `imageExists`, plus the optional `whenReady`). We don't `import` from `signalk-container` because it's a peer plugin (loaded by Signal K, not bundled), so the shim is the API contract we depend on.
+- `waitForContainerManager()` discovers the manager on `(globalThis as any).__signalk_containerManager`. Plugin load order is non-deterministic, so it polls up to 30 s.
+  - **signalk-container >= 1.6.0**: uses `manager.whenReady()` — a single await that resolves when runtime detection has settled. Faster than polling and avoids busy-checking `getRuntime()` every second.
+  - **signalk-container < 1.6.0**: falls back to the original `while (!getRuntime()) await sleep` loop. The `whenReady?():` declaration is intentionally optional so older versions keep working.
+  - Contract: `waitForContainerManager()` never rejects. `whenReady()` rejections are swallowed and treated as "detection didn't settle in time". The caller's job is to handle a `null` return by surfacing `setPluginError`, not to handle thrown errors.
+
+If `signalk-container` is missing, the plugin still loads and **serves charts** (display path needs no runtime); only the convert path is disabled, with `setPluginError` pointing the user at the App Store.
 
 ### Hot-apply config and the path marker
 

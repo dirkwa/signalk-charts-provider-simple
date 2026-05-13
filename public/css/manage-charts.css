@@ -474,7 +474,12 @@
     display: block !important;
 }
 
-.progress-bar::after {
+/* Scoped to upload progress only. The earlier rule fired on every
+ * `.progress-bar` element on the page — the same class is rendered by
+ * download-simple, the catalog "downloading" pill, and chart cards —
+ * so an idle row would still show a shimmer crossing it left-to-right
+ * with nothing actually in flight. */
+.progress-bar-container .progress-bar::after {
     content: '';
     position: absolute;
     top: 0;
@@ -1327,6 +1332,38 @@
     height: 100%;
     background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
     transition: width 0.3s ease;
+}
+
+/* Indeterminate progress: server didn't report Content-Length, so we
+ * don't know the total. A barberpole moving across an empty track is
+ * the standard cue for "something is happening, don't know how much
+ * is left." Used by the catalog row pill and the download-jobs card. */
+.progress-fill-indeterminate {
+    width: 30% !important;
+    transition: none !important;
+    animation: progress-indeterminate 1.5s linear infinite;
+}
+
+@keyframes progress-indeterminate {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
+
+/* Translate-based animations can trigger vestibular discomfort. Users
+ * with prefers-reduced-motion get a slow opacity pulse instead — still
+ * shows the bar is "active" without the panning motion, and not
+ * completely frozen (which would make the UI feel stuck). */
+@keyframes progress-indeterminate-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .progress-fill-indeterminate {
+        animation-name: progress-indeterminate-pulse;
+        animation-duration: 2s;
+        transform: none;
+    }
 }
 
 .progress-text {

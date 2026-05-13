@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import type { ChartStateMap } from '../types';
+import type { ChartStateMap } from '../types.js';
 
 let chartState: ChartStateMap = {};
 let stateFilePath = '';

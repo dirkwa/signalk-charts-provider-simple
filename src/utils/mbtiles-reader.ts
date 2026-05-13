@@ -1,5 +1,5 @@
-import { DatabaseSync } from 'node:sqlite';
-import type { MBTilesMetadata, TileResult } from '../types';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
+import type { MBTilesMetadata, TileResult } from '../types.js';
 
 interface MetadataRow {
   name: string;
@@ -7,13 +7,21 @@ interface MetadataRow {
 }
 
 interface TileRow {
-  tile_data: Buffer;
+  // node:sqlite returns BLOB columns as Uint8Array on a fresh ArrayBuffer
+  // per row (verified against Node 22.5+). We adapt to Buffer below
+  // without a copy via the (buffer, byteOffset, byteLength) overload.
+  tile_data: Uint8Array;
 }
 
 export class MBTilesReader {
   private filePath: string;
   private db: DatabaseSync | null;
   private _metadata: MBTilesMetadata | null;
+  // Tile lookups happen many times per pan/zoom (50–200 hits per Freeboard
+  // gesture), so cache the prepared statement and reuse it instead of
+  // letting `db.prepare(...)` recompile on every call. The compiled
+  // statement is invalidated in `close()` along with the database handle.
+  private _tileStmt: StatementSync | null = null;
 
   constructor(filePath: string) {
     this.filePath = filePath;
@@ -86,19 +94,28 @@ export class MBTilesReader {
       throw new Error('Database is closed');
     }
 
-    const tmsY = (1 << z) - 1 - y;
-
-    const row = this.db
-      .prepare(
+    if (!this._tileStmt) {
+      this._tileStmt = this.db.prepare(
         'SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
-      )
-      .get(z, x, tmsY) as TileRow | undefined;
+      );
+    }
+
+    const tmsY = (1 << z) - 1 - y;
+    const row = this._tileStmt.get(z, x, tmsY) as unknown as TileRow | undefined;
 
     if (!row?.tile_data) {
       return null;
     }
 
-    const data = Buffer.from(row.tile_data);
+    // Adapt the Uint8Array to a Buffer without copying. node:sqlite
+    // returns each BLOB on its own ArrayBuffer per .get() call
+    // (verified empirically on Node 22.5+), so the bytes are owned and
+    // safe to view through Buffer. The two-arg `Buffer.from(uint8array)`
+    // form copies; the (buffer, byteOffset, byteLength) overload does
+    // not. For a 200KB pbf tile that's 200KB of malloc+memcpy avoided
+    // per request — material at Freeboard pan/zoom rates.
+    const u = row.tile_data;
+    const data = Buffer.from(u.buffer, u.byteOffset, u.byteLength);
     const metadata = this.getInfo();
     const format = metadata.format ?? 'png';
 
@@ -128,6 +145,10 @@ export class MBTilesReader {
   }
 
   close(): void {
+    // Drop the cached prepared statement before closing the db; the
+    // statement is bound to the db handle and using it after .close()
+    // would crash node:sqlite.
+    this._tileStmt = null;
     if (this.db) {
       this.db.close();
       this.db = null;

@@ -123,10 +123,9 @@ sudo dnf install podman
 systemctl --user enable --now podman.socket
 ```
 
-The plugin uses standard images that `signalk-container` pulls automatically on first use:
+The plugin uses one combined image that `signalk-container` pulls automatically on first conversion:
 
-- `ghcr.io/osgeo/gdal:alpine-small-latest` — GDAL for format conversion
-- `ghcr.io/dirkwa/signalk-charts-provider-simple/tippecanoe` — tippecanoe for vector tile generation (multi-arch: amd64 + arm64)
+- `ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0` — GDAL + tippecanoe + tile-join + helpers in a single image (multi-arch: amd64 + arm64). The plugin pins to a specific `:VERSION` tag rather than `:latest` so a published image tag is permanent for any host that pulled it; bumping the toolbox image is a co-ordinated edit of `docker/charts-toolbox/VERSION` and the matching constant in `src/utils/container-images.ts`.
 
 **Why `signalk-container`?** It transparently handles the three deployment topologies that 1.x got wrong:
 
@@ -137,6 +136,18 @@ The plugin uses standard images that `signalk-container` pulls automatically on 
 **Signal K running in Docker?** See [docs/running-in-docker.md](docs/running-in-docker.md) for the docker-compose snippet.
 
 Conversion concurrency is configurable — see the [CPU budget](#cpu-budget-for-chart-conversion) section. MBTiles charts (display only, no conversion) work without any container runtime, and without `signalk-container`.
+
+### Standalone container image (third-party use)
+
+The same `charts-toolbox` image the plugin uses internally is also available for use **outside** Signal K — overnight NOAA region pipelines, ad-hoc shell-script automation, GitHub Actions workflows under your own account, etc.
+
+Pull it directly from GHCR:
+
+```bash
+docker pull ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0
+```
+
+See [docs/charts-toolbox-image.md](docs/charts-toolbox-image.md) for a quickstart, the `--user` / `--userns=keep-id` flag forms per runtime, and reproducibility notes.
 
 ## Legal Notice
 

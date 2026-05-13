@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { setMockState } from './helpers';
+import { setMockState } from './helpers.js';
 
 test.describe('Manage Charts tab', () => {
   test('renders the configured charts from /local-charts', async ({ page }) => {

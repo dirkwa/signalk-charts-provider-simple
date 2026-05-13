@@ -9,7 +9,7 @@ import {
   patchS57Mbtiles,
   setMbtilesType,
   setMbtilesDisplayName
-} from '../dist/utils/mbtiles-metadata';
+} from '../dist/utils/mbtiles-metadata.js';
 
 interface MetadataRow {
   name: string;

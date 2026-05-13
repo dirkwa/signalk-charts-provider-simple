@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "none",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "rootDir": "public/js",
+    "outDir": "public/js",
+    "strict": true,
+    "noImplicitAny": true,
+    "esModuleInterop": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": false,
+    "declaration": false,
+    "sourceMap": false,
+    "removeComments": false,
+    "isolatedModules": false,
+    "moduleDetection": "legacy"
+  },
+  "include": ["public/js/**/*.ts"],
+  "exclude": ["node_modules", "dist", "dist-test", "dist-e2e"]
+}

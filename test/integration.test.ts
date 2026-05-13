@@ -9,22 +9,24 @@ import assert from 'node:assert';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import type { Plugin } from '@signalk/server-api';
-import type { ExtendedServerAPI, ChartProvider } from '../dist/types';
-import { findCharts } from '../dist/charts-loader';
-// Plugin entry point exports a factory via `module.exports = …`, so the
-// CommonJS default-import dance is required (esModuleInterop is on).
-const pluginFactory = require('../dist/index') as (app: ExtendedServerAPI) => Plugin;
+import type { ExtendedServerAPI, ChartProvider } from '../dist/types.js';
+import { findCharts } from '../dist/charts-loader.js';
+import pluginFactoryDefault from '../dist/index.js';
+import { downloadManager } from '../dist/utils/download-manager.js';
+
+// ESM equivalent of CJS `__dirname`.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const pluginFactory = pluginFactoryDefault as unknown as (app: ExtendedServerAPI) => Plugin;
 
 // Global cleanup after all tests - clean up any lingering event listeners
 after(() => {
   try {
-    const { downloadManager } = require('../dist/utils/download-manager') as {
-      downloadManager: { removeAllListeners: () => void };
-    };
     downloadManager.removeAllListeners();
-  } catch (_e) {
+  } catch {
     // Ignore if module not loaded
   }
 });

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
 
-import { chooseOutputFilename } from '../dist/utils/s57-converter';
+import { chooseOutputFilename } from '../dist/utils/s57-converter.js';
 
 // Build a `fileExists` stub that says "yes" for the listed paths and "no"
 // for everything else.  Lets us drive the collision logic without
