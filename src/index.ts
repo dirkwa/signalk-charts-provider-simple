@@ -81,7 +81,12 @@ import type {
 // id Signal K uses must match exactly so `cleanupOrphanedJobs` reaps
 // the right containers — alias rather than duplicate the literal.
 const PLUGIN_ID = PLUGIN_OWNER_ID;
-const chartTilesPath = `/plugins/${PLUGIN_ID}`;
+// Tile URLs live under the Signal K v1 charts namespace so non-admin
+// users (readwrite/readonly) can fetch tiles. Routes under /plugins/* are
+// gated by adminAuthenticationMiddleware in the server, which blocks tile
+// rendering for non-admin sessions (issue #99). The v1 api namespace is
+// only http_authorize-gated, so any authenticated user can read tiles.
+const chartTilesPath = `/signalk/v1/api/resources/charts`;
 
 const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let chartProviders: Record<string, ChartProvider> = {};
@@ -163,6 +168,36 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     },
     signalKApiRoutes: (router) => {
       app.debug('** Registering v1 API paths via signalKApiRoutes **');
+
+      // Tile route must be registered BEFORE the metadata route so Express
+      // matches /:identifier/:z/:x/:y first. The metadata route's
+      // /:identifier only matches single-segment paths, so order is
+      // strictly defensive — but keep them in this order anyway.
+      router.get(
+        '/resources/charts/:identifier/:z([0-9]+)/:x([0-9]+)/:y([0-9]+)',
+        (req: Request, res: Response) => {
+          const { identifier, z, x, y } = req.params as Record<string, string>;
+          const ix = parseInt(x);
+          const iy = parseInt(y);
+          const iz = parseInt(z);
+          const provider = chartProviders[identifier];
+          if (!provider) {
+            res.sendStatus(404);
+            return;
+          }
+          switch (provider._fileFormat) {
+            case 'directory':
+              serveTileFromFilesystem(res, provider, iz, ix, iy);
+              return;
+            case 'mbtiles':
+              serveTileFromMbtiles(res, provider, iz, ix, iy);
+              return;
+            default:
+              console.log(`Unknown chart provider fileformat ${String(provider._fileFormat)}`);
+              res.status(500).send();
+          }
+        }
+      );
 
       router.get('/resources/charts/:identifier', (req: Request, res: Response) => {
         const { identifier } = req.params as Record<string, string>;
@@ -552,29 +587,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
   const registerRoutes = (router: IRouter): void => {
     app.debug('** Registering API paths via registerWithRouter **');
-
-    router.get('/:identifier/:z([0-9]*)/:x([0-9]*)/:y([0-9]*)', (req: Request, res: Response) => {
-      const { identifier, z, x, y } = req.params as Record<string, string>;
-      const ix = parseInt(x);
-      const iy = parseInt(y);
-      const iz = parseInt(z);
-      const provider = chartProviders[identifier];
-      if (!provider) {
-        res.sendStatus(404);
-        return;
-      }
-      switch (provider._fileFormat) {
-        case 'directory':
-          serveTileFromFilesystem(res, provider, iz, ix, iy);
-          return;
-        case 'mbtiles':
-          serveTileFromMbtiles(res, provider, iz, ix, iy);
-          return;
-        default:
-          console.log(`Unknown chart provider fileformat ${String(provider._fileFormat)}`);
-          res.status(500).send();
-      }
-    });
 
     router.post('/download-chart-locker', (req: Request, res: Response) => {
       const bb = Busboy({ headers: req.headers });
