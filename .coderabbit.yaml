@@ -1,0 +1,307 @@
+language: en-US
+
+reviews:
+  profile: assertive
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_title_keywords:
+      - 'chore(release):'
+      - 'chore(deps):'
+      - 'chore(deps-dev):'
+      - 'chore(bump):'
+      - '[skip review]'
+      - 'WIP'
+    ignore_usernames:
+      - 'release-please[bot]'
+      - 'renovate[bot]'
+      - 'dependabot[bot]'
+      - 'github-actions[bot]'
+
+  path_filters:
+    - '!**/package-lock.json'
+    - '!**/yarn.lock'
+    - '!**/pnpm-lock.yaml'
+    - '!**/*.min.js'
+    - '!**/*.min.css'
+    - '!**/dist/**'
+    - '!**/dist-test/**'
+    - '!**/dist-e2e/**'
+    - '!**/build/**'
+    - '!**/node_modules/**'
+    - '!**/playwright-report/**'
+    - '!**/test-results/**'
+    - '!**/test/fixtures/*.mbtiles'
+    - '!**/cr-review*.txt'
+
+  high_level_summary_instructions: |
+    Write summaries in present tense. Describe what the code does, not what
+    it did. Skip filler like "This PR" — go straight to the change.
+
+  path_instructions:
+    - path: '**/*'
+      instructions: |
+        ## Scope
+
+        Focus on files changed since `main`. Think about how changes
+        interact with the rest of the stack, not just the diff in
+        isolation.
+
+        signalk-charts-provider-simple is a **SignalK plugin with two
+        responsibilities**:
+
+        1. **Serve charts** (display path). Walks the configured
+           `chartPath`, builds a `ChartProvider` map (both v1 and v2
+           shapes), and serves tiles from `.mbtiles` (via `node:sqlite`)
+           or tilemap directories. Display path needs NO container
+           runtime.
+        2. **Convert charts** (write path). Runs GDAL → tippecanoe
+           pipelines for S-57 ENC, GSHHG, SHP basemaps, BSB/KAP raster,
+           and Pilot tarballs. Goes through the `signalk-container`
+           plugin's manager API — never imports `dockerode` directly.
+
+        Single entry: `src/index.ts`. Built output lands in `dist/`.
+        Node ≥ 22.5 required (uses built-in `node:sqlite`).
+
+        ## Tile route lives under /signalk/v1/api, NOT /plugins
+
+        As of 2.0.1 (issue #99), the tile route is registered in
+        `signalKApiRoutes` at
+        `/signalk/v1/api/resources/charts/<id>/{z}/{x}/{y}`, not under
+        `/plugins/<id>/`. Reason: `/plugins/*` is gated by
+        `adminAuthenticationMiddleware` in signalk-server, which
+        blocks tile rendering for readwrite/readonly users. The v1 API
+        namespace is only `http_authorize`-gated, so any authenticated
+        user can fetch tiles.
+
+        Flag any PR that:
+
+        - Moves the tile route back under `/plugins/...`.
+        - Changes `chartTilesPath` away from
+          `/signalk/v1/api/resources/charts` without a corresponding
+          server-side permission change (see the future
+          `getRoutePermissions()` API in SignalK/signalk-server#2498).
+        - Registers the tile route in `registerWithRouter` instead of
+          `signalKApiRoutes`.
+
+        Tile route in `signalKApiRoutes` MUST be registered BEFORE the
+        `/resources/charts/:identifier` metadata route. Express
+        path-segment matching makes the order strictly defensive, but
+        keep them in that order.
+
+        ## signalk-container is the only container runtime path
+
+        From 2.0 onward, every container-runtime call (image pulls,
+        helper-job execution, mount resolution, orphan cleanup) goes
+        through the `signalk-container` plugin via
+        `utils/container-manager.ts`. Flag any:
+
+        - `import` of `dockerode` or any docker client outside
+          `utils/container-manager.ts`.
+        - Direct `docker`/`podman` shell invocation outside the
+          `docker/charts-toolbox/` image scripts.
+        - New API surface on `ContainerManagerApi` (the local mirror
+          type) without confirming it exists on the published
+          `signalk-container` API.
+
+        `waitForContainerManager()` never rejects. The
+        `whenReady?():` declaration is intentionally optional so
+        signalk-container < 1.6.0 still works. Callers handle a `null`
+        return via `setPluginError`, NOT by catching thrown errors.
+
+        ## Display path stays functional without signalk-container
+
+        If `signalk-container` is missing, the plugin still loads and
+        **serves charts** (display path needs no runtime); only the
+        convert path is disabled with `setPluginError` pointing at the
+        App Store. Flag any change that makes chart display dependent
+        on container availability.
+
+        ## CPU budget is a single source of truth
+
+        `utils/concurrency.ts` is the SOLE owner of CPU/concurrency
+        decisions. The plugin config exposes `cpuBudget`
+        (`single-core` / `half` / `all`); `setCpuBudget()` is called
+        from `start()` and `getCpuBudget()` returns the live
+        `{ maxConcurrentConversions, tippecanoeThreadsPerJob,
+        gdalExportParallelism }` so converters pick up changes between
+        jobs without a restart.
+
+        Flag any reimplementation of CPU/concurrency logic elsewhere
+        (S-57 converter, RNC converter, download manager, etc.). Read
+        from `utils/concurrency.ts` instead.
+
+        ## Quarantine for in-progress writes
+
+        Conversions and downloads write into
+        `<dataDir>/in-progress/<chartNumber>/` first and only promote
+        to `chartPath` on success — if Signal K crashes mid-write the
+        partial `.mbtiles` is in the quarantine and safe to drop on
+        next startup.
+
+        Flag any change that:
+
+        - Writes directly into `chartPath` before the job completes.
+        - Bypasses `promoteQuarantine` / `cleanupQuarantineDir`.
+        - Removes `sweepStaleQuarantineDirs` from `start()`.
+
+        ## TypeScript strict-checked, ESM
+
+        - `"type": "module"`. Relative imports use the `.js` suffix
+          (NodeNext resolution). Don't suggest dropping it.
+        - typescript-eslint `strictTypeChecked` for `src/**/*.ts`.
+          `eqeqeq`, `curly: all`, `no-var`, `prefer-const` are
+          enforced. Tests use plain JS rules.
+        - `no-console` is intentionally OFF — the plugin logs through
+          `console`. Don't suggest adding a logger abstraction.
+        - Avoid `any`. The server-api types are extended in
+          `src/types.ts` as `ExtendedServerAPI` for things
+          `@signalk/server-api` doesn't expose (`app.config`, Express
+          helpers). Extend that interface; don't add new local casts.
+
+        ## Hot-apply config
+
+        `start()` is called fresh on every config save (Signal K
+        restarts the plugin, not the whole server). State that needs
+        to survive a config save lives in the plugin data dir, not in
+        module-level variables. `utils/path-marker.ts` writes
+        `.charts-provider-marker.json` into the chart path on each
+        start — useful for diagnosing host-vs-container mount
+        mismatches; don't remove it.
+
+        ## Test layout
+
+        Plain Node test runner in `test/*.test.js` (CommonJS, no TS).
+        Tests target the **built** files in `dist/`, which is why
+        `pretest` runs `tsc` first. `test/integration.test.js`
+        exercises the loader against
+        `test/fixtures/test-chart.mbtiles` (regenerated by
+        `test/fixtures/create-test-mbtiles.js`).
+
+        - Don't suggest converting tests to TypeScript or to a
+          different runner (vitest, jest). The plain runner + JS
+          choice is intentional.
+        - If a test reports "fixture missing", the fix is
+          `npm run test:fixtures`, not editing tests.
+
+        ## ChartProvider has both v1 and v2 shapes
+
+        `ChartProvider` exposes both `v1` (Freeboard-classic
+        `tilemapUrl` + `chartLayers`) and `v2` (Freeboard-V2 `url` +
+        `layers`) shapes so the plugin works on Signal K v1 and v2
+        servers. `serverMajorVersion` is sniffed from
+        `app.config.version`. `sanitizeProvider(provider, version)`
+        materializes the URL by replacing the `~tilePath~` placeholder
+        with the live `chartTilesPath`.
+
+        Flag any change that:
+
+        - Drops the v1 or v2 shape from `ChartProvider`.
+        - Bakes the resolved URL into `ChartProvider.v1.tilemapUrl` at
+          load time (it must stay as the `~tilePath~` template so the
+          URL builder can re-resolve if needed).
+        - Adds a third URL placeholder string without updating
+          `sanitizeProvider`.
+
+        ## Catalog manager + install tracking
+
+        `utils/catalog-manager.ts` fetches catalogs from
+        `chartcatalogs.github.io` and tracks installed catalog charts
+        so update notifications fire. The install state is persisted
+        per chart; `pruneStaleInstalls` reaps entries whose files
+        have disappeared. Flag any direct catalog HTTP fetch outside
+        this module.
+
+        ## Echo comments
+
+        Flag any comment that merely restates what the code already
+        says. Examples to flag:
+
+        - `// Register the route` above `router.get(...)`
+        - `// Open the mbtiles file` above `new Database(filePath)`
+        - `// Loop over charts` above `for (const chart of ...)`
+
+        Replace with comments explaining *why*, not *what*. Or delete.
+
+        ## Documentation drift risk
+
+        Flag any `.md` file (including `README.md`, `CLAUDE.md`) that
+        contains:
+
+        - Specific code snippets, function signatures, or config
+          values likely to fall out of sync as code evolves.
+        - Step-by-step build/development instructions that duplicate
+          or shadow the code itself.
+        - Implementation status, progress markers, "currently
+          implemented as X" wording. Build narratives belong in PR
+          descriptions, not in repo docs.
+
+        Architecture decisions and conceptual design rationale are
+        fine — `CLAUDE.md` intentionally captures these.
+
+        ## Leftover crumbs from intermediate commits
+
+        Flag references in the current diff to symbols, files, or
+        approaches that no longer exist on this branch — old function
+        names in comments, dangling imports, stale TODOs from a
+        superseded approach, etc.
+
+        Common ones to watch for:
+
+        - References to `dockerode` outside container-manager (2.0
+          migrated everything to signalk-container).
+        - References to the old tile path `/plugins/signalk-charts-provider-simple/...`
+          (2.0.1 moved it to `/signalk/v1/api/resources/charts/...`).
+        - References to a `DOCKER_HOST` env var probe outside the
+          container manager.
+
+        ## Unchecked items in test plans
+
+        If the PR description has a checklist with unchecked items,
+        flag it. Either the work isn't done, or the unchecked items
+        should be removed.
+
+        Also flag a `Tested` section that lists items NOT actually
+        verified (e.g., "test plan: rebuild Docker image" when the
+        build command was never run). The `Tested` section is a
+        retrospective, not a plan.
+
+        ## Commit / PR conventions
+
+        - Branch names use **hyphens**, never slashes.
+        - Angular conventional commits: `<type>(<scope>): <subject>`.
+          Subject ≤ 50 chars, imperative mood, no period.
+        - One logical change per commit and per PR.
+        - **No AI attribution** in commits, PR bodies, or code. Don't
+          mention Claude, AI, or add `Co-Authored-By` trailers.
+        - **No version bumps** in feature/fix PRs. Versions are
+          bumped in dedicated `chore(release):` PRs only when the
+          user explicitly asks.
+        - **Never modify `CHANGELOG.md`.** CI auto-generates release
+          notes via the publish workflow's `generate_release_notes`.
+        - PR descriptions: no checkboxes. "Tested" lists what was
+          actually verified, not what's planned.
+
+        ## What NOT to flag
+
+        These are intentional:
+
+        - Two responsibilities (serve + convert) in one plugin —
+          shipping them together is on purpose; the App Store entry
+          is one plugin.
+        - The v1/v2 dual shape on `ChartProvider` — required for
+          backward compatibility.
+        - The hand-rolled `ContainerManagerApi` type that mirrors
+          signalk-container's surface — loose coupling so the
+          published API can evolve.
+        - `console.log` / `console.error` throughout the plugin —
+          this is the chosen logging strategy.
+        - The pretest step regenerating the mbtiles fixture — needed
+          because the fixture isn't committed.
+        - `signalk.requires: ['signalk-container']` without a
+          matching npm dependency — loose coupling.
+        - The single-source CPU budget in `utils/concurrency.ts` —
+          converters MUST read from it, not reimplement.
+        - The quarantine staging dir for in-progress writes — the
+          crash-safe story depends on it.
