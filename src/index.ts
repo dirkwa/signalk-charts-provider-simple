@@ -272,9 +272,32 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     initS57Converter(app.debug.bind(app));
     initRncConverter(app.debug.bind(app));
 
+    // Bring up the display path (chart loading + resource-provider
+    // registration) BEFORE discovering signalk-container. Display does not
+    // need the container runtime, and gating registration behind the
+    // up-to-30s container wait left Freeboard-SK's GET
+    // /signalk/v2/api/resources/charts returning 404 until the wait
+    // resolved — so charts vanished from the chart list on hosts without
+    // signalk-container installed.
+    app.debug(`Start chart provider. Chart path: ${chartPath}`);
+    const loadOk = await loadChartProviders(chartPath);
+
+    if (serverMajorVersion === 2) {
+      app.debug('** Registering v2 API paths **');
+      registerAsProvider();
+    }
+
+    // Report Started for the display path. Don't clobber a load error
+    // (loadChartProviders sets one) — a later setPluginError from the
+    // signalk-container discovery below is allowed to win, since that
+    // message tells the user conversion needs the container plugin.
+    if (loadOk) {
+      app.setPluginStatus('Started');
+    }
+
     // Discover the signalk-container plugin's manager API.  Chart conversion
     // (S-57, BSB raster, Pilot, basemaps) goes through it from 2.0 onward;
-    // the App Store's `signalk.requires` declaration in our package.json
+    // the App Store's `signalk.recommends` declaration in our package.json
     // ensures users are prompted to install signalk-container, but plugin
     // load order is not deterministic, so we wait up to 30 s before giving
     // up.  A missing manager surfaces as setPluginError but does NOT abort
@@ -299,7 +322,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
 
     const containerManager = await waitForContainerManager({
-      onWaitingStatus: () => app.setPluginStatus('Waiting for signalk-container...')
+      // Don't overwrite the display path's "Started" status with a waiting
+      // message: when charts have already loaded, serving is live and a
+      // "Waiting for signalk-container..." status would be misleading.
+      onWaitingStatus: () => {
+        if (!loadOk) {
+          app.setPluginStatus('Waiting for signalk-container...');
+        }
+      }
     });
     if (!containerManager) {
       app.setPluginError(
@@ -402,87 +432,94 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     });
 
-    app.debug(`Start chart provider. Chart path: ${chartPath}`);
+    // Filesystem housekeeping (removing invalid .mbtiles and orphaned
+    // journal/WAL files) runs independently of the display path so it can
+    // never delay chart listing. It rescans the chart directory itself
+    // rather than reusing the startup snapshot — charts may have been
+    // uploaded/downloaded/converted during the container-manager wait, and
+    // a stale snapshot would delete them as "invalid".
+    void cleanupChartDirectory(chartPath);
+  };
 
-    if (serverMajorVersion === 2) {
-      app.debug('** Registering v2 API paths **');
-      registerAsProvider();
+  // Load enabled charts into `chartProviders` and prune stale install
+  // records. Display-critical: must run (and resolve) before the resource
+  // provider is registered so `listResources` has charts to return. Returns
+  // true on success, false if the chart directory could not be read.
+  const loadChartProviders = async (chartPath: string): Promise<boolean> => {
+    try {
+      const charts = await findCharts(chartPath);
+      const enabledCharts = Object.fromEntries(
+        Object.entries(charts).filter(([, chart]) => {
+          const relativePath = path.relative(chartPath, chart._filePath || '');
+          return isChartEnabled(relativePath);
+        })
+      );
+
+      app.debug(
+        `Chart provider: Found ${Object.keys(charts).length} charts (${Object.keys(enabledCharts).length} enabled) from ${chartPath}.`
+      );
+      chartProviders = enabledCharts;
+
+      pruneStaleInstalls(Object.keys(charts));
+      return true;
+    } catch (e: unknown) {
+      console.error(`Error loading chart providers`, e instanceof Error ? e.message : String(e));
+      chartProviders = {};
+      app.setPluginError(`Error loading chart providers`);
+      return false;
     }
+  };
 
-    // Don't overwrite a pluginError that the manager-discovery block may
-    // have set — that message must stay visible so the user knows chart
-    // conversion will not work until they install signalk-container.
-    if (containerManager) {
-      app.setPluginStatus('Started');
-    }
-
-    findCharts(chartPath)
-      .then((charts) => {
-        const enabledCharts = Object.fromEntries(
-          Object.entries(charts).filter(([, chart]) => {
-            const relativePath = path.relative(chartPath, chart._filePath || '');
-            return isChartEnabled(relativePath);
-          })
-        );
-
-        app.debug(
-          `Chart provider: Found ${Object.keys(charts).length} charts (${Object.keys(enabledCharts).length} enabled) from ${chartPath}.`
-        );
-        chartProviders = enabledCharts;
-
-        pruneStaleInstalls(Object.keys(charts));
-
-        return scanChartsRecursively(chartPath).then((allFiles) => {
-          const validPaths = new Set(
-            Object.values(charts)
-              .map((c) => c._filePath)
-              .filter(Boolean)
-          );
-          for (const file of allFiles) {
-            if (file.name.endsWith('.mbtiles') && !validPaths.has(file.path)) {
-              console.log(`[charts-provider] Removing invalid .mbtiles file: ${file.name}`);
-              try {
-                fs.unlinkSync(file.path);
-              } catch (e) {
-                app.debug(
-                  `Failed to remove ${file.path}: ${e instanceof Error ? e.message : String(e)}`
-                );
-              }
-            }
-          }
-
+  const cleanupChartDirectory = async (chartPath: string): Promise<void> => {
+    try {
+      const charts = await findCharts(chartPath);
+      const allFiles = await scanChartsRecursively(chartPath);
+      const validPaths = new Set(
+        Object.values(charts)
+          .map((c) => c._filePath)
+          .filter(Boolean)
+      );
+      for (const file of allFiles) {
+        if (file.name.endsWith('.mbtiles') && !validPaths.has(file.path)) {
+          console.log(`[charts-provider] Removing invalid .mbtiles file: ${file.name}`);
           try {
-            const cleanOrphans = (dir: string): void => {
-              const entries = fs.readdirSync(dir, { withFileTypes: true });
-              for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                  if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
-                    cleanOrphans(fullPath);
-                  }
-                } else if (
-                  entry.name.endsWith('.mbtiles-journal') ||
-                  entry.name.endsWith('.mbtiles-wal') ||
-                  entry.name.endsWith('.partial_tiles.db')
-                ) {
-                  console.log(`[charts-provider] Removing orphaned file: ${entry.name}`);
-                  fs.unlinkSync(fullPath);
-                }
-              }
-            };
-            cleanOrphans(chartPath);
+            fs.unlinkSync(file.path);
           } catch (e) {
             app.debug(
-              `Error cleaning orphaned files: ${e instanceof Error ? e.message : String(e)}`
+              `Failed to remove ${file.path}: ${e instanceof Error ? e.message : String(e)}`
             );
           }
-        });
-      })
-      .catch((e: unknown) => {
-        console.error(`Error loading chart providers`, e instanceof Error ? e.message : String(e));
-        chartProviders = {};
-        app.setPluginError(`Error loading chart providers`);
-      });
+        }
+      }
+
+      const cleanOrphans = (dir: string): void => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (!entry.name.startsWith('.') && entry.name !== 'node_modules') {
+              cleanOrphans(fullPath);
+            }
+          } else if (
+            entry.name.endsWith('.mbtiles-journal') ||
+            entry.name.endsWith('.mbtiles-wal') ||
+            entry.name.endsWith('.partial_tiles.db')
+          ) {
+            console.log(`[charts-provider] Removing orphaned file: ${entry.name}`);
+            try {
+              fs.unlinkSync(fullPath);
+            } catch (e) {
+              app.debug(
+                `Failed to remove orphan ${fullPath}: ${e instanceof Error ? e.message : String(e)}`
+              );
+            }
+          }
+        }
+      };
+      cleanOrphans(chartPath);
+    } catch (e) {
+      app.debug(`Error cleaning chart directory: ${e instanceof Error ? e.message : String(e)}`);
+    }
   };
 
   const finalizeUploadedFiles = async (

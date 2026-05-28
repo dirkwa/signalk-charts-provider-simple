@@ -25,6 +25,9 @@ test-results/
 # IDE files
 .vscode/
 
+# CodeRabbit local review output (cr review --plain piped to a file)
+cr-review*
+
 # testbuilds
 *.tgz
 

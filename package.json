@@ -58,7 +58,7 @@
   "signalk": {
     "appIcon": "assets/charts_logo.png",
     "displayName": "Charts Provider Simple",
-    "requires": [
+    "recommends": [
       "signalk-container"
     ],
     "screenshots": [
