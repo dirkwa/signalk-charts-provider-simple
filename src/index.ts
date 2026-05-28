@@ -280,7 +280,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // resolved — so charts vanished from the chart list on hosts without
     // signalk-container installed.
     app.debug(`Start chart provider. Chart path: ${chartPath}`);
-    const { charts: loadedCharts, ok: loadOk } = await loadChartProviders(chartPath);
+    const loadOk = await loadChartProviders(chartPath);
 
     if (serverMajorVersion === 2) {
       app.debug('** Registering v2 API paths **');
@@ -297,7 +297,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     // Discover the signalk-container plugin's manager API.  Chart conversion
     // (S-57, BSB raster, Pilot, basemaps) goes through it from 2.0 onward;
-    // the App Store's `signalk.requires` declaration in our package.json
+    // the App Store's `signalk.recommends` declaration in our package.json
     // ensures users are prompted to install signalk-container, but plugin
     // load order is not deterministic, so we wait up to 30 s before giving
     // up.  A missing manager surfaces as setPluginError but does NOT abort
@@ -322,7 +322,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
 
     const containerManager = await waitForContainerManager({
-      onWaitingStatus: () => app.setPluginStatus('Waiting for signalk-container...')
+      // Don't overwrite the display path's "Started" status with a waiting
+      // message: when charts have already loaded, serving is live and a
+      // "Waiting for signalk-container..." status would be misleading.
+      onWaitingStatus: () => {
+        if (!loadOk) {
+          app.setPluginStatus('Waiting for signalk-container...');
+        }
+      }
     });
     if (!containerManager) {
       app.setPluginError(
@@ -427,17 +434,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     // Filesystem housekeeping (removing invalid .mbtiles and orphaned
     // journal/WAL files) runs independently of the display path so it can
-    // never delay chart listing. Reuses the chart scan from loadChartProviders.
-    void cleanupChartDirectory(chartPath, loadedCharts);
+    // never delay chart listing. It rescans the chart directory itself
+    // rather than reusing the startup snapshot — charts may have been
+    // uploaded/downloaded/converted during the container-manager wait, and
+    // a stale snapshot would delete them as "invalid".
+    void cleanupChartDirectory(chartPath);
   };
 
   // Load enabled charts into `chartProviders` and prune stale install
   // records. Display-critical: must run (and resolve) before the resource
   // provider is registered so `listResources` has charts to return. Returns
-  // the full (pre-filter) chart map so housekeeping can reuse the scan.
-  const loadChartProviders = async (
-    chartPath: string
-  ): Promise<{ charts: Record<string, ChartProvider>; ok: boolean }> => {
+  // true on success, false if the chart directory could not be read.
+  const loadChartProviders = async (chartPath: string): Promise<boolean> => {
     try {
       const charts = await findCharts(chartPath);
       const enabledCharts = Object.fromEntries(
@@ -453,20 +461,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       chartProviders = enabledCharts;
 
       pruneStaleInstalls(Object.keys(charts));
-      return { charts, ok: true };
+      return true;
     } catch (e: unknown) {
       console.error(`Error loading chart providers`, e instanceof Error ? e.message : String(e));
       chartProviders = {};
       app.setPluginError(`Error loading chart providers`);
-      return { charts: {}, ok: false };
+      return false;
     }
   };
 
-  const cleanupChartDirectory = async (
-    chartPath: string,
-    charts: Record<string, ChartProvider>
-  ): Promise<void> => {
+  const cleanupChartDirectory = async (chartPath: string): Promise<void> => {
     try {
+      const charts = await findCharts(chartPath);
       const allFiles = await scanChartsRecursively(chartPath);
       const validPaths = new Set(
         Object.values(charts)
