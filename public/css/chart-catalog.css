@@ -382,6 +382,10 @@ select.catalog-folder-select:hover {
     appearance: auto;
 }
 
+option.catalog-folder-option-new {
+    color: var(--md-sys-color-primary);
+}
+
 /* Source attribution note */
 .catalog-source-note {
     padding: var(--md-sys-spacing-3) var(--md-sys-spacing-4);

@@ -107,9 +107,9 @@ The interface provides four tabs:
 - **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
 - **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
 
-### Required for chart conversion: `signalk-container` plugin
+### Recommended for chart conversion: `signalk-container` plugin
 
-To convert S-57 ENC, BSB raster, Pilot Charts, or basemaps, this plugin delegates all container work to the [`signalk-container`](https://github.com/dirkwa/signalk-container) plugin. The Signal K App Store handles installing it for you when you install Charts Provider Simple — the plugin's detail page shows it as a required plugin and offers a one-click bulk install.
+Displaying charts (serving tiles from `.mbtiles`) needs nothing extra. The [`signalk-container`](https://github.com/dirkwa/signalk-container) plugin is only needed to **convert** charts (S-57 ENC, BSB raster, Pilot Charts, or basemaps), where this plugin delegates all container work to it. The Signal K App Store lists it as a recommended plugin on the Charts Provider Simple detail page and offers a one-click bulk install; without it the plugin still loads and serves charts — only the Convert tab is disabled.
 
 `signalk-container` itself needs a Docker- or Podman-compatible runtime on the host. Both engines work the same way; pick whichever is easier:
 
@@ -133,7 +133,7 @@ The plugin uses one combined image that `signalk-container` pulls automatically 
 - **Signal K in Docker / Podman with a named volume** — the helper container mounts the same named volume. (1.x couldn't do this; named-volume deployments were unable to convert.)
 - **Signal K in Docker / Podman with bind-mounted data** — the helper container gets the resolved host path, even when the in-container path doesn't match the host path. (1.x relied on host/container paths matching exactly; mismatches silently failed.)
 
-**Signal K running in Docker?** See [docs/running-in-docker.md](docs/running-in-docker.md) for the docker-compose snippet.
+**Signal K running in Docker?** Runtime and socket setup is handled by `signalk-container` — see [docs/running-in-docker.md](docs/running-in-docker.md) for how conversion is delegated and where to configure the host.
 
 Conversion concurrency is configurable — see the [CPU budget](#cpu-budget-for-chart-conversion) section. MBTiles charts (display only, no conversion) work without any container runtime, and without `signalk-container`.
 
