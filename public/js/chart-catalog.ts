@@ -1095,8 +1095,9 @@ function categoryLabel(category: CatalogCategory | string): string {
 
 /**
  * Derive a filesystem-safe folder name from a catalog label.
- * Keeps letters, digits, spaces (trimmed), hyphens, underscores, and dots.
- * Falls back to '/' when the result would be empty.
+ * Strips path separators and illegal characters, collapses whitespace, and
+ * removes leading dots so a label can't resolve to a traversal ('..') or a
+ * hidden/relative folder ('.'). Falls back to '/' when nothing usable remains.
  */
 function catalogLabelToFolder(label: string | undefined | null): string {
   if (!label) {
@@ -1105,6 +1106,8 @@ function catalogLabelToFolder(label: string | undefined | null): string {
   const safe = label
     .replace(/[/\\:*?"<>|]/g, '')
     .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+/, '')
     .trim();
   return safe || '/';
 }
@@ -1119,7 +1122,7 @@ function buildFolderOptions(defaultFolder: string): string {
 
   if (isNew) {
     options.push(
-      `<option value="${catalogEscapeAttr(defaultFolder)}" selected style="color:var(--md-sys-color-primary,#1a73e8)">${catalogEscapeHtml(folderDisplayName(defaultFolder))} (new)</option>`
+      `<option value="${catalogEscapeAttr(defaultFolder)}" selected class="catalog-folder-option-new">${catalogEscapeHtml(folderDisplayName(defaultFolder))} (new)</option>`
     );
   }
 
