@@ -1095,9 +1095,10 @@ function categoryLabel(category: CatalogCategory | string): string {
 
 /**
  * Derive a filesystem-safe folder name from a catalog label.
- * Strips path separators and illegal characters, collapses whitespace, and
- * removes leading dots so a label can't resolve to a traversal ('..') or a
- * hidden/relative folder ('.'). Falls back to '/' when nothing usable remains.
+ * Strips path separators and illegal characters, collapses whitespace, removes
+ * leading dots/spaces, and rejects a result of '.' or '..' so a label can't
+ * resolve to a traversal or a hidden/relative folder. Falls back to '/' when
+ * nothing usable remains.
  */
 function catalogLabelToFolder(label: string | undefined | null): string {
   if (!label) {
@@ -1107,9 +1108,9 @@ function catalogLabelToFolder(label: string | undefined | null): string {
     .replace(/[/\\:*?"<>|]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/^\.+/, '')
+    .replace(/^[.\s]+/, '')
     .trim();
-  return safe || '/';
+  return safe && safe !== '.' && safe !== '..' ? safe : '/';
 }
 
 function folderDisplayName(folder: string): string {

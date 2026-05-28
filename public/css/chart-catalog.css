@@ -382,7 +382,6 @@ select.catalog-folder-select:hover {
     appearance: auto;
 }
 
-/* The auto-derived "(new)" folder option, highlighted to draw the eye. */
 option.catalog-folder-option-new {
     color: var(--md-sys-color-primary);
 }
