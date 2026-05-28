@@ -61,8 +61,11 @@ async function initConvertTab(): Promise<void> {
         !convertPodmanAvailable
           ? `
         <div class="catalog-podman-warning">
-          <strong>Container runtime not reachable.</strong>
-          Chart conversion needs a Docker- or Podman-compatible socket.
+          <strong>Chart conversion unavailable.</strong>
+          Converting charts needs the
+          <a href="https://github.com/dirkwa/signalk-container" target="_blank" rel="noopener">signalk-container</a>
+          plugin (install it from the App Store) plus a Docker- or Podman-compatible
+          runtime on the host. Chart display works without it.
           <a href="https://github.com/dirkwa/signalk-charts-provider-simple/blob/main/docs/running-in-docker.md" target="_blank" rel="noopener">See setup notes</a>.
         </div>
       `
@@ -178,7 +181,7 @@ function setupDropZone(zoneId: string, inputId: string): void {
   zone.onclick = () => {
     if (!convertPodmanAvailable) {
       alert(
-        'Chart conversion needs a Docker- or Podman-compatible socket. See the warning above.'
+        'Chart conversion needs the signalk-container plugin and a Docker- or Podman-compatible runtime. See the warning above.'
       );
       return;
     }
@@ -199,7 +202,7 @@ function setupDropZone(zoneId: string, inputId: string): void {
     zone.classList.remove('dragover');
     if (!convertPodmanAvailable) {
       alert(
-        'Chart conversion needs a Docker- or Podman-compatible socket. See the warning above.'
+        'Chart conversion needs the signalk-container plugin and a Docker- or Podman-compatible runtime. See the warning above.'
       );
       return;
     }
