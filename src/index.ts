@@ -133,15 +133,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           enum: ['single-core', 'half', 'all'],
           default: 'half'
         },
+        // A `null`-typed field renders as a section header in the admin UI,
+        // visually separating this toggle from the CPU-budget setting above.
         _notificationsHeader: {
           type: 'null',
-          title: 'Notifications',
-          description:
-            'When enabled, suppresses Signal K warn notifications about available chart catalog updates.'
+          title: 'Notifications'
         },
         disableUpdateNotifications: {
           type: 'boolean',
           title: 'Disable chart update notifications',
+          description:
+            'When enabled, suppresses Signal K warn notifications about available chart catalog updates.',
           default: false
         }
       }
