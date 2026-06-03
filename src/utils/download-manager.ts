@@ -288,9 +288,17 @@ class DownloadManager extends EventEmitter {
               }
             }
 
-            const targetPath = path.join(job.targetDir, fileName);
+            // Strip any directory component before joining, the same way
+            // the ZIP branch above does. The route handlers already reject
+            // unsafe chartName/chartNumber with a 400, so this only fires
+            // for any future non-route caller — but it keeps the write
+            // inside targetDir regardless. Reuse the basenamed value for
+            // targetFiles so the cancel/cleanup unlink paths reference the
+            // file that was actually written.
+            const safeFileName = path.basename(fileName);
+            const targetPath = path.join(job.targetDir, safeFileName);
 
-            job.targetFiles.push(fileName);
+            job.targetFiles.push(safeFileName);
             this.emit('job-updated', job);
 
             const fileStream = fs.createWriteStream(targetPath);

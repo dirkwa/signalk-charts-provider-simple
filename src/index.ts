@@ -57,7 +57,7 @@ import { writeChartPathMarker } from './utils/path-marker.js';
 import { parsePluginConfig } from './utils/plugin-config-schema.js';
 import { Type } from '@sinclair/typebox';
 import { parseBody, parseShape } from './utils/rest-validation.js';
-import { isWithinBase, arePairWithinBase } from './utils/path-safety.js';
+import { isWithinBase, arePairWithinBase, validateChartName } from './utils/path-safety.js';
 import Busboy from 'busboy';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -652,6 +652,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
         const { url: downloadUrl, targetFolder, chartName } = parsed;
+
+        // chartName becomes the on-disk filename in download-manager; a
+        // value like `../../foo` would write outside the quarantine dir.
+        const chartNameCheck = validateChartName(chartName);
+        if (!chartNameCheck.valid) {
+          res
+            .status(400)
+            .json({ success: false, error: `Invalid chart name: ${chartNameCheck.reason}` });
+          return;
+        }
 
         try {
           console.log(`Creating download job for: ${downloadUrl}`);
@@ -1917,6 +1927,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
       const { url, chartNumber, catalogFile, zipfileDatetime, targetFolder, minzoom, maxzoom } =
         body;
+
+      // chartNumber reaches download-manager as the on-disk filename for
+      // the direct-.mbtiles branch; guard it the same way as the locker
+      // route so a crafted catalog entry can't escape the quarantine dir.
+      const chartNumberCheck = validateChartName(chartNumber);
+      if (!chartNumberCheck.valid) {
+        res
+          .status(400)
+          .json({ success: false, error: `Invalid chart number: ${chartNumberCheck.reason}` });
+        return;
+      }
 
       const registryEntry = getCatalogRegistry().find((r) => r.file === catalogFile);
       const catalogCategory = registryEntry ? registryEntry.category : '';

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
 
-import { isWithinBase, arePairWithinBase } from '../dist/utils/path-safety.js';
+import { isWithinBase, arePairWithinBase, validateChartName } from '../dist/utils/path-safety.js';
 
 const BASE = '/srv/charts';
 
@@ -57,5 +57,53 @@ describe('arePairWithinBase', () => {
 
   it('rejects if either escapes (target escapes)', () => {
     assert.strictEqual(arePairWithinBase(path.join(BASE, 'a.mbtiles'), '/etc/shadow', BASE), false);
+  });
+});
+
+describe('validateChartName', () => {
+  it('accepts an ordinary name', () => {
+    assert.strictEqual(validateChartName('Chesapeake').valid, true);
+  });
+
+  it('accepts a name with spaces', () => {
+    assert.strictEqual(validateChartName('NOAA Chesapeake Bay').valid, true);
+  });
+
+  it('accepts a unicode name with parentheses', () => {
+    assert.strictEqual(validateChartName('Île de Ré (2024)').valid, true);
+  });
+
+  it('accepts a name that already carries the .mbtiles suffix', () => {
+    assert.strictEqual(validateChartName('already.mbtiles').valid, true);
+  });
+
+  it('rejects an empty name', () => {
+    assert.strictEqual(validateChartName('').valid, false);
+  });
+
+  it('rejects a forward-slash traversal', () => {
+    assert.strictEqual(validateChartName('../../tmp/pwn').valid, false);
+  });
+
+  it('rejects an absolute path', () => {
+    assert.strictEqual(validateChartName('/etc/passwd').valid, false);
+  });
+
+  it('rejects a nested path even without traversal', () => {
+    assert.strictEqual(validateChartName('sub/chart').valid, false);
+  });
+
+  it('rejects a backslash so the name stays safe on Windows hosts', () => {
+    // POSIX treats `\` as an ordinary byte, but a chart copied to a
+    // Windows host would see it as a separator — reject it here.
+    assert.strictEqual(validateChartName('sub\\evil').valid, false);
+  });
+
+  it('rejects ".." on its own', () => {
+    assert.strictEqual(validateChartName('..').valid, false);
+  });
+
+  it('rejects an embedded ".." sequence', () => {
+    assert.strictEqual(validateChartName('a..b').valid, false);
   });
 });
