@@ -204,6 +204,15 @@ async function startDownload(): Promise<void> {
     return;
   }
 
+  // The server rejects these with a 400 (the chart name becomes a
+  // filename); catch them here too so the user gets immediate feedback
+  // instead of a round-trip. The server stays the authoritative guard.
+  if (chartName.includes('/') || chartName.includes('\\') || chartName.includes('..')) {
+    statusDiv.innerHTML =
+      '<div class="error-message">Chart name cannot contain / \\ or ..</div>';
+    return;
+  }
+
   // Basic URL validation
   try {
     new URL(url);
