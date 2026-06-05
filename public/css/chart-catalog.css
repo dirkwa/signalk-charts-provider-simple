@@ -683,3 +683,108 @@ option.catalog-folder-option-new {
         font-size: 12px;
     }
 }
+
+/* ---- Updates Section ---- */
+
+.catalog-updates-section {
+    background: rgba(139, 92, 246, 0.1);
+    border: 1px solid rgba(139, 92, 246, 0.35);
+    border-radius: var(--md-sys-shape-corner-medium);
+    margin-bottom: var(--md-sys-spacing-4);
+    overflow: hidden;
+}
+
+.catalog-updates-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--md-sys-spacing-3) var(--md-sys-spacing-4);
+    border-bottom: 1px solid rgba(139, 92, 246, 0.25);
+    gap: var(--md-sys-spacing-3);
+}
+
+.catalog-updates-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--md-sys-color-on-surface);
+}
+
+.catalog-updates-rows {
+    display: flex;
+    flex-direction: column;
+}
+
+.catalog-update-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--md-sys-spacing-3);
+    padding: var(--md-sys-spacing-3) var(--md-sys-spacing-4);
+    border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.catalog-update-row:last-child {
+    border-bottom: none;
+}
+
+.catalog-update-row.updating {
+    opacity: 0.6;
+}
+
+.catalog-update-row-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+
+.catalog-update-row-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--md-sys-color-on-surface);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.catalog-update-row-dates {
+    font-size: 11px;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.catalog-update-row-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--md-sys-spacing-2);
+    flex-shrink: 0;
+}
+
+.catalog-update-row-updating {
+    display: flex;
+    align-items: center;
+    gap: var(--md-sys-spacing-2);
+    font-size: 13px;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.catalog-update-folder-select {
+    max-width: 200px;
+}
+
+@media (max-width: 600px) {
+    .catalog-update-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .catalog-update-row-actions {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    .catalog-update-folder-select {
+        max-width: 100%;
+        width: 100%;
+    }
+}

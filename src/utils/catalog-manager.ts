@@ -1,17 +1,17 @@
-import https from 'https';
 import fs from 'fs';
+import https from 'https';
 import path from 'path';
 import { parseStringPromise } from 'xml2js';
 import type {
+  CatalogCategory,
+  CatalogChart,
+  CatalogData,
+  CatalogInstallsMap,
   CatalogRegistryEntry,
   CatalogRegistryInfo,
-  CatalogCategory,
-  CatalogData,
-  CatalogChart,
-  CatalogInstallsMap,
-  UrlClassification,
   CatalogUpdate,
-  DebugFunction
+  DebugFunction,
+  UrlClassification
 } from '../types.js';
 import {
   CatalogDataSchema,
@@ -562,7 +562,7 @@ export function getConvertingCount(): number {
   return Object.keys(converting).length;
 }
 
-export function checkForUpdates(): CatalogUpdate[] {
+export function checkForUpdates(chartPath: string): CatalogUpdate[] {
   const updates: CatalogUpdate[] = [];
 
   for (const [chartNumber, install] of Object.entries(installs)) {
@@ -581,13 +581,23 @@ export function checkForUpdates(): CatalogUpdate[] {
       install.zipfile_datetime_iso8601 &&
       catalogChart.zipfile_datetime_iso8601 > install.zipfile_datetime_iso8601
     ) {
+      let installedFolder = '/';
+      if (install.installedFilename) {
+        const rel = path.relative(chartPath, path.dirname(install.installedFilename));
+        // path.relative returns '' when the file is in chartPath root,
+        // and something like '../foo' when outside — treat both as root.
+        if (rel && !rel.startsWith('..') && rel !== '.') {
+          installedFolder = rel;
+        }
+      }
       updates.push({
         chartNumber,
         catalogFile: install.catalogFile,
         title: catalogChart.title,
         installedDate: install.zipfile_datetime_iso8601,
         availableDate: catalogChart.zipfile_datetime_iso8601,
-        downloadUrl: catalogChart.zipfile_location
+        downloadUrl: catalogChart.zipfile_location,
+        installedFolder
       });
     }
   }

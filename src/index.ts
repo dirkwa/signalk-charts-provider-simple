@@ -1,81 +1,82 @@
-import path from 'path';
+import type { Path, Plugin } from '@signalk/server-api';
+import { SKVersion } from '@signalk/server-api';
+import { Type } from '@sinclair/typebox';
+import Busboy from 'busboy';
 import fs from 'fs';
 import https from 'https';
-import type { Plugin, Path } from '@signalk/server-api';
-import { SKVersion } from '@signalk/server-api';
+import { DatabaseSync } from 'node:sqlite';
+import path from 'path';
 import { findCharts, findRepairableCharts } from './charts-loader.js';
-import { scanChartsRecursively, scanAllFolders } from './utils/file-scanner.js';
-import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state.js';
-import { downloadManager } from './utils/download-manager.js';
 import {
-  initCatalogManager,
-  getCatalogRegistry,
+  checkForUpdates,
+  classifyUrl,
   fetchCatalog,
   getCachedCatalog,
-  classifyUrl,
-  trackInstall,
-  setInstallFilename,
-  renameInstallFilename,
-  removeInstall,
-  removeInstallByFilename,
-  getInstalledCatalogCharts,
-  pruneStaleInstalls,
-  setConvertingState,
+  getCatalogRegistry,
+  getCatalogsWithInstalledCharts,
   getConvertingCharts,
   getConvertingCount,
-  checkForUpdates,
-  getCatalogsWithInstalledCharts
+  getInstalledCatalogCharts,
+  initCatalogManager,
+  pruneStaleInstalls,
+  removeInstall,
+  removeInstallByFilename,
+  renameInstallFilename,
+  setConvertingState,
+  setInstallFilename,
+  trackInstall
 } from './utils/catalog-manager.js';
-import {
-  initS57Converter,
-  processS57Zip,
-  getAllConversionProgress as getAllS57Progress,
-  getConversionProgress as getS57Progress,
-  setConversionFailed as setS57Failed
-} from './utils/s57-converter.js';
-import { getContainerManager, waitForContainerManager } from './utils/container-manager.js';
+import { cleanCatalogTitle } from './utils/catalog-title.js';
+import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state.js';
+import { getCpuBudget, setCpuBudget } from './utils/concurrency.js';
 import { PLUGIN_OWNER_ID } from './utils/container-jobs.js';
+import { getContainerManager, waitForContainerManager } from './utils/container-manager.js';
+import { downloadManager } from './utils/download-manager.js';
+import { scanAllFolders, scanChartsRecursively } from './utils/file-scanner.js';
+import { repairMbtilesMetadata, setMbtilesDisplayName } from './utils/mbtiles-metadata.js';
+import { open as openMbtilesReader } from './utils/mbtiles-reader.js';
+import { writeChartPathMarker } from './utils/path-marker.js';
+import { arePairWithinBase, isWithinBase, validateChartName } from './utils/path-safety.js';
+import { parsePluginConfig } from './utils/plugin-config-schema.js';
 import {
   cleanupQuarantineDir,
   makeQuarantineDir,
   promoteQuarantine,
   sweepStaleQuarantineDirs
 } from './utils/quarantine.js';
-import { cleanCatalogTitle } from './utils/catalog-title.js';
-import { setMbtilesDisplayName, repairMbtilesMetadata } from './utils/mbtiles-metadata.js';
-import { open as openMbtilesReader } from './utils/mbtiles-reader.js';
+import { parseBody, parseShape } from './utils/rest-validation.js';
 import {
-  initRncConverter,
-  processRncZip,
-  processPilotTar,
   getAllConversionProgress as getAllRncProgress,
   getConversionProgress as getRncProgress,
+  initRncConverter,
+  processPilotTar,
+  processRncZip,
   setConversionFailed as setRncFailed
 } from './utils/rnc-converter.js';
-import { processGshhg, processShpBasemap } from './utils/s57-converter.js';
-import { getCpuBudget, setCpuBudget } from './utils/concurrency.js';
-import { writeChartPathMarker } from './utils/path-marker.js';
-import { parsePluginConfig } from './utils/plugin-config-schema.js';
-import { Type } from '@sinclair/typebox';
-import { parseBody, parseShape } from './utils/rest-validation.js';
-import { isWithinBase, arePairWithinBase, validateChartName } from './utils/path-safety.js';
-import Busboy from 'busboy';
-import { DatabaseSync } from 'node:sqlite';
+import {
+  getAllConversionProgress as getAllS57Progress,
+  getConversionProgress as getS57Progress,
+  initS57Converter,
+  processGshhg,
+  processS57Zip,
+  processShpBasemap,
+  setConversionFailed as setS57Failed
+} from './utils/s57-converter.js';
 
 // JSON import with type attribute (NodeNext ESM). package.json's `version`
 // is what the marker file records so users can confirm the running build.
 import packageJson from '../package.json' with { type: 'json' };
-const pluginVersion: string = (packageJson as { version: string }).version;
 import type {
-  ExtendedServerAPI,
-  PluginConfig,
   ChartProvider,
-  SanitizedChart,
+  DownloadJob,
+  ExtendedServerAPI,
   IRouter,
+  PluginConfig,
   Request,
   Response,
-  DownloadJob
+  SanitizedChart
 } from './types.js';
+const pluginVersion: string = (packageJson as { version: string }).version;
 
 // Single source of truth lives in container-jobs.ts as PLUGIN_OWNER_ID
 // (used as the `ownerPluginId` label on every runJob call). The plugin
@@ -1832,7 +1833,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     router.get('/catalog-updates', (_req: Request, res: Response) => {
       try {
-        const updates = checkForUpdates();
+        const updates = checkForUpdates(props.chartPath || defaultChartsPath);
         res.json(updates);
       } catch (error) {
         console.error('Error checking catalog updates:', error);
@@ -2869,7 +2870,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           await fetchCatalog(catalogFile);
         }
 
-        const updates = checkForUpdates();
+        const updates = checkForUpdates(props.chartPath || defaultChartsPath);
         if (updates.length > 0) {
           app.debug(`Found ${updates.length} chart update(s) available from catalog`);
           if (props.disableUpdateNotifications) {

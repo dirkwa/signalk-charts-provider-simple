@@ -57,6 +57,12 @@ interface ConversionProgress {
 
 interface CatalogUpdate {
   chartNumber: string;
+  catalogFile: string;
+  title: string;
+  installedDate: string;
+  availableDate: string;
+  downloadUrl: string;
+  installedFolder: string;
 }
 
 interface DownloadJobLite {
@@ -178,6 +184,7 @@ async function initCatalogTab(): Promise<void> {
         <a href="https://github.com/chartcatalogs/catalogs/issues" target="_blank" rel="noopener">catalog issue tracker</a>.
       </div>
       <div id="catalogPodmanWarning"></div>
+      <div id="catalogUpdatesSection"></div>
       <div id="catalogFilterBar"></div>
       <div id="catalogList">
         <div class="catalog-loading">
@@ -236,6 +243,7 @@ async function initCatalogTab(): Promise<void> {
 function wireCatalogClickHandlers(): void {
   const list = document.getElementById('catalogList');
   const filterBar = document.getElementById('catalogFilterBar');
+  const updatesSection = document.getElementById('catalogUpdatesSection');
 
   if (filterBar && !filterBar.dataset['catalogHandlerWired']) {
     filterBar.addEventListener('click', (ev) => {
@@ -301,6 +309,60 @@ function wireCatalogClickHandlers(): void {
     });
     list.dataset['catalogHandlerWired'] = '1';
   }
+
+  // Updates section uses event delegation on a stable parent container
+  // since its content is replaced on every renderUpdatesSection() call.
+  // The container itself is stable; only its innerHTML changes.
+  const output = document.getElementById('catalogOutput');
+  if (output && !output.dataset['catalogUpdateHandlerWired']) {
+    output.addEventListener('click', (ev) => {
+      const target = ev.target as HTMLElement | null;
+      if (!target) {
+        return;
+      }
+
+      // "Update All" button
+      const updateAll = target.closest<HTMLElement>('[data-catalog-update-all]');
+      if (updateAll) {
+        for (const update of catalogUpdates) {
+          const alreadyActive =
+            catalogDownloadJobs[update.chartNumber] !== undefined ||
+            catalogConverting[update.chartNumber];
+          if (!alreadyActive) {
+            const folderEl = document.getElementById(
+              `catalog-update-folder-${catalogEscapeId(update.chartNumber)}`
+            ) as HTMLSelectElement | null;
+            const targetFolder = folderEl ? folderEl.value : update.installedFolder;
+            void downloadUpdateChart(update, targetFolder);
+          }
+        }
+        return;
+      }
+
+      // Per-chart "Update" button
+      const updateBtn = target.closest<HTMLElement>('[data-catalog-update]');
+      if (updateBtn) {
+        const chartNumber = updateBtn.dataset['catalogUpdate'];
+        if (!chartNumber) {
+          return;
+        }
+        const update = catalogUpdates.find((u) => u.chartNumber === chartNumber);
+        if (!update) {
+          return;
+        }
+        const folderEl = document.getElementById(
+          `catalog-update-folder-${catalogEscapeId(chartNumber)}`
+        ) as HTMLSelectElement | null;
+        const targetFolder = folderEl ? folderEl.value : update.installedFolder;
+        void downloadUpdateChart(update, targetFolder);
+        return;
+      }
+    });
+    output.dataset['catalogUpdateHandlerWired'] = '1';
+  }
+
+  // Keep updatesSection reference used only to suppress unused-var warning.
+  void updatesSection;
 }
 
 /**
@@ -396,8 +458,130 @@ async function refreshUpdateBadge(): Promise<void> {
         badge.style.display = 'none';
       }
     }
+
+    renderUpdatesSection();
   } catch {
     // Ignore badge refresh errors
+  }
+}
+
+function renderUpdatesSection(): void {
+  const section = document.getElementById('catalogUpdatesSection');
+  if (!section) {
+    return;
+  }
+
+  if (catalogUpdates.length === 0) {
+    section.innerHTML = '';
+    return;
+  }
+
+  const rows = catalogUpdates
+    .map((update) => {
+      const installedDateStr = update.installedDate
+        ? new Date(update.installedDate).toLocaleDateString()
+        : '';
+      const availableDateStr = update.availableDate
+        ? new Date(update.availableDate).toLocaleDateString()
+        : '';
+      const escapedNum = catalogEscapeId(update.chartNumber);
+      const isUpdating =
+        catalogDownloadJobs[update.chartNumber] !== undefined ||
+        catalogConverting[update.chartNumber];
+
+      const actionHtml = isUpdating
+        ? `<div class="catalog-update-row-updating">
+            <div class="spinner" style="width:16px;height:16px;border-width:2px;flex-shrink:0;"></div>
+            <span>Updating…</span>
+           </div>`
+        : `<select class="catalog-folder-select catalog-update-folder-select" id="catalog-update-folder-${escapedNum}">
+            ${buildFolderOptions(update.installedFolder)}
+           </select>
+           <button class="btn-catalog-download"
+                   data-catalog-update="${catalogEscapeAttr(update.chartNumber)}"
+                   data-catalog-update-file="${catalogEscapeAttr(update.catalogFile)}"
+                   data-catalog-update-url="${catalogEscapeAttr(update.downloadUrl)}"
+                   data-catalog-update-datetime="${catalogEscapeAttr(update.availableDate)}">
+             Update
+           </button>`;
+
+      return `
+        <div class="catalog-update-row${isUpdating ? ' updating' : ''}" data-chart-number="${catalogEscapeAttr(update.chartNumber)}">
+          <div class="catalog-update-row-info">
+            <span class="catalog-update-row-title">${catalogEscapeHtml(update.title || update.chartNumber)}</span>
+            <span class="catalog-update-row-dates">${catalogEscapeHtml(installedDateStr)} → ${catalogEscapeHtml(availableDateStr)}</span>
+          </div>
+          <div class="catalog-update-row-actions">
+            ${actionHtml}
+          </div>
+        </div>`;
+    })
+    .join('');
+
+  const allUpdating = catalogUpdates.every(
+    (u) =>
+      catalogDownloadJobs[u.chartNumber] !== undefined || catalogConverting[u.chartNumber]
+  );
+
+  section.innerHTML = `
+    <div class="catalog-updates-section">
+      <div class="catalog-updates-header">
+        <span class="catalog-updates-title">
+          ${catalogUpdates.length} chart update${catalogUpdates.length !== 1 ? 's' : ''} available
+        </span>
+        <button class="btn-catalog-download" ${allUpdating ? 'disabled' : ''}
+                data-catalog-update-all>
+          Update All
+        </button>
+      </div>
+      <div class="catalog-updates-rows">
+        ${rows}
+      </div>
+    </div>
+  `;
+}
+
+async function downloadUpdateChart(
+  update: CatalogUpdate,
+  targetFolder: string
+): Promise<void> {
+  try {
+    const response = await fetch(`${CATALOG_API_BASE}/catalog/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: update.downloadUrl,
+        chartNumber: update.chartNumber,
+        catalogFile: update.catalogFile,
+        zipfileDatetime: update.availableDate,
+        targetFolder
+      })
+    });
+    if (!response.ok) {
+      let errorText: string;
+      try {
+        const body = (await response.json()) as { error?: string };
+        errorText = body.error ?? `HTTP ${response.status}`;
+      } catch {
+        errorText = `HTTP ${response.status}`;
+      }
+      alert(`Update failed: ${errorText}`);
+      return;
+    }
+    const result = (await response.json()) as CatalogDownloadResponse;
+    if (result.success) {
+      if (result.jobId && !result.jobId.startsWith('gshhg-')) {
+        catalogDownloadJobs[update.chartNumber] = result.jobId;
+      } else {
+        catalogConverting[update.chartNumber] = true;
+      }
+      renderUpdatesSection();
+    } else {
+      alert(`Update failed: ${result.error ?? ''}`);
+    }
+  } catch (error) {
+    console.error('Failed to start chart update:', error);
+    alert('Failed to start update. Check your network connection.');
   }
 }
 
