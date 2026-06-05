@@ -253,7 +253,6 @@ async function initCatalogTab(): Promise<void> {
 function wireCatalogClickHandlers(): void {
   const list = document.getElementById('catalogList');
   const filterBar = document.getElementById('catalogFilterBar');
-  const updatesSection = document.getElementById('catalogUpdatesSection');
 
   if (filterBar && !filterBar.dataset['catalogHandlerWired']) {
     filterBar.addEventListener('click', (ev) => {
@@ -334,6 +333,11 @@ function wireCatalogClickHandlers(): void {
       // "Update All" button - queue updates for sequential processing
       const updateAll = target.closest<HTMLElement>('[data-catalog-update-all]');
       if (updateAll) {
+        // Ignore re-clicks while a queue is running — rebuilding the queue
+        // mid-run would reset the index and drop in-flight items.
+        if (catalogUpdateQueueRunning) {
+          return;
+        }
         const updatesToQueue: QueuedCatalogUpdate[] = [];
         for (const update of catalogUpdates) {
           const alreadyActive =
@@ -378,12 +382,35 @@ function wireCatalogClickHandlers(): void {
         void downloadUpdateChart(update, targetFolder);
         return;
       }
+
+      // Logs / Dismiss buttons rendered inside the updates panel. These
+      // live under #catalogOutput, so the #catalogList handler never sees
+      // them — wire them here too or they'd be dead in the updates panel.
+      // #catalogList is also a descendant of #catalogOutput, so skip clicks
+      // that originate there: its own handler already processes them and we
+      // must not fire twice.
+      if (!target.closest('#catalogList')) {
+        const updateLog = target.closest<HTMLElement>('[data-catalog-log]');
+        if (updateLog) {
+          const chartNumber = updateLog.dataset['catalogLog'];
+          if (chartNumber) {
+            void showConversionLog(chartNumber);
+          }
+          return;
+        }
+
+        const updateDismiss = target.closest<HTMLElement>('[data-catalog-dismiss]');
+        if (updateDismiss) {
+          const chartNumber = updateDismiss.dataset['catalogDismiss'];
+          if (chartNumber) {
+            dismissConversionError(chartNumber);
+          }
+          return;
+        }
+      }
     });
     output.dataset['catalogUpdateHandlerWired'] = '1';
   }
-
-  // Keep updatesSection reference used only to suppress unused-var warning.
-  void updatesSection;
 }
 
 /**
@@ -630,11 +657,16 @@ async function downloadUpdateChart(
       } catch {
         errorText = `HTTP ${response.status}`;
       }
-      alert(`Update failed: ${errorText}`);
+      failUpdate(update.chartNumber, errorText);
       return;
     }
     const result = (await response.json()) as CatalogDownloadResponse;
     if (result.success) {
+      // A retry has started — drop any error from the previous attempt so
+      // the row shows progress, not the stale failure (renderUpdatesSection
+      // checks conversionError before the in-progress state).
+      delete catalogConversionErrors[update.chartNumber];
+      dismissedConversionErrors.delete(update.chartNumber);
       if (result.jobId && !result.jobId.startsWith('gshhg-')) {
         catalogDownloadJobs[update.chartNumber] = result.jobId;
       } else {
@@ -642,12 +674,23 @@ async function downloadUpdateChart(
       }
       renderUpdatesSection();
     } else {
-      alert(`Update failed: ${result.error ?? ''}`);
+      failUpdate(update.chartNumber, result.error ?? 'Update failed');
     }
   } catch (error) {
     console.error('Failed to start chart update:', error);
-    alert('Failed to start update. Check your network connection.');
+    failUpdate(update.chartNumber, 'Failed to start update. Check your network connection.');
   }
+}
+
+/**
+ * Record a failed update so the queue (via waitForConversion) stops on it
+ * rather than silently skipping to the next chart, and the failure surfaces
+ * in the UI. `dismissedConversionErrors` is cleared so a retry's error shows.
+ */
+function failUpdate(chartNumber: string, errorText: string): void {
+  catalogConversionErrors[chartNumber] = errorText;
+  dismissedConversionErrors.delete(chartNumber);
+  renderUpdatesSection();
 }
 
 /**
@@ -655,6 +698,11 @@ async function downloadUpdateChart(
  * `catalogUpdateQueueRunning` is true while the queue is active;
  * `catalogUpdateQueueIndex` tracks the current item. Recursion advances
  * to the next chart only after `waitForConversion` resolves.
+ *
+ * A failed item does NOT abort the run: its error is recorded in
+ * `catalogConversionErrors` (shown per-row) and the queue continues, so one
+ * bad chart in an "Update All" batch doesn't strand the rest. The user sees
+ * exactly which charts failed and can retry those individually.
  */
 async function processUpdateQueue(): Promise<void> {
   if (!catalogUpdateQueueRunning || catalogUpdateQueueIndex >= catalogUpdateQueue.length) {
@@ -697,35 +745,28 @@ async function waitForConversion(chartNumber: string): Promise<void> {
   const maxWait = 10 * 60 * 1000; // 10 minutes max
   const pollInterval = 2000; // 2 seconds
   const startTime = Date.now();
-  let warned = false;
 
   while (true) {
-    // Check if still downloading
-    if (catalogDownloadJobs[chartNumber] !== undefined) {
-      if (!warned && Date.now() - startTime >= maxWait) {
-        console.warn(`Conversion for ${chartNumber} is taking longer than 10 minutes; still waiting...`);
-        warned = true;
+    const stillDownloading = catalogDownloadJobs[chartNumber] !== undefined;
+    const stillConverting = catalogConverting[chartNumber];
+
+    if (stillDownloading || stillConverting) {
+      // Hard timeout: a stuck download/conversion (hung runtime, lost
+      // progress updates) must not block the queue forever. Record a
+      // terminal error and stop waiting so the queue advances and the UI
+      // shows the failure instead of a permanent "Updating…" spinner.
+      if (Date.now() - startTime >= maxWait) {
+        delete catalogDownloadJobs[chartNumber];
+        delete catalogConverting[chartNumber];
+        failUpdate(chartNumber, 'Timed out waiting for conversion (10 min)');
+        return;
       }
       await new Promise(resolve => setTimeout(resolve, pollInterval));
       continue;
     }
 
-    // Check if still converting
-    if (catalogConverting[chartNumber]) {
-      if (!warned && Date.now() - startTime >= maxWait) {
-        console.warn(`Conversion for ${chartNumber} is taking longer than 10 minutes; still waiting...`);
-        warned = true;
-      }
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
-      continue;
-    }
-
-    // Check if there's an error (conversion failed)
-    if (catalogConversionErrors[chartNumber]) {
-      return; // Conversion failed, stop waiting
-    }
-
-    // If we get here, the conversion is complete (no longer in any tracking map)
+    // Not downloading or converting any more: complete (success) or failed
+    // — either way the chart left the active maps, so stop waiting.
     return;
   }
 }
@@ -1084,6 +1125,7 @@ function dismissConversionError(chartNumber: string): void {
   delete catalogConversionErrors[chartNumber];
   dismissedConversionErrors.add(chartNumber);
   renderCatalogList();
+  renderUpdatesSection();
 }
 
 async function pollCatalogDownloads(): Promise<void> {
@@ -1145,6 +1187,7 @@ async function pollCatalogDownloads(): Promise<void> {
           }
         }
         renderCatalogList();
+        renderUpdatesSection();
       } else if (job.status === 'failed') {
         delete catalogDownloadJobs[chartNumber];
         if (progressEl) {
@@ -1160,6 +1203,7 @@ async function pollCatalogDownloads(): Promise<void> {
         }
         setTimeout(() => {
           renderCatalogList();
+          renderUpdatesSection();
         }, 5000);
       } else if (progressEl) {
         const fillEl = progressEl.querySelector<HTMLElement>('.progress-fill');
@@ -1321,6 +1365,7 @@ async function pollConversions(): Promise<void> {
     }
     if (stateChanged) {
       renderCatalogList();
+      renderUpdatesSection();
     } else {
       updateConversionMessagesInPlace();
     }

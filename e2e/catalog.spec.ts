@@ -112,4 +112,57 @@ test.describe('Chart Catalog tab', () => {
     const sentinel = await pill.getAttribute('data-e2e-sentinel');
     expect(sentinel).toBe('pre-poll');
   });
+
+  test('a failed update surfaces an error in the updates panel (not a silent skip)', async ({
+    page
+  }) => {
+    // Regression for the queue silently skipping a chart whose download
+    // POST failed: downloadUpdateChart must record catalogConversionErrors
+    // so the failure shows in the panel (and the queue stops on it) rather
+    // than the chart vanishing with no trace.
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'NOAA_MBTiles_Catalog.xml',
+          label: 'NOAA MBTiles',
+          category: 'mbtiles',
+          chartCount: 1,
+          cachedAt: '2026-05-07T10:00:00Z'
+        }
+      ],
+      catalogUpdates: [
+        {
+          chartNumber: '1',
+          catalogFile: 'NOAA_MBTiles_Catalog.xml',
+          title: 'Boston Harbor',
+          installedDate: '2024-01-01T00:00:00Z',
+          availableDate: '2026-05-01T00:00:00Z',
+          downloadUrl: 'https://example.com/boston.mbtiles',
+          installedFolder: '/'
+        }
+      ],
+      // The next /catalog/download POST returns HTTP 500.
+      downloadFailStatus: 500
+    });
+
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+
+    const row = page.locator('.catalog-update-row[data-chart-number="1"]');
+    await expect(row).toContainText('Boston Harbor');
+
+    // Click the per-chart Update button; the mocked POST fails.
+    await row.locator('[data-catalog-update="1"]').click();
+
+    // The failure must surface as a visible error with a Dismiss button,
+    // not disappear silently.
+    const errorText = row.locator('.conversion-error-text');
+    await expect(errorText).toBeVisible();
+    await expect(errorText).toContainText(/mock download failure/i);
+
+    // Dismiss must clear it from the panel (the Dismiss button under
+    // #catalogUpdatesSection is wired and re-renders the section).
+    await row.locator('[data-catalog-dismiss="1"]').click();
+    await expect(row.locator('.conversion-error-text')).toHaveCount(0);
+  });
 });

@@ -78,6 +78,18 @@ interface MockState {
     downloadedBytes: number;
     error?: string;
   }[];
+  catalogUpdates: {
+    chartNumber: string;
+    catalogFile: string;
+    title: string;
+    installedDate: string;
+    availableDate: string;
+    downloadUrl: string;
+    installedFolder: string;
+  }[];
+  // When set, POST /catalog/download responds with this HTTP status and an
+  // error body so tests can exercise the update-failure path.
+  downloadFailStatus: number | null;
   s57PodmanAvailable: boolean;
   podmanVersion: string | null;
   containerRuntimeEngine: string | null;
@@ -91,6 +103,8 @@ const initialState: MockState = {
   catalogs: {},
   localCharts: { charts: [], folders: ['/'], basePath: '/tmp/charts' },
   downloadJobs: [],
+  catalogUpdates: [],
+  downloadFailStatus: null,
   s57PodmanAvailable: true,
   podmanVersion: 'podman version 5.4.2',
   containerRuntimeEngine: 'podman'
@@ -176,7 +190,7 @@ export function startMockServer(
   });
 
   router.get(`${PLUGIN_BASE}/catalog-updates`, (_req, res) => {
-    res.json([]);
+    res.json(state.catalogUpdates);
   });
 
   router.get(`${PLUGIN_BASE}/download-jobs`, (_req, res) => {
@@ -191,6 +205,10 @@ export function startMockServer(
     const { chartNumber } = req.body as { chartNumber?: string };
     if (!chartNumber) {
       res.status(400).json({ error: 'chartNumber required' });
+      return;
+    }
+    if (state.downloadFailStatus !== null) {
+      res.status(state.downloadFailStatus).json({ error: 'mock download failure' });
       return;
     }
     const jobId = `mock-${chartNumber}-${Date.now()}`;

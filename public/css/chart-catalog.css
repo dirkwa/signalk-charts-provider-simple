@@ -692,8 +692,8 @@ option.catalog-folder-option-new {
 /* ---- Updates Section ---- */
 
 .catalog-updates-section {
-    background: rgba(139, 92, 246, 0.1);
-    border: 1px solid rgba(139, 92, 246, 0.35);
+    background: var(--md-sys-color-secondary-container);
+    border: 1px solid var(--md-sys-color-secondary);
     border-radius: var(--md-sys-shape-corner-medium);
     margin-bottom: var(--md-sys-spacing-4);
     overflow: hidden;
@@ -704,7 +704,7 @@ option.catalog-folder-option-new {
     align-items: center;
     justify-content: space-between;
     padding: var(--md-sys-spacing-3) var(--md-sys-spacing-4);
-    border-bottom: 1px solid rgba(139, 92, 246, 0.25);
+    border-bottom: 1px solid var(--md-sys-color-outline-variant);
     gap: var(--md-sys-spacing-3);
 }
 
@@ -777,7 +777,7 @@ option.catalog-folder-option-new {
     max-width: 200px;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 599px) {
     .catalog-update-row {
         flex-direction: column;
         align-items: flex-start;

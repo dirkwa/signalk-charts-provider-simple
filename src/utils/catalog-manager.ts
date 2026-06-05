@@ -584,11 +584,21 @@ export function checkForUpdates(): CatalogUpdate[] {
       let installedFolder = '/';
       if (install.installedFilename) {
         // installedFilename is already relative to chartPath (stored by
-        // setInstallFilename), so just extract the directory portion.
-        const folder = path.dirname(install.installedFilename);
-        // path.dirname returns '.' when the file is in the root folder,
-        // and could return '../foo' if somehow stored outside — treat both as root.
-        if (folder && folder !== '.' && !folder.startsWith('..')) {
+        // setInstallFilename). Normalize to forward slashes (the frontend
+        // joins this folder with '/', and dirname yields backslashes on
+        // Windows) and take the directory portion with posix semantics.
+        const normalized = install.installedFilename.replace(/\\/g, '/');
+        const folder = path.posix.dirname(normalized);
+        // dirname returns '.' for a file in the root folder. Treat that,
+        // any traversal ('../foo'), and any absolute path (a malformed
+        // record) as root — installedFolder must stay chart-path-relative.
+        if (
+          folder &&
+          folder !== '.' &&
+          folder !== '/' &&
+          !folder.startsWith('../') &&
+          !path.posix.isAbsolute(folder)
+        ) {
           installedFolder = folder;
         }
       }
