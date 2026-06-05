@@ -1,5 +1,5 @@
 import type { ServerAPI } from '@signalk/server-api';
-import type { Request, Response, IRouter } from 'express';
+import type { IRouter, Request, Response } from 'express';
 import type { MBTilesReader } from './utils/mbtiles-reader.js';
 
 // ---- Plugin Configuration ----
@@ -182,12 +182,12 @@ export interface DownloadJob {
 
 export type {
   CatalogCategory,
-  CatalogRegistryEntry,
   CatalogChart,
-  CatalogHeader,
   CatalogData,
+  CatalogHeader,
   CatalogInstall,
-  CatalogInstallsMap
+  CatalogInstallsMap,
+  CatalogRegistryEntry
 } from './utils/catalog-schemas.js';
 
 import type { CatalogRegistryEntry } from './utils/catalog-schemas.js';
@@ -222,6 +222,8 @@ export interface CatalogUpdate {
   installedDate: string;
   availableDate: string;
   downloadUrl: string;
+  /** Chart-path-relative folder of the installed file, e.g. "Netherlands Inland ENC". '/' means root. */
+  installedFolder: string;
 }
 
 // ---- Conversion Progress ----
@@ -324,4 +326,4 @@ export interface TilemapXml {
 
 // ---- Express route helpers ----
 
-export type { Request, Response, IRouter };
+export type { IRouter, Request, Response };

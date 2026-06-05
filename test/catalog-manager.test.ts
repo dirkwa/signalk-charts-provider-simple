@@ -13,6 +13,7 @@ import {
   getCatalogRegistry,
   classifyUrl,
   trackInstall,
+  setInstallFilename,
   removeInstall,
   getInstalledCatalogCharts,
   checkForUpdates,
@@ -293,6 +294,55 @@ describe('CatalogManager', () => {
       assert.strictEqual(updates.length, 0);
 
       removeInstall('same_date_chart');
+    });
+
+    it('reports installedFolder as POSIX, defaulting to root', () => {
+      const cacheDir = path.join(TEST_DATA_DIR, 'catalog-cache');
+      const cacheData = {
+        fetchedAt: new Date().toISOString(),
+        catalogFile: 'NOAA_MBTiles_Catalog.xml',
+        header: { title: 'Test' },
+        charts: [
+          {
+            number: 'folder_chart',
+            title: 'Folder Chart',
+            format: 'MBTiles',
+            zipfile_location: 'https://example.com/test.mbtiles',
+            zipfile_datetime_iso8601: '2024-06-01T00:00:00Z'
+          }
+        ]
+      };
+      fs.writeFileSync(
+        path.join(cacheDir, 'NOAA_MBTiles_Catalog.json'),
+        JSON.stringify(cacheData),
+        'utf-8'
+      );
+
+      // No installedFilename → folder defaults to root.
+      trackInstall(
+        'folder_chart',
+        'NOAA_MBTiles_Catalog.xml',
+        '2023-08-02T00:08:00Z',
+        'https://example.com/test.mbtiles'
+      );
+      assert.strictEqual(checkForUpdates()[0]!.installedFolder, '/');
+
+      // File in the chart-root → still root.
+      setInstallFilename('folder_chart', 'folder_chart.mbtiles');
+      assert.strictEqual(checkForUpdates()[0]!.installedFolder, '/');
+
+      // File in a nested folder → the folder, normalized to forward
+      // slashes. Build the stored relative path with the platform
+      // separator so the test exercises the normalization on Windows too.
+      setInstallFilename('folder_chart', path.join('Europe', 'NL', 'folder_chart.mbtiles'));
+      assert.strictEqual(checkForUpdates()[0]!.installedFolder, 'Europe/NL');
+
+      // A malformed absolute path must collapse to root, never leak a host
+      // folder (installedFolder is documented as chart-path-relative).
+      setInstallFilename('folder_chart', '/var/charts/folder_chart.mbtiles');
+      assert.strictEqual(checkForUpdates()[0]!.installedFolder, '/');
+
+      removeInstall('folder_chart');
     });
   });
 

@@ -1,17 +1,17 @@
-import https from 'https';
 import fs from 'fs';
+import https from 'https';
 import path from 'path';
 import { parseStringPromise } from 'xml2js';
 import type {
+  CatalogCategory,
+  CatalogChart,
+  CatalogData,
+  CatalogInstallsMap,
   CatalogRegistryEntry,
   CatalogRegistryInfo,
-  CatalogCategory,
-  CatalogData,
-  CatalogChart,
-  CatalogInstallsMap,
-  UrlClassification,
   CatalogUpdate,
-  DebugFunction
+  DebugFunction,
+  UrlClassification
 } from '../types.js';
 import {
   CatalogDataSchema,
@@ -581,13 +581,35 @@ export function checkForUpdates(): CatalogUpdate[] {
       install.zipfile_datetime_iso8601 &&
       catalogChart.zipfile_datetime_iso8601 > install.zipfile_datetime_iso8601
     ) {
+      let installedFolder = '/';
+      if (install.installedFilename) {
+        // installedFilename is already relative to chartPath (stored by
+        // setInstallFilename). Normalize to forward slashes (the frontend
+        // joins this folder with '/', and dirname yields backslashes on
+        // Windows) and take the directory portion with posix semantics.
+        const normalized = install.installedFilename.replace(/\\/g, '/');
+        const folder = path.posix.dirname(normalized);
+        // dirname returns '.' for a file in the root folder. Treat that,
+        // any traversal ('../foo'), and any absolute path (a malformed
+        // record) as root — installedFolder must stay chart-path-relative.
+        if (
+          folder &&
+          folder !== '.' &&
+          folder !== '/' &&
+          !folder.startsWith('../') &&
+          !path.posix.isAbsolute(folder)
+        ) {
+          installedFolder = folder;
+        }
+      }
       updates.push({
         chartNumber,
         catalogFile: install.catalogFile,
         title: catalogChart.title,
         installedDate: install.zipfile_datetime_iso8601,
         availableDate: catalogChart.zipfile_datetime_iso8601,
-        downloadUrl: catalogChart.zipfile_location
+        downloadUrl: catalogChart.zipfile_location,
+        installedFolder
       });
     }
   }
