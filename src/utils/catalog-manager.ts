@@ -562,7 +562,7 @@ export function getConvertingCount(): number {
   return Object.keys(converting).length;
 }
 
-export function checkForUpdates(chartPath: string): CatalogUpdate[] {
+export function checkForUpdates(chartPath = ''): CatalogUpdate[] {
   const updates: CatalogUpdate[] = [];
 
   for (const [chartNumber, install] of Object.entries(installs)) {

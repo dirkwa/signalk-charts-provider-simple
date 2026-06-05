@@ -65,6 +65,11 @@ interface CatalogUpdate {
   installedFolder: string;
 }
 
+interface QueuedCatalogUpdate {
+  update: CatalogUpdate;
+  targetFolder: string;
+}
+
 interface DownloadJobLite {
   id: string;
   // chartName on the server side is the chartNumber the catalog
@@ -100,7 +105,7 @@ const catalogChartData: Record<string, CatalogData> = {};
 let catalogFolders: string[] = ['/'];
 
 // Update queue management
-let catalogUpdateQueue: CatalogUpdate[] = [];
+let catalogUpdateQueue: QueuedCatalogUpdate[] = [];
 let catalogUpdateQueueIndex = -1;
 let catalogUpdateQueueRunning = false;
 const catalogDownloadJobs: Record<string, string> = {};
@@ -329,13 +334,19 @@ function wireCatalogClickHandlers(): void {
       // "Update All" button - queue updates for sequential processing
       const updateAll = target.closest<HTMLElement>('[data-catalog-update-all]');
       if (updateAll) {
-        const updatesToQueue: CatalogUpdate[] = [];
+        const updatesToQueue: QueuedCatalogUpdate[] = [];
         for (const update of catalogUpdates) {
           const alreadyActive =
             catalogDownloadJobs[update.chartNumber] !== undefined ||
             catalogConverting[update.chartNumber];
           if (!alreadyActive) {
-            updatesToQueue.push(update);
+            const folderEl = document.getElementById(
+              `catalog-update-folder-${catalogEscapeId(update.chartNumber)}`
+            ) as HTMLSelectElement | null;
+            updatesToQueue.push({
+              update,
+              targetFolder: folderEl ? folderEl.value : update.installedFolder
+            });
           }
         }
         
@@ -640,11 +651,13 @@ async function downloadUpdateChart(
 }
 
 /**
- * Process the update queue sequentially
+ * Serialize catalog updates so only one download/conversion runs at a time.
+ * `catalogUpdateQueueRunning` is true while the queue is active;
+ * `catalogUpdateQueueIndex` tracks the current item. Recursion advances
+ * to the next chart only after `waitForConversion` resolves.
  */
 async function processUpdateQueue(): Promise<void> {
   if (!catalogUpdateQueueRunning || catalogUpdateQueueIndex >= catalogUpdateQueue.length) {
-    // Queue complete
     catalogUpdateQueue = [];
     catalogUpdateQueueIndex = -1;
     catalogUpdateQueueRunning = false;
@@ -652,34 +665,25 @@ async function processUpdateQueue(): Promise<void> {
     return;
   }
 
-  const update = catalogUpdateQueue[catalogUpdateQueueIndex];
-  const folderEl = document.getElementById(
-    `catalog-update-folder-${catalogEscapeId(update.chartNumber)}`
-  ) as HTMLSelectElement | null;
-  const targetFolder = folderEl ? folderEl.value : update.installedFolder;
-
-  // Start the update
+  const { update, targetFolder } = catalogUpdateQueue[catalogUpdateQueueIndex];
   await downloadUpdateChart(update, targetFolder);
-
-  // Wait for this conversion to complete
   await waitForConversion(update.chartNumber);
 
-  // Move to next item
   catalogUpdateQueueIndex++;
   renderUpdatesSection();
-
-  // Process next item
   await processUpdateQueue();
 }
 
 /**
- * Check if a chart is in the update queue
+ * Relative queue position for a chart number. Returns `0` when the chart
+ * is currently processing, a positive number when waiting, and `null`
+ * when the queue is not running or the chart is not queued.
  */
 function getQueuePosition(chartNumber: string): number | null {
   if (!catalogUpdateQueueRunning) {
     return null;
   }
-  const index = catalogUpdateQueue.findIndex(u => u.chartNumber === chartNumber);
+  const index = catalogUpdateQueue.findIndex(u => u.update.chartNumber === chartNumber);
   if (index === -1) {
     return null;
   }
@@ -693,31 +697,37 @@ async function waitForConversion(chartNumber: string): Promise<void> {
   const maxWait = 10 * 60 * 1000; // 10 minutes max
   const pollInterval = 2000; // 2 seconds
   const startTime = Date.now();
-  
-  while (Date.now() - startTime < maxWait) {
+  let warned = false;
+
+  while (true) {
     // Check if still downloading
     if (catalogDownloadJobs[chartNumber] !== undefined) {
+      if (!warned && Date.now() - startTime >= maxWait) {
+        console.warn(`Conversion for ${chartNumber} is taking longer than 10 minutes; still waiting...`);
+        warned = true;
+      }
       await new Promise(resolve => setTimeout(resolve, pollInterval));
       continue;
     }
-    
+
     // Check if still converting
     if (catalogConverting[chartNumber]) {
+      if (!warned && Date.now() - startTime >= maxWait) {
+        console.warn(`Conversion for ${chartNumber} is taking longer than 10 minutes; still waiting...`);
+        warned = true;
+      }
       await new Promise(resolve => setTimeout(resolve, pollInterval));
       continue;
     }
-    
+
     // Check if there's an error (conversion failed)
     if (catalogConversionErrors[chartNumber]) {
       return; // Conversion failed, stop waiting
     }
-    
+
     // If we get here, the conversion is complete (no longer in any tracking map)
     return;
   }
-  
-  // Timeout - conversion took too long
-  console.warn(`Conversion for ${chartNumber} timed out after 10 minutes`);
 }
 
 function renderFilterBar(): void {
