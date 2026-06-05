@@ -24,6 +24,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { makeContainerWritable } from './container-fs.js';
 
 const QUARANTINE_ROOT_NAME = 'in-progress';
 
@@ -36,21 +37,7 @@ const QUARANTINE_ROOT_NAME = 'in-progress';
 export function makeQuarantineDir(dataDir: string, chartNumber: string): string {
   const dir = path.join(dataDir, QUARANTINE_ROOT_NAME, sanitizeIdSegment(chartNumber));
   fs.mkdirSync(dir, { recursive: true });
-  // Container runs as UID 1001 (toolbox user); host-created dirs default
-  // to 0o755 owned by the host process UID. Transfer ownership to the
-  // container user if possible, otherwise fall back to world-writable.
-  try {
-    fs.chownSync(dir, 1001, -1);
-    fs.chmodSync(dir, 0o755);
-  } catch (err) {
-    // Host process lacks CAP_CHOWN; fall back to world-writable so
-    // the container can still write output.
-    if ((err as NodeJS.ErrnoException).code === 'EPERM') {
-      fs.chmodSync(dir, 0o777);
-    } else {
-      throw err;
-    }
-  }
+  makeContainerWritable(dir);
   return dir;
 }
 

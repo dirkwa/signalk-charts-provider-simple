@@ -13,6 +13,7 @@ import type {
 } from '../types.js';
 import { sanitizeChartFilename } from './catalog-title.js';
 import { getCpuBudget } from './concurrency.js';
+import { makeContainerWritable, makeContainerWritableDir } from './container-fs.js';
 import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
 import {
   ensureImage as ensureContainerImage,
@@ -921,21 +922,7 @@ async function runPerBandPipeline(
     const bandGeojsonDir = path.join(tmpDir, `geojson-band-${band}`);
     fs.mkdirSync(bandEncDir, { recursive: true });
     fs.mkdirSync(bandGeojsonDir, { recursive: true });
-    // Container runs as UID 1001 (toolbox user); host-created dirs default
-    // to 0o755 owned by the host process UID. Transfer ownership to the
-    // container user if possible, otherwise fall back to world-writable.
-    try {
-      fs.chownSync(bandGeojsonDir, 1001, -1);
-      fs.chmodSync(bandGeojsonDir, 0o755);
-    } catch (err) {
-      // Host process lacks CAP_CHOWN; fall back to world-writable so
-      // the container can still write output.
-      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
-        fs.chmodSync(bandGeojsonDir, 0o777);
-      } else {
-        throw err;
-      }
-    }
+    makeContainerWritable(bandGeojsonDir);
 
     // Hardlink each cell into the band-scoped dir so the export
     // script (which walks `find <inDir> -name '*.000'`) only sees
@@ -990,21 +977,7 @@ async function runPerBandPipeline(
     const unbandedGeojsonDir = path.join(tmpDir, 'geojson-unbanded');
     fs.mkdirSync(unbandedEncDir, { recursive: true });
     fs.mkdirSync(unbandedGeojsonDir, { recursive: true });
-    // Container runs as UID 1001 (toolbox user); host-created dirs default
-    // to 0o755 owned by the host process UID. Transfer ownership to the
-    // container user if possible, otherwise fall back to world-writable.
-    try {
-      fs.chownSync(unbandedGeojsonDir, 1001, -1);
-      fs.chmodSync(unbandedGeojsonDir, 0o755);
-    } catch (err) {
-      // Host process lacks CAP_CHOWN; fall back to world-writable so
-      // the container can still write output.
-      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
-        fs.chmodSync(unbandedGeojsonDir, 0o777);
-      } else {
-        throw err;
-      }
-    }
+    makeContainerWritable(unbandedGeojsonDir);
 
     // Hardlink (not symlink) — see the band-loop above for the
     // why: bind-mounted absolute symlink targets don't resolve
@@ -1078,21 +1051,11 @@ export async function processS57Zip(
   const geojsonDir = path.join(tmpDir, 'geojson');
   fs.mkdirSync(encDir, { recursive: true });
   fs.mkdirSync(geojsonDir, { recursive: true });
-  // Container runs as UID 1001 (toolbox user); host-created dirs default
-  // to 0o755 owned by the host process UID. Transfer ownership to the
-  // container user if possible, otherwise fall back to world-writable.
-  try {
-    fs.chownSync(geojsonDir, 1001, -1);
-    fs.chmodSync(geojsonDir, 0o755);
-  } catch (err) {
-    // Host process lacks CAP_CHOWN; fall back to world-writable so
-    // the container can still write output.
-    if ((err as NodeJS.ErrnoException).code === 'EPERM') {
-      fs.chmodSync(geojsonDir, 0o777);
-    } else {
-      throw err;
-    }
-  }
+  // The multi-band pipeline has tippecanoe write its intermediate
+  // `band-*.mbtiles` directly into tmpDir (its `/output`), so tmpDir itself
+  // must be container-writable, not just the geojson export dir.
+  makeContainerWritable(tmpDir);
+  makeContainerWritable(geojsonDir);
 
   if (chartNumber) {
     conversionProgress[chartNumber] = {
@@ -1546,8 +1509,9 @@ export async function processShpBasemap(
   onStatus: StatusCallback | null
 ): Promise<S57ConversionResult> {
   const statusFn = onStatus ?? (() => {});
-  const tmpDir = path.join(path.dirname(tarPath), `shpbasemap_${Date.now()}`);
-  fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpDir = makeContainerWritableDir(
+    path.join(path.dirname(tarPath), `shpbasemap_${Date.now()}`)
+  );
 
   if (chartNumber) {
     conversionProgress[chartNumber] = {
