@@ -461,9 +461,10 @@ option.catalog-folder-option-new {
     color: var(--md-sys-color-on-surface-variant);
 }
 
-.catalog-queue-waiting {
-    opacity: 0.6;
-}
+/* No own opacity: a queued row always carries .catalog-update-row.updating
+ * (0.6), which already dims it. Stacking another 0.6 here — plus the
+ * spinner's former inline opacity — compounded down to ~0.18, making the
+ * waiting indicator nearly invisible. */
 
 .catalog-download-progress .progress-bar {
     width: 80px;

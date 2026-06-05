@@ -553,7 +553,7 @@ function renderUpdatesSection(): void {
       } else if (isWaiting) {
         actionHtml = `
           <div class="catalog-queue-waiting">
-            <div class="spinner" style="width:16px;height:16px;border-width:2px;opacity:0.5;"></div>
+            <div class="spinner" style="width:16px;height:16px;border-width:2px;"></div>
             <span>Waiting in queue (position ${queuePosition})...</span>
           </div>`;
       } else if (isDownloading) {
