@@ -6,6 +6,23 @@ import unzipper from 'unzipper';
 import { EventEmitter } from 'events';
 import type { DownloadJob, DownloadJobOptions } from '../types.js';
 
+// A download failure worth retrying: a network error, a timeout, or a 5xx
+// server response. A 4xx (e.g. 404 for a moved/expired catalog link) is NOT
+// transient — retrying just delays a legitimate error — so it stays a plain
+// Error and fails fast.
+export class TransientDownloadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TransientDownloadError';
+  }
+}
+
+// Bounded retry for transient download failures. Three attempts total with a
+// short linear backoff handles a flaky upstream (the chart sources are
+// third-party government servers) without stalling on a genuinely-gone file.
+const MAX_DOWNLOAD_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = 2000;
+
 interface DownloadManagerEvents {
   'job-created': [job: DownloadJob];
   'job-updated': [job: DownloadJob];
@@ -116,7 +133,7 @@ class DownloadManager extends EventEmitter {
       job.startedAt = Date.now();
       this.emit('job-updated', job);
 
-      await this.downloadAndExtract(job);
+      await this.downloadWithRetry(job);
 
       job.status = 'completed';
       job.progress = 100;
@@ -127,18 +144,56 @@ class DownloadManager extends EventEmitter {
       job.error = (error instanceof Error ? error.message : String(error)) || 'Download failed';
       job.completedAt = Date.now();
 
-      for (const fileName of job.targetFiles) {
-        const filePath = path.join(job.targetDir, fileName);
-        try {
-          fs.unlinkSync(filePath);
-          console.log(`[${job.id}] Cleaned up partial file: ${fileName}`);
-        } catch {
-          // file may not exist yet
-        }
-      }
+      this.cleanupPartialFiles(job);
 
       this.emit('job-failed', job);
       console.error(`Download job ${job.id} failed:`, error);
+    }
+  }
+
+  private cleanupPartialFiles(job: DownloadJob): void {
+    for (const fileName of job.targetFiles) {
+      const filePath = path.join(job.targetDir, fileName);
+      try {
+        fs.unlinkSync(filePath);
+        console.log(`[${job.id}] Cleaned up partial file: ${fileName}`);
+      } catch {
+        // file may not exist yet
+      }
+    }
+  }
+
+  // Run downloadAndExtract with bounded retries on TRANSIENT failures only
+  // (network error, timeout, 5xx). A 4xx (e.g. 404 for an expired catalog
+  // link) throws immediately. Between attempts, partial files are removed and
+  // the URL is reset to the original (downloadAndExtract mutates job.url while
+  // following redirects).
+  private async downloadWithRetry(job: DownloadJob): Promise<void> {
+    const originalUrl = job.originalUrl ?? job.url;
+    for (let attempt = 1; attempt <= MAX_DOWNLOAD_ATTEMPTS; attempt++) {
+      try {
+        await this.downloadAndExtract(job);
+        return;
+      } catch (error) {
+        const transient = error instanceof TransientDownloadError;
+        if (!transient || attempt === MAX_DOWNLOAD_ATTEMPTS) {
+          throw error;
+        }
+        const msg = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[${job.id}] Transient download failure (attempt ${attempt}/${MAX_DOWNLOAD_ATTEMPTS}): ${msg}; retrying...`
+        );
+        this.cleanupPartialFiles(job);
+        job.url = originalUrl;
+        job.downloadedBytes = 0;
+        job.progress = 0;
+        // downloadAndExtract pushes onto these as files/zip-entries arrive, so
+        // clear them (after cleanupPartialFiles has used targetFiles) — else a
+        // retry of a partially-streamed download accumulates duplicate names.
+        job.targetFiles = [];
+        job.extractedFiles = [];
+        await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * attempt));
+      }
     }
   }
 
@@ -165,7 +220,12 @@ class DownloadManager extends EventEmitter {
           }
 
           if (response.statusCode !== 200) {
-            reject(new Error(`HTTP ${response.statusCode}`));
+            const status = response.statusCode ?? 0;
+            response.resume(); // drain so the socket can be reused/freed
+            // 5xx = server-side hiccup, worth a retry; 4xx (incl. 404 for a
+            // moved/expired catalog link) is permanent — fail fast.
+            const msg = `HTTP ${status}`;
+            reject(status >= 500 ? new TransientDownloadError(msg) : new Error(msg));
             return;
           }
 
@@ -328,12 +388,13 @@ class DownloadManager extends EventEmitter {
         })
         .on('error', (error: Error) => {
           console.error(`[${job.id}] Download error:`, error);
-          reject(error);
+          // Connection reset / DNS / socket errors are transient — retry.
+          reject(new TransientDownloadError(error.message));
         });
 
       req.on('timeout', () => {
         req.destroy();
-        reject(new Error('Server not responding (no data received for 60s)'));
+        reject(new TransientDownloadError('Server not responding (no data received for 60s)'));
       });
     });
   }
