@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import unzipper from 'unzipper';
+import { makeContainerWritableDir } from './container-fs.js';
 import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
 import {
   ensureImage as ensureContainerImage,
@@ -388,8 +389,7 @@ export async function processPilotTar(
 ): Promise<RncConversionResult> {
   const statusFn = onStatus ?? (() => {});
 
-  const tmpDir = path.join(path.dirname(tarPath), `pilot_${Date.now()}`);
-  fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpDir = makeContainerWritableDir(path.join(path.dirname(tarPath), `pilot_${Date.now()}`));
 
   if (chartNumber) {
     conversionProgress[chartNumber] = {

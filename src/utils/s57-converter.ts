@@ -1,9 +1,19 @@
-import https from 'https';
 import fs from 'fs';
-import path from 'path';
+import https from 'https';
 import { DatabaseSync } from 'node:sqlite';
+import path from 'path';
 import unzipper from 'unzipper';
+import type {
+  ConversionProgress,
+  ConversionProgressMap,
+  DebugFunction,
+  S57ConversionOptions,
+  S57ConversionResult,
+  StatusCallback
+} from '../types.js';
+import { sanitizeChartFilename } from './catalog-title.js';
 import { getCpuBudget } from './concurrency.js';
+import { makeContainerWritable, makeContainerWritableDir } from './container-fs.js';
 import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
 import {
   ensureImage as ensureContainerImage,
@@ -11,6 +21,7 @@ import {
   runJob as runContainerJob
 } from './container-jobs.js';
 import { getContainerManager } from './container-manager.js';
+import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata.js';
 import {
   BAND_MAX_ZOOM,
   BAND_MIN_ZOOM,
@@ -18,16 +29,6 @@ import {
   groupCellsByBand,
   highestBandForFiles
 } from './s57-band.js';
-import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata.js';
-import { sanitizeChartFilename } from './catalog-title.js';
-import type {
-  ConversionProgress,
-  ConversionProgressMap,
-  S57ConversionResult,
-  S57ConversionOptions,
-  StatusCallback,
-  DebugFunction
-} from '../types.js';
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = 100;
@@ -921,6 +922,7 @@ async function runPerBandPipeline(
     const bandGeojsonDir = path.join(tmpDir, `geojson-band-${band}`);
     fs.mkdirSync(bandEncDir, { recursive: true });
     fs.mkdirSync(bandGeojsonDir, { recursive: true });
+    makeContainerWritable(bandGeojsonDir);
 
     // Hardlink each cell into the band-scoped dir so the export
     // script (which walks `find <inDir> -name '*.000'`) only sees
@@ -975,6 +977,8 @@ async function runPerBandPipeline(
     const unbandedGeojsonDir = path.join(tmpDir, 'geojson-unbanded');
     fs.mkdirSync(unbandedEncDir, { recursive: true });
     fs.mkdirSync(unbandedGeojsonDir, { recursive: true });
+    makeContainerWritable(unbandedGeojsonDir);
+
     // Hardlink (not symlink) — see the band-loop above for the
     // why: bind-mounted absolute symlink targets don't resolve
     // inside the helper container.
@@ -1047,6 +1051,11 @@ export async function processS57Zip(
   const geojsonDir = path.join(tmpDir, 'geojson');
   fs.mkdirSync(encDir, { recursive: true });
   fs.mkdirSync(geojsonDir, { recursive: true });
+  // The multi-band pipeline has tippecanoe write its intermediate
+  // `band-*.mbtiles` directly into tmpDir (its `/output`), so tmpDir itself
+  // must be container-writable, not just the geojson export dir.
+  makeContainerWritable(tmpDir);
+  makeContainerWritable(geojsonDir);
 
   if (chartNumber) {
     conversionProgress[chartNumber] = {
@@ -1500,8 +1509,9 @@ export async function processShpBasemap(
   onStatus: StatusCallback | null
 ): Promise<S57ConversionResult> {
   const statusFn = onStatus ?? (() => {});
-  const tmpDir = path.join(path.dirname(tarPath), `shpbasemap_${Date.now()}`);
-  fs.mkdirSync(tmpDir, { recursive: true });
+  const tmpDir = makeContainerWritableDir(
+    path.join(path.dirname(tarPath), `shpbasemap_${Date.now()}`)
+  );
 
   if (chartNumber) {
     conversionProgress[chartNumber] = {

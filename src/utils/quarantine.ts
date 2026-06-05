@@ -24,6 +24,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { makeContainerWritable } from './container-fs.js';
 
 const QUARANTINE_ROOT_NAME = 'in-progress';
 
@@ -36,6 +37,7 @@ const QUARANTINE_ROOT_NAME = 'in-progress';
 export function makeQuarantineDir(dataDir: string, chartNumber: string): string {
   const dir = path.join(dataDir, QUARANTINE_ROOT_NAME, sanitizeIdSegment(chartNumber));
   fs.mkdirSync(dir, { recursive: true });
+  makeContainerWritable(dir);
   return dir;
 }
 
