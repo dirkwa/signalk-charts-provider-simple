@@ -235,7 +235,7 @@ export function buildExportScript(opts: ExportScriptOptions): string {
   if (parallel === 1) {
     return `
 set -e
-: > "${errLog}" 2>/dev/null || true
+: > ${errLog}
 count=$(find ${inDir} -name '*.000' ! -name '._*' -type f | wc -l)
 i=0
 find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
@@ -264,7 +264,7 @@ echo "PROGRESS: Export complete"
   const multiArg = opts.multiFile ? '1' : '0';
   return `
 set -e
-: > "${errLog}" 2>/dev/null || true
+: > ${errLog}
 count=$(find ${inDir} -name '*.000' ! -name '._*' -type f | wc -l)
 i=0
 find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
