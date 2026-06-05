@@ -125,7 +125,7 @@ systemctl --user enable --now podman.socket
 
 The plugin uses one combined image that `signalk-container` pulls automatically on first conversion:
 
-- `ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0` — GDAL + tippecanoe + tile-join + helpers in a single image (multi-arch: amd64 + arm64). The plugin pins to a specific `:VERSION` tag rather than `:latest` so a published image tag is permanent for any host that pulled it; bumping the toolbox image is a co-ordinated edit of `docker/charts-toolbox/VERSION` and the matching constant in `src/utils/container-images.ts`.
+- `ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.1.0` — GDAL + tippecanoe + tile-join + helpers in a single image (multi-arch: amd64 + arm64). The plugin pins to a specific `:VERSION` tag rather than `:latest` so a published image tag is permanent for any host that pulled it; bumping the toolbox image is a co-ordinated edit of `docker/charts-toolbox/VERSION` and the matching constant in `src/utils/container-images.ts`.
 
 **Why `signalk-container`?** It transparently handles the three deployment topologies that 1.x got wrong:
 
@@ -144,7 +144,7 @@ The same `charts-toolbox` image the plugin uses internally is also available for
 Pull it directly from GHCR:
 
 ```bash
-docker pull ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0
+docker pull ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.1.0
 ```
 
 See [docs/charts-toolbox-image.md](docs/charts-toolbox-image.md) for a quickstart, the `--user` / `--userns=keep-id` flag forms per runtime, and reproducibility notes.

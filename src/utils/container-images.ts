@@ -19,4 +19,4 @@
  * rebuild + push, then update the version in this file.
  */
 export const CHARTS_TOOLBOX_IMAGE =
-  'ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0';
+  'ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.1.0';

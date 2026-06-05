@@ -7,7 +7,7 @@ This is also the image the plugin's converter is being migrated to use internall
 ## Image reference
 
 ```text
-ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0
+ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.1.0
 ```
 
 Tags:
@@ -41,7 +41,7 @@ unzip -q MyChart.zip                     # creates ENC_ROOT/ etc.
 docker run --rm \
     -v "$PWD:/data" \
     --user "$(id -u):$(id -g)" \
-    ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0 \
+    ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.1.0 \
     sh -c '
         find /data/ENC_ROOT -name "*.000" -print0 | while IFS= read -r -d "" cell; do
             name=$(basename "$cell" .000)
@@ -59,7 +59,7 @@ docker run --rm \
 docker run --rm \
     -v "$PWD:/data" \
     --user "$(id -u):$(id -g)" \
-    ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0 \
+    ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.1.0 \
     sh -c '
         tippecanoe \
             -o /data/MyChart.mbtiles \
@@ -83,7 +83,7 @@ Pass `--user $(id -u):$(id -g)` to align the in-container UID with your host UID
 docker run --rm \
     --user "$(id -u):$(id -g)" \
     -v "$PWD:/data" \
-    ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0 \
+    ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.1.0 \
     <command>
 ```
 
@@ -95,7 +95,7 @@ docker run --rm \
 podman run --rm \
     --userns=keep-id:uid=1001,gid=1001 \
     -v "$PWD:/data:Z" \
-    ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.0.0 \
+    ghcr.io/dirkwa/signalk-charts-provider-simple/charts-toolbox:1.1.0 \
     <command>
 ```
 
