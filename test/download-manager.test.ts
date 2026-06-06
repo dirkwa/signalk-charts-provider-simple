@@ -193,8 +193,15 @@ describe('DownloadManager retry', () => {
     // The retry must NOT run a second attempt, and the job must stay cancelled
     // — never overwritten by a later completion.
     let secondAttempt = false;
+    // Resolve the moment the first attempt actually reaches the origin, so we
+    // cancel based on a real signal rather than a wall-clock guess (flaky CI).
+    let signalFirstHit: () => void = () => {};
+    const firstHit = new Promise<void>((resolve) => {
+      signalFirstHit = resolve;
+    });
     const origin = await startOrigin((hit, res) => {
       if (hit === 1) {
+        signalFirstHit();
         res.statusCode = 503;
         res.end('busy');
         return;
@@ -209,9 +216,9 @@ describe('DownloadManager retry', () => {
       const jobId = downloadManager.createJob(origin.url, TMP, 'cancel-in-backoff', {
         saveRaw: true
       });
-      // Cancel mid-backoff: after the first 503 (a few hundred ms in) but well
-      // before the ~2s backoff elapses.
-      await new Promise((r) => setTimeout(r, 500));
+      // Wait for the first attempt to land (deterministic), then cancel while
+      // the loop is in its ~2s backoff before the second attempt.
+      await firstHit;
       const result = downloadManager.cancelJob(jobId);
       assert.strictEqual(result.success, true, 'cancel should succeed mid-flight');
 
