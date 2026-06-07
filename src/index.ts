@@ -1824,8 +1824,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             registryStatus: getRegistryStatus()
           });
         } catch (error) {
-          console.error('Error refreshing catalog registry:', error);
-          res.status(500).json({ error: 'Failed to refresh catalog registry' });
+          // The refresh itself is awaited+swallowed above; this only fires if
+          // building the response throws.
+          console.error('Error building catalog refresh response:', error);
+          res.status(500).json({ error: 'Failed to build catalog refresh response' });
         }
       })();
     });

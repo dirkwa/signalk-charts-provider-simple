@@ -225,7 +225,7 @@ async function initCatalogTab(): Promise<void> {
     </div>
   `;
 
-  await loadCatalogRegistry();
+  const registryOk = await loadCatalogRegistry();
   await loadFolders();
   await checkS57Status();
   await refreshUpdateBadge();
@@ -239,7 +239,11 @@ async function initCatalogTab(): Promise<void> {
   // catalogDownloadJobs was still empty, so without this call the
   // user briefly sees "Download & Convert" on actively-downloading
   // rows until the first pollCatalogDownloads tick (~2s later).
-  renderCatalogList();
+  // Skip on a failed load so we don't clobber the server-error message
+  // loadCatalogRegistry wrote into #catalogList.
+  if (registryOk) {
+    renderCatalogList();
+  }
 
   // Wire delegated click handlers — every action that previously used
   // inline `onclick="X('${catalogEscapeAttr(value)}')"` now reads a data-*
@@ -350,7 +354,6 @@ function wireCatalogClickHandlers(): void {
         return;
       }
 
-      // Refresh button - force a re-fetch of the catalog index from GitHub.
       const refreshBtn = target.closest<HTMLButtonElement>('[data-catalog-refresh]');
       if (refreshBtn) {
         void doCatalogRefresh(refreshBtn);
@@ -486,14 +489,22 @@ function registryEmptyMessageHtml(status: RegistryStatus | undefined): string {
 
 // Non-destructive banner shown ABOVE a populated list when a refresh failed —
 // so we never blank the cached cards just to report the failure.
-function showRegistryBanner(status: RegistryStatus | undefined): void {
+function showRegistryBanner(
+  status: RegistryStatus | undefined,
+  source: 'github' | 'server' = 'github'
+): void {
   const el = document.getElementById('catalogRegistryBanner');
   if (!el) {
     return;
   }
-  const msg = status?.isRateLimited
-    ? `Showing cached catalogs. GitHub rate limit reached — try refresh again ${formatRateLimitReset(status)}.`
-    : 'Showing cached catalogs. Could not reach GitHub to refresh the index.';
+  let msg: string;
+  if (status?.isRateLimited) {
+    msg = `Showing cached catalogs. GitHub rate limit reached — try refresh again ${formatRateLimitReset(status)}.`;
+  } else if (source === 'server') {
+    msg = 'Showing cached catalogs. Could not reach the Signal K server to refresh the index.';
+  } else {
+    msg = 'Showing cached catalogs. Could not reach GitHub to refresh the index.';
+  }
   el.innerHTML = `<div class="catalog-banner catalog-banner-warning">${msg}</div>`;
 }
 
@@ -557,7 +568,7 @@ async function loadCatalogRegistry(): Promise<boolean> {
         listEl.innerHTML = `<div class="catalog-error">Failed to load the catalog list from the Signal K server. Reload the page or click Refresh.</div>`;
       }
     } else {
-      showRegistryBanner(undefined);
+      showRegistryBanner(undefined, 'server');
     }
     return false;
   }
@@ -592,8 +603,13 @@ async function doCatalogRefresh(btn: HTMLButtonElement): Promise<void> {
     applyRegistryResponse(data);
   } catch (error) {
     console.error('Catalog refresh failed:', error);
+    // A newer load/refresh already won — don't overwrite the fresh UI with
+    // this stale failure.
+    if (seq !== registryLoadSeq) {
+      return;
+    }
     if (catalogRegistry.length > 0) {
-      showRegistryBanner(undefined);
+      showRegistryBanner(undefined, 'server');
     } else {
       const listEl = document.getElementById('catalogList');
       if (listEl) {

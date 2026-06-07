@@ -282,11 +282,41 @@ test.describe('Chart Catalog tab', () => {
 
     await page.locator('[data-catalog-refresh]').click();
 
-    // Cards must NOT be blanked; a non-destructive banner explains why.
+    // Cards must NOT be blanked; a non-destructive banner explains why,
+    // and a GitHub rate-limit blames GitHub (not the Signal K server).
     await expect(page.locator('.catalog-card')).toHaveCount(1);
-    await expect(page.locator('#catalogRegistryBanner .catalog-banner-warning')).toContainText(
-      /cached catalogs/i
-    );
+    const banner = page.locator('#catalogRegistryBanner .catalog-banner-warning');
+    await expect(banner).toContainText(/cached catalogs/i);
+    await expect(banner).toContainText(/GitHub rate limit/i);
+  });
+
+  test('a refresh that cannot reach the Signal K server blames the server, not GitHub', async ({
+    page
+  }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'DE_IENC.xml',
+          label: 'Germany Inland ENC',
+          category: 'ienc',
+          chartCount: 3,
+          cachedAt: '2026-05-07T10:00:00Z'
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('.catalog-card')).toHaveCount(1);
+
+    // Make the refresh request to OUR endpoint fail at the transport level.
+    await page.route('**/catalog-registry/refresh', (r) => r.abort());
+    await page.locator('[data-catalog-refresh]').click();
+
+    const banner = page.locator('#catalogRegistryBanner .catalog-banner-warning');
+    await expect(banner).toContainText(/Signal K server/i);
+    await expect(banner).not.toContainText(/GitHub/i);
+    // Cards still present (never blanked on a transport failure).
+    await expect(page.locator('.catalog-card')).toHaveCount(1);
   });
 
   test('a successful refresh populates the list and clears any banner', async ({ page }) => {

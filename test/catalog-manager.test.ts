@@ -2,7 +2,7 @@
  * Tests for the catalog manager module
  */
 
-import { describe, it, before, after, mock } from 'node:test';
+import { describe, it, before, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 // NOTE: the module under test imports from 'https' (not 'node:https'); ESM
@@ -652,11 +652,14 @@ describe('CatalogManager', () => {
     before(async () => {
       // initCatalogManager (outer before) fired a real, fire-and-forget
       // fetch; single-flight would hand that in-progress promise to our
-      // first stubbed test. Drain it so each test below starts clean.
+      // first stubbed test. Drain it — under a stub so this never makes a
+      // live GitHub call (offline/flaky-safe).
+      stubHttps({ statusCode: 200, headers: { 'x-ratelimit-remaining': '60' }, body: '[]' });
       await fetchCatalogRegistry().catch(() => undefined);
+      mock.restoreAll();
     });
 
-    after(() => {
+    afterEach(() => {
       mock.restoreAll();
     });
 
@@ -677,7 +680,6 @@ describe('CatalogManager', () => {
       assert.strictEqual(s.resetAt, 1749532800 * 1000);
       assert.strictEqual(s.retryAfter, 3600);
       assert.strictEqual(s.httpStatus, 403);
-      mock.restoreAll();
     });
 
     it('a 403 WITHOUT remaining 0 is a generic error, not rate-limited', async () => {
@@ -686,7 +688,6 @@ describe('CatalogManager', () => {
       const s = getRegistryStatus();
       assert.strictEqual(s.isRateLimited, false);
       assert.strictEqual(s.status, 'error');
-      mock.restoreAll();
     });
 
     it('a 200 clears the rate-limit flag and records remaining', async () => {
@@ -696,7 +697,6 @@ describe('CatalogManager', () => {
       assert.strictEqual(s.status, 'ok');
       assert.strictEqual(s.isRateLimited, false);
       assert.strictEqual(s.remaining, 57);
-      mock.restoreAll();
     });
 
     it('a network error is status error with null httpStatus (not rate-limited)', async () => {
@@ -706,7 +706,6 @@ describe('CatalogManager', () => {
       assert.strictEqual(s.status, 'error');
       assert.strictEqual(s.isRateLimited, false);
       assert.strictEqual(s.httpStatus, null);
-      mock.restoreAll();
     });
 
     it('single-flight: two concurrent calls issue one https.get', async () => {
@@ -746,7 +745,6 @@ describe('CatalogManager', () => {
       });
       await Promise.all([fetchCatalogRegistry(), fetchCatalogRegistry()]);
       assert.strictEqual(getMock.mock.callCount(), 1);
-      mock.restoreAll();
     });
   });
 });

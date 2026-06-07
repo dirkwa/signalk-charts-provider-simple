@@ -366,11 +366,12 @@ function doFetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
           registryStatus.httpStatus = response.statusCode ?? null;
 
           if (response.statusCode !== 200) {
-            // Only flag rate-limited when GitHub actually says so (403/429 with
-            // remaining 0); any other non-200 is a generic error.
+            // Classify off THIS response's header (the local `remaining`), not
+            // the persisted field — a 403/429 without an x-ratelimit-remaining
+            // header must not inherit a previous response's 0 and get
+            // mislabeled rate-limited.
             const rateLimited =
-              (response.statusCode === 403 || response.statusCode === 429) &&
-              registryStatus.remaining === 0;
+              (response.statusCode === 403 || response.statusCode === 429) && remaining === 0;
             registryStatus.isRateLimited = rateLimited;
             registryStatus.status = rateLimited ? 'rate_limited' : 'error';
             response.resume();
@@ -388,6 +389,9 @@ function doFetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
               const raw: unknown = JSON.parse(data);
               const files = safeParse(GithubContentsListingSchema, raw);
               if (!files) {
+                // Reached GitHub (200) but the body was malformed — a generic
+                // error, definitively not a rate limit.
+                registryStatus.isRateLimited = false;
                 registryStatus.status = 'error';
                 reject(new Error('GitHub API response did not match expected shape'));
                 return;
@@ -410,6 +414,7 @@ function doFetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
               registryStatus.lastSuccessAt = Date.now();
               resolve(xmlFiles);
             } catch (err) {
+              registryStatus.isRateLimited = false;
               registryStatus.status = 'error';
               reject(err);
             }
