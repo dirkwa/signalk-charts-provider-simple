@@ -742,13 +742,31 @@ describe('CatalogManager', () => {
       assert.strictEqual(s.status, 'error');
     });
 
-    it('a 200 clears the rate-limit flag and records remaining', async () => {
+    it('a 200 clears the rate-limit flag, metadata, and records remaining', async () => {
+      // First a 403 that sets isRateLimited + resetAt + retryAfter...
+      stubHttps({
+        statusCode: 403,
+        headers: {
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': '1749532800',
+          'retry-after': '3600'
+        }
+      });
+      await assert.rejects(fetchCatalogRegistry());
+      assert.strictEqual(getRegistryStatus().isRateLimited, true);
+      assert.strictEqual(getRegistryStatus().resetAt, 1749532800 * 1000);
+      mock.restoreAll();
+
+      // ...then a 200 must clear all of it, not just the flag, so a stale
+      // rate-limit banner can't slip through while status === 'ok'.
       stubHttps({ statusCode: 200, headers: { 'x-ratelimit-remaining': '57' }, body: '[]' });
       await fetchCatalogRegistry();
       const s = getRegistryStatus();
       assert.strictEqual(s.status, 'ok');
       assert.strictEqual(s.isRateLimited, false);
       assert.strictEqual(s.remaining, 57);
+      assert.strictEqual(s.resetAt, null, 'a success must clear the stale reset time');
+      assert.strictEqual(s.retryAfter, null, 'a success must clear the stale retry-after');
     });
 
     it('a network error is status error with null httpStatus (not rate-limited)', async () => {

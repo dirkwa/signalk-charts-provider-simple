@@ -409,8 +409,14 @@ function doFetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
                 saveRegistryCache();
                 debug(`Catalog registry: ${xmlFiles.length} catalogs from GitHub`);
               }
+              // A successful fetch means we are not rate-limited; clear the
+              // rate-limit metadata so a stale reset/retry time can't leak into
+              // the UI later (resetAt/retryAfter are only meaningful while
+              // isRateLimited).
               registryStatus.isRateLimited = false;
               registryStatus.status = 'ok';
+              registryStatus.resetAt = null;
+              registryStatus.retryAfter = null;
               registryStatus.lastSuccessAt = Date.now();
               resolve(xmlFiles);
             } catch (err) {
