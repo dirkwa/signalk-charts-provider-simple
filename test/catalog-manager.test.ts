@@ -79,19 +79,26 @@ function stubHttpsEmpty200(): void {
   });
 }
 
+// Every initCatalogManager() fire-and-forgets fetchCatalogRegistry(), so any
+// call (suite setup AND each restart simulation) must run under a stub or it
+// makes a live GitHub call and leaks an in-flight request into later
+// assertions. This wraps init: stub https.get, init (its synchronous
+// loadInstalls/recovery runs here, before the await), drain the pending
+// fetch, restore.
+async function initCatalogManagerOffline(): Promise<void> {
+  stubHttpsEmpty200();
+  initCatalogManager(TEST_DATA_DIR, () => {});
+  await fetchCatalogRegistry().catch(() => undefined);
+  mock.restoreAll();
+}
+
 describe('CatalogManager', () => {
   before(async () => {
     // Clean up any previous test data
     if (fs.existsSync(TEST_DATA_DIR)) {
       fs.rmSync(TEST_DATA_DIR, { recursive: true });
     }
-    // initCatalogManager fires a fire-and-forget fetchCatalogRegistry(); stub
-    // https.get BEFORE the call so that init fetch never reaches GitHub, then
-    // drain the single pending request and restore so no live call leaks.
-    stubHttpsEmpty200();
-    initCatalogManager(TEST_DATA_DIR, () => {});
-    await fetchCatalogRegistry().catch(() => undefined);
-    mock.restoreAll();
+    await initCatalogManagerOffline();
   });
 
   after(() => {
@@ -545,7 +552,7 @@ describe('CatalogManager', () => {
       removeInstall('p');
     });
 
-    it('survives a restart mid-update: load auto-rolls-back to prior (no reap needed)', () => {
+    it('survives a restart mid-update: load auto-rolls-back to prior (no reap needed)', async () => {
       seedCache('rst', '2024-06-10T00:00:00Z');
       trackInstall('rst', CATALOG, '2024-01-01T00:00:00Z', 'https://example.com/old.mbtiles');
       setInstallFilename('rst', 'rst.mbtiles'); // committed old
@@ -554,7 +561,7 @@ describe('CatalogManager', () => {
       // Simulate a Signal K restart: drop module memory, reload from disk.
       // Recovery is automatic in loadInstalls() — NO manual rollbackInstall,
       // because orphan-reap does not fire for a download-phase restart.
-      initCatalogManager(TEST_DATA_DIR, () => {});
+      await initCatalogManagerOffline();
 
       const rec = getInstalledCatalogCharts()['rst'];
       assert.ok(rec, 'prior version must survive the restart');
@@ -570,7 +577,7 @@ describe('CatalogManager', () => {
       removeInstall('rst');
     });
 
-    it('survives a restart mid-update even when pruneStaleInstalls runs', () => {
+    it('survives a restart mid-update even when pruneStaleInstalls runs', async () => {
       // Reproduces the live finding: prune runs at startup before any reap and
       // must NOT delete an in-flight record (the new file isn't on disk yet, so
       // its chartId is absent from the scanned set). With load-time recovery the
@@ -581,7 +588,7 @@ describe('CatalogManager', () => {
       setInstallFilename('prn', 'old-prn.mbtiles'); // committed old → chartId 'old-prn'
       trackInstall('prn', CATALOG, '2024-06-10T00:00:00Z', 'https://example.com/new.mbtiles'); // begin update
 
-      initCatalogManager(TEST_DATA_DIR, () => {}); // restart → load auto-rolls-back to old-prn
+      await initCatalogManagerOffline(); // restart → load auto-rolls-back to old-prn
       // Startup then scans charts and prunes. The old file IS on disk, so its
       // chartId is present; pass it so prune keeps the recovered record.
       pruneStaleInstalls(['old-prn']);
@@ -593,9 +600,9 @@ describe('CatalogManager', () => {
       removeInstall('prn');
     });
 
-    it('survives a restart mid-fresh-install: pending record dropped on load', () => {
+    it('survives a restart mid-fresh-install: pending record dropped on load', async () => {
       trackInstall('frsh', CATALOG, '2024-01-01T00:00:00Z', 'https://example.com/a.mbtiles');
-      initCatalogManager(TEST_DATA_DIR, () => {}); // restart → load drops the never-committed fresh record
+      await initCatalogManagerOffline(); // restart → load drops the never-committed fresh record
       assert.strictEqual(getInstalledCatalogCharts()['frsh'], undefined);
     });
 
