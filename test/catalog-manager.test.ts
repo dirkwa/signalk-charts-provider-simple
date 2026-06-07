@@ -39,13 +39,59 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // gets cleaned in the test's after hook so no commit-time leakage.
 const TEST_DATA_DIR = path.join(__dirname, 'fixtures', 'catalog-test-data');
 
+// Minimal https.get stub that resolves an empty 200 registry, so any fetch it
+// covers never touches the network. Shared by the outer init and the
+// rate-limit suite's drain so neither makes a live GitHub call.
+function stubHttpsEmpty200(): void {
+  mock.method(https, 'get', (...args: unknown[]) => {
+    const cb = args[args.length - 1] as (r: unknown) => void;
+    const req = {
+      on() {
+        return req;
+      },
+      setTimeout() {
+        return req;
+      },
+      destroy() {
+        /* no-op */
+      }
+    };
+    process.nextTick(() => {
+      const response = {
+        statusCode: 200,
+        headers: { 'x-ratelimit-remaining': '60' },
+        resume() {
+          /* drained */
+        },
+        on(event: string, handler: (chunk?: Buffer) => void) {
+          if (event === 'data') {
+            handler(Buffer.from('[]'));
+          }
+          if (event === 'end') {
+            handler();
+          }
+          return response;
+        }
+      };
+      cb(response);
+    });
+    return req;
+  });
+}
+
 describe('CatalogManager', () => {
-  before(() => {
+  before(async () => {
     // Clean up any previous test data
     if (fs.existsSync(TEST_DATA_DIR)) {
       fs.rmSync(TEST_DATA_DIR, { recursive: true });
     }
+    // initCatalogManager fires a fire-and-forget fetchCatalogRegistry(); stub
+    // https.get BEFORE the call so that init fetch never reaches GitHub, then
+    // drain the single pending request and restore so no live call leaks.
+    stubHttpsEmpty200();
     initCatalogManager(TEST_DATA_DIR, () => {});
+    await fetchCatalogRegistry().catch(() => undefined);
+    mock.restoreAll();
   });
 
   after(() => {
@@ -650,11 +696,10 @@ describe('CatalogManager', () => {
     }
 
     before(async () => {
-      // initCatalogManager (outer before) fired a real, fire-and-forget
-      // fetch; single-flight would hand that in-progress promise to our
-      // first stubbed test. Drain it — under a stub so this never makes a
-      // live GitHub call (offline/flaky-safe).
-      stubHttps({ statusCode: 200, headers: { 'x-ratelimit-remaining': '60' }, body: '[]' });
+      // The outer before already drained the init fetch under a stub; this is
+      // belt-and-suspenders in case any prior fetch is still in flight. Stubbed
+      // so it can never make a live GitHub call.
+      stubHttpsEmpty200();
       await fetchCatalogRegistry().catch(() => undefined);
       mock.restoreAll();
     });
