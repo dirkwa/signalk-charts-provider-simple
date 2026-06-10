@@ -108,7 +108,7 @@ function initDownloadInterface(): void {
         <h3>Where to Find Charts</h3>
         <ul>
           <li><a href="https://chartlocker.brucebalan.com/" target="_blank">Bruce's Chart Locker</a> - Community-maintained chart collection</li>
-          <li><a href="https://distribution.charts.noaa.gov/ncds/index.html" target="_blank">NOAA Nautical Charts</a> - Official US nautical charts</li>
+          <li><a href="#" onclick="openTab(null, 'customCatalogs'); return false;">NOAA Nautical Charts</a> - build a chart set in the NOAA Charts tab</li>
         </ul>
       </div>
     </div>

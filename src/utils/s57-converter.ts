@@ -7,10 +7,16 @@ import type {
   ConversionProgress,
   ConversionProgressMap,
   DebugFunction,
+  S57BucketProgress,
   S57ConversionOptions,
   S57ConversionResult,
   StatusCallback
 } from '../types.js';
+
+// Message thrown when an in-progress conversion is cancelled at a bucket
+// boundary. Callers (the Custom Catalogs flow) detect cancellation via their
+// own flag, so this is just a recognizable stop signal.
+export const CONVERSION_ABORTED_MESSAGE = 'Conversion cancelled';
 import { sanitizeChartFilename } from './catalog-title.js';
 import { getCpuBudget } from './concurrency.js';
 import { makeContainerWritable, makeContainerWritableDir } from './container-fs.js';
@@ -606,7 +612,8 @@ async function runTippecanoe(
   geojsonDir: string,
   outputMbtiles: string,
   chartNumber: string,
-  options: S57ConversionOptions = {}
+  options: S57ConversionOptions = {},
+  onTilePercent?: (pct: number) => void
 ): Promise<void> {
   const minzoom = options.minzoom ?? 9;
   const maxzoom = options.maxzoom ?? 16;
@@ -681,9 +688,12 @@ async function runTippecanoe(
   const handleTippecanoeLine = (line: string): void => {
     appendLog(chartNumber, line);
     const match = line.match(/(\d+(?:\.\d+)?)%/);
-    if (match && chartNumber && conversionProgress[chartNumber]) {
+    if (match) {
       const pct = parseFloat(match[1]);
-      conversionProgress[chartNumber].message = `Generating tiles: ${Math.round(pct)}%`;
+      if (chartNumber && conversionProgress[chartNumber]) {
+        conversionProgress[chartNumber].message = `Generating tiles: ${Math.round(pct)}%`;
+      }
+      onTilePercent?.(pct);
     }
   };
 
@@ -886,8 +896,32 @@ async function runPerBandPipeline(
   let bandIndex = 0;
   const totalBuckets = grouping.bands.length + (grouping.unbanded.length > 0 ? 1 : 0);
 
+  // Structured progress for the Custom Catalogs UI. No-op when the caller
+  // didn't pass an onProgress (upload / single-chart catalog flows).
+  const emitBucket = (
+    stage: S57BucketProgress['stage'],
+    label: string,
+    bucketPercent: number
+  ): void => {
+    options.onProgress?.({
+      stage,
+      bucketIndex: bandIndex,
+      bucketCount: totalBuckets,
+      bucketLabel: label,
+      bucketPercent
+    });
+  };
+  // Cooperative cancel: stop at the next bucket boundary. An in-flight
+  // container job can't be force-killed, so this only fires between buckets.
+  const abortIfRequested = (): void => {
+    if (options.isAborted?.()) {
+      throw new Error(CONVERSION_ABORTED_MESSAGE);
+    }
+  };
+
   for (const band of grouping.bands) {
     bandIndex += 1;
+    abortIfRequested();
     const cells = grouping.byBand.get(band) ?? [];
     const bandFloor = BAND_MIN_ZOOM[band] ?? userMinzoom;
     const bandCeiling = BAND_MAX_ZOOM[band] ?? userMaxzoom;
@@ -951,6 +985,7 @@ async function runPerBandPipeline(
     }
 
     const bucketProgressPrefix = `[band ${band} ${bandIndex}/${totalBuckets}]`;
+    const bucketLabel = `Band ${band}`;
     setProgress(
       chartNumber,
       'converting',
@@ -960,6 +995,7 @@ async function runPerBandPipeline(
       chartNumber,
       `${bucketProgressPrefix} Exporting ${cells.length} cell(s) to GeoJSON...`
     );
+    emitBucket('export', bucketLabel, -1);
     await exportAllLayersToGeoJSON(bandEncDir, cells, bandGeojsonDir, chartNumber);
 
     setProgress(
@@ -968,17 +1004,21 @@ async function runPerBandPipeline(
       `${bucketProgressPrefix} Generating tiles z${bandMinzoom}-z${bandMaxzoom}...`
     );
     appendLog(chartNumber, `${bucketProgressPrefix} Tippecanoe z${bandMinzoom}-z${bandMaxzoom}`);
+    emitBucket('tiles', bucketLabel, 0);
     const bandMbtiles = path.join(tmpDir, `band-${band}.mbtiles`);
-    await runTippecanoe(bandGeojsonDir, bandMbtiles, chartNumber, {
-      ...options,
-      minzoom: bandMinzoom,
-      maxzoom: bandMaxzoom
-    });
+    await runTippecanoe(
+      bandGeojsonDir,
+      bandMbtiles,
+      chartNumber,
+      { ...options, minzoom: bandMinzoom, maxzoom: bandMaxzoom },
+      (pct) => emitBucket('tiles', bucketLabel, pct)
+    );
     intermediates.push(bandMbtiles);
   }
 
   if (grouping.unbanded.length > 0) {
     bandIndex += 1;
+    abortIfRequested();
     const unbandedEncDir = path.join(tmpDir, 'enc-unbanded');
     const unbandedGeojsonDir = path.join(tmpDir, 'geojson-unbanded');
     fs.mkdirSync(unbandedEncDir, { recursive: true });
@@ -1000,6 +1040,7 @@ async function runPerBandPipeline(
     }
 
     const bucketProgressPrefix = `[unbanded ${bandIndex}/${totalBuckets}]`;
+    const bucketLabel = 'Other charts';
     setProgress(
       chartNumber,
       'converting',
@@ -1009,6 +1050,7 @@ async function runPerBandPipeline(
       chartNumber,
       `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s) to GeoJSON...`
     );
+    emitBucket('export', bucketLabel, -1);
     await exportAllLayersToGeoJSON(
       unbandedEncDir,
       grouping.unbanded,
@@ -1025,12 +1067,15 @@ async function runPerBandPipeline(
       chartNumber,
       `${bucketProgressPrefix} Tippecanoe z${userMinzoom}-z${userMaxzoom} (user-requested)`
     );
+    emitBucket('tiles', bucketLabel, 0);
     const unbandedMbtiles = path.join(tmpDir, 'band-unbanded.mbtiles');
-    await runTippecanoe(unbandedGeojsonDir, unbandedMbtiles, chartNumber, {
-      ...options,
-      minzoom: userMinzoom,
-      maxzoom: userMaxzoom
-    });
+    await runTippecanoe(
+      unbandedGeojsonDir,
+      unbandedMbtiles,
+      chartNumber,
+      { ...options, minzoom: userMinzoom, maxzoom: userMaxzoom },
+      (pct) => emitBucket('tiles', bucketLabel, pct)
+    );
     intermediates.push(unbandedMbtiles);
   }
 
@@ -1040,22 +1085,43 @@ async function runPerBandPipeline(
     );
   }
 
+  abortIfRequested();
   setProgress(chartNumber, 'converting', 'Joining per-band tile sets...');
+  options.onProgress?.({
+    stage: 'join',
+    bucketIndex: totalBuckets,
+    bucketCount: totalBuckets,
+    bucketLabel: 'Joining',
+    bucketPercent: -1
+  });
   await runTileJoin(intermediates, outputMbtiles, chartNumber);
 }
 
-export async function processS57Zip(
-  zipPath: string,
+/**
+ * Convert a directory tree of already-extracted S-57 ENC cells (`.000`
+ * files, possibly nested) into a single vector MBTiles. This is the reusable
+ * core of the conversion pipeline: `processS57Zip` extracts one ZIP and
+ * delegates here, and the Custom Catalogs flow extracts many NOAA ENC ZIPs
+ * into one combined tree and converts it in a single pass so the output is
+ * one `.mbtiles` per custom catalog.
+ *
+ * `encDir` is treated as read-only input (an input-only container mount, so
+ * it doesn't need `makeContainerWritable`). All conversion scratch — GeoJSON
+ * export and per-band intermediate `.mbtiles` — is created under
+ * `scratchParent` (defaulting to the parent of `encDir`) and removed on the
+ * way out, so the caller's input tree is never mutated.
+ */
+export async function processS57Directory(
+  encDir: string,
   chartsDir: string,
   chartNumber: string,
   onStatus: StatusCallback | null,
-  options: S57ConversionOptions = {}
+  options: S57ConversionOptions = {},
+  scratchParent?: string
 ): Promise<S57ConversionResult> {
   const statusFn = onStatus ?? (() => {});
-  const tmpDir = path.join(path.dirname(zipPath), `s57_${Date.now()}`);
-  const encDir = path.join(tmpDir, 'enc');
+  const tmpDir = path.join(scratchParent ?? path.dirname(encDir), `s57out_${Date.now()}`);
   const geojsonDir = path.join(tmpDir, 'geojson');
-  fs.mkdirSync(encDir, { recursive: true });
   fs.mkdirSync(geojsonDir, { recursive: true });
   // The multi-band pipeline has tippecanoe write its intermediate
   // `band-*.mbtiles` directly into tmpDir (its `/output`), so tmpDir itself
@@ -1085,25 +1151,9 @@ export async function processS57Zip(
     setProgress(chartNumber, 'pulling', 'Checking charts-toolbox image...');
     await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
 
-    statusFn('extracting', 'Extracting ENC files...');
-    setProgress(chartNumber, 'extracting', 'Extracting ENC files...');
-    let extracted: string[];
-    try {
-      extracted = await extractZip(zipPath, encDir);
-    } catch (zipErr) {
-      throw new Error(
-        `Downloaded file is not a valid ZIP archive (${zipErr instanceof Error ? zipErr.message : String(zipErr)}). The server may have returned an error page instead.`
-      );
-    }
-    debug(`Extracted ${extracted.length} files from ZIP`);
-
-    if (extracted.length === 0) {
-      throw new Error('No files found in ZIP archive');
-    }
-
     const encFiles = findEncFiles(encDir);
     if (encFiles.length === 0) {
-      throw new Error('No S-57 ENC files (.000) found in ZIP');
+      throw new Error('No S-57 ENC files (.000) found in the chart data');
     }
     debug(`Found ${encFiles.length} ENC files`);
     appendLog(chartNumber, `Found ${encFiles.length} ENC files`);
@@ -1148,10 +1198,24 @@ export async function processS57Zip(
         `Single-pass pipeline: ${encFiles.length} ENC file(s) in one GDAL container`
       );
 
+      options.onProgress?.({
+        stage: 'export',
+        bucketIndex: 1,
+        bucketCount: 1,
+        bucketLabel: 'Charts',
+        bucketPercent: -1
+      });
       await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber);
 
       statusFn('converting', 'Generating vector tiles...');
       setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');
+      options.onProgress?.({
+        stage: 'tiles',
+        bucketIndex: 1,
+        bucketCount: 1,
+        bucketLabel: 'Charts',
+        bucketPercent: 0
+      });
 
       // Clamp tippecanoe's maxzoom to the IHO band ceiling. Most
       // tippecanoe time is spent at the highest zooms; if the only
@@ -1169,7 +1233,15 @@ export async function processS57Zip(
         appendLog(chartNumber, msg);
       }
       const effectiveOptions: S57ConversionOptions = { ...options, maxzoom: clamp.effective };
-      await runTippecanoe(geojsonDir, outputPath, chartNumber, effectiveOptions);
+      await runTippecanoe(geojsonDir, outputPath, chartNumber, effectiveOptions, (pct) =>
+        options.onProgress?.({
+          stage: 'tiles',
+          bucketIndex: 1,
+          bucketCount: 1,
+          bucketLabel: 'Charts',
+          bucketPercent: pct
+        })
+      );
     }
 
     if (!fs.existsSync(outputPath)) {
@@ -1236,6 +1308,74 @@ export async function processS57Zip(
       setTimeout(() => {
         delete conversionProgress[chartNumber];
       }, 300000);
+    }
+    throw err;
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      debug(`Warning: failed to clean up ${tmpDir}`);
+    }
+  }
+}
+
+/**
+ * Extract a single S-57 ENC ZIP into a scratch tree and convert it to one
+ * vector MBTiles. Thin wrapper over {@link processS57Directory}: it owns the
+ * ZIP-specific extraction step (and its "not a valid ZIP archive" error
+ * surface), then hands the extracted `enc/` tree to the shared pipeline.
+ * Behaviour for the upload / single-catalog-chart flows is unchanged.
+ */
+export async function processS57Zip(
+  zipPath: string,
+  chartsDir: string,
+  chartNumber: string,
+  onStatus: StatusCallback | null,
+  options: S57ConversionOptions = {}
+): Promise<S57ConversionResult> {
+  const statusFn = onStatus ?? (() => {});
+  const tmpDir = path.join(path.dirname(zipPath), `s57_${Date.now()}`);
+  const encDir = path.join(tmpDir, 'enc');
+  fs.mkdirSync(encDir, { recursive: true });
+
+  if (chartNumber) {
+    conversionProgress[chartNumber] = {
+      status: 'extracting',
+      message: 'Extracting ENC files...',
+      log: []
+    };
+  }
+
+  try {
+    statusFn('extracting', 'Extracting ENC files...');
+    setProgress(chartNumber, 'extracting', 'Extracting ENC files...');
+    let extracted: string[];
+    try {
+      extracted = await extractZip(zipPath, encDir);
+    } catch (zipErr) {
+      throw new Error(
+        `Downloaded file is not a valid ZIP archive (${zipErr instanceof Error ? zipErr.message : String(zipErr)}). The server may have returned an error page instead.`
+      );
+    }
+    debug(`Extracted ${extracted.length} files from ZIP`);
+
+    if (extracted.length === 0) {
+      throw new Error('No files found in ZIP archive');
+    }
+
+    // Delegate to the shared pipeline. `tmpDir` is the scratch parent, so the
+    // pipeline's GeoJSON/per-band scratch lands alongside `enc/` and is
+    // cleaned up together with it by the finally below.
+    return await processS57Directory(encDir, chartsDir, chartNumber, onStatus, options, tmpDir);
+  } catch (err) {
+    // processS57Directory already records its own failures; this also covers
+    // the extraction phase (invalid/empty ZIP) before delegation. Idempotent
+    // — both land on the same terminal 'failed' state.
+    if (chartNumber) {
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {

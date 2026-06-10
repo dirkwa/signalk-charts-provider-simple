@@ -7,6 +7,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 - **Local Chart Management**: MBTiles (raster and vector), with folder organization and enable/disable toggles
 - **Download Manager**: Built-in download queue with progress tracking and ZIP extraction
 - **Chart Catalog**: Browse and download charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) with automatic update notifications
+- **NOAA Charts**: Draw a coverage region on a map from NOAA band-4 chart footprints; the plugin bundles the overlapping band-3/4/5 ENCs and converts them into a single vector MBTiles named after your chart set
 - **S-57 ENC Conversion**: Convert IENC/ENC charts to vector MBTiles with full S-52 symbology in Freeboard-SK
 - **BSB Raster Conversion**: Convert BSB/KAP raster charts and Pilot Charts to raster MBTiles
 - **World Basemaps**: GSHHG and OSM coastline basemaps for offline use
@@ -60,7 +61,7 @@ Access the plugin's web interface through your Signal K server:
 http://[your-server]:3000/plugins/signalk-charts-provider-simple/
 ```
 
-The interface provides four tabs:
+The interface provides five tabs:
 
 1. **Manage Charts**:
    - View all charts with metadata (name, bounds, zoom levels, size)
@@ -85,6 +86,15 @@ The interface provides four tabs:
    - Download & convert for S-57 ENC, BSB raster, Pilot Charts, and basemaps
    - Automatic update notifications (Signal K delta + tab badge)
    - Category filtering (MBTiles / RNC / IENC / General)
+
+5. **NOAA Charts**:
+   - Build a named **chart set** of NOAA ENC coverage by clicking band-4 footprints on a map (Leaflet + OpenSeaMap)
+   - Each band-4 selection automatically pulls in the overlapping band-3 and band-5 ENCs
+   - Footprint data from NOAA's [official chart locator](https://www.charts.noaa.gov/InteractiveCatalog/data/enc.geojson)
+   - Download & convert produces one `.mbtiles` per chart set, with live progress and a log
+   - Out-of-date detection when NOAA publishes new editions or your selection changes
+   - Container runtime (`signalk-container`) required, same as other conversions
+   - US waters only — NOAA is the only source of freely-downloadable ENC charts
 
 ### Supported Formats
 

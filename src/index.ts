@@ -61,10 +61,44 @@ import {
   getConversionProgress as getS57Progress,
   initS57Converter,
   processGshhg,
+  processS57Directory,
   processS57Zip,
   processShpBasemap,
   setConversionFailed as setS57Failed
 } from './utils/s57-converter.js';
+import {
+  band4MapEntries,
+  computeInclusion,
+  coverageByBox,
+  getFootprintIndex,
+  initNoaaEncFootprints,
+  peekFootprintIndex
+} from './utils/noaa-enc-footprints.js';
+import {
+  appendCatalogLog,
+  boxStatesForCatalog,
+  clearCatalogCancel,
+  clearCatalogProgress,
+  createCustomCatalog,
+  type CustomCatalog,
+  deleteCustomCatalog,
+  evaluateFreshness,
+  getCatalogDetail,
+  getCatalogProgress,
+  getCustomCatalog,
+  initCustomCatalogManager,
+  isCatalogBusy,
+  isCatalogCancelRequested,
+  isValidCatalogId,
+  listCustomCatalogs,
+  requestCatalogCancel,
+  saveCustomCatalog,
+  setCatalogBusy,
+  setCatalogDetail,
+  setCatalogFailed,
+  setCatalogProgress
+} from './utils/custom-catalog-manager.js';
+import { downloadAndExtractEncs } from './utils/custom-catalog-download.js';
 
 // JSON import with type attribute (NodeNext ESM). package.json's `version`
 // is what the marker file records so users can confirm the running build.
@@ -269,9 +303,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     const dataDir = pluginDataDir;
     initCatalogManager(dataDir, app.debug.bind(app));
+    initNoaaEncFootprints(dataDir, app.debug.bind(app));
+    initCustomCatalogManager(dataDir, app.debug.bind(app));
 
     const tempDirPattern =
-      /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-)\d+$/;
+      /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-|custom-catalog-)\d+$/;
     try {
       const dataDirEntries = fs.readdirSync(dataDir, { withFileTypes: true });
       for (const entry of dataDirEntries) {
@@ -2334,6 +2370,213 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         });
       }
     });
+
+    // ---- Custom NOAA ENC catalogs ----
+    // Build a named bundle of NOAA band-4 coverage areas selected on a map,
+    // then download all selected band-4 ENCs plus overlapping band-3/5 ENCs
+    // and convert them once into a single MBTiles named after the catalog.
+
+    const CustomCatalogCreateBody = Type.Object({
+      name: Type.String({ minLength: 1, maxLength: 120 })
+    });
+    const CustomCatalogUpdateBody = Type.Object({
+      name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+      selectedBand4ChartIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 32 })))
+    });
+
+    // Map data: all NOAA band-4 footprints as selectable bbox areas. This is
+    // the one endpoint that fetches the (large) NOAA enc.geojson; every other
+    // endpoint reads the in-memory index via peekFootprintIndex(). Registered
+    // BEFORE '/custom-catalogs/:id' so the literal path wins over the param.
+    router.get('/custom-catalogs/noaa-enc-footprints', (req: Request, res: Response) => {
+      const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+      void (async () => {
+        try {
+          const index = await getFootprintIndex({ forceRefresh });
+          res.json({
+            band4: band4MapEntries(index.all),
+            fetchedAt: index.fetchedAt,
+            stale: index.stale
+          });
+        } catch (error) {
+          res.status(502).json({
+            error: error instanceof Error ? error.message : 'Failed to load NOAA ENC footprints'
+          });
+        }
+      })();
+    });
+
+    router.get('/custom-catalogs', (_req: Request, res: Response) => {
+      res.json(listCustomCatalogs().map((c) => decorateCatalog(c)));
+    });
+
+    router.post('/custom-catalogs', (req: Request, res: Response) => {
+      const body = parseBody(CustomCatalogCreateBody, req, res);
+      if (!body) {
+        return;
+      }
+      try {
+        const catalog = createCustomCatalog(body.name);
+        res.status(201).json(decorateCatalog(catalog));
+      } catch (error) {
+        res.status(400).json({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to create catalog'
+        });
+      }
+    });
+
+    router.get('/custom-catalogs/:id', (req: Request, res: Response) => {
+      const catalog = getCustomCatalog((req.params as Record<string, string>).id);
+      if (!catalog) {
+        res.status(404).json({ error: 'Custom catalog not found' });
+        return;
+      }
+      res.json(decorateCatalog(catalog));
+    });
+
+    router.put('/custom-catalogs/:id', (req: Request, res: Response) => {
+      const id = (req.params as Record<string, string>).id;
+      const catalog = getCustomCatalog(id);
+      if (!catalog) {
+        res.status(404).json({ error: 'Custom catalog not found' });
+        return;
+      }
+      if (isCatalogBusy(id)) {
+        res
+          .status(409)
+          .json({ error: 'Catalog is downloading/converting; try again when it finishes' });
+        return;
+      }
+      const body = parseBody(CustomCatalogUpdateBody, req, res);
+      if (!body) {
+        return;
+      }
+      if (body.name !== undefined && body.name.trim() !== '') {
+        catalog.name = body.name.trim();
+      }
+      if (body.selectedBand4ChartIds !== undefined) {
+        catalog.selectedBand4ChartIds = Array.from(new Set(body.selectedBand4ChartIds));
+        // Recompute coverage from the cached footprint index when available so
+        // the UI shows an included-chart count immediately. The snapshot in
+        // `chartVersions` is only refreshed at download time.
+        const index = peekFootprintIndex();
+        if (index) {
+          catalog.includedChartIds = computeInclusion(
+            index.all,
+            catalog.selectedBand4ChartIds
+          ).includedChartIds;
+        }
+        // Any selection change requires a rebuild of the single combined chart.
+        catalog.status = catalog.selectedBand4ChartIds.length === 0 ? 'empty' : 'out_of_date';
+      }
+      saveCustomCatalog(catalog);
+      res.json(decorateCatalog(catalog));
+    });
+
+    router.delete('/custom-catalogs/:id', (req: Request, res: Response) => {
+      const id = (req.params as Record<string, string>).id;
+      if (isCatalogBusy(id)) {
+        res.status(409).json({ error: 'Catalog is downloading/converting; cannot delete now' });
+        return;
+      }
+      if (!deleteCustomCatalog(id)) {
+        res.status(404).json({ error: 'Custom catalog not found' });
+        return;
+      }
+      // The produced .mbtiles (if any) is intentionally left in the chart
+      // library — deleting the catalog definition is non-destructive. The user
+      // can remove the chart itself from the Manage Charts tab.
+      res.json({ success: true });
+    });
+
+    router.post('/custom-catalogs/:id/download-convert', (req: Request, res: Response) => {
+      const id = (req.params as Record<string, string>).id;
+      const catalog = getCustomCatalog(id);
+      if (!catalog) {
+        res.status(404).json({ error: 'Custom catalog not found' });
+        return;
+      }
+      if (catalog.selectedBand4ChartIds.length === 0) {
+        res.status(400).json({ success: false, error: 'Select at least one coverage area first' });
+        return;
+      }
+      if (isCatalogBusy(id)) {
+        res.status(409).json({ success: false, error: 'Already downloading/converting' });
+        return;
+      }
+      const cm = getContainerManager();
+      if (!cm?.getRuntime()) {
+        res.status(503).json({
+          success: false,
+          error:
+            'signalk-container plugin not available. Install it from the App Store and restart Signal K.'
+        });
+        return;
+      }
+      const budgetMax = getCpuBudget().maxConcurrentConversions;
+      if (getConvertingCount() >= budgetMax) {
+        res.status(429).json({
+          success: false,
+          error: `Too many conversions running (max ${budgetMax}). Please wait for one to finish.`
+        });
+        return;
+      }
+
+      handleCustomCatalogDownloadConvert(catalog);
+      res.json({ success: true, message: 'Download and conversion started' });
+    });
+
+    router.get('/custom-catalogs/:id/status', (req: Request, res: Response) => {
+      const id = (req.params as Record<string, string>).id;
+      const catalog = getCustomCatalog(id);
+      if (!catalog) {
+        res.status(404).json({ error: 'Custom catalog not found' });
+        return;
+      }
+      res.json({
+        ...decorateCatalog(catalog),
+        busy: isCatalogBusy(id),
+        progress: getCatalogProgress(id),
+        detail: getCatalogDetail(id)
+      });
+    });
+
+    router.post('/custom-catalogs/:id/cancel', (req: Request, res: Response) => {
+      const id = (req.params as Record<string, string>).id;
+      if (!isValidCatalogId(id)) {
+        res.status(400).json({ success: false, error: 'Invalid catalog id' });
+        return;
+      }
+      if (!isCatalogBusy(id)) {
+        res.json({ success: true, message: 'Nothing running' });
+        return;
+      }
+      requestCatalogCancel(id);
+      setCatalogProgress(id, 'cancelling', 'Cancelling…');
+      // Downloads stop between charts immediately; a conversion stops at the
+      // next band boundary (the in-flight container job can't be force-killed).
+      res.json({ success: true, message: 'Cancellation requested' });
+    });
+
+    router.get('/custom-catalogs/:id/log', (req: Request, res: Response) => {
+      const id = (req.params as Record<string, string>).id;
+      if (!isValidCatalogId(id)) {
+        res.status(400).json({ log: [], status: null });
+        return;
+      }
+      const tail = parseInt(req.query.tail as string) || 200;
+      const managerProgress = getCatalogProgress(id);
+      const s57 = getS57Progress(id);
+      // Manager progress carries the download phase; the S-57 converter carries
+      // the detailed per-band conversion log. Concatenate for the full picture.
+      const log = [...(managerProgress?.log ?? []), ...(s57?.log ?? [])];
+      res.json({
+        log: log.slice(-tail),
+        status: managerProgress?.status ?? s57?.status ?? null,
+        message: managerProgress?.message ?? s57?.message ?? ''
+      });
+    });
   };
 
   // Helper functions for catalog download routes (extracted to reduce nesting)
@@ -2837,6 +3080,284 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       jobId: `gshhg-${chartNumber}`,
       message: 'GSHHG basemap conversion started'
     });
+  }
+
+  // Augment a persisted catalog with derived, non-persisted fields the UI
+  // needs: the freshness-aware effective status, the live included-chart
+  // count, and any reasons it's out of date. Freshness is only computed when
+  // the NOAA footprint index is already in memory (the map endpoint loads it);
+  // otherwise we fall back to the stored status so this never blocks on the
+  // network.
+  function decorateCatalog(catalog: CustomCatalog): CustomCatalog & {
+    effectiveStatus: string;
+    includedCount: number;
+    updateReasons: string[];
+    boxStates: Record<string, string>;
+  } {
+    const chartPath = props.chartPath || defaultChartsPath;
+    const index = peekFootprintIndex();
+    if (!index) {
+      return {
+        ...catalog,
+        effectiveStatus: catalog.selectedBand4ChartIds.length === 0 ? 'empty' : catalog.status,
+        includedCount: catalog.includedChartIds.length,
+        updateReasons: [],
+        boxStates: {}
+      };
+    }
+    const freshness = evaluateFreshness(catalog, index, (rel) =>
+      fs.existsSync(path.join(chartPath, rel))
+    );
+    return {
+      ...catalog,
+      effectiveStatus: freshness.effectiveStatus,
+      includedCount: freshness.recomputed.includedChartIds.length,
+      updateReasons: freshness.reasons,
+      // Per-box freshness by NOAA edition (independent of whether the source
+      // ZIPs still exist on disk — they're cleaned up after conversion).
+      boxStates: boxStatesForCatalog(catalog, index)
+    };
+  }
+
+  // Async download-and-convert flow for a custom catalog. Fetches the current
+  // NOAA footprint index, resolves the band-3/4/5 ENC set, downloads every ZIP
+  // into one combined tree, converts it once via processS57Directory, and
+  // promotes the single MBTiles into the live chart library. The client polls
+  // /custom-catalogs/:id/status and /log for progress.
+  function handleCustomCatalogDownloadConvert(catalog: CustomCatalog): void {
+    const id = catalog.id;
+    const chartPath = props.chartPath || defaultChartsPath;
+    setCatalogBusy(id, true);
+    clearCatalogProgress(id);
+    setCatalogProgress(id, 'preparing', 'Resolving coverage…');
+    setCatalogDetail(id, {
+      phase: 'preparing',
+      overallPercent: 0,
+      sectionLabel: 'Resolving coverage…',
+      sectionPercent: -1,
+      downloadedChartIds: []
+    });
+    const stagedSoFar: string[] = [];
+
+    const stagingRoot = path.join(app.getDataDirPath(), `custom-catalog-${Date.now()}`);
+    const encDir = path.join(stagingRoot, 'enc');
+    const zipsDir = path.join(stagingRoot, 'zips');
+
+    void (async () => {
+      let quarantineDir: string | null = null;
+      let convertingFlagged = false;
+      try {
+        // Refresh the footprint index so we download the current editions.
+        const index = await getFootprintIndex();
+        const inclusion = computeInclusion(index.all, catalog.selectedBand4ChartIds);
+        if (inclusion.includedChartIds.length === 0) {
+          throw new Error('No NOAA charts match the selected coverage areas');
+        }
+        appendCatalogLog(
+          id,
+          `Resolved ${inclusion.includedChartIds.length} ENC(s) from ` +
+            `${catalog.selectedBand4ChartIds.length} selected area(s)`
+        );
+        if (inclusion.missingSelected.length > 0) {
+          appendCatalogLog(
+            id,
+            `Note: no longer published: ${inclusion.missingSelected.join(', ')}`
+          );
+        }
+
+        // Per-box coverage so the map can fill each band-4 box by its own
+        // band-4 + nested-band-5 download fraction.
+        setCatalogDetail(id, {
+          coverageByBox: coverageByBox(index.all, catalog.selectedBand4ChartIds)
+        });
+
+        // 1. Download + extract every ENC ZIP into one combined input tree.
+        const result = await downloadAndExtractEncs(inclusion.includedChartIds, encDir, zipsDir, {
+          onProgress: (done, total, chartId) => {
+            setCatalogProgress(id, 'downloading', `Downloading ${done}/${total}: ${chartId}`);
+            setCatalogDetail(id, {
+              phase: 'downloading',
+              overallPercent: 0,
+              sectionLabel: `Downloading ${done}/${total}`,
+              sectionPercent: total > 0 ? Math.round((done / total) * 100) : -1
+            });
+          },
+          // Flip the map area as each ENC lands, rather than all at once.
+          onStaged: (chartId) => {
+            stagedSoFar.push(chartId);
+            setCatalogDetail(id, { downloadedChartIds: [...stagedSoFar] });
+          },
+          onLog: (line) => appendCatalogLog(id, line),
+          isAborted: () => isCatalogCancelRequested(id)
+        });
+        // Cancel during download → stop before converting.
+        if (isCatalogCancelRequested(id)) {
+          throw new Error('Cancelled by user');
+        }
+        if (result.staged.length === 0) {
+          throw new Error('All ENC downloads failed — check network connectivity');
+        }
+        appendCatalogLog(
+          id,
+          `Downloaded ${result.staged.length}/${inclusion.includedChartIds.length} ENC(s)` +
+            (result.failed.length > 0 ? `, ${result.failed.length} failed` : '')
+        );
+        // A partial download yields an MBTiles that omits the failed cells, so
+        // it must not be marked up-to-date (see the status decision after
+        // conversion below).
+        const partialDownload = result.failed.length > 0;
+        if (partialDownload) {
+          appendCatalogLog(
+            id,
+            `WARNING: ${result.failed.length} cell(s) failed to download: ` +
+              `${result.failed.map((f) => f.chartId).join(', ')} — the built chart will be ` +
+              `incomplete and stay flagged for rebuild.`
+          );
+        }
+
+        // Persist the snapshot of what actually baked into the MBTiles — the
+        // STAGED charts and their editions, not the full requested set. On a
+        // partial download this records only the cells that made it in, so
+        // freshness (recomputed full vs stored staged) flags the missing cells
+        // and per-box edition state shows the affected boxes as needing a
+        // refresh. On a complete download staged == the full set, so nothing
+        // changes for the common case.
+        const staged = new Set(result.staged);
+        catalog.includedChartIds = inclusion.includedChartIds.filter((cid) => staged.has(cid));
+        catalog.chartVersions = Object.fromEntries(
+          Object.entries(inclusion.chartVersions).filter(([cid]) => staged.has(cid))
+        );
+        catalog.downloadedChartIds = result.staged;
+        catalog.lastDownloadedAt = new Date().toISOString();
+        catalog.status = 'downloaded';
+        saveCustomCatalog(catalog);
+
+        // 2. Convert the combined tree once → one MBTiles in the quarantine.
+        //    Flag converting so the global CPU-budget gate accounts for it.
+        setCatalogProgress(id, 'converting', 'Converting combined ENC set…');
+        setCatalogDetail(id, {
+          phase: 'converting',
+          overallPercent: 0,
+          sectionLabel: 'Starting conversion…',
+          sectionPercent: -1
+        });
+        // Re-check the conversion budget right before claiming a slot. The
+        // admission check at request time ran before the (long) download, so
+        // several catalogs could have passed it and now be ready to convert
+        // together. This synchronous check + setConvertingState pair is atomic
+        // in the event loop, so it can't over-subscribe maxConcurrentConversions.
+        const convertBudgetMax = getCpuBudget().maxConcurrentConversions;
+        if (getConvertingCount() >= convertBudgetMax) {
+          throw new Error(
+            `Too many conversions running (max ${convertBudgetMax}). Please retry when one finishes.`
+          );
+        }
+        setConvertingState(id, true);
+        convertingFlagged = true;
+        quarantineDir = makeQuarantineDir(app.getDataDirPath(), id);
+        const conv = await processS57Directory(
+          encDir,
+          quarantineDir,
+          id,
+          (status, message) => setCatalogProgress(id, status, message),
+          {
+            displayName: catalog.name,
+            displayDescription: `Custom catalog: ${catalog.name}`,
+            isAborted: () => isCatalogCancelRequested(id),
+            onProgress: (p) => {
+              // Overall bar is convert-only: each bucket is an equal slice,
+              // advanced by that bucket's tippecanoe %. Join sits near 100%.
+              const tilePct = p.bucketPercent >= 0 ? p.bucketPercent : 0;
+              const overall =
+                p.stage === 'join'
+                  ? 99
+                  : p.bucketCount > 0
+                    ? Math.round(((p.bucketIndex - 1 + tilePct / 100) / p.bucketCount) * 100)
+                    : 0;
+              let sectionLabel: string;
+              if (p.stage === 'join') {
+                sectionLabel = `Combining ${p.bucketCount} tile sets — this can take a while and can't be interrupted`;
+              } else if (p.stage === 'export') {
+                sectionLabel = `${p.bucketLabel} — reading charts (${p.bucketIndex} of ${p.bucketCount})`;
+              } else {
+                sectionLabel = `${p.bucketLabel} — generating tiles (${p.bucketIndex} of ${p.bucketCount})`;
+              }
+              setCatalogDetail(id, {
+                phase: p.stage === 'join' ? 'joining' : 'converting',
+                overallPercent: overall,
+                sectionLabel,
+                sectionPercent: p.stage === 'tiles' ? Math.round(tilePct) : -1
+              });
+            }
+          },
+          stagingRoot
+        );
+
+        // 3. Promote the single output into the live chart library (root).
+        await promoteQuarantine(quarantineDir, [conv.mbtilesFile], chartPath);
+        setChartEnabled(conv.mbtilesFile, true);
+
+        catalog.convertedChartPath = conv.mbtilesFile;
+        catalog.lastConvertedAt = new Date().toISOString();
+        // Only a complete bundle counts as up-to-date. A partial download
+        // produced a chart that omits some cells, so leave it out_of_date and
+        // the UI flags it for a rebuild (which retries the failed cells).
+        catalog.status = partialDownload ? 'out_of_date' : 'converted';
+        saveCustomCatalog(catalog);
+
+        await refreshChartProviders();
+        const chartId = conv.mbtilesFile.replace(/\.mbtiles$/, '');
+        if (chartProviders[chartId]) {
+          emitChartDelta(chartId, sanitizeProvider(chartProviders[chartId], 2));
+        }
+
+        setCatalogProgress(id, 'completed', `Created ${conv.mbtilesFile}`);
+        setCatalogDetail(id, {
+          phase: 'completed',
+          overallPercent: 100,
+          sectionLabel: `Created ${conv.mbtilesFile}`,
+          sectionPercent: 100
+        });
+        appendCatalogLog(id, `Done: ${conv.mbtilesFile}`);
+        // Let the completed state linger briefly, then clear so the UI settles
+        // onto the persisted 'converted' status.
+        setTimeout(() => clearCatalogProgress(id), 8000);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (isCatalogCancelRequested(id)) {
+          appendCatalogLog(id, 'Cancelled by user.');
+          setCatalogProgress(id, 'cancelled', 'Cancelled');
+          setCatalogDetail(id, {
+            phase: 'cancelled',
+            sectionLabel: 'Cancelled',
+            sectionPercent: -1
+          });
+          // Drop the cancelled state after a short linger.
+          setTimeout(() => clearCatalogProgress(id), 6000);
+        } else {
+          app.error(`Custom catalog ${id} download/convert failed: ${msg}`);
+          setCatalogFailed(id, msg);
+          setCatalogDetail(id, { phase: 'failed', sectionLabel: msg, sectionPercent: -1 });
+        }
+        // Mark out_of_date (unless it had a prior good conversion) so the UI
+        // shows the coverage needs a (re)build.
+        const latest = getCustomCatalog(id);
+        if (latest && latest.selectedBand4ChartIds.length > 0 && latest.status !== 'converted') {
+          latest.status = 'out_of_date';
+          saveCustomCatalog(latest);
+        }
+      } finally {
+        if (convertingFlagged) {
+          setConvertingState(id, false);
+        }
+        if (quarantineDir !== null) {
+          cleanupQuarantineDir(quarantineDir);
+        }
+        cleanupDir(stagingRoot);
+        clearCatalogCancel(id);
+        setCatalogBusy(id, false);
+      }
+    })();
   }
 
   const registerAsProvider = (): void => {

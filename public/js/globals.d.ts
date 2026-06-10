@@ -1,3 +1,4 @@
+/// <reference types="leaflet" />
 /**
  * Ambient declarations for cross-script globals.
  *
@@ -25,6 +26,7 @@ declare global {
     handleDownloadTabActive(): void;
     handleConvertTabActive(): void;
     handleCatalogTabActive(): void;
+    handleCustomCatalogsTabActive(): void;
 
     // chart-catalog.ts
     setCatalogFilter(category: string): void;

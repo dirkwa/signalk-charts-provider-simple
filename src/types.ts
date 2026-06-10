@@ -267,6 +267,25 @@ export interface S57ConversionResult {
   mbtilesFile: string;
 }
 
+/**
+ * Structured per-bucket progress for the multi-band S-57 pipeline. A "bucket"
+ * is one IHO band (or the unbanded remainder); the pipeline runs them in
+ * sequence, then tile-joins. Consumed by the Custom Catalogs UI to drive its
+ * progress bars; the upload / single-chart catalog flows don't pass an
+ * `onProgress` and so never see these.
+ */
+export interface S57BucketProgress {
+  /** `export` = GDAL→GeoJSON, `tiles` = tippecanoe, `join` = tile-join. */
+  stage: 'export' | 'tiles' | 'join';
+  /** 1-based index of the current bucket. */
+  bucketIndex: number;
+  bucketCount: number;
+  /** Human label, e.g. "Band 4" / "Other charts" / "Joining". */
+  bucketLabel: string;
+  /** 0–100 for `tiles`; -1 (indeterminate) for `export` / `join`. */
+  bucketPercent: number;
+}
+
 export interface S57ConversionOptions {
   minzoom?: number;
   maxzoom?: number;
@@ -284,6 +303,19 @@ export interface S57ConversionOptions {
    * provenance survives in clients that surface description.
    */
   displayDescription?: string;
+  /**
+   * Optional structured progress reporter. Called as the per-band pipeline
+   * moves through export → tiles → join for each bucket. Only the Custom
+   * Catalogs flow passes this.
+   */
+  onProgress?: (progress: S57BucketProgress) => void;
+  /**
+   * Optional cooperative-cancel check. Polled between buckets (and before
+   * tile-join); when it returns true the pipeline throws to stop at the next
+   * boundary. An in-flight container job can't be force-killed, so cancel
+   * takes effect at the next stage boundary, not instantly.
+   */
+  isAborted?: () => boolean;
 }
 
 export interface ContainerRuntimeStatus {

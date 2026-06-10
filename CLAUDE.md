@@ -31,11 +31,12 @@ This is a Signal K server plugin. The single entry is `src/index.ts`, which expo
 
 2. **Convert charts on demand** (write path, requires Docker/Podman via the `signalk-container` plugin — see the integration section below for the API contract).
    - `utils/container-manager.ts` is the discovery + waiting layer for the `signalk-container` plugin's manager API. Converters call `getContainerManager()` after `start()` has resolved it; they never import `dockerode` directly.
-   - `utils/s57-converter.ts` runs GDAL → tippecanoe pipelines for S-57 ENC, GSHHG, and SHP basemaps. `utils/s57-band.ts` sorts S-57 cells by chart-band and feeds tippecanoe per-band layers.
+   - `utils/s57-converter.ts` runs GDAL → tippecanoe pipelines for S-57 ENC, GSHHG, and SHP basemaps. `utils/s57-band.ts` sorts S-57 cells by chart-band and feeds tippecanoe per-band layers. `processS57Directory` is the reusable core (convert an already-extracted ENC tree); `processS57Zip` is a thin wrapper that extracts one ZIP then delegates to it.
    - `utils/rnc-converter.ts` runs GDAL pipelines for BSB/KAP raster (`processRncZip`) and Pilot tarballs (`processPilotTar`).
    - `utils/concurrency.ts` is the **single source of truth for CPU usage**. The plugin config exposes a `cpuBudget` enum (`single-core` / `half` / `all`); `setCpuBudget` is called from `start()` and `getCpuBudget()` returns the live `{ maxConcurrentConversions, tippecanoeThreadsPerJob, gdalExportParallelism }` so converters pick up changes between jobs without a restart. Don't reimplement CPU/concurrency logic elsewhere — read it from this module.
    - `utils/catalog-manager.ts` fetches and caches catalogs from `chartcatalogs.github.io` and tracks installed catalog charts so update notifications can fire.
    - `utils/download-manager.ts` is a queue with progress for direct-URL downloads and ZIP extraction.
+   - **NOAA Charts** (the `NOAA Charts` tab; UI calls each bundle a "chart set"): `utils/noaa-enc-footprints.ts` fetches + disk-caches NOAA's `enc.geojson`, reprojects EPSG:3857→4326, and exposes the band-4 map list plus the band-3/4/5 bbox-overlap inclusion math (all pure/testable). `utils/custom-catalog-manager.ts` persists each chart set as JSON under `<dataDir>/custom-catalogs/` (safe-slug ids, path-traversal-checked) and evaluates freshness. `utils/custom-catalog-download.ts` stages every selected ENC ZIP into one combined tree (zip-slip-safe). The `/custom-catalogs*` routes in `index.ts` drive download → `processS57Directory` (one combined conversion) → quarantine promote, producing one MBTiles per chart set. Server-side modules/routes keep the generic `custom-catalog` names; only the UI (tab `public/js/noaa-chart-selector.ts`) is NOAA-specific, since NOAA is currently the only free ENC source.
 
 ### `signalk-container` integration
 
@@ -55,7 +56,7 @@ If `signalk-container` is missing, the plugin still loads and **serves charts** 
 
 ### Web UI
 
-`public/` is a static webapp served by Signal K at `/plugins/signalk-charts-provider-simple/`. It talks to Express routes registered in `index.ts` via `registerWithRouter`. The UI has four tabs: Manage Charts / Download from URL / Convert / Chart Catalog.
+`public/` is a static webapp served by Signal K at `/plugins/signalk-charts-provider-simple/`. It talks to Express routes registered in `index.ts` via `registerWithRouter`. The UI has five tabs: Manage Charts / Download from URL / Convert / Chart Catalog / NOAA Charts. Scripts are plain `<script>` tags (no bundler); cross-file references go through `window.X`. The NOAA Charts tab (`public/js/noaa-chart-selector.ts`) uses Leaflet, vendored under `public/vendor/leaflet/` so the map UI loads offline (only basemap tiles need a network); `@types/leaflet` types the global `L` for the strict `public/js` build.
 
 ### Type extensions
 

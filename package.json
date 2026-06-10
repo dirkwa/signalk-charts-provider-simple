@@ -88,6 +88,7 @@
     "@playwright/test": "^1.59.1",
     "@types/busboy": "^1.5.4",
     "@types/express": "^5.0.3",
+    "@types/leaflet": "^1.9.12",
     "@types/node": "^22.15.0",
     "@types/unzipper": "^0.10.11",
     "@types/xml2js": "^0.4.14",
@@ -95,6 +96,7 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.4",
     "express": "^5.2.1",
+    "leaflet": "^1.9.4",
     "prettier": "^3.7.4",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.33.1"
