@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  boxStatesForCatalog,
   catalogMbtilesName,
   createCustomCatalog,
   deleteCustomCatalog,
@@ -198,5 +199,69 @@ describe('evaluateFreshness', () => {
       () => true
     );
     assert.strictEqual(r.effectiveStatus, 'empty');
+  });
+});
+
+describe('boxStatesForCatalog', () => {
+  // Box A (band-4) with one nested band-5 cell inside it.
+  function indexWith(b4: string, b5: string): FootprintIndex {
+    return makeIndex([
+      { encEdUp: `US4BOXA00_${b4}`, band: 4, ring: square(0, 0, 4) },
+      { encEdUp: `US5NEST00_${b5}`, band: 5, ring: square(1, 1, 1) }
+    ]);
+  }
+
+  function builtCatalog(): CustomCatalog {
+    return {
+      schemaVersion: 1,
+      id: 'cs',
+      name: 'CS',
+      selectedBand: 4,
+      selectedBand4ChartIds: ['US4BOXA0'],
+      includedChartIds: ['US4BOXA0', 'US5NEST0'],
+      chartVersions: { US4BOXA0: 'US4BOXA00_ED1', US5NEST0: 'US5NEST00_ED1' },
+      downloadedChartIds: ['US4BOXA0', 'US5NEST0'],
+      convertedChartPath: 'CS.mbtiles',
+      status: 'converted',
+      createdAt: '',
+      updatedAt: '',
+      lastDownloadedAt: null,
+      lastConvertedAt: null
+    };
+  }
+
+  it('up_to_date when baked editions still match current NOAA', () => {
+    const r = boxStatesForCatalog(builtCatalog(), indexWith('ED1', 'ED1'));
+    assert.strictEqual(r['US4BOXA0'], 'up_to_date');
+  });
+
+  it('needs_refresh when a nested band-5 cell has a newer edition', () => {
+    const r = boxStatesForCatalog(builtCatalog(), indexWith('ED1', 'ED2'));
+    assert.strictEqual(r['US4BOXA0'], 'needs_refresh');
+  });
+
+  it('needs_refresh when the catalog was never built', () => {
+    const r = boxStatesForCatalog(
+      { ...builtCatalog(), convertedChartPath: null },
+      indexWith('ED1', 'ED1')
+    );
+    assert.strictEqual(r['US4BOXA0'], 'needs_refresh');
+  });
+
+  it('needs_refresh when NOAA added a new cell to the box since the build', () => {
+    const idx = makeIndex([
+      { encEdUp: 'US4BOXA00_ED1', band: 4, ring: square(0, 0, 4) },
+      { encEdUp: 'US5NEST00_ED1', band: 5, ring: square(1, 1, 1) },
+      { encEdUp: 'US5NEW000_ED1', band: 5, ring: square(2, 2, 1) } // new cell in the box
+    ]);
+    const r = boxStatesForCatalog(builtCatalog(), idx);
+    assert.strictEqual(r['US4BOXA0'], 'needs_refresh');
+  });
+
+  // Edition-driven, so it does NOT depend on source files still being on disk
+  // (the chartFileExists check used by evaluateFreshness is irrelevant here).
+  it('is independent of on-disk source/output files', () => {
+    const r = boxStatesForCatalog(builtCatalog(), indexWith('ED1', 'ED1'));
+    assert.strictEqual(r['US4BOXA0'], 'up_to_date');
   });
 });

@@ -20,7 +20,7 @@ import path from 'path';
 import type { ConversionProgress, DebugFunction } from '../types.js';
 import { sanitizeChartFilename } from './catalog-title.js';
 import { isWithinBase } from './path-safety.js';
-import { computeInclusion, type FootprintIndex } from './noaa-enc-footprints.js';
+import { computeInclusion, coverageByBox, type FootprintIndex } from './noaa-enc-footprints.js';
 
 export const CUSTOM_CATALOG_SCHEMA_VERSION = 1;
 const CATALOG_DIR_NAME = 'custom-catalogs';
@@ -355,6 +355,56 @@ export function evaluateFreshness(
   // A selected band-4 chart is also in the recomputed included set, so an
   // edition change can be pushed by both loops above — de-dupe for display.
   return { upToDate, reasons: [...new Set(reasons)], recomputed, effectiveStatus };
+}
+
+/** Per selected band-4 box: is what's baked into the MBTiles still current? */
+export type BoxState = 'up_to_date' | 'needs_refresh';
+
+/**
+ * Compute, for each selected band-4 box, whether the chart edition baked into
+ * the built MBTiles still matches the current NOAA editions for that box's
+ * charts (its band-4 cell + the band-5 cells nested in it).
+ *
+ * `needs_refresh` when: the catalog was never built; a chart in the box's
+ * current coverage has a newer `enc_ed_up` than the snapshot taken at build
+ * time; or NOAA has added a new cell to the box since the build. `up_to_date`
+ * only when every covered chart matches the baked snapshot.
+ *
+ * This is driven entirely by the edition snapshot persisted in the chart-set
+ * JSON, so it is independent of whether the downloaded source ZIPs still exist
+ * on disk (they are cleaned up after conversion by design).
+ */
+export function boxStatesForCatalog(
+  catalog: CustomCatalog,
+  index: FootprintIndex
+): Record<string, BoxState> {
+  const coverage = coverageByBox(index.all, catalog.selectedBand4ChartIds);
+  const baked = catalog.chartVersions;
+  const built = catalog.convertedChartPath !== null;
+
+  const result: Record<string, BoxState> = {};
+  for (const boxId of catalog.selectedBand4ChartIds) {
+    if (!built) {
+      result[boxId] = 'needs_refresh';
+      continue;
+    }
+    const cov = coverage[boxId] ?? [];
+    let fresh = cov.length > 0;
+    for (const chartId of cov) {
+      const bakedEdition = baked[chartId];
+      const currentEdition = index.byChartId.get(chartId)?.encEdUp;
+      // New cell not in the build, or a drifted edition → this box is stale.
+      if (
+        bakedEdition === undefined ||
+        (currentEdition !== undefined && currentEdition !== bakedEdition)
+      ) {
+        fresh = false;
+        break;
+      }
+    }
+    result[boxId] = fresh ? 'up_to_date' : 'needs_refresh';
+  }
+  return result;
 }
 
 // ---- Per-catalog progress (download + convert) ----

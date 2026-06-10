@@ -47,6 +47,8 @@ interface CustomCatalog {
   effectiveStatus: string;
   includedCount: number;
   updateReasons: string[];
+  // Per-box freshness by NOAA edition: band-4 chartId -> 'up_to_date' | 'needs_refresh'.
+  boxStates: Record<string, string>;
 }
 
 interface CatalogProgress {
@@ -301,13 +303,27 @@ function refreshAreaColors(): void {
   // While downloading, each box shows a red base with a yellow fill rising
   // bottom-to-top by its own band-4 + nested-band-5 completed fraction.
   const downloading = ccBusy && ccDetail?.phase === 'downloading';
-  const baseColor = active ? ccStatusColor(active) : null;
+  // Idle colour is per-box, driven by NOAA-edition freshness (green = baked
+  // editions still current, red = NOAA has a newer edition / never built).
+  // Falls back to the catalog-level colour if the footprint index isn't loaded.
+  const boxStates = active?.boxStates ?? {};
+  const haveBoxStates = Object.keys(boxStates).length > 0;
   for (const [chartId, rect] of ccRectByChartId) {
-    if (active && selected.has(chartId)) {
-      rect.setStyle(ccSelectedStyle(downloading ? CC_RED : (baseColor ?? CC_RED)));
-    } else {
+    if (!active || !selected.has(chartId)) {
       rect.setStyle(ccClearStyle());
+      continue;
     }
+    let color: string;
+    if (downloading) {
+      color = CC_RED; // base; the fill overlay shows per-box progress
+    } else if (ccBusy) {
+      color = CC_YELLOW; // converting / combining
+    } else if (haveBoxStates) {
+      color = boxStates[chartId] === 'up_to_date' ? CC_GREEN : CC_RED;
+    } else {
+      color = ccStatusColor(active);
+    }
+    rect.setStyle(ccSelectedStyle(color));
   }
   updateFillOverlays(downloading, selected);
 }
@@ -523,6 +539,10 @@ function renderProgress(): void {
   let cancelHtml = '';
   if (ccBusy && d?.phase === 'cancelling') {
     cancelHtml = `<span class="cc-cancel-pending">Cancelling…</span>`;
+  } else if (ccBusy && d?.phase === 'joining') {
+    // The tile-join container job can't be interrupted (signalk-container's
+    // runJob has no abort), so don't offer a Cancel that wouldn't work.
+    cancelHtml = `<span class="cc-cancel-pending">Can't be interrupted</span>`;
   } else if (ccBusy) {
     cancelHtml = `<button class="cc-btn cc-btn-danger cc-cancel-btn" data-cc-action="cancel">Cancel</button>`;
   }

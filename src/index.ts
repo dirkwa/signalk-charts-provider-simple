@@ -76,6 +76,7 @@ import {
 } from './utils/noaa-enc-footprints.js';
 import {
   appendCatalogLog,
+  boxStatesForCatalog,
   clearCatalogCancel,
   clearCatalogProgress,
   createCustomCatalog,
@@ -3087,9 +3088,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // the NOAA footprint index is already in memory (the map endpoint loads it);
   // otherwise we fall back to the stored status so this never blocks on the
   // network.
-  function decorateCatalog(
-    catalog: CustomCatalog
-  ): CustomCatalog & { effectiveStatus: string; includedCount: number; updateReasons: string[] } {
+  function decorateCatalog(catalog: CustomCatalog): CustomCatalog & {
+    effectiveStatus: string;
+    includedCount: number;
+    updateReasons: string[];
+    boxStates: Record<string, string>;
+  } {
     const chartPath = props.chartPath || defaultChartsPath;
     const index = peekFootprintIndex();
     if (!index) {
@@ -3097,7 +3101,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         ...catalog,
         effectiveStatus: catalog.selectedBand4ChartIds.length === 0 ? 'empty' : catalog.status,
         includedCount: catalog.includedChartIds.length,
-        updateReasons: []
+        updateReasons: [],
+        boxStates: {}
       };
     }
     const freshness = evaluateFreshness(catalog, index, (rel) =>
@@ -3107,7 +3112,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       ...catalog,
       effectiveStatus: freshness.effectiveStatus,
       includedCount: freshness.recomputed.includedChartIds.length,
-      updateReasons: freshness.reasons
+      updateReasons: freshness.reasons,
+      // Per-box freshness by NOAA edition (independent of whether the source
+      // ZIPs still exist on disk — they're cleaned up after conversion).
+      boxStates: boxStatesForCatalog(catalog, index)
     };
   }
 
@@ -3207,10 +3215,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           );
         }
 
-        // Persist the downloaded snapshot before conversion so a crash leaves
-        // a coherent record the user can retry from.
-        catalog.includedChartIds = inclusion.includedChartIds;
-        catalog.chartVersions = inclusion.chartVersions;
+        // Persist the snapshot of what actually baked into the MBTiles — the
+        // STAGED charts and their editions, not the full requested set. On a
+        // partial download this records only the cells that made it in, so
+        // freshness (recomputed full vs stored staged) flags the missing cells
+        // and per-box edition state shows the affected boxes as needing a
+        // refresh. On a complete download staged == the full set, so nothing
+        // changes for the common case.
+        const staged = new Set(result.staged);
+        catalog.includedChartIds = inclusion.includedChartIds.filter((cid) => staged.has(cid));
+        catalog.chartVersions = Object.fromEntries(
+          Object.entries(inclusion.chartVersions).filter(([cid]) => staged.has(cid))
+        );
         catalog.downloadedChartIds = result.staged;
         catalog.lastDownloadedAt = new Date().toISOString();
         catalog.status = 'downloaded';
@@ -3260,7 +3276,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     : 0;
               let sectionLabel: string;
               if (p.stage === 'join') {
-                sectionLabel = `Joining ${p.bucketCount} tile sets`;
+                sectionLabel = `Combining ${p.bucketCount} tile sets — this can take a while and can't be interrupted`;
               } else if (p.stage === 'export') {
                 sectionLabel = `${p.bucketLabel} — reading charts (${p.bucketIndex} of ${p.bucketCount})`;
               } else {
