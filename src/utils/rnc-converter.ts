@@ -9,6 +9,7 @@ import {
   runJob as runContainerJob
 } from './container-jobs.js';
 import { getContainerManager } from './container-manager.js';
+import { throwJobFailure } from './job-failure.js';
 import { setMbtilesType } from './mbtiles-metadata.js';
 import type {
   ConversionProgress,
@@ -145,7 +146,7 @@ export async function convertKapToMbtiles(
   });
 
   if (result.exitCode !== 0) {
-    throw new Error(`gdal_translate failed (exit ${result.exitCode})`);
+    throwJobFailure(result, 'gdal_translate', (t) => appendLog(chartNumber, t));
   }
   if (!fs.existsSync(outputFile)) {
     throw new Error(`gdal_translate succeeded but output file not found: ${outputFile}`);
@@ -452,7 +453,7 @@ export async function processPilotTar(
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
     if (tarResult.exitCode !== 0) {
-      throw new Error(`tar extraction failed (exit ${tarResult.exitCode})`);
+      throwJobFailure(tarResult, 'tar extraction', (t) => appendLog(chartNumber, t));
     }
 
     const kapFiles: string[] = [];

@@ -21,6 +21,7 @@ import {
   runJob as runContainerJob
 } from './container-jobs.js';
 import { getContainerManager } from './container-manager.js';
+import { throwJobFailure } from './job-failure.js';
 import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata.js';
 import {
   BAND_MAX_ZOOM,
@@ -368,7 +369,12 @@ async function exportAllLayersToGeoJSON(
   });
 
   if (result.exitCode !== 0) {
-    throw new Error(`GDAL export failed with exit code ${result.exitCode}`);
+    // A structural export failure (find/ogrinfo/bash) may still have written
+    // per-file ogr2ogr stderr before dying; surface that alongside the
+    // container log tail so an empty /input and a per-chart parse error are
+    // distinguishable.
+    surfaceExportErrorsIfEmpty(geojsonDir, chartNumber);
+    throwJobFailure(result, `gdal-export-${chartNumber}`, (t) => appendLog(chartNumber, t));
   }
 
   // The export script swallows non-zero exits from per-file ogr2ogr calls
@@ -722,7 +728,7 @@ async function runTippecanoe(
   });
 
   if (result.exitCode !== 0) {
-    throw new Error(`tippecanoe failed with exit code ${result.exitCode}`);
+    throwJobFailure(result, 'tippecanoe', (t) => appendLog(chartNumber, t));
   }
 
   // Best-effort cleanup of the merged dir.
@@ -837,7 +843,7 @@ async function runTileJoin(
   });
 
   if (result.exitCode !== 0) {
-    throw new Error(`tile-join failed with exit code ${result.exitCode}`);
+    throwJobFailure(result, 'tile-join', (t) => appendLog(chartNumber, t));
   }
 }
 
@@ -1419,7 +1425,7 @@ export async function processGshhg(
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
   if (rasterizeResult.exitCode !== 0) {
-    throw new Error(`gdal_rasterize failed (exit ${rasterizeResult.exitCode})`);
+    throwJobFailure(rasterizeResult, 'gdal_rasterize', (t) => appendLog(chartNumber, t));
   }
 
   setProgress(chartNumber, 'converting', 'Creating MBTiles...');
@@ -1444,7 +1450,7 @@ export async function processGshhg(
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
   if (translateResult.exitCode !== 0) {
-    throw new Error(`gdal_translate failed (exit ${translateResult.exitCode})`);
+    throwJobFailure(translateResult, 'gdal_translate', (t) => appendLog(chartNumber, t));
   }
 
   setProgress(chartNumber, 'converting', 'Adding zoom levels...');
@@ -1473,7 +1479,7 @@ export async function processGshhg(
     onStderrLine: (line) => appendLog(chartNumber, line)
   });
   if (overviewResult.exitCode !== 0) {
-    throw new Error(`gdaladdo failed (exit ${overviewResult.exitCode})`);
+    throwJobFailure(overviewResult, 'gdaladdo', (t) => appendLog(chartNumber, t));
   }
 
   try {
@@ -1573,7 +1579,7 @@ export async function processShpBasemap(
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
     if (tarResult.exitCode !== 0) {
-      throw new Error(`tar extraction failed (exit ${tarResult.exitCode})`);
+      throwJobFailure(tarResult, 'tar extraction', (t) => appendLog(chartNumber, t));
     }
 
     const findShp = (dir: string, prefix: string | null): string | null => {
@@ -1690,7 +1696,7 @@ export async function processShpBasemap(
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
     if (rasterizeResult.exitCode !== 0) {
-      throw new Error(`gdal_rasterize failed (exit ${rasterizeResult.exitCode})`);
+      throwJobFailure(rasterizeResult, 'gdal_rasterize', (t) => appendLog(chartNumber, t));
     }
 
     appendLog(chartNumber, 'Creating MBTiles...');
@@ -1714,7 +1720,7 @@ export async function processShpBasemap(
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
     if (translateResult.exitCode !== 0) {
-      throw new Error(`gdal_translate failed (exit ${translateResult.exitCode})`);
+      throwJobFailure(translateResult, 'gdal_translate', (t) => appendLog(chartNumber, t));
     }
 
     appendLog(chartNumber, 'Adding zoom levels...');
@@ -1742,7 +1748,7 @@ export async function processShpBasemap(
       onStderrLine: (line) => appendLog(chartNumber, line)
     });
     if (overviewResult.exitCode !== 0) {
-      throw new Error(`gdaladdo failed (exit ${overviewResult.exitCode})`);
+      throwJobFailure(overviewResult, 'gdaladdo', (t) => appendLog(chartNumber, t));
     }
 
     try {
