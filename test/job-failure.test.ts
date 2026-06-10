@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 
-import { throwJobFailure } from '../dist/utils/job-failure.js';
+import { throwJobFailure, type FailedJobResult } from '../dist/utils/job-failure.js';
 
 // Collect the lines the helper would surface, and capture whether it threw and
 // with what message. throwJobFailure always throws, so every case asserts that.
-function run(result: { exitCode: number; log: string[]; error?: string; status?: string }): {
+function run(result: FailedJobResult): {
   lines: string[];
   message: string;
 } {

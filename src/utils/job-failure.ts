@@ -3,7 +3,7 @@
 // stderr dump) is always at the END of the log, so we tail rather than head.
 const JOB_LOG_TAIL_LINES = 10;
 
-interface FailedJobResult {
+export interface FailedJobResult {
   exitCode: number;
   log: string[];
   error?: string;
