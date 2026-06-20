@@ -19,7 +19,7 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Read the VERSION file once and expose its trimmed value to later
       # steps so the produced image carries an explicit `:1.0.0`-style
