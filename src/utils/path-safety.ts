@@ -98,6 +98,32 @@ export function resolveDefaultChartsPath(
   return inDataVolumeDefault;
 }
 
+/**
+ * True when `effectivePath` IS the installer-injected host charts mount (the
+ * value of `SIGNALK_CHARTS_HOST_PATH`). Used to decide "must already exist,
+ * probe-don't-create" vs create-on-demand.
+ *
+ * Both sides are normalized so a trailing slash, `//`, or `.`/`..` in a
+ * user-typed path can't divert the mount into the create-on-demand branch
+ * (which would `mkdir` and silently shadow a missing bind mount). Returns false
+ * when the env is unset/blank (there is no mount to match).
+ */
+export function isHostMountPath(effectivePath: string, hostMountEnv: string | undefined): boolean {
+  if (!hasHostChartsMountEnv(hostMountEnv)) {
+    return false;
+  }
+  return (
+    normalizeForCompare(effectivePath) === normalizeForCompare((hostMountEnv as string).trim())
+  );
+}
+
+// Normalize a path for equality comparison: collapse `.`/`..`/`//` AND strip a
+// trailing separator (path.normalize keeps a trailing slash, so `/a/b/` and
+// `/a/b` would otherwise compare unequal — the #150 trailing-slash edge).
+function normalizeForCompare(p: string): string {
+  return stripTrailingSep(path.normalize(p));
+}
+
 /** Verdict of {@link classifyChartDirAccess}. */
 export type ChartDirAccess =
   | { ok: true }

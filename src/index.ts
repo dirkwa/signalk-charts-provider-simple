@@ -44,6 +44,7 @@ import {
   arePairWithinBase,
   classifyChartDirAccess,
   hasHostChartsMountEnv,
+  isHostMountPath,
   isWithinBase,
   resolveDefaultChartsPath,
   validateChartName
@@ -308,14 +309,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const chartPath = props.chartPath || defaultChartsPath;
 
     // Is the effective path the host folder the installer bind-mounted (via
-    // SIGNALK_CHARTS_HOST_PATH) and which the user left as the default? If so we
-    // must NOT create it on demand: that folder is supposed to already exist
-    // (the installer made it and mounted it), so a missing dir means a missing
-    // mount — and `mkdir`-ing it would silently shadow the absent mount with an
-    // ephemeral in-container dir whose charts vanish on container recreate.
-    const isHostMount =
-      hasHostChartsMountEnv(process.env.SIGNALK_CHARTS_HOST_PATH) &&
-      chartPath === defaultChartsPath;
+    // SIGNALK_CHARTS_HOST_PATH)? If so we must NOT create it on demand: that
+    // folder is supposed to already exist (the installer made it and mounted
+    // it), so a missing dir means a missing mount — and `mkdir`-ing it would
+    // silently shadow the absent mount with an ephemeral in-container dir whose
+    // charts vanish on container recreate. isHostMountPath normalizes both
+    // sides so a trailing slash / `.`/`..` can't divert the mount into the
+    // mkdir branch.
+    const isHostMount = isHostMountPath(chartPath, process.env.SIGNALK_CHARTS_HOST_PATH);
 
     let exists: boolean;
     let createdOrWritable: boolean;

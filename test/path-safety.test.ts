@@ -8,6 +8,7 @@ import {
   validateChartName,
   resolveDefaultChartsPath,
   hasHostChartsMountEnv,
+  isHostMountPath,
   classifyChartDirAccess
 } from '../dist/utils/path-safety.js';
 
@@ -153,6 +154,38 @@ describe('hasHostChartsMountEnv', () => {
   it('is true for a non-empty path', () => {
     assert.strictEqual(hasHostChartsMountEnv('/srv/charts-host'), true);
     assert.strictEqual(hasHostChartsMountEnv('  /x  '), true);
+  });
+});
+
+describe('isHostMountPath', () => {
+  const mount = '/srv/charts-host';
+
+  it('is false when the env is unset/blank (no mount to match)', () => {
+    assert.strictEqual(isHostMountPath(mount, undefined), false);
+    assert.strictEqual(isHostMountPath(mount, ''), false);
+    assert.strictEqual(isHostMountPath(mount, '   '), false);
+  });
+
+  it('matches the exact mount path', () => {
+    assert.strictEqual(isHostMountPath(mount, mount), true);
+  });
+
+  it('matches despite a trailing slash on the effective path (the #150 edge)', () => {
+    assert.strictEqual(isHostMountPath('/srv/charts-host/', mount), true);
+  });
+
+  it('matches despite whitespace around the env value', () => {
+    assert.strictEqual(isHostMountPath(mount, '  /srv/charts-host  '), true);
+  });
+
+  it('matches despite a redundant `.` / `..` segment', () => {
+    assert.strictEqual(isHostMountPath('/srv/./charts-host', mount), true);
+    assert.strictEqual(isHostMountPath('/srv/x/../charts-host', mount), true);
+  });
+
+  it('is false for a genuinely different path', () => {
+    assert.strictEqual(isHostMountPath('/srv/other', mount), false);
+    assert.strictEqual(isHostMountPath('/srv/charts-host-evil', mount), false);
   });
 });
 
