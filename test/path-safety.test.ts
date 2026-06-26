@@ -2,7 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import path from 'node:path';
 
-import { isWithinBase, arePairWithinBase, validateChartName } from '../dist/utils/path-safety.js';
+import {
+  isWithinBase,
+  arePairWithinBase,
+  validateChartName,
+  resolveDefaultChartsPath,
+  hasHostChartsMountEnv,
+  classifyChartDirAccess
+} from '../dist/utils/path-safety.js';
 
 const BASE = '/srv/charts';
 
@@ -105,5 +112,81 @@ describe('validateChartName', () => {
 
   it('rejects an embedded ".." sequence', () => {
     assert.strictEqual(validateChartName('a..b').valid, false);
+  });
+});
+
+describe('resolveDefaultChartsPath', () => {
+  const fallback = '/home/node/.signalk/charts-simple';
+
+  it('uses the in-data-volume default when the host-mount env is unset', () => {
+    assert.strictEqual(resolveDefaultChartsPath(undefined, fallback), fallback);
+  });
+
+  it('uses the in-data-volume default when the host-mount env is empty', () => {
+    assert.strictEqual(resolveDefaultChartsPath('', fallback), fallback);
+  });
+
+  it('uses the in-data-volume default when the host-mount env is only whitespace', () => {
+    assert.strictEqual(resolveDefaultChartsPath('   ', fallback), fallback);
+  });
+
+  it('prefers the host-mount env when it is a non-empty path', () => {
+    assert.strictEqual(
+      resolveDefaultChartsPath('/home/node/charts-host', fallback),
+      '/home/node/charts-host'
+    );
+  });
+
+  it('trims surrounding whitespace from the host-mount env', () => {
+    assert.strictEqual(
+      resolveDefaultChartsPath('  /home/node/charts-host  ', fallback),
+      '/home/node/charts-host'
+    );
+  });
+});
+
+describe('hasHostChartsMountEnv', () => {
+  it('is false for undefined / empty / whitespace', () => {
+    assert.strictEqual(hasHostChartsMountEnv(undefined), false);
+    assert.strictEqual(hasHostChartsMountEnv(''), false);
+    assert.strictEqual(hasHostChartsMountEnv('   '), false);
+  });
+
+  it('is true for a non-empty path', () => {
+    assert.strictEqual(hasHostChartsMountEnv('/home/node/charts-host'), true);
+    assert.strictEqual(hasHostChartsMountEnv('  /x  '), true);
+  });
+});
+
+describe('classifyChartDirAccess', () => {
+  // Host-mount path: must NOT be created on demand; missing dir = missing mount.
+  it('host mount, missing dir -> mount-missing (never silently created)', () => {
+    assert.deepStrictEqual(classifyChartDirAccess(true, false, false), {
+      ok: false,
+      reason: 'mount-missing'
+    });
+  });
+
+  it('host mount, exists but not writable -> exists-unwritable (ownership, not missing)', () => {
+    assert.deepStrictEqual(classifyChartDirAccess(true, true, false), {
+      ok: false,
+      reason: 'exists-unwritable'
+    });
+  });
+
+  it('host mount, exists and writable -> ok', () => {
+    assert.deepStrictEqual(classifyChartDirAccess(true, true, true), { ok: true });
+  });
+
+  // Non-mount path: create-on-demand semantics (existence is not load-bearing).
+  it('non-mount, created/writable -> ok', () => {
+    assert.deepStrictEqual(classifyChartDirAccess(false, false, true), { ok: true });
+  });
+
+  it('non-mount, could not create/write -> not-writable', () => {
+    assert.deepStrictEqual(classifyChartDirAccess(false, false, false), {
+      ok: false,
+      reason: 'not-writable'
+    });
   });
 });

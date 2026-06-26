@@ -40,7 +40,14 @@ import { repairMbtilesMetadata, setMbtilesDisplayName } from './utils/mbtiles-me
 import { open as openMbtilesReader } from './utils/mbtiles-reader.js';
 import { writeChartPathMarker } from './utils/path-marker.js';
 import { getBlankTileReplacement, getOverzoomedTile } from './utils/tile-overzoom.js';
-import { arePairWithinBase, isWithinBase, validateChartName } from './utils/path-safety.js';
+import {
+  arePairWithinBase,
+  classifyChartDirAccess,
+  hasHostChartsMountEnv,
+  isWithinBase,
+  resolveDefaultChartsPath,
+  validateChartName
+} from './utils/path-safety.js';
 import { parsePluginConfig } from './utils/plugin-config-schema.js';
 import {
   cleanupQuarantineDir,
@@ -140,12 +147,24 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let defaultChartsPath = '';
   let serverMajorVersion = 1;
 
+  // The effective default chart directory. When Signal K runs in a container
+  // (signalk-universal-installer), the installer can mount a host folder the
+  // user shares with other chart apps (OpenCPN/qtVlm/...) and inject its
+  // in-container path via SIGNALK_CHARTS_HOST_PATH. When that env is present we
+  // default to it instead of the in-data-volume `charts-simple` dir, so a
+  // container user gets the shared host folder out of the box with no config —
+  // and so the chartPath field is never the free-text foot-gun that pointed at
+  // an unmounted host path. A user can still override via the chartPath setting.
   function getDefaultChartsPath(): string {
     if (!defaultChartsPath) {
       pluginDataDir = app.getDataDirPath();
-      const configBasePath = path.dirname(path.dirname(pluginDataDir));
-      defaultChartsPath = path.join(configBasePath, 'charts-simple');
       serverMajorVersion = app.config?.version ? parseInt(app.config.version.split('.')[0], 10) : 1;
+      const configBasePath = path.dirname(path.dirname(pluginDataDir));
+      const inDataVolumeDefault = path.join(configBasePath, 'charts-simple');
+      defaultChartsPath = resolveDefaultChartsPath(
+        process.env.SIGNALK_CHARTS_HOST_PATH,
+        inDataVolumeDefault
+      );
     }
     return defaultChartsPath;
   }
@@ -160,7 +179,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         chartPath: {
           type: 'string',
           title: 'Chart path',
-          description: `Main directory for chart files. Defaults to "${getDefaultChartsPath()}". Subfolders will be scanned recursively.`,
+          description:
+            (hasHostChartsMountEnv(process.env.SIGNALK_CHARTS_HOST_PATH)
+              ? `Main directory for chart files. Defaults to the shared host charts folder mounted by the installer. ` +
+                `Leave this blank to use it; only change it if you know the path is reachable inside the container. `
+              : `Main directory for chart files. Defaults to "${getDefaultChartsPath()}". `) +
+            `Subfolders will be scanned recursively.`,
           default: getDefaultChartsPath()
         },
         cpuBudget: {
@@ -281,10 +305,48 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     setCpuBudget(props.cpuBudget);
 
     getDefaultChartsPath(); // ensure lazy init
-    ensureDirectoryExists(defaultChartsPath);
     const chartPath = props.chartPath || defaultChartsPath;
-    if (!ensureDirectoryExists(chartPath)) {
-      app.setPluginError(`Chart directory is not writable: ${chartPath}`);
+
+    // Is the effective path the host folder the installer bind-mounted (via
+    // SIGNALK_CHARTS_HOST_PATH) and which the user left as the default? If so we
+    // must NOT create it on demand: that folder is supposed to already exist
+    // (the installer made it and mounted it), so a missing dir means a missing
+    // mount — and `mkdir`-ing it would silently shadow the absent mount with an
+    // ephemeral in-container dir whose charts vanish on container recreate.
+    const isHostMount =
+      hasHostChartsMountEnv(process.env.SIGNALK_CHARTS_HOST_PATH) &&
+      chartPath === defaultChartsPath;
+
+    let exists: boolean;
+    let createdOrWritable: boolean;
+    if (isHostMount) {
+      // Probe, never create.
+      exists = fs.existsSync(chartPath);
+      createdOrWritable = exists && isDirWritable(chartPath);
+    } else {
+      // In-data-volume default or a user-typed path: create-on-demand as before.
+      createdOrWritable = ensureDirectoryExists(chartPath);
+      exists = createdOrWritable || fs.existsSync(chartPath);
+    }
+
+    const access = classifyChartDirAccess(isHostMount, exists, createdOrWritable);
+    if (!access.ok) {
+      if (access.reason === 'mount-missing') {
+        app.setPluginError(
+          `Shared charts folder is not mounted into the container at ${chartPath}. ` +
+            `Charts live in a host folder the installer shares with the container; that ` +
+            `mount appears to be missing. Re-run the installer to restore it, or clear the ` +
+            `Chart path setting to fall back to Signal K's own charts folder.`
+        );
+      } else if (access.reason === 'exists-unwritable') {
+        app.setPluginError(
+          `Chart directory exists but is not writable by Signal K: ${chartPath}. ` +
+            `In a container this is usually a folder-ownership mismatch — make sure the ` +
+            `host folder is owned by the user that runs Signal K.`
+        );
+      } else {
+        app.setPluginError(`Chart directory is not writable: ${chartPath}`);
+      }
       app.setPluginStatus('Started (no chart directory)');
       return;
     }
@@ -3586,6 +3648,19 @@ const ensureDirectoryExists = (dirPath: string): boolean => {
     if (!fs.existsSync(dirPath)) {
       fs.mkdirSync(dirPath, { recursive: true });
     }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Probe whether an EXISTING directory is writable, without creating it. Used
+// for the injected host charts mount: we must NOT mkdir a missing mount (that
+// silently shadows it with an ephemeral in-container dir), so we check
+// existence + writability separately instead of create-on-demand.
+const isDirWritable = (dirPath: string): boolean => {
+  try {
+    fs.accessSync(dirPath, fs.constants.W_OK);
     return true;
   } catch {
     return false;
