@@ -494,6 +494,27 @@ describe('buildTippecanoeCommand (argv stays small regardless of layer count)', 
     assert.match(cmd[2], /'\/out put\/x\.mbtiles'/);
   });
 
+  // The actual #151 leak prevention: an explicit `-n NAME` stops tippecanoe
+  // from defaulting the `name` metadata row to the `-o` container path.
+  it('passes a baked `-n NAME` through (with spaces) so the name is never the /output/ path', () => {
+    const cmd = buildTippecanoeCommand(
+      ['-o', '/output/0.mbtiles', '-n', 'Waddenzee met Diepte 2026 - Week 18'],
+      '/input/.layers'
+    );
+    assert.match(cmd[2], /'-n' 'Waddenzee met Diepte 2026 - Week 18'/);
+  });
+
+  // A hostile chart title must not break out of the single-quoted argv.
+  it('single-quote-escapes a name containing a quote and shell metacharacters', () => {
+    const cmd = buildTippecanoeCommand(
+      ['-o', '/output/0.mbtiles', '-n', `evil'; rm -rf / #`],
+      '/input/.layers'
+    );
+    // The POSIX escape closes the quote, emits an escaped quote, reopens:
+    // evil'\''; rm -rf / # — so the metacharacters stay inside one literal arg.
+    assert.match(cmd[2], /'-n' 'evil'\\''; rm -rf \/ #'/);
+  });
+
   it('quotes the manifest path so a named-volume subPath with spaces works', () => {
     const cmd = buildTippecanoeCommand(['-o', '/output/out.mbtiles'], '/input/My Charts/.layers');
     assert.match(cmd[2], /done < '\/input\/My Charts\/\.layers'/);
@@ -530,8 +551,18 @@ describe('wantedMbtilesName (never lets the /output/ container path become the c
     assert.strictEqual(wantedMbtilesName('', undefined), 'S-57 ENC');
   });
 
-  it('never returns a /output/-prefixed value', () => {
-    for (const name of [wantedMbtilesName('1', undefined), wantedMbtilesName('', '')]) {
+  // wantedMbtilesName produces the name we hand to tippecanoe/tile-join's
+  // `-n`; it does NOT sanitize an already-leaked path (the catalog never
+  // supplies one). The actual leak prevention is that the conversion always
+  // passes THIS value as `-n` so the tool never falls back to the `-o`
+  // container path — asserted in the buildTippecanoeCommand suite below.
+  it('every fallback output is a friendly label, never an /output/ path', () => {
+    for (const name of [
+      wantedMbtilesName('1', undefined),
+      wantedMbtilesName('1', '   '),
+      wantedMbtilesName('', '')
+    ]) {
+      assert.ok(name.startsWith('S-57 '), `expected an S-57 fallback label, got "${name}"`);
       assert.ok(!name.startsWith('/output/'), `unexpected /output/ prefix in "${name}"`);
     }
   });
