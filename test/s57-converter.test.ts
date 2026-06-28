@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import {
   _testInternals,
@@ -18,7 +19,9 @@ const {
   buildLayerManifest,
   buildTippecanoeCommand,
   TIPPECANOE_LAYER_MANIFEST,
-  surfaceExportErrorsIfEmpty
+  surfaceExportErrorsIfEmpty,
+  wantedMbtilesName,
+  stampMbtilesName
 } = _testInternals;
 
 interface GeoJSONFeature {
@@ -500,6 +503,92 @@ describe('buildTippecanoeCommand (argv stays small regardless of layer count)', 
     assert.ok(
       typeof TIPPECANOE_LAYER_MANIFEST === 'string' && TIPPECANOE_LAYER_MANIFEST.length > 0
     );
+  });
+});
+
+describe('wantedMbtilesName (never lets the /output/ container path become the chart name)', () => {
+  it('uses the cleaned displayName when the catalog supplied one', () => {
+    assert.strictEqual(
+      wantedMbtilesName('1', 'Waddenzee met Diepte 2026 - Week 18'),
+      'Waddenzee met Diepte 2026 - Week 18'
+    );
+  });
+
+  it('trims surrounding whitespace from the displayName', () => {
+    assert.strictEqual(wantedMbtilesName('1', '  Port of Rotterdam  '), 'Port of Rotterdam');
+  });
+
+  it('falls back to `S-57 <chartNumber>` when displayName is missing', () => {
+    assert.strictEqual(wantedMbtilesName('7', undefined), 'S-57 7');
+  });
+
+  it('falls back to `S-57 <chartNumber>` when displayName is blank', () => {
+    assert.strictEqual(wantedMbtilesName('7', '   '), 'S-57 7');
+  });
+
+  it('falls back to `S-57 ENC` when both chartNumber and displayName are empty', () => {
+    assert.strictEqual(wantedMbtilesName('', undefined), 'S-57 ENC');
+  });
+
+  it('never returns a /output/-prefixed value', () => {
+    for (const name of [wantedMbtilesName('1', undefined), wantedMbtilesName('', '')]) {
+      assert.ok(!name.startsWith('/output/'), `unexpected /output/ prefix in "${name}"`);
+    }
+  });
+});
+
+describe('stampMbtilesName (degenerate single-input tile-join path)', () => {
+  let tmp: string;
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-stamp-name-'));
+  });
+
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  // Build a minimal tippecanoe-shaped metadata table whose `name` row is the
+  // leaked container path, then assert stampMbtilesName overwrites it cleanly.
+  function makeMbtiles(name: string): string {
+    const file = path.join(tmp, `${name.replace(/\W+/g, '_')}.mbtiles`);
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE metadata (name TEXT, value TEXT)');
+    db.prepare('INSERT INTO metadata (name, value) VALUES (?, ?)').run('name', name);
+    db.close();
+    return file;
+  }
+
+  function readName(file: string): string | null {
+    const db = new DatabaseSync(file);
+    const row = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get() as
+      | { value: string }
+      | undefined;
+    db.close();
+    return row ? row.value : null;
+  }
+
+  it('overwrites the leaked /output/ name with the wanted name', () => {
+    const file = makeMbtiles('/output/Waddenzee.mbtiles');
+    stampMbtilesName(file, 'Waddenzee met Diepte 2026 - Week 18');
+    assert.strictEqual(readName(file), 'Waddenzee met Diepte 2026 - Week 18');
+  });
+
+  it('leaves exactly one name row (no duplicate from append-style writes)', () => {
+    const file = makeMbtiles('/output/x.mbtiles');
+    stampMbtilesName(file, 'S-57 3');
+    const db = new DatabaseSync(file);
+    const row = db.prepare("SELECT COUNT(*) AS n FROM metadata WHERE name = 'name'").get() as {
+      n: number;
+    };
+    db.close();
+    assert.strictEqual(row.n, 1);
+  });
+
+  it('never throws on a missing file (best-effort contract)', () => {
+    assert.doesNotThrow(() => {
+      stampMbtilesName(path.join(tmp, 'does-not-exist.mbtiles'), 'whatever');
+    });
   });
 });
 

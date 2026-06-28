@@ -143,6 +143,46 @@ function setProgress(chartNumber: string, status: string, message: string): void
 }
 
 /**
+ * The `name` metadata row tippecanoe/tile-join should bake into the output
+ * MBTiles. Without an explicit `-n/--name`, both tools default that row to
+ * the `-o` container path (e.g. `/output/Waddenzee.mbtiles`), which then
+ * leaks into the chart name shown in clients and the catalog screen when the
+ * post-conversion metadata patch fails (it is best-effort and never throws).
+ * Passing this up front means the file is born with a sensible name and the
+ * `/output/...` value can never survive — the patch only ever refines it to
+ * the cleaned catalog title.
+ *
+ * Mirrors the fallback the patcher uses (`S-57 <chartNumber>`) so an
+ * un-patched file matches a patched one's `name` when no displayName exists.
+ */
+function wantedMbtilesName(chartNumber: string, displayName: string | undefined): string {
+  const trimmed = displayName?.trim();
+  return trimmed ? trimmed : `S-57 ${chartNumber || 'ENC'}`;
+}
+
+/**
+ * Best-effort, synchronous overwrite of the `name` metadata row. Used by the
+ * tile-join single-input degenerate path, where no container job runs to bake
+ * the name in via `-n`. DELETE-then-INSERT (not INSERT OR REPLACE) because
+ * tippecanoe's `metadata` table has no UNIQUE constraint on `name`, so REPLACE
+ * would append a second row rather than overwrite. Never throws — the
+ * post-conversion patch is the authoritative pass.
+ */
+function stampMbtilesName(outputPath: string, name: string): void {
+  try {
+    const db = new DatabaseSync(outputPath);
+    try {
+      db.exec("DELETE FROM metadata WHERE name = 'name'");
+      db.prepare("INSERT INTO metadata (name, value) VALUES ('name', ?)").run(name);
+    } finally {
+      db.close();
+    }
+  } catch {
+    /* best-effort; patchS57Mbtiles/setMbtilesDisplayName run afterward */
+  }
+}
+
+/**
  * Decide the on-disk `.mbtiles` filename for a freshly converted chart.
  *
  * Catalogs (NL_IENC, etc.) hand us sequential chart numbers like "1",
@@ -655,7 +695,9 @@ export const _testInternals = {
   buildLayerManifest,
   buildTippecanoeCommand,
   TIPPECANOE_LAYER_MANIFEST,
-  surfaceExportErrorsIfEmpty
+  surfaceExportErrorsIfEmpty,
+  wantedMbtilesName,
+  stampMbtilesName
 };
 
 async function runTippecanoe(
@@ -663,7 +705,11 @@ async function runTippecanoe(
   outputMbtiles: string,
   chartNumber: string,
   options: S57ConversionOptions = {},
-  onTilePercent?: (pct: number) => void
+  onTilePercent?: (pct: number) => void,
+  // The `name` metadata row to bake in. Set only for the final output of a
+  // conversion (single-pass, or the joined per-band result); per-band
+  // intermediates leave it undefined since tile-join sets the final name.
+  mbtilesName?: string
 ): Promise<void> {
   const minzoom = options.minzoom ?? 9;
   const maxzoom = options.maxzoom ?? 16;
@@ -760,6 +806,9 @@ async function runTippecanoe(
       [
         '-o',
         `${outputPrefix}/${path.basename(outputMbtiles)}`,
+        // Bake the `name` metadata row so it never defaults to the `/output/`
+        // container path (issue #151). Omitted for per-band intermediates.
+        ...(mbtilesName ? ['-n', mbtilesName] : []),
         '-z',
         String(maxzoom),
         '-Z',
@@ -825,7 +874,10 @@ async function runTileJoin(
   outputMbtiles: string,
   chartNumber: string,
   onPercent?: (pct: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  // The `name` metadata row to bake into the joined output, so it never
+  // defaults to the `/output/` container path (issue #151).
+  mbtilesName?: string
 ): Promise<void> {
   if (inputMbtiles.length === 0) {
     throw new Error('runTileJoin called with no inputs');
@@ -850,6 +902,13 @@ async function runTileJoin(
       }
       fs.copyFileSync(inputMbtiles[0], outputMbtiles);
       fs.unlinkSync(inputMbtiles[0]);
+    }
+    // No tile-join ran, so the moved intermediate still carries its
+    // per-band tippecanoe `name` (the `/output/` default). Stamp the
+    // wanted name directly so this branch matches the joined path.
+    // Best-effort: the post-conversion patch refines it further.
+    if (mbtilesName) {
+      stampMbtilesName(outputMbtiles, mbtilesName);
     }
     // Mirror the multi-input path's completion so the "Combining" bar
     // reaches 100% even when the join collapsed to a single file move.
@@ -953,6 +1012,9 @@ async function runTileJoin(
         'tile-join',
         '-o',
         `${outputPrefix}/${path.basename(outputMbtiles)}`,
+        // Bake the `name` metadata row so the joined output never defaults
+        // to the `/output/` container path (issue #151).
+        ...(mbtilesName ? ['-n', mbtilesName] : []),
         '--no-tile-size-limit',
         '--force',
         ...inputArgs
@@ -1216,7 +1278,14 @@ async function runPerBandPipeline(
       bucketPercent
     });
   emitJoin(0);
-  await runTileJoin(intermediates, outputMbtiles, chartNumber, emitJoin, options.signal);
+  await runTileJoin(
+    intermediates,
+    outputMbtiles,
+    chartNumber,
+    emitJoin,
+    options.signal,
+    wantedMbtilesName(chartNumber, options.displayName)
+  );
 }
 
 /**
@@ -1355,14 +1424,20 @@ export async function processS57Directory(
         appendLog(chartNumber, msg);
       }
       const effectiveOptions: S57ConversionOptions = { ...options, maxzoom: clamp.effective };
-      await runTippecanoe(geojsonDir, outputPath, chartNumber, effectiveOptions, (pct) =>
-        options.onProgress?.({
-          stage: 'tiles',
-          bucketIndex: 1,
-          bucketCount: 1,
-          bucketLabel: 'Charts',
-          bucketPercent: pct
-        })
+      await runTippecanoe(
+        geojsonDir,
+        outputPath,
+        chartNumber,
+        effectiveOptions,
+        (pct) =>
+          options.onProgress?.({
+            stage: 'tiles',
+            bucketIndex: 1,
+            bucketCount: 1,
+            bucketLabel: 'Charts',
+            bucketPercent: pct
+          }),
+        wantedMbtilesName(chartNumber, options.displayName)
       );
     }
 
