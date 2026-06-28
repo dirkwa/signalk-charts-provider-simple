@@ -1616,16 +1616,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
           try {
             const countRow = db.prepare('SELECT COUNT(*) as count FROM map').get() as
-              | { count: number }
-              | undefined;
+              { count: number } | undefined;
             if (countRow) {
               metadata.tileCount = countRow.count;
             }
           } catch {
             try {
               const countRow = db.prepare('SELECT COUNT(*) as count FROM tiles').get() as
-                | { count: number }
-                | undefined;
+                { count: number } | undefined;
               if (countRow) {
                 metadata.tileCount = countRow.count;
               }

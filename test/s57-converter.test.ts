@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import {
   _testInternals,
@@ -18,7 +19,9 @@ const {
   buildLayerManifest,
   buildTippecanoeCommand,
   TIPPECANOE_LAYER_MANIFEST,
-  surfaceExportErrorsIfEmpty
+  surfaceExportErrorsIfEmpty,
+  wantedMbtilesName,
+  stampMbtilesName
 } = _testInternals;
 
 interface GeoJSONFeature {
@@ -491,6 +494,27 @@ describe('buildTippecanoeCommand (argv stays small regardless of layer count)', 
     assert.match(cmd[2], /'\/out put\/x\.mbtiles'/);
   });
 
+  // The actual #151 leak prevention: an explicit `-n NAME` stops tippecanoe
+  // from defaulting the `name` metadata row to the `-o` container path.
+  it('passes a baked `-n NAME` through (with spaces) so the name is never the /output/ path', () => {
+    const cmd = buildTippecanoeCommand(
+      ['-o', '/output/0.mbtiles', '-n', 'Waddenzee met Diepte 2026 - Week 18'],
+      '/input/.layers'
+    );
+    assert.match(cmd[2], /'-n' 'Waddenzee met Diepte 2026 - Week 18'/);
+  });
+
+  // A hostile chart title must not break out of the single-quoted argv.
+  it('single-quote-escapes a name containing a quote and shell metacharacters', () => {
+    const cmd = buildTippecanoeCommand(
+      ['-o', '/output/0.mbtiles', '-n', `evil'; rm -rf / #`],
+      '/input/.layers'
+    );
+    // The POSIX escape closes the quote, emits an escaped quote, reopens:
+    // evil'\''; rm -rf / # — so the metacharacters stay inside one literal arg.
+    assert.match(cmd[2], /'-n' 'evil'\\''; rm -rf \/ #'/);
+  });
+
   it('quotes the manifest path so a named-volume subPath with spaces works', () => {
     const cmd = buildTippecanoeCommand(['-o', '/output/out.mbtiles'], '/input/My Charts/.layers');
     assert.match(cmd[2], /done < '\/input\/My Charts\/\.layers'/);
@@ -500,6 +524,101 @@ describe('buildTippecanoeCommand (argv stays small regardless of layer count)', 
     assert.ok(
       typeof TIPPECANOE_LAYER_MANIFEST === 'string' && TIPPECANOE_LAYER_MANIFEST.length > 0
     );
+  });
+});
+
+describe('wantedMbtilesName (never lets the /output/ container path become the chart name)', () => {
+  it('uses the cleaned displayName when the catalog supplied one', () => {
+    assert.strictEqual(
+      wantedMbtilesName('1', 'Waddenzee met Diepte 2026 - Week 18'),
+      'Waddenzee met Diepte 2026 - Week 18'
+    );
+  });
+
+  it('trims surrounding whitespace from the displayName', () => {
+    assert.strictEqual(wantedMbtilesName('1', '  Port of Rotterdam  '), 'Port of Rotterdam');
+  });
+
+  it('falls back to `S-57 <chartNumber>` when displayName is missing', () => {
+    assert.strictEqual(wantedMbtilesName('7', undefined), 'S-57 7');
+  });
+
+  it('falls back to `S-57 <chartNumber>` when displayName is blank', () => {
+    assert.strictEqual(wantedMbtilesName('7', '   '), 'S-57 7');
+  });
+
+  it('falls back to `S-57 ENC` when both chartNumber and displayName are empty', () => {
+    assert.strictEqual(wantedMbtilesName('', undefined), 'S-57 ENC');
+  });
+
+  // wantedMbtilesName produces the name we hand to tippecanoe/tile-join's
+  // `-n`; it does NOT sanitize an already-leaked path (the catalog never
+  // supplies one). The actual leak prevention is that the conversion always
+  // passes THIS value as `-n` so the tool never falls back to the `-o`
+  // container path — asserted in the buildTippecanoeCommand suite below.
+  it('every fallback output is a friendly label, never an /output/ path', () => {
+    for (const name of [
+      wantedMbtilesName('1', undefined),
+      wantedMbtilesName('1', '   '),
+      wantedMbtilesName('', '')
+    ]) {
+      assert.ok(name.startsWith('S-57 '), `expected an S-57 fallback label, got "${name}"`);
+      assert.ok(!name.startsWith('/output/'), `unexpected /output/ prefix in "${name}"`);
+    }
+  });
+});
+
+describe('stampMbtilesName (degenerate single-input tile-join path)', () => {
+  let tmp: string;
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-stamp-name-'));
+  });
+
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  // Build a minimal tippecanoe-shaped metadata table whose `name` row is the
+  // leaked container path, then assert stampMbtilesName overwrites it cleanly.
+  function makeMbtiles(name: string): string {
+    const file = path.join(tmp, `${name.replace(/\W+/g, '_')}.mbtiles`);
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE metadata (name TEXT, value TEXT)');
+    db.prepare('INSERT INTO metadata (name, value) VALUES (?, ?)').run('name', name);
+    db.close();
+    return file;
+  }
+
+  function readName(file: string): string | null {
+    const db = new DatabaseSync(file);
+    const row = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get() as
+      { value: string } | undefined;
+    db.close();
+    return row ? row.value : null;
+  }
+
+  it('overwrites the leaked /output/ name with the wanted name', () => {
+    const file = makeMbtiles('/output/Waddenzee.mbtiles');
+    stampMbtilesName(file, 'Waddenzee met Diepte 2026 - Week 18');
+    assert.strictEqual(readName(file), 'Waddenzee met Diepte 2026 - Week 18');
+  });
+
+  it('leaves exactly one name row (no duplicate from append-style writes)', () => {
+    const file = makeMbtiles('/output/x.mbtiles');
+    stampMbtilesName(file, 'S-57 3');
+    const db = new DatabaseSync(file);
+    const row = db.prepare("SELECT COUNT(*) AS n FROM metadata WHERE name = 'name'").get() as {
+      n: number;
+    };
+    db.close();
+    assert.strictEqual(row.n, 1);
+  });
+
+  it('never throws on a missing file (best-effort contract)', () => {
+    assert.doesNotThrow(() => {
+      stampMbtilesName(path.join(tmp, 'does-not-exist.mbtiles'), 'whatever');
+    });
   });
 });
 

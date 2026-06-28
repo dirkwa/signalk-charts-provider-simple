@@ -15,8 +15,7 @@ function getChartName(filePath: string): string | null {
 
     try {
       const row = db.prepare("SELECT value FROM metadata WHERE name = 'name'").get() as
-        | { value: string }
-        | undefined;
+        { value: string } | undefined;
       return row ? row.value : null;
     } finally {
       db.close();

@@ -238,8 +238,7 @@ export class MBTilesReader {
     }
     try {
       const row = this.db.prepare('SELECT tile_data FROM tiles LIMIT 1').get() as unknown as
-        | TileRow
-        | undefined;
+        TileRow | undefined;
       if (!row?.tile_data) {
         return null;
       }

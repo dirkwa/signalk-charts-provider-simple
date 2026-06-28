@@ -246,12 +246,7 @@ export interface CatalogUpdate {
 // ---- Conversion Progress ----
 
 export type ConversionStatus =
-  | 'starting'
-  | 'pulling'
-  | 'extracting'
-  | 'converting'
-  | 'completed'
-  | 'failed';
+  'starting' | 'pulling' | 'extracting' | 'converting' | 'completed' | 'failed';
 
 export interface ConversionProgress {
   status: string;

@@ -274,8 +274,7 @@ async function parseCatalogXml(xmlData: string, catalogFile: string): Promise<Ca
 
   const parsed = result as Record<string, unknown>;
   const root = (parsed.RncProductCatalogChartCatalogs ?? parsed.EncProductCatalogcellCatalogs) as
-    | Record<string, unknown>
-    | undefined;
+    Record<string, unknown> | undefined;
 
   if (!root) {
     throw new Error('Unexpected XML root element');

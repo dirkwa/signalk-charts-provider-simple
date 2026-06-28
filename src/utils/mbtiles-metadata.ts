@@ -8,8 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
  * engines guard, an import-time failure is loud enough.
  */
 function loadSqlite():
-  | { ok: true; DatabaseSync: typeof DatabaseSync }
-  | { ok: false; reason: string } {
+  { ok: true; DatabaseSync: typeof DatabaseSync } | { ok: false; reason: string } {
   if (typeof DatabaseSync !== 'function') {
     return { ok: false, reason: 'node:sqlite DatabaseSync is not a function' };
   }
