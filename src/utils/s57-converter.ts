@@ -1467,11 +1467,14 @@ export async function processS57Directory(
     // patchS57Mbtiles just wrote with the cleaned catalog title, and set
     // `description` to the full original title for provenance. Manual
     // uploads leave displayName undefined and keep the patcher's
-    // `S-57 <chartNumber>` default.
-    if (options.displayName) {
+    // `S-57 <chartNumber>` default. Trim before both the guard and the
+    // value so a whitespace-only label falls through to the fallback
+    // instead of overwriting it with blanks (mirrors wantedMbtilesName).
+    const displayName = options.displayName?.trim();
+    if (displayName) {
       const dnResult = await setMbtilesDisplayName(
         outputPath,
-        options.displayName,
+        displayName,
         options.displayDescription,
         {
           onMessage: (msg) => {
