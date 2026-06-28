@@ -42,7 +42,7 @@
     "@signalk/server-api": "^2.0.0",
     "@sinclair/typebox": "^0.34.49",
     "busboy": "^1.6.0",
-    "geojson-vt": "^3.2.1",
+    "geojson-vt": "^4.0.3",
     "pbf": "^4.0.2",
     "unzipper": "^0.12.3",
     "vt-pbf": "^3.1.3",
