@@ -38,7 +38,7 @@
     "name": "Dirk Wahrheit"
   },
   "dependencies": {
-    "@mapbox/vector-tile": "^2.0.5",
+    "@mapbox/vector-tile": "^3.0.0",
     "@signalk/server-api": "^2.0.0",
     "@sinclair/typebox": "^0.34.49",
     "busboy": "^1.6.0",
