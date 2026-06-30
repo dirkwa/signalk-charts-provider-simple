@@ -18,6 +18,7 @@ const {
   bandClampedMaxzoom,
   buildLayerManifest,
   buildTippecanoeCommand,
+  withOutputChmod,
   TIPPECANOE_LAYER_MANIFEST,
   surfaceExportErrorsIfEmpty,
   wantedMbtilesName,
@@ -474,13 +475,25 @@ describe('buildTippecanoeCommand (argv stays small regardless of layer count)', 
     assert.strictEqual(cmd.length, 3);
     assert.strictEqual(cmd[0], 'bash');
     assert.strictEqual(cmd[1], '-c');
-    // Reads the manifest (quoted), assembles -L args, execs tippecanoe.
+    // Reads the manifest (quoted), assembles -L args, runs tippecanoe.
     assert.match(cmd[2], /< '\/input\/\.layers'/);
     assert.match(cmd[2], /layers\+=\(-L "\$line"\)/);
-    assert.match(
-      cmd[2],
-      /exec tippecanoe '-o' '\/output\/out\.mbtiles' '-z' '14' "\$\{layers\[@\]\}"/
-    );
+    assert.match(cmd[2], /tippecanoe '-o' '\/output\/out\.mbtiles' '-z' '14' "\$\{layers\[@\]\}"/);
+  });
+
+  // The toolbox container's fixed UID owns whatever tippecanoe writes; a
+  // trailing chmod (run while still that UID) is what lets the host
+  // SignalK process — commonly a different UID — write to it afterward
+  // (e.g. the post-conversion metadata patch).
+  it('chmods the -o output path after tippecanoe runs, not before (no exec)', () => {
+    const cmd = buildTippecanoeCommand(['-o', '/output/out.mbtiles', '-z', '14'], '/input/.layers');
+    assert.doesNotMatch(cmd[2], /exec tippecanoe/);
+    const lines = cmd[2].split('\n');
+    const tippecanoeLine = lines.findIndex((l: string) => l.includes('tippecanoe '));
+    const chmodLine = lines.findIndex((l: string) => l.includes('chmod 666'));
+    assert.ok(tippecanoeLine >= 0 && chmodLine >= 0);
+    assert.ok(chmodLine > tippecanoeLine, 'chmod must run after tippecanoe, not before');
+    assert.match(lines[chmodLine], /chmod 666 '\/output\/out\.mbtiles'/);
   });
 
   it('keeps argv length constant whether there are 2 or 200 layers', () => {
@@ -524,6 +537,41 @@ describe('buildTippecanoeCommand (argv stays small regardless of layer count)', 
     assert.ok(
       typeof TIPPECANOE_LAYER_MANIFEST === 'string' && TIPPECANOE_LAYER_MANIFEST.length > 0
     );
+  });
+});
+
+// gdaladdo/tile-join (unlike tippecanoe) run as plain argv today; this is
+// what wraps them in the same bash -c + trailing-chmod shape so their
+// output is host-writable afterward too — see buildTippecanoeCommand above
+// for why that matters.
+describe('withOutputChmod (gdaladdo/tile-join output becomes host-writable)', () => {
+  it('returns a 3-element bash -c command running the original argv then a chmod', () => {
+    const cmd = withOutputChmod(
+      ['gdaladdo', '-r', 'average', '/output/x.mbtiles'],
+      '/output/x.mbtiles'
+    );
+    assert.strictEqual(cmd.length, 3);
+    assert.strictEqual(cmd[0], 'bash');
+    assert.strictEqual(cmd[1], '-c');
+    const lines = cmd[2].split('\n');
+    const argvLine = lines.findIndex((l: string) => l.includes('gdaladdo'));
+    const chmodLine = lines.findIndex((l: string) => l.includes('chmod 666'));
+    assert.ok(argvLine >= 0 && chmodLine >= 0);
+    assert.ok(chmodLine > argvLine, 'chmod must run after the original command, not before');
+  });
+
+  it('shell-quotes both the argv and the chmod target so paths with spaces survive', () => {
+    const cmd = withOutputChmod(
+      ['gdaladdo', '-r', 'average', '/out put/x.mbtiles'],
+      '/out put/x.mbtiles'
+    );
+    assert.match(cmd[2], /'\/out put\/x\.mbtiles'/);
+    assert.match(cmd[2], /chmod 666 '\/out put\/x\.mbtiles'/);
+  });
+
+  it('runs `set -e` first so a failing original command skips the chmod', () => {
+    const cmd = withOutputChmod(['gdaladdo', '/output/x.mbtiles'], '/output/x.mbtiles');
+    assert.strictEqual(cmd[2].split('\n')[0], 'set -e');
   });
 });
 

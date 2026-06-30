@@ -69,6 +69,22 @@ async function extractZip(zipPath: string, targetDir: string): Promise<string[]>
   return allFiles;
 }
 
+// The toolbox image's helper tools (gdal_translate, gdaladdo, …) all run as
+// the image's fixed UID, so whatever they write lands owned by that UID
+// with owner-only write. The host SignalK process is commonly a different
+// UID and can't write the file afterward — e.g. the post-conversion
+// metadata patch (setMbtilesType below) fails with "attempt to write a
+// readonly database". Appending a `chmod` to the same container
+// invocation fixes this at the source, while the container is still
+// running as the owning UID.
+function withOutputChmod(argv: readonly string[], outputContainerPath: string): string[] {
+  const sq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+  const script = ['set -e', argv.map(sq).join(' '), `chmod 666 ${sq(outputContainerPath)}`].join(
+    '\n'
+  );
+  return ['bash', '-c', script];
+}
+
 function appendLog(chartNumber: string, text: string): void {
   if (!chartNumber || !text) {
     return;
@@ -175,7 +191,10 @@ async function addOverviews(mbtilesFile: string, chartNumber: string): Promise<v
   const result = await runContainerJob({
     image: CHARTS_TOOLBOX_IMAGE,
     label: `gdaladdo-${chartNumber || name}`,
-    command: ['gdaladdo', '-r', 'average', `${dataPrefix}/${name}`, '2', '4', '8', '16'],
+    command: withOutputChmod(
+      ['gdaladdo', '-r', 'average', `${dataPrefix}/${name}`, '2', '4', '8', '16'],
+      `${dataPrefix}/${name}`
+    ),
     outputs: { '/data': resolved['/data'].source },
     // Single-process; one core is enough.
     resources: { cpus: 1 },
@@ -327,7 +346,10 @@ export async function processRncZip(
       const overviewResult = await runContainerJob({
         image: CHARTS_TOOLBOX_IMAGE,
         label: `gdaladdo-${baseName}`,
-        command: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
+        command: withOutputChmod(
+          ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
+          containerOutput
+        ),
         outputs: { '/output': resolved['/output'].source },
         // Single-process; one core is enough.
         resources: { cpus: 1 },
@@ -550,7 +572,10 @@ export async function processPilotTar(
       const overviewResult = await runContainerJob({
         image: CHARTS_TOOLBOX_IMAGE,
         label: `gdaladdo-${baseName}`,
-        command: ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
+        command: withOutputChmod(
+          ['gdaladdo', '-r', 'average', containerOutput, '2', '4', '8', '16'],
+          containerOutput
+        ),
         outputs: { '/output': convResolved['/output'].source },
         // Single-process; one core is enough.
         resources: { cpus: 1 },
