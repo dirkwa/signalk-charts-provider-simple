@@ -34,6 +34,7 @@ import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-s
 import { getCpuBudget, setCpuBudget } from './utils/concurrency.js';
 import { PLUGIN_OWNER_ID } from './utils/container-jobs.js';
 import { getContainerManager, waitForContainerManager } from './utils/container-manager.js';
+import { MAX_CONVERSION_LOG_LINES } from './utils/conversion-log.js';
 import { downloadManager } from './utils/download-manager.js';
 import { scanAllFolders, scanChartsRecursively } from './utils/file-scanner.js';
 import { repairMbtilesMetadata, setMbtilesDisplayName } from './utils/mbtiles-metadata.js';
@@ -1972,7 +1973,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         res.json({ log: [], status: null });
         return;
       }
-      const tail = parseInt(req.query.tail as string) || 100;
+      const tail = parseInt(req.query.tail as string) || MAX_CONVERSION_LOG_LINES;
       const log = progress.log || [];
       res.json({
         log: log.slice(-tail),
@@ -2644,7 +2645,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         res.status(400).json({ log: [], status: null });
         return;
       }
-      const tail = parseInt(req.query.tail as string) || 200;
+      const tail = parseInt(req.query.tail as string) || MAX_CONVERSION_LOG_LINES;
       const managerProgress = getCatalogProgress(id);
       const s57 = getS57Progress(id);
       // Manager progress carries the download phase; the S-57 converter carries

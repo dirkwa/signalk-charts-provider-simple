@@ -32,6 +32,7 @@ import { sanitizeChartFilename } from './catalog-title.js';
 import { getCpuBudget } from './concurrency.js';
 import { makeContainerWritable, makeContainerWritableDir } from './container-fs.js';
 import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
+import { MAX_CONVERSION_LOG_LINES } from './conversion-log.js';
 import {
   ensureImage as ensureContainerImage,
   resolveJobPaths,
@@ -49,7 +50,7 @@ import {
 } from './s57-band.js';
 
 const conversionProgress: ConversionProgressMap = {};
-const MAX_LOG_LINES = 100;
+const MAX_LOG_LINES = MAX_CONVERSION_LOG_LINES;
 
 let debug: DebugFunction = () => {};
 
