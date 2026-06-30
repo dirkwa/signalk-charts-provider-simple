@@ -66,13 +66,36 @@ export function getAllConversionProgress(): ConversionProgressMap {
 }
 
 export function setConversionFailed(chartNumber: string, message: string): void {
-  conversionProgress[chartNumber] = {
+  const entry: ConversionProgress = {
     status: 'failed',
     message,
     log: conversionProgress[chartNumber]?.log ?? []
   };
+  conversionProgress[chartNumber] = entry;
+  // Only clear the entry if it's still the one this timer was scheduled for
+  // — a retry started in the meantime replaces it with a new object (and
+  // schedules its own cleanup), so a stale timer must not delete that one.
   setTimeout(() => {
-    delete conversionProgress[chartNumber];
+    if (conversionProgress[chartNumber] === entry) {
+      delete conversionProgress[chartNumber];
+    }
+  }, 300000);
+}
+
+// Keeps the completed entry (and its log) around for the same grace period
+// as a failure, instead of deleting it the instant it succeeds — otherwise
+// the next poll sees the job vanish before the "Done" message is ever read.
+export function setConversionCompleted(chartNumber: string, message: string): void {
+  const entry: ConversionProgress = {
+    status: 'completed',
+    message,
+    log: conversionProgress[chartNumber]?.log ?? []
+  };
+  conversionProgress[chartNumber] = entry;
+  setTimeout(() => {
+    if (conversionProgress[chartNumber] === entry) {
+      delete conversionProgress[chartNumber];
+    }
   }, 300000);
 }
 
@@ -1504,24 +1527,21 @@ export async function processS57Directory(
     }
 
     const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
-    statusFn('completed', `Created ${outputName} (${size} MB)`);
+    const doneMsg = `Created ${outputName} (${size} MB)`;
+    statusFn('completed', doneMsg);
     appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
 
     if (chartNumber) {
-      delete conversionProgress[chartNumber];
+      setConversionCompleted(chartNumber, doneMsg);
     }
 
     return { mbtilesFile: outputName };
   } catch (err) {
     if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'failed',
-        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
-        log: conversionProgress[chartNumber]?.log ?? []
-      };
-      setTimeout(() => {
-        delete conversionProgress[chartNumber];
-      }, 300000);
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {
@@ -1852,11 +1872,12 @@ export async function processGshhg(
   }
 
   const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
-  statusFn('completed', `GSHHG basemap installed (${size} MB)`);
+  const doneMsg = `GSHHG basemap installed (${size} MB)`;
+  statusFn('completed', doneMsg);
   appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
 
   if (chartNumber) {
-    delete conversionProgress[chartNumber];
+    setConversionCompleted(chartNumber, doneMsg);
   }
 
   return { mbtilesFile: outputName };
@@ -2120,21 +2141,20 @@ export async function processShpBasemap(
     }
 
     const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
-    statusFn('completed', `Basemap installed (${size} MB)`);
+    const doneMsg = `Basemap installed (${size} MB)`;
+    statusFn('completed', doneMsg);
     appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
 
     if (chartNumber) {
-      delete conversionProgress[chartNumber];
+      setConversionCompleted(chartNumber, doneMsg);
     }
     return { mbtilesFile: outputName };
   } catch (err) {
     if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'failed',
-        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
-        log: conversionProgress[chartNumber]?.log ?? []
-      };
-      setTimeout(() => delete conversionProgress[chartNumber], 300000);
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {
