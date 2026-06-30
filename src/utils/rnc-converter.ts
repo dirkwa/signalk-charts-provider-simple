@@ -47,6 +47,20 @@ export function setConversionFailed(chartNumber: string, message: string): void 
   }, 300000);
 }
 
+// Keeps the completed entry (and its log) around for the same grace period
+// as a failure, instead of deleting it the instant it succeeds — otherwise
+// the next poll sees the job vanish before the "Done" message is ever read.
+export function setConversionCompleted(chartNumber: string, message: string): void {
+  conversionProgress[chartNumber] = {
+    status: 'completed',
+    message,
+    log: conversionProgress[chartNumber]?.log ?? []
+  };
+  setTimeout(() => {
+    delete conversionProgress[chartNumber];
+  }, 300000);
+}
+
 async function extractZip(zipPath: string, targetDir: string): Promise<string[]> {
   await fs
     .createReadStream(zipPath)
@@ -354,23 +368,20 @@ export async function processRncZip(
       throw new Error('No charts converted');
     }
 
-    statusFn('completed', `Converted ${mbtilesFiles.length} chart(s) to MBTiles`);
+    const doneMsg = `Converted ${mbtilesFiles.length} chart(s) to MBTiles`;
+    statusFn('completed', doneMsg);
 
     if (chartNumber) {
-      delete conversionProgress[chartNumber];
+      setConversionCompleted(chartNumber, doneMsg);
     }
 
     return { mbtilesFiles };
   } catch (err) {
     if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'failed',
-        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
-        log: conversionProgress[chartNumber]?.log ?? []
-      };
-      setTimeout(() => {
-        delete conversionProgress[chartNumber];
-      }, 300000);
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {
@@ -577,23 +588,20 @@ export async function processPilotTar(
       throw new Error('No charts converted');
     }
 
-    statusFn('completed', `Converted ${mbtilesFiles.length} chart(s)`);
+    const doneMsg = `Converted ${mbtilesFiles.length} chart(s)`;
+    statusFn('completed', doneMsg);
 
     if (chartNumber) {
-      delete conversionProgress[chartNumber];
+      setConversionCompleted(chartNumber, doneMsg);
     }
 
     return { mbtilesFiles };
   } catch (err) {
     if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'failed',
-        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
-        log: conversionProgress[chartNumber]?.log ?? []
-      };
-      setTimeout(() => {
-        delete conversionProgress[chartNumber];
-      }, 300000);
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {

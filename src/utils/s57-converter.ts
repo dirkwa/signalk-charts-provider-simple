@@ -76,6 +76,20 @@ export function setConversionFailed(chartNumber: string, message: string): void 
   }, 300000);
 }
 
+// Keeps the completed entry (and its log) around for the same grace period
+// as a failure, instead of deleting it the instant it succeeds — otherwise
+// the next poll sees the job vanish before the "Done" message is ever read.
+export function setConversionCompleted(chartNumber: string, message: string): void {
+  conversionProgress[chartNumber] = {
+    status: 'completed',
+    message,
+    log: conversionProgress[chartNumber]?.log ?? []
+  };
+  setTimeout(() => {
+    delete conversionProgress[chartNumber];
+  }, 300000);
+}
+
 async function extractZip(zipPath: string, targetDir: string): Promise<string[]> {
   await fs
     .createReadStream(zipPath)
@@ -1504,24 +1518,21 @@ export async function processS57Directory(
     }
 
     const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
-    statusFn('completed', `Created ${outputName} (${size} MB)`);
+    const doneMsg = `Created ${outputName} (${size} MB)`;
+    statusFn('completed', doneMsg);
     appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
 
     if (chartNumber) {
-      delete conversionProgress[chartNumber];
+      setConversionCompleted(chartNumber, doneMsg);
     }
 
     return { mbtilesFile: outputName };
   } catch (err) {
     if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'failed',
-        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
-        log: conversionProgress[chartNumber]?.log ?? []
-      };
-      setTimeout(() => {
-        delete conversionProgress[chartNumber];
-      }, 300000);
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {
@@ -1852,11 +1863,12 @@ export async function processGshhg(
   }
 
   const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
-  statusFn('completed', `GSHHG basemap installed (${size} MB)`);
+  const doneMsg = `GSHHG basemap installed (${size} MB)`;
+  statusFn('completed', doneMsg);
   appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
 
   if (chartNumber) {
-    delete conversionProgress[chartNumber];
+    setConversionCompleted(chartNumber, doneMsg);
   }
 
   return { mbtilesFile: outputName };
@@ -2120,21 +2132,20 @@ export async function processShpBasemap(
     }
 
     const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
-    statusFn('completed', `Basemap installed (${size} MB)`);
+    const doneMsg = `Basemap installed (${size} MB)`;
+    statusFn('completed', doneMsg);
     appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
 
     if (chartNumber) {
-      delete conversionProgress[chartNumber];
+      setConversionCompleted(chartNumber, doneMsg);
     }
     return { mbtilesFile: outputName };
   } catch (err) {
     if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'failed',
-        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
-        log: conversionProgress[chartNumber]?.log ?? []
-      };
-      setTimeout(() => delete conversionProgress[chartNumber], 300000);
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {
