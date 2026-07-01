@@ -30,7 +30,12 @@ function throwIfJobCancelled(result: { status?: string }): void {
 }
 import { sanitizeChartFilename } from './catalog-title.js';
 import { getCpuBudget } from './concurrency.js';
-import { makeContainerWritable, makeContainerWritableDir } from './container-fs.js';
+import {
+  makeContainerWritable,
+  makeContainerWritableDir,
+  shellQuote,
+  withOutputChmod
+} from './container-fs.js';
 import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
 import {
   ensureImage as ensureContainerImage,
@@ -675,6 +680,10 @@ function buildLayerManifest(
   );
 }
 
+// `shellQuote` and `withOutputChmod` live in container-fs.ts (next to
+// makeContainerWritable, the rest of the toolbox-UID permission story) so both
+// converters share one copy — see the imports at the top of this file.
+
 // Build the tippecanoe invocation as a small `bash -c` script that reads the
 // `-L` layer pairs from the manifest at runtime, instead of inlining them into
 // argv. A large bundle has 100+ layers, so inlining produced a 200+ element
@@ -689,15 +698,20 @@ function buildTippecanoeCommand(
   // Single-quote for the shell so paths/flags with spaces survive
   // word-splitting (the manifest path can carry a named-volume subPath, and
   // chart dirs commonly contain spaces).
-  const sq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+  const sq = shellQuote;
   const quoted = fixedArgs.map(sq).join(' ');
+  // The `-o <path>` pair gives us the container-side output path to chmod
+  // once tippecanoe is done — see withOutputChmod above for why.
+  const outputIndex = fixedArgs.indexOf('-o');
+  const outputContainerPath = outputIndex >= 0 ? fixedArgs[outputIndex + 1] : undefined;
   const script = [
     'set -e',
     'layers=()',
     `while IFS= read -r line; do`,
     '  [ -n "$line" ] && layers+=(-L "$line")',
     `done < ${sq(manifestContainerPath)}`,
-    `exec tippecanoe ${quoted} "\${layers[@]}"`
+    `tippecanoe ${quoted} "\${layers[@]}"`,
+    ...(outputContainerPath ? [`chmod 666 ${sq(outputContainerPath)}`] : [])
   ].join('\n');
   return ['bash', '-c', script];
 }
@@ -708,6 +722,7 @@ export const _testInternals = {
   bandClampedMaxzoom,
   buildLayerManifest,
   buildTippecanoeCommand,
+  withOutputChmod,
   TIPPECANOE_LAYER_MANIFEST,
   surfaceExportErrorsIfEmpty,
   wantedMbtilesName,
@@ -1022,17 +1037,20 @@ async function runTileJoin(
     result = await runContainerJob({
       image: CHARTS_TOOLBOX_IMAGE,
       label: `tile-join-${chartNumber}`,
-      command: [
-        'tile-join',
-        '-o',
-        `${outputPrefix}/${path.basename(outputMbtiles)}`,
-        // Bake the `name` metadata row so the joined output never defaults
-        // to the `/output/` container path (issue #151).
-        ...(mbtilesName ? ['-n', mbtilesName] : []),
-        '--no-tile-size-limit',
-        '--force',
-        ...inputArgs
-      ],
+      command: withOutputChmod(
+        [
+          'tile-join',
+          '-o',
+          `${outputPrefix}/${path.basename(outputMbtiles)}`,
+          // Bake the `name` metadata row so the joined output never defaults
+          // to the `/output/` container path (issue #151).
+          ...(mbtilesName ? ['-n', mbtilesName] : []),
+          '--no-tile-size-limit',
+          '--force',
+          ...inputArgs
+        ],
+        `${outputPrefix}/${path.basename(outputMbtiles)}`
+      ),
       inputs: { '/input': resolved['/input'].source },
       outputs: { '/output': resolved['/output'].source },
       env: { TIPPECANOE_MAX_THREADS: String(tippecanoeThreads) },
@@ -1812,20 +1830,23 @@ export async function processGshhg(
   const overviewResult = await runContainerJob({
     image: CHARTS_TOOLBOX_IMAGE,
     label: `gdaladdo-${chartNumber}`,
-    command: [
-      'gdaladdo',
-      '-r',
-      'average',
-      `${outputPrefix}/${outputName}`,
-      '2',
-      '4',
-      '8',
-      '16',
-      '32',
-      '64',
-      '128',
-      '256'
-    ],
+    command: withOutputChmod(
+      [
+        'gdaladdo',
+        '-r',
+        'average',
+        `${outputPrefix}/${outputName}`,
+        '2',
+        '4',
+        '8',
+        '16',
+        '32',
+        '64',
+        '128',
+        '256'
+      ],
+      `${outputPrefix}/${outputName}`
+    ),
     outputs: { '/output': resolved['/output'].source },
     // Single-process; one core is enough.
     resources: { cpus: 1 },
@@ -2081,20 +2102,23 @@ export async function processShpBasemap(
     const overviewResult = await runContainerJob({
       image: CHARTS_TOOLBOX_IMAGE,
       label: `gdaladdo-${chartNumber}`,
-      command: [
-        'gdaladdo',
-        '-r',
-        'average',
-        `${outputPrefix}/${outputName}`,
-        '2',
-        '4',
-        '8',
-        '16',
-        '32',
-        '64',
-        '128',
-        '256'
-      ],
+      command: withOutputChmod(
+        [
+          'gdaladdo',
+          '-r',
+          'average',
+          `${outputPrefix}/${outputName}`,
+          '2',
+          '4',
+          '8',
+          '16',
+          '32',
+          '64',
+          '128',
+          '256'
+        ],
+        `${outputPrefix}/${outputName}`
+      ),
       outputs: { '/output': rasterResolved['/output'].source },
       // Single-process; one core is enough.
       resources: { cpus: 1 },
