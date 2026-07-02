@@ -9,6 +9,7 @@ import {
   runJob as runContainerJob
 } from './container-jobs.js';
 import { getContainerManager } from './container-manager.js';
+import { setConversionResult } from './conversion-progress.js';
 import { throwJobFailure } from './job-failure.js';
 import { setMbtilesType } from './mbtiles-metadata.js';
 import type {
@@ -37,37 +38,11 @@ export function getAllConversionProgress(): ConversionProgressMap {
 }
 
 export function setConversionFailed(chartNumber: string, message: string): void {
-  const entry: ConversionProgress = {
-    status: 'failed',
-    message,
-    log: conversionProgress[chartNumber]?.log ?? []
-  };
-  conversionProgress[chartNumber] = entry;
-  // Only clear the entry if it's still the one this timer was scheduled for
-  // — a retry started in the meantime replaces it with a new object (and
-  // schedules its own cleanup), so a stale timer must not delete that one.
-  setTimeout(() => {
-    if (conversionProgress[chartNumber] === entry) {
-      delete conversionProgress[chartNumber];
-    }
-  }, 300000);
+  setConversionResult(conversionProgress, chartNumber, 'failed', message);
 }
 
-// Keeps the completed entry (and its log) around for the same grace period
-// as a failure, instead of deleting it the instant it succeeds — otherwise
-// the next poll sees the job vanish before the "Done" message is ever read.
 export function setConversionCompleted(chartNumber: string, message: string): void {
-  const entry: ConversionProgress = {
-    status: 'completed',
-    message,
-    log: conversionProgress[chartNumber]?.log ?? []
-  };
-  conversionProgress[chartNumber] = entry;
-  setTimeout(() => {
-    if (conversionProgress[chartNumber] === entry) {
-      delete conversionProgress[chartNumber];
-    }
-  }, 300000);
+  setConversionResult(conversionProgress, chartNumber, 'completed', message);
 }
 
 async function extractZip(zipPath: string, targetDir: string): Promise<string[]> {
