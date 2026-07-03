@@ -53,68 +53,73 @@ function writeMbtiles(
 }
 
 describe('charts-loader S-57 type recovery (freeboard-sk #436)', () => {
-  let dir: string;
+  let root: string;
   before(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cps-loader-'));
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'cps-loader-'));
   });
   after(() => {
-    fs.rmSync(dir, { recursive: true, force: true });
+    // maxRetries/retryDelay rides out the brief window where Windows still
+    // holds a lock on a just-closed .mbtiles (EBUSY on unlink otherwise).
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
+  // Write a one-chart .mbtiles into its own subdir, load it through the real
+  // findCharts, then close the reader handle findCharts leaves open (charts
+  // hold a live node:sqlite handle, which locks the file on Windows). Returns
+  // the served chart type.
+  async function loadType(
+    name: string,
+    opts: { type?: string; format: string; layers: string[] }
+  ): Promise<string> {
+    const dir = fs.mkdtempSync(path.join(root, `${name}-`));
+    writeMbtiles(path.join(dir, `${name}.mbtiles`), opts);
+    const charts = await findCharts(dir);
+    const chart = charts[name] as { type: string; _mbtilesHandle?: { close?: () => void } };
+    chart._mbtilesHandle?.close?.();
+    return chart.type;
+  }
+
   it('serves an un-patched ENC vector chart (type=overlay) as S-57', async () => {
-    writeMbtiles(path.join(dir, 'unpatched.mbtiles'), {
+    const type = await loadType('unpatched', {
       type: 'overlay',
       format: 'pbf',
       layers: ['DEPARE', 'LNDARE', 'SOUNDG', 'COALNE']
     });
-    const charts = await findCharts(dir);
-    assert.strictEqual(charts['unpatched'].type, 'S-57');
+    assert.strictEqual(type, 'S-57');
   });
 
   it('serves a vector chart with no type row at all as S-57 when S-57 layers are present', async () => {
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.mkdirSync(dir, { recursive: true });
-    writeMbtiles(path.join(dir, 'notype.mbtiles'), {
+    const type = await loadType('notype', {
       format: 'pbf',
       layers: ['LNDARE', 'DEPCNT']
     });
-    const charts = await findCharts(dir);
-    assert.strictEqual(charts['notype'].type, 'S-57');
+    assert.strictEqual(type, 'S-57');
   });
 
   it('keeps an explicit type=S-57 chart as S-57 (no regression)', async () => {
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.mkdirSync(dir, { recursive: true });
-    writeMbtiles(path.join(dir, 'patched.mbtiles'), {
+    const type = await loadType('patched', {
       type: 'S-57',
       format: 'pbf',
       layers: ['LNDARE', 'DEPARE']
     });
-    const charts = await findCharts(dir);
-    assert.strictEqual(charts['patched'].type, 'S-57');
+    assert.strictEqual(type, 'S-57');
   });
 
   it('does NOT promote a generic vector tileset (no S-57 layers) to S-57', async () => {
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.mkdirSync(dir, { recursive: true });
-    writeMbtiles(path.join(dir, 'generic.mbtiles'), {
+    const type = await loadType('generic', {
       type: 'overlay',
       format: 'pbf',
       layers: ['water', 'roads', 'buildings']
     });
-    const charts = await findCharts(dir);
-    assert.strictEqual(charts['generic'].type, 'tilelayer');
+    assert.strictEqual(type, 'tilelayer');
   });
 
   it('does NOT treat a raster chart as S-57 even if its type is unrecognized', async () => {
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.mkdirSync(dir, { recursive: true });
-    writeMbtiles(path.join(dir, 'raster.mbtiles'), {
+    const type = await loadType('raster', {
       type: 'overlay',
       format: 'png',
       layers: []
     });
-    const charts = await findCharts(dir);
-    assert.strictEqual(charts['raster'].type, 'tilelayer');
+    assert.strictEqual(type, 'tilelayer');
   });
 });
