@@ -24,17 +24,18 @@
  *
  * Tile contents are independent per tile (no real pyramid consistency); the
  * overzoom module only ever reads one ancestor at a time, so that's fine.
- * Run with: node test/fixtures/create-test-vector-mbtiles.cjs
+ * Run with: node test/fixtures/create-test-vector-mbtiles.mjs
  */
 
-const { DatabaseSync } = require('node:sqlite');
-const path = require('path');
-const fs = require('fs');
-const { gzipSync } = require('node:zlib');
-const geojsonvt = require('geojson-vt');
-const vtpbf = require('vt-pbf');
+// ESM because geojson-vt 4 is ESM-only (no CJS entry to require()).
+import { DatabaseSync } from 'node:sqlite';
+import path from 'node:path';
+import fs from 'node:fs';
+import { gzipSync } from 'node:zlib';
+import geojsonvt from 'geojson-vt';
+import vtpbf from 'vt-pbf';
 
-const outputPath = path.join(__dirname, 'test-vector-chart.mbtiles');
+const outputPath = path.join(import.meta.dirname, 'test-vector-chart.mbtiles');
 
 if (fs.existsSync(outputPath)) {
   fs.unlinkSync(outputPath);

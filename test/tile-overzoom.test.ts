@@ -1,7 +1,7 @@
 /**
  * Tests for serve-time overzoom synthesis from vector MBTiles.
  *
- * The fixture (create-test-vector-mbtiles.cjs) advertises minzoom=2,
+ * The fixture (create-test-vector-mbtiles.mjs) advertises minzoom=2,
  * maxzoom=16 but contains only six tiles — see the generator's header for
  * the authoritative inventory: z2 (0,1) 'test-buoy' (id 42) + `areas`
  * polygon, z3 (0,3) 'z3-buoy' (id 43) at the same lon/lat, z8 (56,86)
@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
-import Pbf from 'pbf';
+import { PbfReader } from 'pbf';
 import { VectorTile } from '@mapbox/vector-tile';
 import { fromGeojsonVt } from 'vt-pbf';
 import type { Feature, Point } from 'geojson';
@@ -48,7 +48,7 @@ const TOLERANCE_DEG = 0.05;
 function decode(tile: Buffer): VectorTile {
   assert.strictEqual(tile[0], 0x1f, 'synthesized tile must be gzipped');
   assert.strictEqual(tile[1], 0x8b, 'synthesized tile must be gzipped');
-  return new VectorTile(new Pbf(gunzipSync(tile)));
+  return new VectorTile(new PbfReader(gunzipSync(tile)));
 }
 
 function pointCoords(vt: VectorTile, x: number, y: number, z: number): [number, number] {
