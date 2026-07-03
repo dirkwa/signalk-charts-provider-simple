@@ -9,6 +9,7 @@ import {
   runJob as runContainerJob
 } from './container-jobs.js';
 import { getContainerManager } from './container-manager.js';
+import { setConversionResult } from './conversion-progress.js';
 import { throwJobFailure } from './job-failure.js';
 import { setMbtilesType } from './mbtiles-metadata.js';
 import type {
@@ -37,14 +38,11 @@ export function getAllConversionProgress(): ConversionProgressMap {
 }
 
 export function setConversionFailed(chartNumber: string, message: string): void {
-  conversionProgress[chartNumber] = {
-    status: 'failed',
-    message,
-    log: conversionProgress[chartNumber]?.log ?? []
-  };
-  setTimeout(() => {
-    delete conversionProgress[chartNumber];
-  }, 300000);
+  setConversionResult(conversionProgress, chartNumber, 'failed', message);
+}
+
+export function setConversionCompleted(chartNumber: string, message: string): void {
+  setConversionResult(conversionProgress, chartNumber, 'completed', message);
 }
 
 async function extractZip(zipPath: string, targetDir: string): Promise<string[]> {
@@ -354,23 +352,20 @@ export async function processRncZip(
       throw new Error('No charts converted');
     }
 
-    statusFn('completed', `Converted ${mbtilesFiles.length} chart(s) to MBTiles`);
+    const doneMsg = `Converted ${mbtilesFiles.length} chart(s) to MBTiles`;
+    statusFn('completed', doneMsg);
 
     if (chartNumber) {
-      delete conversionProgress[chartNumber];
+      setConversionCompleted(chartNumber, doneMsg);
     }
 
     return { mbtilesFiles };
   } catch (err) {
     if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'failed',
-        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
-        log: conversionProgress[chartNumber]?.log ?? []
-      };
-      setTimeout(() => {
-        delete conversionProgress[chartNumber];
-      }, 300000);
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {
@@ -577,23 +572,20 @@ export async function processPilotTar(
       throw new Error('No charts converted');
     }
 
-    statusFn('completed', `Converted ${mbtilesFiles.length} chart(s)`);
+    const doneMsg = `Converted ${mbtilesFiles.length} chart(s)`;
+    statusFn('completed', doneMsg);
 
     if (chartNumber) {
-      delete conversionProgress[chartNumber];
+      setConversionCompleted(chartNumber, doneMsg);
     }
 
     return { mbtilesFiles };
   } catch (err) {
     if (chartNumber) {
-      conversionProgress[chartNumber] = {
-        status: 'failed',
-        message: (err instanceof Error ? err.message : String(err)) || 'Conversion failed',
-        log: conversionProgress[chartNumber]?.log ?? []
-      };
-      setTimeout(() => {
-        delete conversionProgress[chartNumber];
-      }, 300000);
+      setConversionFailed(
+        chartNumber,
+        (err instanceof Error ? err.message : String(err)) || 'Conversion failed'
+      );
     }
     throw err;
   } finally {
