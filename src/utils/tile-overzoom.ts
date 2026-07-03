@@ -24,7 +24,7 @@
  */
 
 import { gunzipSync, gzipSync } from 'node:zlib';
-import Pbf from 'pbf';
+import { PbfReader } from 'pbf';
 import { VectorTile } from '@mapbox/vector-tile';
 import geojsonvt from 'geojson-vt';
 import { fromGeojsonVt } from 'vt-pbf';
@@ -155,7 +155,7 @@ export function _overzoomCacheStats(reader: MBTilesReader): {
 
 function decodeTile(raw: Buffer): VectorTile {
   const bytes = raw[0] === 0x1f && raw[1] === 0x8b ? gunzipSync(raw) : raw;
-  return new VectorTile(new Pbf(bytes));
+  return new VectorTile(new PbfReader(bytes));
 }
 
 /** True when at least one feature touches the tile's visible extent. */

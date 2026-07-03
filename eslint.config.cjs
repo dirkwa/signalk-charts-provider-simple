@@ -132,9 +132,10 @@ module.exports = [
     }
   },
 
-  // Test fixtures stay as CommonJS scripts — they're one-off setup
-  // scripts, not under test. The `.cjs` extension keeps them parseable
-  // as CJS now that the package is `"type": "module"`.
+  // Test fixtures are one-off setup scripts, not under test. Plain-CJS
+  // fixtures keep the `.cjs` extension so they stay parseable as CJS now
+  // that the package is `"type": "module"`; fixtures that import ESM-only
+  // dependencies (geojson-vt 4) are `.mjs` — see the block below.
   {
     files: ['test/fixtures/**/*.cjs'],
     plugins: {
@@ -151,6 +152,36 @@ module.exports = [
         module: 'readonly',
         require: 'readonly',
         exports: 'readonly',
+        Promise: 'readonly'
+      }
+    },
+    rules: {
+      'prettier/prettier': 'error',
+      'no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_'
+        }
+      ],
+      'no-console': 'off'
+    }
+  },
+
+  // ESM fixtures (same policy as the CJS block above, module flavor).
+  {
+    files: ['test/fixtures/**/*.mjs'],
+    plugins: {
+      prettier
+    },
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        Buffer: 'readonly',
         Promise: 'readonly'
       }
     },
