@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
+    # Only rebuild when the image recipe itself changes. Deliberately not
+    # triggered by edits to this workflow file: a change here (e.g. a
+    # Dependabot action bump) doesn't alter the image, and rebuilding an
+    # unchanged VERSION would just fail the "tag already exists" guard. Use
+    # workflow_dispatch to run a build after editing the workflow.
     paths:
       - 'docker/charts-toolbox/**'
-      - '.github/workflows/build-charts-toolbox.yml'
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}/charts-toolbox
