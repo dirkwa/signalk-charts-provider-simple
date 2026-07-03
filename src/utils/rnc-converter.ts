@@ -3,6 +3,7 @@ import path from 'path';
 import unzipper from 'unzipper';
 import { makeContainerWritableDir } from './container-fs.js';
 import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
+import { MAX_CONVERSION_LOG_LINES } from './conversion-log.js';
 import {
   ensureImage as ensureContainerImage,
   resolveJobPaths,
@@ -21,7 +22,7 @@ import type {
 } from '../types.js';
 
 const conversionProgress: ConversionProgressMap = {};
-const MAX_LOG_LINES = 100;
+const MAX_LOG_LINES = MAX_CONVERSION_LOG_LINES;
 
 let debug: DebugFunction = () => {};
 

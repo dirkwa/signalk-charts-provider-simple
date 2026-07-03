@@ -24,7 +24,8 @@ import { computeInclusion, coverageByBox, type FootprintIndex } from './noaa-enc
 
 export const CUSTOM_CATALOG_SCHEMA_VERSION = 1;
 const CATALOG_DIR_NAME = 'custom-catalogs';
-const MAX_LOG_LINES = 200;
+export const MAX_CATALOG_MANAGER_LOG_LINES = 200;
+const MAX_LOG_LINES = MAX_CATALOG_MANAGER_LOG_LINES;
 
 export type CustomCatalogStatus = 'empty' | 'out_of_date' | 'downloaded' | 'converted';
 
