@@ -13,9 +13,36 @@ import type {
 
 const KNOWN_CHART_TYPES = new Set(['tilelayer', 's-57', 'mapstylejson', 'tilejson', 'wms', 'wmts']);
 
-function resolveChartType(metadataType: string | undefined): string {
+// S-57 object-class layer names that only ever appear in ENC-derived vector
+// tiles. Freeboard only applies its land/depth S-57 style when the served
+// chart type is `S-57`; a chart whose `type=S-57` metadata row failed to get
+// written (e.g. the post-conversion patch couldn't open the file read-write
+// under Docker/rootful-podman — issue #157) still carries these layers, so we
+// can recognize it as S-57 from the tile schema and style it correctly instead
+// of serving it as a generic, unstyled vector tilelayer (freeboard-sk #436).
+const S57_LAYER_MARKERS = ['LNDARE', 'DEPARE', 'DEPCNT', 'COALNE', 'SOUNDG'];
+
+function looksLikeS57(format: string | undefined, layerIds: string[]): boolean {
+  if ((format ?? '').toLowerCase() !== 'pbf') {
+    return false;
+  }
+  return layerIds.some((id) => S57_LAYER_MARKERS.includes(id));
+}
+
+function resolveChartType(
+  metadataType: string | undefined,
+  format?: string,
+  layerIds: string[] = []
+): string {
   if (metadataType && KNOWN_CHART_TYPES.has(metadataType.toLowerCase())) {
     return metadataType;
+  }
+  // The metadata `type` is missing or unrecognized (tippecanoe's default
+  // `overlay`, or an un-patched file). Recover the S-57 type from the tile
+  // schema so the chart still gets its proper style; otherwise fall back to a
+  // plain tilelayer.
+  if (looksLikeS57(format, layerIds)) {
+    return 'S-57';
   }
   return 'tilelayer';
 }
@@ -102,7 +129,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
       minzoom: metadata.minzoom,
       maxzoom: metadata.maxzoom,
       format: metadata.format ?? 'png',
-      type: resolveChartType(metadata.type),
+      type: resolveChartType(metadata.type, metadata.format, vectorLayers),
       scale: parseInt(metadata.scale ?? '', 10) || 250000,
       ...(tileSize !== undefined ? { tileSize } : {}),
 
