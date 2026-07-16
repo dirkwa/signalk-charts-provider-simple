@@ -83,6 +83,14 @@ function isZipMagic(filePath: string): boolean {
   }
 }
 
+// Per-download state shared across resume attempts: the Content-Type of
+// the response the .part file was written from (finalizeDownload's
+// zip-claim check) and the source's ETag/Last-Modified for If-Range.
+interface DownloadState {
+  contentType: string;
+  validator: string;
+}
+
 // cancelJob() marks a job failed with this exact error and emits job-cancelled.
 const CANCELLED_ERROR = 'Cancelled by user';
 function isCancelled(job: DownloadJob): boolean {
@@ -206,7 +214,11 @@ class DownloadManager extends EventEmitter {
       await this.downloadWithRetry(job);
 
       // A cancel that raced the last await must win over 'completed'.
+      // In-flight work has settled here, so sweep anything created after
+      // cancelJob()'s own (racy) unlink pass — extraction targets and the
+      // recreated .part file included.
       if (isCancelled(job)) {
+        this.cleanupPartialFiles(job);
         return;
       }
       job.status = 'completed';
@@ -215,8 +227,11 @@ class DownloadManager extends EventEmitter {
       this.emit('job-completed', job);
     } catch (error) {
       // A cancelled job is already in its terminal state (cancelJob set it and
-      // emitted job-cancelled); don't overwrite or re-emit job-failed.
+      // emitted job-cancelled); don't overwrite or re-emit job-failed. Do run
+      // a final cleanup: the attempt that just ended may have written files
+      // after cancelJob()'s unlink pass.
       if (isCancelled(job)) {
+        this.cleanupPartialFiles(job);
         return;
       }
       job.status = 'failed';
@@ -277,7 +292,10 @@ class DownloadManager extends EventEmitter {
     }
     const partPath = this.partFilePath(job);
     job.partFile = path.basename(partPath);
-    let contentType = '';
+    // Shared across attempts: the Content-Type of the response the part
+    // file was written from, and the source's ETag/Last-Modified validator
+    // for If-Range resumes.
+    const state: DownloadState = { contentType: '', validator: '' };
     let attemptsWithoutProgress = 0;
     for (;;) {
       // cancelJob() marks the job failed/'Cancelled by user' but can't abort an
@@ -289,7 +307,7 @@ class DownloadManager extends EventEmitter {
       }
       const bytesBefore = this.partFileSize(partPath);
       try {
-        contentType = await this.downloadToFile(job, partPath);
+        await this.downloadToFile(job, partPath, state);
         break;
       } catch (error) {
         if (isCancelled(job)) {
@@ -325,24 +343,35 @@ class DownloadManager extends EventEmitter {
     if (isCancelled(job)) {
       throw new Error('Cancelled by user');
     }
-    await this.finalizeDownload(job, partPath, contentType);
+    await this.finalizeDownload(job, partPath, state.contentType);
   }
 
   // One HTTP attempt: stream the response body onto the end of `partPath`.
-  // Sends a Range request when the part file already has bytes; handles
+  // Sends a Range request when the part file already has bytes — with
+  // If-Range when the source gave us an ETag/Last-Modified, so a source
+  // that changed between attempts answers 200 (full body) and we rewrite
+  // instead of appending version-B bytes onto version-A data. Handles
   // servers that ignore Range (200 → rewrite the file from scratch) and
   // 416 (part already complete, or stale → drop it and let the retry
   // start over). A premature connection close is a TransientDownloadError
   // so the caller resumes; fs errors stay plain Errors and fail fast.
-  // Resolves with the response Content-Type so finalizeDownload can sanity
-  // -check the body against what the source claimed to serve.
-  private downloadToFile(job: DownloadJob, partPath: string, redirects = 0): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
+  // Mutates `state` with the Content-Type and validator of the response
+  // the part file was written from.
+  private downloadToFile(
+    job: DownloadJob,
+    partPath: string,
+    state: DownloadState,
+    redirects = 0
+  ): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
       const startByte = this.partFileSize(partPath);
       const protocol = job.url.startsWith('https') ? https : http;
       const headers: Record<string, string> = {};
       if (startByte > 0) {
         headers.Range = `bytes=${String(startByte)}-`;
+        if (state.validator) {
+          headers['If-Range'] = state.validator;
+        }
       }
 
       console.log(`[${job.id}] Starting download from: ${job.url} (offset ${String(startByte)})`);
@@ -351,7 +380,13 @@ class DownloadManager extends EventEmitter {
         .get(job.url, { timeout: 60000, headers }, (response) => {
           const status = response.statusCode ?? 0;
 
-          if (status === 301 || status === 302 || status === 307 || status === 308) {
+          if (
+            status === 301 ||
+            status === 302 ||
+            status === 303 ||
+            status === 307 ||
+            status === 308
+          ) {
             const redirectUrl = response.headers.location;
             response.resume(); // drain so the socket can be reused/freed
             if (redirectUrl) {
@@ -370,7 +405,7 @@ class DownloadManager extends EventEmitter {
               }
               console.log(`[${job.id}] Following redirect to: ${resolvedUrl}`);
               job.url = resolvedUrl;
-              this.downloadToFile(job, partPath, redirects + 1)
+              this.downloadToFile(job, partPath, state, redirects + 1)
                 .then(resolve)
                 .catch(reject);
               return;
@@ -385,9 +420,12 @@ class DownloadManager extends EventEmitter {
             response.resume();
             const total = parseContentRangeTotal(response.headers['content-range']);
             if (total !== null && total === startByte) {
+              // state.contentType deliberately keeps the value from the
+              // response the bytes were actually written from — a 416's
+              // own Content-Type describes the error body, not the chart.
               job.downloadedBytes = startByte;
               job.totalBytes = total;
-              resolve(response.headers['content-type'] ?? '');
+              resolve();
               return;
             }
             try {
@@ -441,6 +479,11 @@ class DownloadManager extends EventEmitter {
           job.downloadedBytes = appendFrom;
 
           const contentType = response.headers['content-type'] ?? '';
+          state.contentType = contentType;
+          // Remember the source's validator so the next resume can send
+          // If-Range: a changed source then answers 200 (full body) and
+          // the rewrite path below keeps the file consistent.
+          state.validator = response.headers.etag ?? response.headers['last-modified'] ?? '';
           console.log(
             `[${job.id}] ${resumed ? `Resuming at byte ${String(startByte)}` : 'Downloading'}; Content-Type: ${contentType}, total: ${totalBytes > 0 ? String(totalBytes) : 'unknown'} bytes`
           );
@@ -508,7 +551,7 @@ class DownloadManager extends EventEmitter {
               );
               return;
             }
-            resolve(contentType);
+            resolve();
           });
 
           response.pipe(fileStream);

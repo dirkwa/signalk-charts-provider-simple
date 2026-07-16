@@ -190,6 +190,32 @@ describe('DownloadManager zip extraction', () => {
     }
   });
 
+  it('follows a 303 See Other redirect', async () => {
+    const origin = await startOrigin((hit, res) => {
+      if (hit === 1) {
+        res.statusCode = 303;
+        res.setHeader('location', '/see/other/chart.bin');
+        res.end();
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/octet-stream');
+      res.end('CHARTDATA');
+    });
+
+    const dir = fs.mkdtempSync(path.join(TMP, 'seeother-'));
+    try {
+      const jobId = downloadManager.createJob(origin.url, dir, 'seeother', { saveRaw: true });
+      const job = await waitForTerminal(jobId);
+
+      assert.strictEqual(job.status, 'completed', `expected completed, got ${job.error ?? ''}`);
+      assert.strictEqual(origin.hits(), 2);
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'seeother.bin'), 'utf8'), 'CHARTDATA');
+    } finally {
+      await origin.close();
+    }
+  });
+
   it('follows a relative redirect Location', async () => {
     const origin = await startOrigin((hit, res) => {
       if (hit === 1) {
@@ -268,18 +294,29 @@ describe('DownloadManager zip extraction', () => {
 // always the full body).
 interface ResumableOrigin extends Origin {
   ranges: () => (string | undefined)[];
+  ifRanges: () => (string | undefined)[];
 }
 
 function startResumableOrigin(
   body: Buffer,
   perHit: (hit: number) => number | null,
-  opts: { ignoreRange?: boolean; failWith?: (hit: number) => number | null } = {}
+  opts: {
+    ignoreRange?: boolean;
+    failWith?: (hit: number) => number | null;
+    etagForHit?: (hit: number) => string;
+    bodyForHit?: (hit: number) => Buffer;
+  } = {}
 ): Promise<ResumableOrigin> {
   let hits = 0;
   const ranges: (string | undefined)[] = [];
+  const ifRanges: (string | undefined)[] = [];
   const server = http.createServer((req, res) => {
     hits += 1;
     ranges.push(req.headers.range);
+    // 'if-range' is not in Node's singular-header list, so normalize.
+    const ifRangeHeader = req.headers['if-range'];
+    const ifRange = Array.isArray(ifRangeHeader) ? ifRangeHeader[0] : ifRangeHeader;
+    ifRanges.push(ifRange);
 
     const failStatus = opts.failWith?.(hits) ?? null;
     if (failStatus !== null) {
@@ -288,12 +325,23 @@ function startResumableOrigin(
       return;
     }
 
+    const currentBody = opts.bodyForHit?.(hits) ?? body;
+    const etag = opts.etagForHit?.(hits);
+    if (etag) {
+      res.setHeader('etag', etag);
+    }
+    // Real If-Range semantics: a Range request whose If-Range validator no
+    // longer matches the current representation gets the FULL body (200).
     const m = /^bytes=(\d+)-$/.exec(req.headers.range ?? '');
-    const start = !opts.ignoreRange && m ? parseInt(m[1], 10) : 0;
-    const slice = body.subarray(start);
+    const honorRange = !opts.ignoreRange && m && (!ifRange || ifRange === etag);
+    const start = honorRange && m ? parseInt(m[1], 10) : 0;
+    const slice = currentBody.subarray(start);
     if (start > 0) {
       res.statusCode = 206;
-      res.setHeader('content-range', `bytes ${start}-${body.length - 1}/${body.length}`);
+      res.setHeader(
+        'content-range',
+        `bytes ${start}-${currentBody.length - 1}/${currentBody.length}`
+      );
     } else {
       res.statusCode = 200;
     }
@@ -319,6 +367,7 @@ function startResumableOrigin(
         url: `http://127.0.0.1:${port}/chart.bin`,
         hits: () => hits,
         ranges: () => ranges,
+        ifRanges: () => ifRanges,
         close: () =>
           new Promise<void>((r) => {
             server.close(() => {
@@ -351,8 +400,10 @@ describe('DownloadManager resume', () => {
 
   it('resumes from the interrupted offset with a Range request', async () => {
     // First attempt is cut after ~3000 bytes; the retry must ask for the
-    // remainder (Range) and the final file must be byte-identical.
-    const origin = await startResumableOrigin(body, (hit) => (hit === 1 ? 3000 : null));
+    // remainder (Range + If-Range) and the final file must be byte-identical.
+    const origin = await startResumableOrigin(body, (hit) => (hit === 1 ? 3000 : null), {
+      etagForHit: () => '"v1"'
+    });
     const dir = fs.mkdtempSync(path.join(TMP, 'resume-'));
     try {
       const jobId = downloadManager.createJob(origin.url, dir, 'resume-test', { saveRaw: true });
@@ -371,12 +422,48 @@ describe('DownloadManager resume', () => {
         offset > 0 && offset <= 3000,
         `resume offset must be within the first attempt's delivered bytes, got ${String(offset)}`
       );
+      assert.strictEqual(
+        origin.ifRanges()[1],
+        '"v1"',
+        "the resume must bind to the first response's validator via If-Range"
+      );
       const written = fs.readFileSync(path.join(dir, 'resume-test.bin'));
       assert.ok(written.equals(body), 'resumed file must be byte-identical to the source');
       // No .part leftovers after success.
       assert.deepStrictEqual(
         fs.readdirSync(dir).filter((f) => f.endsWith('.part')),
         []
+      );
+    } finally {
+      await origin.close();
+    }
+  });
+
+  it('rewrites from scratch when the source changed between attempts (If-Range mismatch)', async () => {
+    // Same-length payload swap: version A is cut mid-transfer; the resume
+    // carries If-Range with A's validator, the origin answers 200 with the
+    // full version-B body, and the final file must be pure B — never
+    // A-prefix + B-suffix.
+    const bodyB = Buffer.alloc(body.length);
+    for (let i = 0; i < bodyB.length; i++) {
+      bodyB[i] = (i * 7 + 13) % 249;
+    }
+    const origin = await startResumableOrigin(body, (hit) => (hit === 1 ? 3000 : null), {
+      etagForHit: (hit) => (hit === 1 ? '"v1"' : '"v2"'),
+      bodyForHit: (hit) => (hit === 1 ? body : bodyB)
+    });
+    const dir = fs.mkdtempSync(path.join(TMP, 'changed-'));
+    try {
+      const jobId = downloadManager.createJob(origin.url, dir, 'changed-test', { saveRaw: true });
+      const job = await waitForTerminal(jobId);
+
+      assert.strictEqual(job.status, 'completed', `expected completed, got ${job.error ?? ''}`);
+      assert.strictEqual(origin.hits(), 2);
+      assert.strictEqual(origin.ifRanges()[1], '"v1"');
+      const written = fs.readFileSync(path.join(dir, 'changed-test.bin'));
+      assert.ok(
+        written.equals(bodyB),
+        'file must be the full new version, not stale bytes with a new tail'
       );
     } finally {
       await origin.close();
