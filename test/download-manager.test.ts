@@ -8,6 +8,7 @@ import assert from 'node:assert';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 import { downloadManager } from '../dist/utils/download-manager.js';
@@ -66,6 +67,148 @@ function waitForTerminal(jobId: string): Promise<DownloadJob> {
     downloadManager.on('job-cancelled', check);
   });
 }
+
+// Build a minimal STORED (uncompressed) ZIP in memory so the zip tests
+// need no archiver dependency: local file headers + central directory +
+// end-of-central-directory, method 0 throughout.
+function storedZip(entries: { name: string; data: Buffer }[]): Buffer {
+  const chunks: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const { name, data } of entries) {
+    const nameBuf = Buffer.from(name, 'utf8');
+    const crc = zlib.crc32(data);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); // local file header signature
+    local.writeUInt16LE(20, 4); // version needed
+    local.writeUInt16LE(0, 8); // method: stored
+    local.writeUInt16LE(0x21, 12); // mod date (any valid DOS date)
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18); // compressed size
+    local.writeUInt32LE(data.length, 22); // uncompressed size
+    local.writeUInt16LE(nameBuf.length, 26);
+    chunks.push(local, nameBuf, data);
+
+    const cen = Buffer.alloc(46);
+    cen.writeUInt32LE(0x02014b50, 0); // central directory signature
+    cen.writeUInt16LE(20, 4); // version made by
+    cen.writeUInt16LE(20, 6); // version needed
+    cen.writeUInt16LE(0, 10); // method: stored
+    cen.writeUInt16LE(0x21, 14); // mod date
+    cen.writeUInt32LE(crc, 16);
+    cen.writeUInt32LE(data.length, 20);
+    cen.writeUInt32LE(data.length, 24);
+    cen.writeUInt16LE(nameBuf.length, 28);
+    cen.writeUInt32LE(offset, 42); // local header offset
+    central.push(cen, nameBuf);
+
+    offset += 30 + nameBuf.length + data.length;
+  }
+  const cd = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); // EOCD signature
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(cd.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, cd, eocd]);
+}
+
+describe('DownloadManager zip extraction', () => {
+  before(() => {
+    fs.mkdirSync(TMP, { recursive: true });
+  });
+
+  beforeEach(() => {
+    downloadManager.removeAllListeners();
+  });
+
+  after(() => {
+    downloadManager.removeAllListeners();
+    fs.rmSync(TMP, { recursive: true, force: true });
+  });
+
+  it('extracts every .mbtiles entry from a multi-chart ZIP and skips the rest', async () => {
+    const zip = storedZip([
+      { name: 'Kiribati/Gilbert Islands GoogleSat.mbtiles', data: Buffer.from('SAT-DATA') },
+      { name: 'Kiribati/readme.txt', data: Buffer.from('not a chart') },
+      { name: 'Kiribati/Gilbert Islands ArcGis.mbtiles', data: Buffer.from('ARC-DATA') }
+    ]);
+    const origin = await startOrigin((_hit, res) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/zip');
+      res.end(zip);
+    });
+
+    const dir = fs.mkdtempSync(path.join(TMP, 'zip-multi-'));
+    try {
+      const jobId = downloadManager.createJob(origin.url, dir, 'Kiribati');
+      const job = await waitForTerminal(jobId);
+
+      assert.strictEqual(job.status, 'completed', `expected completed, got ${job.error ?? ''}`);
+      assert.deepStrictEqual([...job.extractedFiles].sort(), [
+        'Gilbert Islands ArcGis.mbtiles',
+        'Gilbert Islands GoogleSat.mbtiles'
+      ]);
+      assert.strictEqual(
+        fs.readFileSync(path.join(dir, 'Gilbert Islands GoogleSat.mbtiles'), 'utf8'),
+        'SAT-DATA'
+      );
+      assert.strictEqual(
+        fs.readFileSync(path.join(dir, 'Gilbert Islands ArcGis.mbtiles'), 'utf8'),
+        'ARC-DATA'
+      );
+      assert.strictEqual(fs.existsSync(path.join(dir, 'readme.txt')), false);
+    } finally {
+      await origin.close();
+    }
+  });
+
+  it(
+    'fails cleanly when the target dir vanishes mid-extraction (no unhandled rejection, no hang)',
+    { timeout: 20000 },
+    async () => {
+      // Regression: the quarantine dir being rm -rf'd under a running
+      // extraction used to (a) leak the write-stream ENOENTs as
+      // process-level unhandled rejections and (b) stall the zip parser
+      // (pipe() unpipes on destination error), so the job never reached a
+      // terminal state.
+      const zip = storedZip([
+        { name: 'a.mbtiles', data: Buffer.from('AAA') },
+        { name: 'b.mbtiles', data: Buffer.from('BBB') }
+      ]);
+      const origin = await startOrigin((_hit, res) => {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/zip');
+        res.end(zip);
+      });
+
+      const vanishedDir = path.join(TMP, 'vanished-quarantine'); // never created
+      let unhandled = 0;
+      const onUnhandled = (): void => {
+        unhandled += 1;
+      };
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const jobId = downloadManager.createJob(origin.url, vanishedDir, 'Kiribati');
+        const job = await waitForTerminal(jobId);
+
+        assert.strictEqual(job.status, 'failed');
+        assert.match(job.error ?? '', /ENOENT/);
+        // A failed write must not be counted as an extracted file (the
+        // write stream's 'close' fires even after 'error').
+        assert.deepStrictEqual(job.extractedFiles, []);
+        // Give any stray unhandled rejection a beat to surface.
+        await new Promise((r) => setTimeout(r, 100));
+        assert.strictEqual(unhandled, 0, 'write failures must not leak as unhandled rejections');
+      } finally {
+        process.removeListener('unhandledRejection', onUnhandled);
+        await origin.close();
+      }
+    }
+  );
+});
 
 describe('DownloadManager retry', () => {
   before(() => {

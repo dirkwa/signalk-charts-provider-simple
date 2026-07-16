@@ -11,7 +11,10 @@
  * - One subdir per chart number (`<dataDir>/in-progress/<chartNumber>/`).
  *   Multiple concurrent conversions of the same chartNumber can't
  *   collide because `cpuBudget.maxConcurrentConversions` is 1, but the
- *   subdir layout still keeps things tidy under inspection.
+ *   subdir layout still keeps things tidy under inspection. Download
+ *   jobs run concurrently (up to 3), so they use
+ *   `makeUniqueQuarantineDir` — a per-job suffix — instead of the
+ *   name-keyed variant.
  *
  * - `promote()` uses `fs.promises.rename` first (atomic when both
  *   sides are on the same filesystem) and falls back to copy+unlink
@@ -29,6 +32,18 @@ import { makeContainerWritable } from './container-fs.js';
 const QUARANTINE_ROOT_NAME = 'in-progress';
 
 /**
+ * Quarantine dirs created in this *process* lifetime that haven't been
+ * cleaned up yet. Module-level on purpose: a plugin restart (config save)
+ * re-runs `start()` — and its `sweepStaleQuarantineDirs()` call — while
+ * downloads and conversions from the previous plugin lifecycle are still
+ * running (`downloadManager` is a module singleton, converter promises
+ * aren't cancelled). The sweep must not delete those live workspaces;
+ * only dirs left by a previous *server* process (registry empty after a
+ * real restart) are stale.
+ */
+const activeQuarantineDirs = new Set<string>();
+
+/**
  * Resolve `<dataDir>/in-progress/<chartNumber>/` and create it. Idempotent.
  * Returns the absolute path so the caller can pass it as the converter's
  * `chartsDir` argument and the converter writes there instead of into the
@@ -38,6 +53,30 @@ export function makeQuarantineDir(dataDir: string, chartNumber: string): string 
   const dir = path.join(dataDir, QUARANTINE_ROOT_NAME, sanitizeIdSegment(chartNumber));
   fs.mkdirSync(dir, { recursive: true });
   makeContainerWritable(dir);
+  activeQuarantineDirs.add(dir);
+  return dir;
+}
+
+/**
+ * Like `makeQuarantineDir`, but with a per-call unique suffix so concurrent
+ * jobs staging under the same display name can never share (and therefore
+ * never delete) each other's workspace. Download jobs need this: the
+ * download manager runs up to 3 jobs at once, and each job's completion
+ * (or failure) listener wipes its quarantine dir — with a name-keyed dir,
+ * the first job to finish would rm -rf the directory a second job with the
+ * same chart name was still extracting into.
+ */
+export function makeUniqueQuarantineDir(dataDir: string, base: string): string {
+  const root = path.join(dataDir, QUARANTINE_ROOT_NAME);
+  fs.mkdirSync(root, { recursive: true });
+  // mkdtemp's exclusive create guarantees uniqueness even for two calls in
+  // the same instant. Truncate the sanitized base so the whole segment
+  // (base + '-' + 6 random chars) stays well under sanitizeIdSegment's
+  // 64-char cap.
+  const prefix = `${sanitizeIdSegment(base).slice(0, 40)}-`;
+  const dir = fs.mkdtempSync(path.join(root, prefix));
+  makeContainerWritable(dir);
+  activeQuarantineDirs.add(dir);
   return dir;
 }
 
@@ -187,6 +226,10 @@ export async function promoteQuarantine(
  * anything.
  */
 export function cleanupQuarantineDir(quarantineDir: string): void {
+  // Unregister first, even if the rm below fails: the caller is done with
+  // the dir either way, and leaving it out of the active set means the
+  // next startup sweep can remove whatever the failed rm left behind.
+  activeQuarantineDirs.delete(quarantineDir);
   try {
     fs.rmSync(quarantineDir, { recursive: true, force: true });
   } catch {
@@ -197,10 +240,12 @@ export function cleanupQuarantineDir(quarantineDir: string): void {
 }
 
 /**
- * Wipe every subdir under `<dataDir>/in-progress/` at startup.
- * Anything in there is from a prior server lifecycle that didn't
- * complete, so the contents are by definition stale and unsafe to
- * promote.
+ * Wipe stale subdirs under `<dataDir>/in-progress/` at startup.
+ * "Stale" means "not created in this process lifetime": `start()` runs on
+ * every plugin config save while downloads/conversions from the previous
+ * plugin lifecycle keep running, so any dir still in the active registry
+ * belongs to live work and is skipped. After a real server restart the
+ * registry is empty and everything on disk gets wiped, as before.
  *
  * Returns the count of dirs swept so callers can log it.
  */
@@ -212,8 +257,12 @@ export function sweepStaleQuarantineDirs(dataDir: string): number {
   let swept = 0;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (entry.isDirectory()) {
+      const dir = path.join(root, entry.name);
+      if (activeQuarantineDirs.has(dir)) {
+        continue;
+      }
       try {
-        fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true });
         swept += 1;
       } catch {
         // Best-effort. Permissions / locked file shouldn't block
