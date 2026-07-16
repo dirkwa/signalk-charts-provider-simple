@@ -128,6 +128,15 @@ import type {
 } from './types.js';
 const pluginVersion: string = (packageJson as { version: string }).version;
 
+// The startup-global 'job-completed' handler is re-registered on every
+// start() because its closure captures the current chartPath. Track the
+// previous instance (module scope, like downloadManager itself) so
+// re-registration removes exactly that handler — a blanket
+// removeAllListeners('job-completed') would also strip the per-job
+// promotion/cleanup listeners of downloads still running from a prior
+// plugin lifecycle, stranding their files in the quarantine.
+let globalJobCompletedListener: ((job: DownloadJob) => void) | null = null;
+
 // Single source of truth lives in container-jobs.ts as PLUGIN_OWNER_ID
 // (used as the `ownerPluginId` label on every runJob call). The plugin
 // id Signal K uses must match exactly so `cleanupOrphanedJobs` reaps
@@ -545,8 +554,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     startCatalogUpdateChecker();
 
-    downloadManager.removeAllListeners('job-completed');
-    downloadManager.on('job-completed', (job: DownloadJob) => {
+    if (globalJobCompletedListener) {
+      downloadManager.removeListener('job-completed', globalJobCompletedListener);
+    }
+    globalJobCompletedListener = (job: DownloadJob): void => {
       app.debug(
         `Download job completed: ${job.id}, extracted files: ${job.extractedFiles.join(', ')}`
       );
@@ -568,7 +579,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           }
         }
       });
-    });
+    };
+    downloadManager.on('job-completed', globalJobCompletedListener);
 
     // Filesystem housekeeping (removing invalid .mbtiles and orphaned
     // journal/WAL files) runs independently of the display path so it can
@@ -1727,6 +1739,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               });
             });
 
+            // Observe the rejection now: Promise.all only attaches in the
+            // 'finish' handler, which never fires on an aborted request —
+            // a staging failure there would otherwise surface as a
+            // process-level unhandled rejection.
+            writePromise.catch(() => undefined);
             writePromises.push(writePromise);
           }
         );
@@ -1795,6 +1812,24 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               cleanupQuarantineDir(quarantineDir);
             }
           })();
+        });
+
+        // An aborted request or a Busboy parse error never reaches
+        // 'finish', which owns the normal cleanup — without these the
+        // staged files stay on disk and the dir stays registered as
+        // active (so the startup sweep skips it) until a full server
+        // restart. cleanupQuarantineDir is idempotent, so a late abort
+        // racing the finish path is harmless.
+        bb.on('error', (err: unknown) => {
+          app.error('Upload stream error: ' + (err instanceof Error ? err.message : String(err)));
+          cleanupQuarantineDir(quarantineDir);
+          if (!res.headersSent) {
+            res.status(400).send('Malformed upload');
+          }
+        });
+        req.on('aborted', () => {
+          app.debug('Upload request aborted by client');
+          cleanupQuarantineDir(quarantineDir);
         });
 
         req.pipe(bb);
@@ -2375,8 +2410,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const jobId = downloadManager.createJob(url, quarantineDir, chartNumber);
           createdJobId = jobId;
 
-          trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-
           const cleanupListener = (job: DownloadJob): void => {
             if (job.id !== jobId) {
               return;
@@ -2447,6 +2480,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           };
           downloadManager.on('job-failed', cleanupListener);
           downloadManager.on('job-completed', cleanupListener);
+
+          // Only after the listeners own the job/quarantine lifecycle:
+          // if this throws, the catch below must NOT touch the dir (the
+          // listeners will promote or clean it), and nothing before the
+          // registration above can throw once createJob has returned.
+          trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
 
           app.debug(`Catalog download started: ${chartNumber} from ${catalogFile}, job: ${jobId}`);
 

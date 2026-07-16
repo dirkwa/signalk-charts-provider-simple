@@ -330,7 +330,14 @@ class DownloadManager extends EventEmitter {
                         // keep 'finish' (where the job's failure is decided)
                         // from ever firing. Drain the entry so the stream
                         // keeps flowing and the job fails instead of hanging.
-                        entry.autodrain();
+                        // The drain stream's own errors must be observed too
+                        // — an unlistened 'error' on it would crash the
+                        // process; the parser's error handler already fails
+                        // the job for a corrupt archive.
+                        void entry
+                          .autodrain()
+                          .promise()
+                          .catch(() => undefined);
                         rejectExtract(err);
                       });
 
@@ -347,7 +354,10 @@ class DownloadManager extends EventEmitter {
                   extractPromise.catch(() => undefined);
                   extractionPromises.push(extractPromise);
                 } else {
-                  entry.autodrain();
+                  void entry
+                    .autodrain()
+                    .promise()
+                    .catch(() => undefined);
                 }
               })
               .on('finish', () => {
