@@ -54,6 +54,7 @@ import { parsePluginConfig } from './utils/plugin-config-schema.js';
 import {
   cleanupQuarantineDir,
   makeQuarantineDir,
+  makeUniqueQuarantineDir,
   promoteQuarantine,
   sweepStaleQuarantineDirs
 } from './utils/quarantine.js';
@@ -802,6 +803,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
+        // Setup-failure cleanup state: if anything throws after the
+        // quarantine dir exists but before the job owns it, the catch
+        // below removes the orphan. Once createJob has returned, the
+        // job's completion/failure listeners own the dir — the catch
+        // must NOT touch it then.
+        let stagedDir: string | null = null;
+        let createdJobId: string | null = null;
         try {
           console.log(`Creating download job for: ${downloadUrl}`);
           console.log(`Target folder: ${targetFolder}`);
@@ -818,11 +826,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             fs.mkdirSync(targetDir, { recursive: true });
           }
 
-          // Stage the download in the quarantine dir; promote on
+          // Stage the download in a per-job quarantine dir; promote on
           // job-completed so a crash mid-fetch never leaves a partial
-          // .mbtiles in the live chart library.
-          const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartName);
+          // .mbtiles in the live chart library. Per-job (unique) because
+          // download jobs run concurrently: two downloads with the same
+          // chart name must not share a dir, or the first to finish wipes
+          // the workspace out from under the other mid-extraction.
+          const quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartName);
+          stagedDir = quarantineDir;
           const jobId = downloadManager.createJob(downloadUrl, quarantineDir, chartName);
+          createdJobId = jobId;
 
           const promoteListener = (job: DownloadJob): void => {
             if (job.id !== jobId) {
@@ -883,6 +896,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             message: 'Download job created'
           });
         } catch (error) {
+          if (stagedDir !== null && createdJobId === null) {
+            cleanupQuarantineDir(stagedDir);
+          }
           console.error('Error creating download job:', error);
           res.status(500).json({
             success: false,
@@ -1652,10 +1668,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         // streamed here first, then atomically promoted on `finish`.
         // A crashed/aborted request leaves the partial files in the
         // quarantine for the startup sweep to wipe, never in basePath.
-        const quarantineDir = makeQuarantineDir(
-          app.getDataDirPath(),
-          `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-        );
+        const quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), 'upload');
         const uploadedFiles: string[] = [];
         const writePromises: Promise<void>[] = [];
         const fields: Record<string, string> = {};
@@ -2119,7 +2132,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           // the UI stuck waiting for status it would never get.
           let quarantineDir: string;
           try {
-            quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+            quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartNumber);
           } catch (err) {
             res.status(500).json({
               success: false,
@@ -2236,6 +2249,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         return;
       }
 
+      // Setup-failure cleanup state for the direct-.mbtiles branch: see
+      // the download-chart-locker route. Once createJob has returned,
+      // the job's listeners own the dir and the catch must leave it be.
+      let stagedDir: string | null = null;
+      let createdJobId: string | null = null;
       try {
         const chartPath = props.chartPath || defaultChartsPath;
         const targetDir =
@@ -2346,12 +2364,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             chartPath
           );
         } else {
-          // Direct .mbtiles download (or ZIP-of-.mbtiles): stage into the
-          // quarantine dir so a crash mid-download/extract never leaves a
-          // half-built file in the live chart library. Promotion runs on
-          // job-completed; failure / no-files paths drop the quarantine.
-          const quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+          // Direct .mbtiles download (or ZIP-of-.mbtiles): stage into a
+          // per-job quarantine dir so a crash mid-download/extract never
+          // leaves a half-built file in the live chart library, and so a
+          // re-download of the same chartNumber can't share (and wipe)
+          // a still-running job's dir. Promotion runs on job-completed;
+          // failure / no-files paths drop the quarantine.
+          const quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartNumber);
+          stagedDir = quarantineDir;
           const jobId = downloadManager.createJob(url, quarantineDir, chartNumber);
+          createdJobId = jobId;
 
           trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
 
@@ -2435,6 +2457,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           });
         }
       } catch (error) {
+        if (stagedDir !== null && createdJobId === null) {
+          cleanupQuarantineDir(stagedDir);
+        }
         console.error('Error creating catalog download job:', error);
         res.status(500).json({
           success: false,
@@ -2721,7 +2746,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       let quarantineDir: string | null = null;
 
       try {
-        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+        quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartNumber);
         const displayName = chartTitle ? cleanCatalogTitle(chartTitle) : undefined;
         const result = await processS57Zip(
           zipPath,
@@ -2837,7 +2862,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       let quarantineDir: string | null = null;
 
       try {
-        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+        quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processRncZip(
           zipPath,
           quarantineDir,
@@ -2948,7 +2973,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       let quarantineDir: string | null = null;
 
       try {
-        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+        quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processPilotTar(
           dlPath,
           quarantineDir,
@@ -3049,7 +3074,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       let quarantineDir: string | null = null;
 
       try {
-        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+        quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processShpBasemap(
           dlPath,
           quarantineDir,
@@ -3126,7 +3151,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     void (async () => {
       let quarantineDir: string | null = null;
       try {
-        quarantineDir = makeQuarantineDir(app.getDataDirPath(), chartNumber);
+        quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartNumber);
         const result = await processGshhg(
           tmpDir,
           quarantineDir,
@@ -3351,7 +3376,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
         setConvertingState(id, true);
         convertingFlagged = true;
-        quarantineDir = makeQuarantineDir(app.getDataDirPath(), id);
+        quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), id);
         const conv = await processS57Directory(
           encDir,
           quarantineDir,

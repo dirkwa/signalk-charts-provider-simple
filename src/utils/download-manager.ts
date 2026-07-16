@@ -309,21 +309,42 @@ class DownloadManager extends EventEmitter {
 
                   const extractPromise = new Promise<void>((resolveExtract, rejectExtract) => {
                     const writeStream = fs.createWriteStream(targetPath);
+                    // 'close' fires even after 'error' (emitClose default);
+                    // don't count a failed write as an extracted file.
+                    let writeFailed = false;
 
                     writeStream
                       .on('close', () => {
+                        if (writeFailed) {
+                          return;
+                        }
                         console.log(`[${job.id}] Extracted: ${fileName}`);
                         job.extractedFiles.push(path.basename(fileName));
                         resolveExtract();
                       })
                       .on('error', (err: Error) => {
+                        writeFailed = true;
                         console.error(`[${job.id}] Error writing ${fileName}:`, err);
+                        // pipe() unpipes on destination error and leaves the
+                        // entry paused, which would stall the zip parser and
+                        // keep 'finish' (where the job's failure is decided)
+                        // from ever firing. Drain the entry so the stream
+                        // keeps flowing and the job fails instead of hanging.
+                        entry.autodrain();
                         rejectExtract(err);
                       });
 
                     entry.pipe(writeStream);
                   });
 
+                  // Observe the rejection immediately: Promise.all() below
+                  // only attaches at the zip stream's 'finish', so an
+                  // earlier write failure would surface as a process-level
+                  // unhandled rejection (seen as plugin status "Unhandled
+                  // rejection: ENOENT ..." when the quarantine dir vanished
+                  // mid-extraction). The real error still propagates through
+                  // Promise.all on the original promise.
+                  extractPromise.catch(() => undefined);
                   extractionPromises.push(extractPromise);
                 } else {
                   entry.autodrain();

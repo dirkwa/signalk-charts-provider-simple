@@ -7,6 +7,7 @@ import os from 'node:os';
 import {
   cleanupQuarantineDir,
   makeQuarantineDir,
+  makeUniqueQuarantineDir,
   promoteQuarantine,
   sweepStaleQuarantineDirs
 } from '../dist/utils/quarantine.js';
@@ -166,17 +167,20 @@ describe('quarantine helpers', () => {
     assert.strictEqual(fs.existsSync(q), false);
   });
 
-  it('sweepStaleQuarantineDirs wipes every subdir under in-progress/', () => {
+  it('sweepStaleQuarantineDirs wipes stale subdirs from a previous process lifecycle', () => {
     // Use a fresh dataDir so prior test cases' leftover subdirs don't
-    // get counted into this test's swept total.
+    // get counted into this test's swept total. Stale dirs are created
+    // directly on disk — that's what a previous server process leaves
+    // behind (this process's active registry has never seen them).
     const sweepDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-quarantine-sweep-'));
     try {
-      const a = makeQuarantineDir(sweepDir, 'stale-a');
-      const b = makeQuarantineDir(sweepDir, 'stale-b');
-      const c = makeQuarantineDir(sweepDir, 'stale-c');
-      fs.writeFileSync(path.join(a, 'half-built.mbtiles'), 'aaa');
-      fs.writeFileSync(path.join(b, 'half-built.mbtiles'), 'bbb');
-      fs.writeFileSync(path.join(c, 'half-built.mbtiles'), 'ccc');
+      const a = path.join(sweepDir, 'in-progress', 'stale-a');
+      const b = path.join(sweepDir, 'in-progress', 'stale-b');
+      const c = path.join(sweepDir, 'in-progress', 'stale-c');
+      for (const dir of [a, b, c]) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'half-built.mbtiles'), 'stale');
+      }
 
       const swept = sweepStaleQuarantineDirs(sweepDir);
       assert.strictEqual(swept, 3);
@@ -189,6 +193,54 @@ describe('quarantine helpers', () => {
     } finally {
       fs.rmSync(sweepDir, { recursive: true, force: true });
     }
+  });
+
+  it('sweepStaleQuarantineDirs skips dirs still active in this process (live downloads survive a plugin restart)', () => {
+    const sweepDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-quarantine-active-'));
+    try {
+      // A previous-lifecycle leftover, unknown to the registry.
+      const stale = path.join(sweepDir, 'in-progress', 'stale');
+      fs.mkdirSync(stale, { recursive: true });
+      // A live workspace created in this process — e.g. a download still
+      // extracting when a config save re-ran start()'s sweep.
+      const active = makeQuarantineDir(sweepDir, 'active-download');
+      fs.writeFileSync(path.join(active, 'streaming.mbtiles'), 'live');
+
+      const swept = sweepStaleQuarantineDirs(sweepDir);
+      assert.strictEqual(swept, 1);
+      assert.strictEqual(fs.existsSync(stale), false);
+      assert.strictEqual(fs.existsSync(active), true);
+      assert.strictEqual(fs.readFileSync(path.join(active, 'streaming.mbtiles'), 'utf8'), 'live');
+
+      // Once the job is done and cleaned up, the same path is no longer
+      // protected: a later recreation by a dead process would be swept.
+      cleanupQuarantineDir(active);
+      fs.mkdirSync(active, { recursive: true });
+      assert.strictEqual(sweepStaleQuarantineDirs(sweepDir), 1);
+      assert.strictEqual(fs.existsSync(active), false);
+    } finally {
+      fs.rmSync(sweepDir, { recursive: true, force: true });
+    }
+  });
+
+  it('makeUniqueQuarantineDir returns a distinct dir per call for the same base name', () => {
+    const a = makeUniqueQuarantineDir(dataDir, 'Kiribati');
+    const b = makeUniqueQuarantineDir(dataDir, 'Kiribati');
+    assert.notStrictEqual(a, b);
+    for (const dir of [a, b]) {
+      assert.ok(dir.startsWith(path.join(dataDir, 'in-progress') + path.sep));
+      assert.ok(path.basename(dir).startsWith('Kiribati-'));
+      assert.strictEqual(fs.existsSync(dir), true);
+    }
+  });
+
+  it('makeUniqueQuarantineDir keeps the unique suffix on very long base names', () => {
+    // sanitizeIdSegment caps segments at 64 chars; the suffix must survive.
+    const longBase = 'x'.repeat(200);
+    const a = makeUniqueQuarantineDir(dataDir, longBase);
+    const b = makeUniqueQuarantineDir(dataDir, longBase);
+    assert.notStrictEqual(a, b);
+    assert.ok(path.basename(a).length <= 64);
   });
 
   it('sweepStaleQuarantineDirs returns 0 when there is no in-progress root', () => {
