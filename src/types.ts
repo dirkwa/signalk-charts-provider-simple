@@ -167,6 +167,10 @@ export interface DownloadJob {
   totalBytes: number;
   extractedFiles: string[];
   targetFiles: string[];
+  // Basename of the in-progress .part file in targetDir. Present while a
+  // download is running (it survives transient retries so a resumed
+  // attempt can continue from its current size); cleared on completion.
+  partFile?: string;
   createdAt: number;
   startedAt?: number;
   completedAt?: number;

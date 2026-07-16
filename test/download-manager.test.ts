@@ -165,6 +165,57 @@ describe('DownloadManager zip extraction', () => {
     }
   });
 
+  it('uniquifies duplicate basenames across archive folders instead of clobbering', async () => {
+    const zip = storedZip([
+      { name: 'region-a/chart.mbtiles', data: Buffer.from('AAA') },
+      { name: 'region-b/chart.mbtiles', data: Buffer.from('BBB') }
+    ]);
+    const origin = await startOrigin((_hit, res) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/zip');
+      res.end(zip);
+    });
+
+    const dir = fs.mkdtempSync(path.join(TMP, 'zip-dup-'));
+    try {
+      const jobId = downloadManager.createJob(origin.url, dir, 'dup');
+      const job = await waitForTerminal(jobId);
+
+      assert.strictEqual(job.status, 'completed', `expected completed, got ${job.error ?? ''}`);
+      assert.deepStrictEqual([...job.extractedFiles].sort(), ['chart-2.mbtiles', 'chart.mbtiles']);
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'chart.mbtiles'), 'utf8'), 'AAA');
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'chart-2.mbtiles'), 'utf8'), 'BBB');
+    } finally {
+      await origin.close();
+    }
+  });
+
+  it('follows a relative redirect Location', async () => {
+    const origin = await startOrigin((hit, res) => {
+      if (hit === 1) {
+        res.statusCode = 302;
+        res.setHeader('location', '/moved/chart.bin');
+        res.end();
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/octet-stream');
+      res.end('CHARTDATA');
+    });
+
+    const dir = fs.mkdtempSync(path.join(TMP, 'relredir-'));
+    try {
+      const jobId = downloadManager.createJob(origin.url, dir, 'relredir', { saveRaw: true });
+      const job = await waitForTerminal(jobId);
+
+      assert.strictEqual(job.status, 'completed', `expected completed, got ${job.error ?? ''}`);
+      assert.strictEqual(origin.hits(), 2);
+      assert.strictEqual(fs.readFileSync(path.join(dir, 'relredir.bin'), 'utf8'), 'CHARTDATA');
+    } finally {
+      await origin.close();
+    }
+  });
+
   it(
     'fails cleanly when the target dir vanishes mid-extraction (no unhandled rejection, no hang)',
     { timeout: 20000 },
@@ -208,6 +259,214 @@ describe('DownloadManager zip extraction', () => {
       }
     }
   );
+});
+
+// Origin that honors HTTP Range requests over a fixed body. `perHit`
+// returns how many bytes of the (range-adjusted) response to send before
+// hard-destroying the socket — or null to send everything cleanly. Set
+// `ignoreRange` to emulate a server without Range support (always 200,
+// always the full body).
+interface ResumableOrigin extends Origin {
+  ranges: () => (string | undefined)[];
+}
+
+function startResumableOrigin(
+  body: Buffer,
+  perHit: (hit: number) => number | null,
+  opts: { ignoreRange?: boolean; failWith?: (hit: number) => number | null } = {}
+): Promise<ResumableOrigin> {
+  let hits = 0;
+  const ranges: (string | undefined)[] = [];
+  const server = http.createServer((req, res) => {
+    hits += 1;
+    ranges.push(req.headers.range);
+
+    const failStatus = opts.failWith?.(hits) ?? null;
+    if (failStatus !== null) {
+      res.statusCode = failStatus;
+      res.end('nope');
+      return;
+    }
+
+    const m = /^bytes=(\d+)-$/.exec(req.headers.range ?? '');
+    const start = !opts.ignoreRange && m ? parseInt(m[1], 10) : 0;
+    const slice = body.subarray(start);
+    if (start > 0) {
+      res.statusCode = 206;
+      res.setHeader('content-range', `bytes ${start}-${body.length - 1}/${body.length}`);
+    } else {
+      res.statusCode = 200;
+    }
+    res.setHeader('content-type', 'application/octet-stream');
+    res.setHeader('content-length', slice.length);
+
+    const n = perHit(hits);
+    if (n === null || n >= slice.length) {
+      res.end(slice);
+      return;
+    }
+    res.write(slice.subarray(0, n));
+    // Give the chunk a beat to flush, then cut the connection hard.
+    setTimeout(() => {
+      res.destroy();
+    }, 50);
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      resolve({
+        url: `http://127.0.0.1:${port}/chart.bin`,
+        hits: () => hits,
+        ranges: () => ranges,
+        close: () =>
+          new Promise<void>((r) => {
+            server.close(() => {
+              r();
+            });
+          })
+      });
+    });
+  });
+}
+
+describe('DownloadManager resume', () => {
+  before(() => {
+    fs.mkdirSync(TMP, { recursive: true });
+  });
+
+  beforeEach(() => {
+    downloadManager.removeAllListeners();
+  });
+
+  after(() => {
+    downloadManager.removeAllListeners();
+    fs.rmSync(TMP, { recursive: true, force: true });
+  });
+
+  const body = Buffer.alloc(8192);
+  for (let i = 0; i < body.length; i++) {
+    body[i] = i % 251;
+  }
+
+  it('resumes from the interrupted offset with a Range request', async () => {
+    // First attempt is cut after ~3000 bytes; the retry must ask for the
+    // remainder (Range) and the final file must be byte-identical.
+    const origin = await startResumableOrigin(body, (hit) => (hit === 1 ? 3000 : null));
+    const dir = fs.mkdtempSync(path.join(TMP, 'resume-'));
+    try {
+      const jobId = downloadManager.createJob(origin.url, dir, 'resume-test', { saveRaw: true });
+      const job = await waitForTerminal(jobId);
+
+      assert.strictEqual(job.status, 'completed', `expected completed, got ${job.error ?? ''}`);
+      assert.strictEqual(origin.hits(), 2);
+      const secondRange = origin.ranges()[1];
+      const offsetMatch = /^bytes=(\d+)-$/.exec(secondRange ?? '');
+      assert.ok(
+        offsetMatch,
+        `second request must carry a Range header, got ${String(secondRange)}`
+      );
+      const offset = parseInt(offsetMatch[1], 10);
+      assert.ok(
+        offset > 0 && offset <= 3000,
+        `resume offset must be within the first attempt's delivered bytes, got ${String(offset)}`
+      );
+      const written = fs.readFileSync(path.join(dir, 'resume-test.bin'));
+      assert.ok(written.equals(body), 'resumed file must be byte-identical to the source');
+      // No .part leftovers after success.
+      assert.deepStrictEqual(
+        fs.readdirSync(dir).filter((f) => f.endsWith('.part')),
+        []
+      );
+    } finally {
+      await origin.close();
+    }
+  });
+
+  it('rewrites from scratch when the server ignores Range', async () => {
+    const origin = await startResumableOrigin(body, (hit) => (hit === 1 ? 3000 : null), {
+      ignoreRange: true
+    });
+    const dir = fs.mkdtempSync(path.join(TMP, 'norange-'));
+    try {
+      const jobId = downloadManager.createJob(origin.url, dir, 'norange-test', { saveRaw: true });
+      const job = await waitForTerminal(jobId);
+
+      assert.strictEqual(job.status, 'completed', `expected completed, got ${job.error ?? ''}`);
+      const written = fs.readFileSync(path.join(dir, 'norange-test.bin'));
+      assert.strictEqual(written.length, body.length, 'body must not be duplicated/appended');
+      assert.ok(written.equals(body));
+    } finally {
+      await origin.close();
+    }
+  });
+
+  it(
+    'keeps retrying through stalls as long as bytes advance (budget rearms on progress)',
+    { timeout: 30000 },
+    async () => {
+      // Four consecutive cut connections — more than MAX_DOWNLOAD_ATTEMPTS —
+      // but every attempt delivers ~2000 new bytes, so the job must still
+      // complete on the fifth request.
+      const origin = await startResumableOrigin(body, (hit) => (hit <= 4 ? 2000 : null));
+      const dir = fs.mkdtempSync(path.join(TMP, 'stalls-'));
+      try {
+        const jobId = downloadManager.createJob(origin.url, dir, 'stalls-test', {
+          saveRaw: true
+        });
+        const job = await waitForTerminal(jobId);
+
+        assert.strictEqual(job.status, 'completed', `expected completed, got ${job.error ?? ''}`);
+        assert.strictEqual(origin.hits(), 5, 'should have taken 5 requests (4 stalls + 1 final)');
+        // Every retry must resume at a strictly higher offset — this fails
+        // if retries throw away partial data and re-download from zero.
+        const offsets = origin.ranges().map((r, i) => {
+          if (i === 0) {
+            return 0;
+          }
+          const m = /^bytes=(\d+)-$/.exec(r ?? '');
+          assert.ok(m, `request ${String(i + 1)} must carry a Range header, got ${String(r)}`);
+          return parseInt(m[1], 10);
+        });
+        for (let i = 1; i < offsets.length; i++) {
+          assert.ok(
+            offsets[i] > offsets[i - 1],
+            `resume offsets must strictly increase, got ${offsets.join(', ')}`
+          );
+        }
+        const written = fs.readFileSync(path.join(dir, 'stalls-test.bin'));
+        assert.ok(written.equals(body));
+      } finally {
+        await origin.close();
+      }
+    }
+  );
+
+  it('fails fast when the resume request gets a 4xx (expired link) and drops the part file', async () => {
+    const origin = await startResumableOrigin(body, (hit) => (hit === 1 ? 2500 : null), {
+      failWith: (hit) => (hit >= 2 ? 403 : null)
+    });
+    const dir = fs.mkdtempSync(path.join(TMP, 'expired-'));
+    try {
+      const jobId = downloadManager.createJob(origin.url, dir, 'expired-test', { saveRaw: true });
+      const job = await waitForTerminal(jobId);
+
+      assert.strictEqual(job.status, 'failed');
+      assert.match(job.error ?? '', /403/);
+      assert.strictEqual(origin.hits(), 2, 'a 4xx on resume must not be retried');
+      assert.ok(
+        /^bytes=\d+-$/.test(origin.ranges()[1] ?? ''),
+        'the second request must have been a resume attempt'
+      );
+      assert.deepStrictEqual(
+        fs.readdirSync(dir).filter((f) => f.endsWith('.part')),
+        [],
+        'part file must be cleaned up on final failure'
+      );
+    } finally {
+      await origin.close();
+    }
+  });
 });
 
 describe('DownloadManager retry', () => {
