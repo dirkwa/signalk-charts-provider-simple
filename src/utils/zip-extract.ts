@@ -14,10 +14,16 @@
  * Both enforce the same abuse limits, because a ZIP is attacker-controlled
  * input even when it arrives from an authenticated admin: a 1 MB archive can
  * expand to terabytes (zip bomb), and an archive with a million entries can
- * exhaust inodes long before it exhausts disk. `unzipper` reports the
- * central directory's `uncompressedSize` per entry, so both budgets are
- * checked *before* any bytes are written, and the running total is checked
- * again as it grows.
+ * exhaust inodes long before it exhausts disk.
+ *
+ * The size budget is enforced twice, and both halves are load-bearing.
+ * `unzipper` reports the central directory's `uncompressedSize` per entry, so
+ * an archive that *admits* it is too big is rejected before a single byte is
+ * written. But those declared sizes are attacker-controlled: a DEFLATE entry
+ * can claim 1 KB and decompress to gigabytes. So `writeEntry` also counts
+ * bytes as they stream and aborts the moment the running total passes the
+ * budget — checking only after an entry finished would mean the disk already
+ * took the hit.
  */
 
 import fs from 'fs';
@@ -73,18 +79,101 @@ function assertWithinLimits(
   }
 }
 
-async function writeEntry(
-  entry: { stream(): NodeJS.ReadableStream },
-  target: string
-): Promise<void> {
+interface ZipEntry {
+  path: string;
+  type: string;
+  uncompressedSize?: number;
+  stream(): NodeJS.ReadableStream;
+}
+
+/**
+ * Open an archive, keep its file entries, and reject it outright if the
+ * central directory already declares more than the budget allows. Shared by
+ * both extractors so their limit handling can't drift apart.
+ */
+async function openAndValidate(
+  zipPath: string,
+  limits: ExtractLimits
+): Promise<{ files: ZipEntry[]; bounds: Required<ExtractLimits> }> {
+  const bounds = {
+    maxTotalBytes: limits.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES,
+    maxEntries: limits.maxEntries ?? DEFAULT_MAX_ENTRIES
+  };
+  const directory = await unzipper.Open.file(zipPath);
+  const files = directory.files.filter((f) => f.type === 'File') as unknown as ZipEntry[];
+  assertWithinLimits(files, bounds);
+  return { files, bounds };
+}
+
+/**
+ * Stream one entry to `target`, aborting the moment the running total passes
+ * `budget.remaining`.
+ *
+ * The cap has to be enforced *during* the write, not after it. A DEFLATE
+ * entry can declare a tiny `uncompressedSize` in the central directory and
+ * still decompress to gigabytes, so `assertWithinLimits`'s pre-flight check
+ * on declared sizes is necessary but not sufficient — checking again only
+ * once the entry is fully on disk would mean the disk is already full by the
+ * time we complain. A partially written file is removed on abort so a
+ * rejected archive leaves nothing behind.
+ *
+ * Returns the number of bytes written.
+ */
+async function writeEntry(entry: ZipEntry, target: string, remaining: number): Promise<number> {
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  await new Promise<void>((resolve, reject) => {
-    entry
-      .stream()
-      .pipe(fs.createWriteStream(target))
-      .on('finish', () => resolve())
-      .on('error', reject);
-  });
+
+  let written = 0;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const source = entry.stream();
+      const sink = fs.createWriteStream(target);
+      let settled = false;
+
+      const fail = (err: Error): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        // Stop pulling bytes immediately; without this the source keeps
+        // decompressing into a sink we no longer care about.
+        source.unpipe(sink);
+        (source as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+        sink.destroy();
+        reject(err);
+      };
+
+      source.on('data', (chunk: Buffer) => {
+        written += chunk.length;
+        if (written > remaining) {
+          fail(
+            new ZipLimitError(
+              `archive expanded past the uncompressed-size limit while extracting ${entry.path}`
+            )
+          );
+        }
+      });
+      source.on('error', fail);
+      sink.on('error', fail);
+      sink.on('finish', () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      });
+
+      source.pipe(sink);
+    });
+  } catch (err) {
+    // Don't leave a truncated file where a chart is supposed to be.
+    try {
+      fs.rmSync(target, { force: true });
+    } catch {
+      // Best-effort: the caller is already failing this archive.
+    }
+    throw err;
+  }
+
+  return written;
 }
 
 /**
@@ -100,13 +189,7 @@ export async function extractZipSafely(
   destDir: string,
   limits: ExtractLimits = {}
 ): Promise<number> {
-  const bounds = {
-    maxTotalBytes: limits.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES,
-    maxEntries: limits.maxEntries ?? DEFAULT_MAX_ENTRIES
-  };
-  const directory = await unzipper.Open.file(zipPath);
-  const files = directory.files.filter((f) => f.type === 'File');
-  assertWithinLimits(files, bounds);
+  const { files, bounds } = await openAndValidate(zipPath, limits);
 
   let written = 0;
   let bytesWritten = 0;
@@ -116,16 +199,8 @@ export async function extractZipSafely(
     if (!isWithinBase(target, destDir)) {
       continue;
     }
-    await writeEntry(entry, target);
+    bytesWritten += await writeEntry(entry, target, bounds.maxTotalBytes - bytesWritten);
     written += 1;
-    // Re-check against actual bytes on disk: the central directory's
-    // declared sizes are attacker-controlled and can understate reality.
-    bytesWritten += fs.statSync(target).size;
-    if (bytesWritten > bounds.maxTotalBytes) {
-      throw new ZipLimitError(
-        `archive expanded past the ${bounds.maxTotalBytes} byte limit while extracting`
-      );
-    }
   }
   return written;
 }
@@ -152,13 +227,7 @@ export async function extractMbtilesFromZip(
   limits: ExtractLimits = {},
   progress: ExtractProgress = {}
 ): Promise<MbtilesExtractResult> {
-  const bounds = {
-    maxTotalBytes: limits.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES,
-    maxEntries: limits.maxEntries ?? DEFAULT_MAX_ENTRIES
-  };
-  const directory = await unzipper.Open.file(zipPath);
-  const allFiles = directory.files.filter((f) => f.type === 'File');
-  assertWithinLimits(allFiles, bounds);
+  const { files: allFiles, bounds } = await openAndValidate(zipPath, limits);
 
   const mbtiles = allFiles.filter((f) => /\.mbtiles$/i.test(f.path));
   const skipped = allFiles.length - mbtiles.length;
@@ -191,15 +260,8 @@ export async function extractMbtilesFromZip(
     used.add(name);
 
     const target = path.join(destDir, name);
-    await writeEntry(entry, target);
+    bytesWritten += await writeEntry(entry, target, bounds.maxTotalBytes - bytesWritten);
     files.push(name);
-
-    bytesWritten += fs.statSync(target).size;
-    if (bytesWritten > bounds.maxTotalBytes) {
-      throw new ZipLimitError(
-        `archive expanded past the ${bounds.maxTotalBytes} byte limit while extracting`
-      );
-    }
 
     progress.onEntry?.(files.length, mbtiles.length, name);
   }

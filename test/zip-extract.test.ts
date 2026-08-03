@@ -60,6 +60,50 @@ function storedZip(entries: { name: string; data: Buffer }[]): Buffer {
   return Buffer.concat([...chunks, cd, eocd]);
 }
 
+/**
+ * Build a single-entry DEFLATE ZIP whose central directory *understates* the
+ * uncompressed size. This is the zip-bomb shape that a pre-flight check on
+ * declared sizes cannot catch: the archive looks tiny and honest until the
+ * stream is actually decompressed.
+ */
+function lyingDeflateZip(name: string, real: Buffer, declaredSize: number): Buffer {
+  const nameBuf = Buffer.from(name, 'utf8');
+  const deflated = zlib.deflateRawSync(real);
+  const crc = zlib.crc32(real);
+
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(8, 8); // method: DEFLATE
+  local.writeUInt16LE(0x21, 12);
+  local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(deflated.length, 18);
+  local.writeUInt32LE(declaredSize, 22); // the lie
+  local.writeUInt16LE(nameBuf.length, 26);
+
+  const cen = Buffer.alloc(46);
+  cen.writeUInt32LE(0x02014b50, 0);
+  cen.writeUInt16LE(20, 4);
+  cen.writeUInt16LE(20, 6);
+  cen.writeUInt16LE(8, 10); // method: DEFLATE
+  cen.writeUInt16LE(0x21, 14);
+  cen.writeUInt32LE(crc, 16);
+  cen.writeUInt32LE(deflated.length, 20);
+  cen.writeUInt32LE(declaredSize, 24); // the lie
+  cen.writeUInt16LE(nameBuf.length, 28);
+  cen.writeUInt32LE(0, 42);
+
+  const cd = Buffer.concat([cen, nameBuf]);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(cd.length, 12);
+  eocd.writeUInt32LE(30 + nameBuf.length + deflated.length, 16);
+
+  return Buffer.concat([local, nameBuf, deflated, cd, eocd]);
+}
+
 function writeZip(name: string, entries: { name: string; data: Buffer }[]): string {
   const zipPath = path.join(TMP, name);
   fs.writeFileSync(zipPath, storedZip(entries));
@@ -177,6 +221,30 @@ describe('extractMbtilesFromZip', () => {
     assert.deepEqual(fs.readdirSync(dest), []);
   });
 
+  it('stops a lying DEFLATE entry mid-stream instead of after it is on disk', async () => {
+    // 32 MB of zeros deflates to a few KB, but the header claims 1000 bytes,
+    // so the declared-size pre-check waves it through. Only enforcing the
+    // budget *while* streaming catches this — checking after the write means
+    // the disk already took the hit.
+    const REAL = 32 * 1024 * 1024;
+    const CAP = 1024 * 1024;
+    const zipPath = path.join(TMP, 'lying.zip');
+    fs.writeFileSync(zipPath, lyingDeflateZip('bomb.mbtiles', Buffer.alloc(REAL, 0), 1000));
+    const dest = destDir('lying');
+
+    // The archive itself is tiny — this is not caught by a file-size limit.
+    assert.ok(fs.statSync(zipPath).size < CAP);
+
+    await assert.rejects(
+      () => extractMbtilesFromZip(zipPath, dest, { maxTotalBytes: CAP }),
+      (err: unknown) => err instanceof ZipLimitError
+    );
+
+    // Nothing partial is left behind, and nothing near the real size was
+    // ever written.
+    assert.deepEqual(fs.readdirSync(dest), []);
+  });
+
   it('reports progress per extracted chart', async () => {
     const zip = writeZip('progress.zip', [
       { name: 'a.mbtiles', data: Buffer.from('A') },
@@ -252,5 +320,33 @@ describe('extractZipSafely', () => {
       () => extractZipSafely(zip, dest, { maxEntries: 1 }),
       (err: unknown) => err instanceof ZipLimitError
     );
+  });
+
+  it('enforces the declared uncompressed-size limit', async () => {
+    const zip = writeZip('tree-big.zip', [{ name: 'big.bin', data: Buffer.alloc(4096, 0x42) }]);
+    const dest = destDir('tree-big');
+
+    await assert.rejects(
+      () => extractZipSafely(zip, dest, { maxTotalBytes: 100 }),
+      (err: unknown) => err instanceof ZipLimitError
+    );
+    assert.deepEqual(fs.readdirSync(dest), []);
+  });
+
+  it('stops a lying DEFLATE entry mid-stream', async () => {
+    const zipPath = path.join(TMP, 'tree-lying.zip');
+    fs.writeFileSync(
+      zipPath,
+      lyingDeflateZip('ENC_ROOT/bomb.000', Buffer.alloc(32 * 1024 * 1024, 0), 1000)
+    );
+    const dest = destDir('tree-lying');
+
+    await assert.rejects(
+      () => extractZipSafely(zipPath, dest, { maxTotalBytes: 1024 * 1024 }),
+      (err: unknown) => err instanceof ZipLimitError
+    );
+    // The partial entry is cleaned up, leaving only the empty parent dir the
+    // extractor created for it.
+    assert.ok(!fs.existsSync(path.join(dest, 'ENC_ROOT', 'bomb.000')));
   });
 });

@@ -69,9 +69,9 @@ The interface provides five tabs:
    - **Upload ZIP** imports a whole archive at once: every `.mbtiles` inside it
      is extracted into the selected folder (nested folders are flattened, and
      non-chart files in the archive are ignored). Multi-GB archives are
-     supported — anything over 50 MB uploads in chunks, so a slow WiFi link
-     can't run into the server's request timeout. Extraction needs roughly
-     twice the archive size free on disk while it runs.
+     supported — large ones upload in chunks automatically, so a slow WiFi
+     link can't run into the server's request timeout. Extraction needs
+     roughly twice the archive size free on disk while it runs.
    - S-57 charts shown with ENC badge
    - Converting charts shown with progress indicator
 
