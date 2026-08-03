@@ -41,6 +41,7 @@ import { repairMbtilesMetadata, setMbtilesDisplayName } from './utils/mbtiles-me
 import { open as openMbtilesReader } from './utils/mbtiles-reader.js';
 import { writeChartPathMarker } from './utils/path-marker.js';
 import { getBlankTileReplacement, getOverzoomedTile } from './utils/tile-overzoom.js';
+import { extractMbtilesFromZip, ZipLimitError } from './utils/zip-extract.js';
 import {
   arePairWithinBase,
   classifyChartDirAccess,
@@ -772,6 +773,34 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
   const UploadFields = Type.Object({
     targetFolder: Type.Optional(Type.String())
+  });
+
+  const UploadZipFields = Type.Object({
+    targetFolder: Type.Optional(Type.String())
+  });
+
+  // Ceiling on a single uploaded chart ZIP. Deliberately high: a single
+  // regional MBTiles set routinely runs to 6 GB or more, and the ZIP is
+  // staged whole before extraction, so the limit has to clear real-world
+  // chart bundles with room to spare. Still bounded, so a runaway upload
+  // can't silently fill the data volume. The extractor applies its own
+  // uncompressed-size budget on top of this.
+  //
+  // Sizes above 4 GB require the archive to use ZIP64; `unzipper` reads
+  // ZIP64 central directories, and the 64-bit sizes stay well inside
+  // JavaScript's safe-integer range, so the arithmetic here is exact.
+  const MAX_ZIP_UPLOAD_BYTES = 32 * 1024 * 1024 * 1024;
+
+  // `x-upload-id` names a quarantine subdirectory, so it's restricted to a
+  // conservative charset here rather than relying on downstream sanitizing:
+  // no separators, no dots, nothing that could walk out of the quarantine
+  // root even before `makeQuarantineDir` sanitizes it.
+  const UploadZipChunkHeaders = Type.Object({
+    'x-upload-id': Type.String({ minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_-]+$' }),
+    'x-upload-filename': Type.String({ minLength: 1, pattern: '\\.[zZ][iI][pP]$' }),
+    'x-chunk-index': Type.Integer({ minimum: 0 }),
+    'x-total-chunks': Type.Integer({ minimum: 1 }),
+    'x-target-folder': Type.Optional(Type.String())
   });
 
   const UploadChunkHeaders = Type.Object({
@@ -1841,6 +1870,216 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
+    // Upload a ZIP of charts: the archive is staged in quarantine, every
+    // `.mbtiles` entry is extracted (flattened to basenames), and only then
+    // are the results promoted into the target folder. The ZIP itself is
+    // never kept — it's a transport container, not a chart.
+    //
+    // Same quarantine discipline as `/upload`: an aborted or malformed
+    // request leaves bytes only in the quarantine dir, never in the live
+    // chart library, and the startup sweep reclaims whatever a crash left.
+    router.post('/upload-zip', (req: Request, res: Response) => {
+      try {
+        const bb = Busboy({
+          headers: req.headers,
+          limits: { fileSize: MAX_ZIP_UPLOAD_BYTES, files: 1 }
+        });
+        const basePath = props.chartPath || defaultChartsPath;
+        const quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), 'upload-zip');
+        const fields: Record<string, string> = {};
+        let stagedZipPath: string | null = null;
+        let stagedZipName = '';
+        let writePromise: Promise<void> | null = null;
+        let truncated = false;
+
+        bb.on('field', (fieldname: string, value: string) => {
+          fields[fieldname] = value;
+        });
+
+        bb.on(
+          'file',
+          (_fieldname: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
+            const { filename } = info;
+
+            // Only the first ZIP is taken; anything else is drained so
+            // busboy can still reach 'finish'.
+            if (!/\.zip$/i.test(filename) || stagedZipPath !== null) {
+              (file as NodeJS.ReadableStream & { resume(): void }).resume();
+              return;
+            }
+
+            // The archive's own name never reaches the chart library — the
+            // promoted names come from the entries inside it — so a fixed
+            // staging name sidesteps traversal entirely rather than
+            // validating an attacker-controlled one.
+            stagedZipName = path.basename(filename);
+            const stagedPath = path.join(quarantineDir, 'upload.zip');
+            stagedZipPath = stagedPath;
+            app.debug(`Staging ZIP upload: ${filename} -> ${stagedPath}`);
+
+            // busboy truncates at the size limit and emits 'limit' rather
+            // than erroring; without this the handler would happily try to
+            // open a half-written archive.
+            (file as NodeJS.ReadableStream & { on(ev: string, cb: () => void): void }).on(
+              'limit',
+              () => {
+                truncated = true;
+              }
+            );
+
+            const writeStream = fs.createWriteStream(stagedPath);
+            file.pipe(writeStream);
+
+            writePromise = new Promise<void>((resolve, reject) => {
+              writeStream.on('finish', () => resolve());
+              writeStream.on('error', (err: Error) => {
+                app.error(`Error staging ZIP ${filename}: ${err.message}`);
+                reject(err);
+              });
+            });
+            // Observe the rejection now — Promise handling below only
+            // attaches on 'finish', which never fires on an aborted request.
+            writePromise.catch(() => undefined);
+          }
+        );
+
+        bb.on('finish', () => {
+          void (async () => {
+            try {
+              const parsed = parseShape(UploadZipFields, fields, res);
+              if (!parsed) {
+                return;
+              }
+              const { targetFolder = '' } = parsed;
+
+              if (stagedZipPath === null) {
+                res.status(400).json({ success: false, error: 'No ZIP file uploaded' });
+                return;
+              }
+              if (truncated) {
+                res.status(413).json({
+                  success: false,
+                  error: `ZIP exceeds the ${MAX_ZIP_UPLOAD_BYTES / (1024 * 1024 * 1024)} GB upload limit`
+                });
+                return;
+              }
+
+              const promoteTarget =
+                targetFolder && targetFolder !== '/' ? path.join(basePath, targetFolder) : basePath;
+              if (!isWithinBase(promoteTarget, basePath)) {
+                res
+                  .status(403)
+                  .json({ success: false, error: 'Access denied: Invalid upload path' });
+                return;
+              }
+
+              if (writePromise) {
+                await writePromise;
+              }
+
+              // Extract beside the archive, inside the same quarantine dir.
+              const extractDir = path.join(quarantineDir, 'extracted');
+              let extracted;
+              try {
+                extracted = await extractMbtilesFromZip(stagedZipPath, extractDir);
+              } catch (err) {
+                if (err instanceof ZipLimitError) {
+                  res.status(413).json({ success: false, error: err.message });
+                  return;
+                }
+                app.error(
+                  `Error extracting ZIP ${stagedZipName}: ` +
+                    (err instanceof Error ? err.message : String(err))
+                );
+                // Running out of disk is the expected failure for the sizes
+                // this route accepts (a multi-GB archive is staged *and*
+                // extracted, so it needs roughly twice its own size free).
+                // Reporting that as "is it a valid ZIP file?" sends the user
+                // off checking a file that was never the problem.
+                const code = (err as NodeJS.ErrnoException).code;
+                if (code === 'ENOSPC') {
+                  res.status(507).json({
+                    success: false,
+                    error:
+                      'Not enough free disk space to extract this archive. Extraction needs about twice the archive size free while it runs.'
+                  });
+                  return;
+                }
+                res.status(400).json({
+                  success: false,
+                  error: 'Could not read the ZIP archive. Is it a valid ZIP file?'
+                });
+                return;
+              }
+
+              if (extracted.files.length === 0) {
+                res.status(400).json({
+                  success: false,
+                  error: 'No .mbtiles files found in the ZIP archive'
+                });
+                return;
+              }
+
+              await promoteQuarantine(extractDir, extracted.files, promoteTarget);
+              await finalizeUploadedFiles(extracted.files, targetFolder, basePath);
+
+              app.debug(
+                `Extracted ${extracted.files.length} chart(s) from ${stagedZipName} into ${promoteTarget}`
+              );
+
+              res.status(200).json({
+                success: true,
+                message: `${extracted.files.length} chart${extracted.files.length !== 1 ? 's' : ''} extracted from ${stagedZipName}`,
+                files: extracted.files,
+                skipped: extracted.skipped
+              });
+            } catch (error) {
+              app.error(
+                'Error completing ZIP upload: ' +
+                  (error instanceof Error ? error.message : String(error))
+              );
+              if (!res.headersSent) {
+                // Staging the archive and promoting the extracted charts both
+                // write to disk, so ENOSPC can surface here too — same
+                // reasoning as the extraction branch above.
+                if ((error as NodeJS.ErrnoException).code === 'ENOSPC') {
+                  res.status(507).json({
+                    success: false,
+                    error: 'Not enough free disk space to complete this upload.'
+                  });
+                } else {
+                  res.status(500).json({ success: false, error: 'Error completing ZIP upload' });
+                }
+              }
+            } finally {
+              cleanupQuarantineDir(quarantineDir);
+            }
+          })();
+        });
+
+        bb.on('error', (err: unknown) => {
+          app.error(
+            'ZIP upload stream error: ' + (err instanceof Error ? err.message : String(err))
+          );
+          cleanupQuarantineDir(quarantineDir);
+          if (!res.headersSent) {
+            res.status(400).json({ success: false, error: 'Malformed upload' });
+          }
+        });
+        req.on('aborted', () => {
+          app.debug('ZIP upload request aborted by client');
+          cleanupQuarantineDir(quarantineDir);
+        });
+
+        req.pipe(bb);
+      } catch (error) {
+        app.error(
+          'Error uploading chart ZIP: ' + (error instanceof Error ? error.message : String(error))
+        );
+        res.status(500).json({ success: false, error: 'Error uploading chart ZIP' });
+      }
+    });
+
     // Chunked upload for large files — each chunk is a short-lived request that
     // stays well within Node's server.requestTimeout (default 300s in Node 18+).
     router.put('/upload-chunk', (req: Request, res: Response) => {
@@ -1941,6 +2180,163 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           'Error in chunked upload: ' + (error instanceof Error ? error.message : String(error))
         );
         res.status(500).json({ error: 'Error in chunked upload' });
+      }
+    });
+
+    // Chunked ZIP upload. A 6 GB archive sent as one request cannot finish
+    // inside Node's 300 s `server.requestTimeout` on anything slower than
+    // ~21 MB/s sustained — i.e. it works on wired gigabit and fails on
+    // typical boat WiFi, which is exactly the case this plugin runs in.
+    // Chunks keep each request short, so throughput stops mattering.
+    //
+    // The archive accumulates in a per-upload quarantine dir keyed by the
+    // client-supplied upload id; only the final chunk triggers extraction
+    // and promotion, so an interrupted upload leaves nothing in the chart
+    // library and the startup sweep reclaims the partial archive.
+    router.put('/upload-zip-chunk', (req: Request, res: Response) => {
+      try {
+        const headerFields = {
+          'x-upload-id': req.headers['x-upload-id'],
+          'x-upload-filename': req.headers['x-upload-filename'],
+          'x-chunk-index': req.headers['x-chunk-index'],
+          'x-total-chunks': req.headers['x-total-chunks'],
+          'x-target-folder': req.headers['x-target-folder']
+        };
+        const parsed = parseShape(UploadZipChunkHeaders, headerFields, res);
+        if (!parsed) {
+          return;
+        }
+        const uploadId = parsed['x-upload-id'];
+        // The client percent-encodes the filename so non-Latin1 names
+        // survive the header. It's used only for log lines and the success
+        // message — never as a path — but decode defensively anyway.
+        let archiveName: string;
+        try {
+          archiveName = path.basename(decodeURIComponent(parsed['x-upload-filename']));
+        } catch {
+          archiveName = path.basename(parsed['x-upload-filename']);
+        }
+        const chunkIndex = parsed['x-chunk-index'];
+        const totalChunks = parsed['x-total-chunks'];
+        const targetFolder = parsed['x-target-folder'] ?? '/';
+
+        const basePath = props.chartPath || defaultChartsPath;
+        const uploadPath =
+          targetFolder && targetFolder !== '/' ? path.join(basePath, targetFolder) : basePath;
+
+        if (!isWithinBase(uploadPath, basePath)) {
+          res.status(403).json({ success: false, error: 'Access denied: Invalid upload path' });
+          return;
+        }
+
+        // The upload id only ever names a quarantine directory, never a
+        // path in the chart library. Keyed by id (not filename) so two
+        // uploads of the same archive name can't append into each other.
+        const quarantineDir = makeQuarantineDir(app.getDataDirPath(), `zipchunk-${uploadId}`);
+        const stagedPath = path.join(quarantineDir, 'upload.zip');
+
+        const writeStream = fs.createWriteStream(stagedPath, {
+          flags: chunkIndex === 0 ? 'w' : 'a'
+        });
+
+        req.pipe(writeStream);
+
+        writeStream.on('finish', () => {
+          void (async () => {
+            try {
+              if (chunkIndex + 1 < totalChunks) {
+                app.debug(`ZIP chunk ${chunkIndex + 1}/${totalChunks} for ${archiveName}`);
+                res.json({ received: chunkIndex, total: totalChunks });
+                return;
+              }
+
+              app.debug(`Final ZIP chunk for ${archiveName}, extracting`);
+              try {
+                const extractDir = path.join(quarantineDir, 'extracted');
+                let extracted;
+                try {
+                  extracted = await extractMbtilesFromZip(stagedPath, extractDir);
+                } catch (err) {
+                  if (err instanceof ZipLimitError) {
+                    res.status(413).json({ success: false, error: err.message });
+                    return;
+                  }
+                  if ((err as NodeJS.ErrnoException).code === 'ENOSPC') {
+                    res.status(507).json({
+                      success: false,
+                      error:
+                        'Not enough free disk space to extract this archive. Extraction needs about twice the archive size free while it runs.'
+                    });
+                    return;
+                  }
+                  app.error(
+                    `Error extracting ZIP ${archiveName}: ` +
+                      (err instanceof Error ? err.message : String(err))
+                  );
+                  res.status(400).json({
+                    success: false,
+                    error: 'Could not read the ZIP archive. Is it a valid ZIP file?'
+                  });
+                  return;
+                }
+
+                if (extracted.files.length === 0) {
+                  res.status(400).json({
+                    success: false,
+                    error: 'No .mbtiles files found in the ZIP archive'
+                  });
+                  return;
+                }
+
+                await promoteQuarantine(extractDir, extracted.files, uploadPath);
+                await finalizeUploadedFiles(extracted.files, targetFolder, basePath);
+
+                res.json({
+                  success: true,
+                  message: `${extracted.files.length} chart${extracted.files.length !== 1 ? 's' : ''} extracted from ${archiveName}`,
+                  files: extracted.files,
+                  skipped: extracted.skipped
+                });
+              } finally {
+                cleanupQuarantineDir(quarantineDir);
+              }
+            } catch (error) {
+              app.error(
+                `Error finalizing chunked ZIP upload: ${error instanceof Error ? error.message : String(error)}`
+              );
+              if (!res.headersSent) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOSPC') {
+                  res.status(507).json({
+                    success: false,
+                    error: 'Not enough free disk space to complete this upload.'
+                  });
+                } else {
+                  res.status(500).json({ success: false, error: 'Error finalizing upload' });
+                }
+              }
+            }
+          })();
+        });
+
+        writeStream.on('error', (err: Error) => {
+          app.error(`Error writing ZIP chunk for ${archiveName}: ${err.message}`);
+          cleanupQuarantineDir(quarantineDir);
+          if (!res.headersSent) {
+            const code = (err as NodeJS.ErrnoException).code;
+            res.status(code === 'ENOSPC' ? 507 : 500).json({
+              success: false,
+              error:
+                code === 'ENOSPC'
+                  ? 'Not enough free disk space to receive this archive.'
+                  : 'Error writing chunk'
+            });
+          }
+        });
+      } catch (error) {
+        app.error(
+          'Error in chunked ZIP upload: ' + (error instanceof Error ? error.message : String(error))
+        );
+        res.status(500).json({ success: false, error: 'Error in chunked ZIP upload' });
       }
     });
 

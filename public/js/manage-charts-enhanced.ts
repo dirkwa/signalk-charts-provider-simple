@@ -23,6 +23,16 @@ interface LocalChartsResponse {
   basePath?: string;
 }
 
+interface ZipUploadResponse {
+  success?: boolean;
+  message?: string;
+  error?: string;
+  /** Basenames of the .mbtiles extracted into the target folder. */
+  files?: string[];
+  /** Non-.mbtiles entries in the archive that were ignored. */
+  skipped?: number;
+}
+
 interface RepairableChart {
   identifier: string;
   filePath: string;
@@ -341,9 +351,13 @@ function renderChartsUI(): void {
           <button class="btn btn-secondary" onclick="triggerUploadEmpty()" style="padding: 12px 24px;">
             Upload from Computer
           </button>
+          <button class="btn btn-secondary" onclick="triggerZipUploadEmpty()" style="padding: 12px 24px;">
+            Upload ZIP
+          </button>
         </div>
       </div>
       <input type="file" id="chartUploadInputEmpty" accept=".mbtiles" multiple style="display: none;" onchange="handleFileUpload(event)">
+      <input type="file" id="chartZipUploadInputEmpty" accept=".zip" style="display: none;" onchange="handleZipUpload(event)">
     `;
     return;
   }
@@ -363,6 +377,7 @@ function renderChartsUI(): void {
         </button>
         ${selectedFolder && selectedFolder !== '/' ? `<button class="btn btn-danger" onclick="deleteSelectedFolder()" title="Delete Selected Folder">Delete Folder</button>` : ''}
         <button class="btn btn-primary" onclick="triggerUpload()" title="Upload charts to ${manageEscapeAttr(selectedFolder ?? '/')}">Upload</button>
+        <button class="btn btn-secondary" onclick="triggerZipUpload()" title="Upload a ZIP archive to ${manageEscapeAttr(selectedFolder ?? '/')} — every .mbtiles inside is extracted into the folder">Upload ZIP</button>
         <button class="btn btn-icon ${viewMode === 'grid' ? 'active' : ''}" onclick="setViewMode('grid')" title="Grid View">
           <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>
         </button>
@@ -415,6 +430,7 @@ function renderChartsUI(): void {
   }
 
   html += `<input type="file" id="chartUploadInput" accept=".mbtiles" multiple style="display: none;" onchange="handleFileUpload(event)">`;
+  html += `<input type="file" id="chartZipUploadInput" accept=".zip" style="display: none;" onchange="handleZipUpload(event)">`;
 
   manageOutput.innerHTML = html;
 
@@ -635,6 +651,281 @@ function triggerUploadEmpty(): void {
   document.getElementById('chartUploadInputEmpty')?.click();
 }
 
+// Chunk size for large file uploads (50 MB). Declared above its first use
+// so both the .mbtiles and ZIP upload paths can read it regardless of the
+// order the functions happen to appear in.
+const CHUNK_SIZE = 50 * 1024 * 1024;
+
+function triggerZipUpload(): void {
+  document.getElementById('chartZipUploadInput')?.click();
+}
+
+function triggerZipUploadEmpty(): void {
+  document.getElementById('chartZipUploadInputEmpty')?.click();
+}
+
+/**
+ * Upload one ZIP archive; the server extracts every `.mbtiles` inside it
+ * into the selected folder. Unlike the plain upload we can't warn about
+ * duplicates up front — the archive's contents aren't known until the
+ * server opens it — so the server's existing replace-with-backup behaviour
+ * in `promoteQuarantine` is what handles collisions.
+ */
+function handleZipUpload(event: Event): void {
+  const target = event.target as HTMLInputElement | null;
+  const file = target?.files?.[0];
+  // Clear immediately so re-picking the same archive still fires 'change'.
+  if (target) {
+    target.value = '';
+  }
+  if (!file) {
+    return;
+  }
+
+  if (!/\.zip$/i.test(file.name)) {
+    showErrorNotification(`"${file.name}" is not a .zip file.`);
+    return;
+  }
+
+  performZipUpload(file);
+}
+
+/**
+ * Chart archives routinely run to several GB, and a single request that big
+ * cannot finish inside Node's 300 s `server.requestTimeout` unless the link
+ * sustains ~21 MB/s — fine on wired gigabit, but not on the WiFi most boats
+ * actually have. Anything past CHUNK_SIZE therefore goes up in chunks, each
+ * its own short request, exactly as the plain .mbtiles upload does.
+ */
+function performZipUpload(file: File): void {
+  if (file.size > CHUNK_SIZE) {
+    void performChunkedZipUpload(file);
+    return;
+  }
+
+  const formData = new FormData();
+  // Field before file, so busboy has targetFolder in hand by the time the
+  // file stream arrives (same ordering requirement as the plain upload).
+  formData.append('targetFolder', selectedFolder ?? '/');
+  formData.append('archive', file);
+  performSimpleZipUpload(formData, file);
+}
+
+/** Render the archive-upload progress overlay. Returns false if the mount
+ *  point is gone (tab switched away mid-click). */
+function renderZipUploadOverlay(file: File): boolean {
+  const manageOutput = document.getElementById('manageOutput');
+  if (!manageOutput) {
+    return false;
+  }
+  const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+  manageOutput.innerHTML = `
+    <div class="upload-progress-overlay">
+      <div class="upload-progress-card">
+        <div class="upload-progress-header">
+          <div class="spinner"></div>
+          <h3>Uploading Archive...</h3>
+        </div>
+        <div class="upload-progress-body">
+          <p>Uploading to ${window.getIcon('folder', true)} <strong>${manageEscapeHtml(selectedFolder ?? '/')}</strong></p>
+          <ul class="upload-file-list">
+            <li>${manageEscapeHtml(file.name)} (${sizeMb} MB)</li>
+          </ul>
+          <div class="progress-bar-container">
+            <div class="progress-bar" id="uploadProgressBar"></div>
+          </div>
+          <p class="upload-status" id="uploadStatus">Starting upload...</p>
+        </div>
+      </div>
+    </div>
+  `;
+  return true;
+}
+
+/** Read a JSON error out of a response body, falling back to the status. */
+function zipErrorFrom(responseText: string, status: number): string {
+  try {
+    const parsed = JSON.parse(responseText) as ZipUploadResponse;
+    if (parsed.error) {
+      return parsed.error;
+    }
+  } catch {
+    // Non-JSON body — fall through to the generic message.
+  }
+  return `Upload failed: HTTP ${status}`;
+}
+
+function performSimpleZipUpload(formData: FormData, file: File): void {
+  isUploadInProgress = true;
+
+  if (!renderZipUploadOverlay(file)) {
+    isUploadInProgress = false;
+    return;
+  }
+
+  const xhr = new XMLHttpRequest();
+
+  xhr.upload.addEventListener('progress', (e) => {
+    if (e.lengthComputable) {
+      updateUploadProgress(e.loaded, e.total);
+    }
+  });
+
+  // Extraction happens after the last byte is sent and can take a while for
+  // a multi-GB archive, so swap the bar for an indeterminate message rather
+  // than leaving it parked at 100% looking hung.
+  xhr.upload.addEventListener('load', () => {
+    const statusText = document.getElementById('uploadStatus');
+    if (statusText) {
+      statusText.textContent = 'Extracting charts from archive...';
+    }
+  });
+
+  xhr.addEventListener('load', () => {
+    isUploadInProgress = false;
+    void loadCharts();
+
+    let payload: ZipUploadResponse | null = null;
+    try {
+      payload = JSON.parse(xhr.responseText) as ZipUploadResponse;
+    } catch {
+      payload = null;
+    }
+
+    if (xhr.status === 200 && payload?.files) {
+      showZipUploadNotification(payload.files.length, file.name);
+    } else {
+      showErrorNotification(zipErrorFrom(xhr.responseText, xhr.status));
+    }
+  });
+
+  xhr.addEventListener('error', () => {
+    isUploadInProgress = false;
+    console.error('Error uploading ZIP archive');
+    void loadCharts();
+    showErrorNotification('Error uploading archive. Please try again.');
+  });
+
+  xhr.open('POST', `${MANAGE_API_BASE}/upload-zip`);
+  xhr.send(formData);
+}
+
+async function performChunkedZipUpload(file: File): Promise<void> {
+  isUploadInProgress = true;
+
+  if (!renderZipUploadOverlay(file)) {
+    isUploadInProgress = false;
+    return;
+  }
+
+  const targetFolder = selectedFolder ?? '/';
+  // Server-side this only ever names a quarantine dir, and the route's
+  // schema restricts it to this charset — keep the generated value inside
+  // it. randomUUID isn't available on plain-HTTP origins, which is how
+  // Signal K is usually reached on a boat, so build the id by hand.
+  const uploadId = `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  let bytesSent = 0;
+  let finalPayload: ZipUploadResponse | null = null;
+
+  try {
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+
+      const payload = await sendZipChunk(
+        file.slice(start, end),
+        {
+          uploadId,
+          filename: file.name,
+          chunkIndex: i,
+          totalChunks,
+          targetFolder
+        },
+        (chunkLoaded) => {
+          updateUploadProgress(bytesSent + chunkLoaded, file.size);
+        }
+      );
+
+      bytesSent += end - start;
+      updateUploadProgress(bytesSent, file.size);
+
+      // The last chunk's response carries the extraction result.
+      if (i === totalChunks - 1) {
+        finalPayload = payload;
+      } else {
+        // Extraction only starts once the final chunk lands, so show it
+        // as the last chunk goes out rather than after every chunk.
+        if (i === totalChunks - 2) {
+          const statusText = document.getElementById('uploadStatus');
+          if (statusText) {
+            statusText.textContent = 'Extracting charts from archive...';
+          }
+        }
+      }
+    }
+
+    isUploadInProgress = false;
+    void loadCharts();
+    showZipUploadNotification(finalPayload?.files?.length ?? 0, file.name);
+  } catch (error) {
+    isUploadInProgress = false;
+    console.error('Chunked ZIP upload failed:', error);
+    void loadCharts();
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    showErrorNotification(message);
+  }
+}
+
+function sendZipChunk(
+  chunk: Blob,
+  meta: {
+    uploadId: string;
+    filename: string;
+    chunkIndex: number;
+    totalChunks: number;
+    targetFolder: string;
+  },
+  onProgress: (loaded: number) => void
+): Promise<ZipUploadResponse | null> {
+  return new Promise<ZipUploadResponse | null>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) {
+        onProgress(e.loaded);
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as ZipUploadResponse);
+        } catch {
+          resolve(null);
+        }
+      } else {
+        reject(new Error(zipErrorFrom(xhr.responseText, xhr.status)));
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      reject(new Error('Network error while uploading archive'));
+    });
+
+    xhr.open('PUT', `${MANAGE_API_BASE}/upload-zip-chunk`);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.setRequestHeader('X-Upload-Id', meta.uploadId);
+    // setRequestHeader throws on non-Latin1, and chart archives do carry
+    // umlauts and accents. Percent-encode; the server decodes.
+    xhr.setRequestHeader('X-Upload-Filename', encodeURIComponent(meta.filename));
+    xhr.setRequestHeader('X-Chunk-Index', String(meta.chunkIndex));
+    xhr.setRequestHeader('X-Total-Chunks', String(meta.totalChunks));
+    xhr.setRequestHeader('X-Target-Folder', meta.targetFolder);
+    xhr.send(chunk);
+  });
+}
+
 function handleFileUpload(event: Event): void {
   const target = event.target as HTMLInputElement | null;
   const files = target?.files;
@@ -702,9 +993,6 @@ function handleFileUpload(event: Event): void {
     target.value = '';
   }
 }
-
-// Chunk size for large file uploads (50 MB)
-const CHUNK_SIZE = 50 * 1024 * 1024;
 
 function performUpload(formData: FormData, validFileCount: number, files: FileList): void {
   isUploadInProgress = true;
@@ -1732,6 +2020,23 @@ function showUploadNotification(fileCount: number): void {
   fadeOutNotification('uploadNotification', html);
 }
 
+function showZipUploadNotification(chartCount: number, archiveName: string): void {
+  const html = `
+    <div class="notification-toast" id="zipUploadNotification">
+      <div class="notification-content">
+        <div class="notification-icon success">
+          ${window.getIcon('checkmark')}
+        </div>
+        <div class="notification-text">
+          <div class="notification-title">Archive Extracted</div>
+          <div class="notification-message">${chartCount} chart${chartCount !== 1 ? 's' : ''} extracted from ${manageEscapeHtml(archiveName)}</div>
+        </div>
+      </div>
+    </div>
+  `;
+  fadeOutNotification('zipUploadNotification', html);
+}
+
 function showSuccessNotification(message: string): void {
   const html = `
     <div class="notification-toast" id="successNotification">
@@ -2011,6 +2316,9 @@ window.deleteChart = deleteChart;
 window.triggerUpload = triggerUpload;
 window.triggerUploadEmpty = triggerUploadEmpty;
 window.handleFileUpload = handleFileUpload;
+window.triggerZipUpload = triggerZipUpload;
+window.triggerZipUploadEmpty = triggerZipUploadEmpty;
+window.handleZipUpload = handleZipUpload;
 window.handleDragStart = handleDragStart;
 window.handleDragOver = handleDragOver;
 window.handleDrop = handleDrop;

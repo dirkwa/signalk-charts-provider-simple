@@ -79,4 +79,59 @@ test.describe('Manage Charts tab', () => {
       { timeout: 5000 }
     );
   });
+
+  test('offers a ZIP upload control wired to a .zip file input', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/'],
+        charts: [{ relativePath: 'foo.mbtiles', name: 'Foo Chart', folder: '/', enabled: true }]
+      }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+
+    const zipButton = page.getByRole('button', { name: 'Upload ZIP' });
+    await expect(zipButton).toBeVisible({ timeout: 5000 });
+
+    // The hidden input is what actually carries the archive; if its accept
+    // filter drifts away from .zip the picker starts offering the wrong
+    // files, which no assertion on the button alone would catch.
+    const zipInput = page.locator('#chartZipUploadInput');
+    await expect(zipInput).toHaveAttribute('accept', '.zip');
+    // Single archive per upload — the route takes only the first file.
+    await expect(zipInput).not.toHaveAttribute('multiple', /.*/);
+
+    // Clicking the button must reach that input. Intercept the click
+    // rather than let it open a native file dialog Playwright can't close.
+    const clicked = await page.evaluate(() => {
+      const input = document.getElementById('chartZipUploadInput');
+      if (!input) {
+        return false;
+      }
+      let sawClick = false;
+      input.addEventListener('click', (e) => {
+        sawClick = true;
+        e.preventDefault();
+      });
+      (window as unknown as { triggerZipUpload: () => void }).triggerZipUpload();
+      return sawClick;
+    });
+    expect(clicked).toBe(true);
+  });
+
+  test('offers ZIP upload from the empty state too', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      localCharts: { basePath: '/tmp/charts', folders: ['/'], charts: [] }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+
+    await expect(page.getByRole('button', { name: 'Upload ZIP' })).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('#chartZipUploadInputEmpty')).toHaveAttribute('accept', '.zip');
+  });
 });
