@@ -133,5 +133,22 @@ test.describe('Manage Charts tab', () => {
 
     await expect(page.getByRole('button', { name: 'Upload ZIP' })).toBeVisible({ timeout: 5000 });
     await expect(page.locator('#chartZipUploadInputEmpty')).toHaveAttribute('accept', '.zip');
+
+    // The empty state has its own input id and trigger, so the populated
+    // state's coverage says nothing about this one being wired up.
+    const clicked = await page.evaluate(() => {
+      const input = document.getElementById('chartZipUploadInputEmpty');
+      if (!input) {
+        return false;
+      }
+      let sawClick = false;
+      input.addEventListener('click', (e) => {
+        sawClick = true;
+        e.preventDefault();
+      });
+      (window as unknown as { triggerZipUploadEmpty: () => void }).triggerZipUploadEmpty();
+      return sawClick;
+    });
+    expect(clicked).toBe(true);
   });
 });

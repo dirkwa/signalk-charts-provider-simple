@@ -167,6 +167,29 @@ describe('extractMbtilesFromZip', () => {
     assert.equal(fs.readFileSync(path.join(dest, 'chart-3.mbtiles'), 'utf8'), 'NORTH');
   });
 
+  it('disambiguates names that collide only by case', async () => {
+    // Distinct entries in the archive, but the same file on Windows and
+    // macOS. Keying collisions on the exact basename would let the second
+    // overwrite the first and report a chart that isn't there.
+    const zip = writeZip('dupcase.zip', [
+      { name: 'east/Chart.mbtiles', data: Buffer.from('EAST') },
+      { name: 'west/chart.mbtiles', data: Buffer.from('WEST') }
+    ]);
+    const dest = destDir('dupcase');
+
+    const result = await extractMbtilesFromZip(zip, dest);
+
+    assert.equal(result.files.length, 2);
+    // Every returned name must name a file that actually exists.
+    for (const name of result.files) {
+      assert.ok(fs.existsSync(path.join(dest, name)), `${name} missing on disk`);
+    }
+    // The two names differ by more than case, so neither can shadow the
+    // other on a case-insensitive filesystem.
+    const lowered = result.files.map((f) => f.toLowerCase());
+    assert.equal(new Set(lowered).size, 2, `names still collide: ${result.files.join(', ')}`);
+  });
+
   it('flattens traversal paths instead of escaping destDir', async () => {
     const zip = writeZip('slip.zip', [
       { name: '../../../evil.mbtiles', data: Buffer.from('EVIL') },

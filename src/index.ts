@@ -706,6 +706,78 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
   };
 
+  /**
+   * Extract a staged ZIP and promote the charts it contains, answering the
+   * request on every outcome. Shared by the single-request and chunked ZIP
+   * routes so their error mapping can't drift apart.
+   *
+   * Returns true when charts were promoted; false means the response has
+   * already been sent and the caller should stop.
+   */
+  const extractAndPromoteZip = async (
+    stagedZipPath: string,
+    quarantineDir: string,
+    archiveName: string,
+    targetFolder: string,
+    promoteTarget: string,
+    basePath: string,
+    res: Response
+  ): Promise<boolean> => {
+    const extractDir = path.join(quarantineDir, 'extracted');
+    let extracted;
+    try {
+      extracted = await extractMbtilesFromZip(stagedZipPath, extractDir);
+    } catch (err) {
+      if (err instanceof ZipLimitError) {
+        res.status(413).json({ success: false, error: err.message });
+        return false;
+      }
+      // Running out of disk is an expected failure at these sizes — a
+      // multi-GB archive is staged *and* extracted, so it needs roughly
+      // twice its own size free. Reporting that as "is it a valid ZIP
+      // file?" sends the user off checking a file that was never at fault.
+      if ((err as NodeJS.ErrnoException).code === 'ENOSPC') {
+        res.status(507).json({
+          success: false,
+          error:
+            'Not enough free disk space to extract this archive. Extraction needs about twice the archive size free while it runs.'
+        });
+        return false;
+      }
+      app.error(
+        `Error extracting ZIP ${archiveName}: ` + (err instanceof Error ? err.message : String(err))
+      );
+      res.status(400).json({
+        success: false,
+        error: 'Could not read the ZIP archive. Is it a valid ZIP file?'
+      });
+      return false;
+    }
+
+    if (extracted.files.length === 0) {
+      res.status(400).json({
+        success: false,
+        error: 'No .mbtiles files found in the ZIP archive'
+      });
+      return false;
+    }
+
+    await promoteQuarantine(extractDir, extracted.files, promoteTarget);
+    await finalizeUploadedFiles(extracted.files, targetFolder, basePath);
+
+    app.debug(
+      `Extracted ${extracted.files.length} chart(s) from ${archiveName} into ${promoteTarget}`
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `${extracted.files.length} chart${extracted.files.length !== 1 ? 's' : ''} extracted from ${archiveName}`,
+      files: extracted.files,
+      skipped: extracted.skipped
+    });
+    return true;
+  };
+
   // Tippecanoe accepts zooms 0–22 in practice (anything beyond produces
   // 4×4 pixel tiles per source feature; nothing useful comes out and the
   // job runs much longer). Bound the inputs to that envelope so a typo
@@ -1978,61 +2050,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               }
 
               // Extract beside the archive, inside the same quarantine dir.
-              const extractDir = path.join(quarantineDir, 'extracted');
-              let extracted;
-              try {
-                extracted = await extractMbtilesFromZip(stagedZipPath, extractDir);
-              } catch (err) {
-                if (err instanceof ZipLimitError) {
-                  res.status(413).json({ success: false, error: err.message });
-                  return;
-                }
-                app.error(
-                  `Error extracting ZIP ${stagedZipName}: ` +
-                    (err instanceof Error ? err.message : String(err))
-                );
-                // Running out of disk is the expected failure for the sizes
-                // this route accepts (a multi-GB archive is staged *and*
-                // extracted, so it needs roughly twice its own size free).
-                // Reporting that as "is it a valid ZIP file?" sends the user
-                // off checking a file that was never the problem.
-                const code = (err as NodeJS.ErrnoException).code;
-                if (code === 'ENOSPC') {
-                  res.status(507).json({
-                    success: false,
-                    error:
-                      'Not enough free disk space to extract this archive. Extraction needs about twice the archive size free while it runs.'
-                  });
-                  return;
-                }
-                res.status(400).json({
-                  success: false,
-                  error: 'Could not read the ZIP archive. Is it a valid ZIP file?'
-                });
-                return;
-              }
-
-              if (extracted.files.length === 0) {
-                res.status(400).json({
-                  success: false,
-                  error: 'No .mbtiles files found in the ZIP archive'
-                });
-                return;
-              }
-
-              await promoteQuarantine(extractDir, extracted.files, promoteTarget);
-              await finalizeUploadedFiles(extracted.files, targetFolder, basePath);
-
-              app.debug(
-                `Extracted ${extracted.files.length} chart(s) from ${stagedZipName} into ${promoteTarget}`
+              await extractAndPromoteZip(
+                stagedZipPath,
+                quarantineDir,
+                stagedZipName,
+                targetFolder,
+                promoteTarget,
+                basePath,
+                res
               );
-
-              res.status(200).json({
-                success: true,
-                message: `${extracted.files.length} chart${extracted.files.length !== 1 ? 's' : ''} extracted from ${stagedZipName}`,
-                files: extracted.files,
-                skipped: extracted.skipped
-              });
             } catch (error) {
               app.error(
                 'Error completing ZIP upload: ' +
@@ -2259,7 +2285,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           try {
             stagedBytes = fs.statSync(stagedPath).size;
           } catch {
-            stagedBytes = 0;
+            // No staged archive for this id. Appending would create the file
+            // and start writing at the wrong offset, producing a corrupt
+            // archive that only fails later as "is it a valid ZIP file?".
+            // Say what actually went wrong instead.
+            cleanupQuarantineDir(quarantineDir);
+            res.status(409).json({
+              success: false,
+              error: 'No upload in progress for this id. Restart the upload from the first chunk.'
+            });
+            return;
           }
         }
         if (stagedBytes >= MAX_ZIP_UPLOAD_BYTES) {
@@ -2321,51 +2356,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
               app.debug(`Final ZIP chunk for ${archiveName}, extracting`);
               try {
-                const extractDir = path.join(quarantineDir, 'extracted');
-                let extracted;
-                try {
-                  extracted = await extractMbtilesFromZip(stagedPath, extractDir);
-                } catch (err) {
-                  if (err instanceof ZipLimitError) {
-                    res.status(413).json({ success: false, error: err.message });
-                    return;
-                  }
-                  if ((err as NodeJS.ErrnoException).code === 'ENOSPC') {
-                    res.status(507).json({
-                      success: false,
-                      error:
-                        'Not enough free disk space to extract this archive. Extraction needs about twice the archive size free while it runs.'
-                    });
-                    return;
-                  }
-                  app.error(
-                    `Error extracting ZIP ${archiveName}: ` +
-                      (err instanceof Error ? err.message : String(err))
-                  );
-                  res.status(400).json({
-                    success: false,
-                    error: 'Could not read the ZIP archive. Is it a valid ZIP file?'
-                  });
-                  return;
-                }
-
-                if (extracted.files.length === 0) {
-                  res.status(400).json({
-                    success: false,
-                    error: 'No .mbtiles files found in the ZIP archive'
-                  });
-                  return;
-                }
-
-                await promoteQuarantine(extractDir, extracted.files, uploadPath);
-                await finalizeUploadedFiles(extracted.files, targetFolder, basePath);
-
-                res.json({
-                  success: true,
-                  message: `${extracted.files.length} chart${extracted.files.length !== 1 ? 's' : ''} extracted from ${archiveName}`,
-                  files: extracted.files,
-                  skipped: extracted.skipped
-                });
+                await extractAndPromoteZip(
+                  stagedPath,
+                  quarantineDir,
+                  archiveName,
+                  targetFolder,
+                  uploadPath,
+                  basePath,
+                  res
+                );
               } finally {
                 cleanupQuarantineDir(quarantineDir);
               }
