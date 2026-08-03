@@ -854,7 +854,19 @@ async function performChunkedZipUpload(file: File): Promise<void> {
         },
         (chunkLoaded) => {
           updateUploadProgress(bytesSent + chunkLoaded, file.size);
-        }
+        },
+        // Extraction starts once the final chunk's bytes are in, and for a
+        // multi-GB archive it takes long enough that the bar would otherwise
+        // sit at 100% looking hung. Flip the label at that exact point, not
+        // while the last chunk is still going out.
+        i === totalChunks - 1
+          ? () => {
+              const statusText = document.getElementById('uploadStatus');
+              if (statusText) {
+                statusText.textContent = 'Extracting charts from archive...';
+              }
+            }
+          : undefined
       );
 
       bytesSent += end - start;
@@ -863,15 +875,6 @@ async function performChunkedZipUpload(file: File): Promise<void> {
       // The last chunk's response carries the extraction result.
       if (i === totalChunks - 1) {
         finalPayload = payload;
-      } else {
-        // Extraction only starts once the final chunk lands, so show it
-        // as the last chunk goes out rather than after every chunk.
-        if (i === totalChunks - 2) {
-          const statusText = document.getElementById('uploadStatus');
-          if (statusText) {
-            statusText.textContent = 'Extracting charts from archive...';
-          }
-        }
       }
     }
 
@@ -900,7 +903,8 @@ function sendZipChunk(
     totalChunks: number;
     targetFolder: string;
   },
-  onProgress: (loaded: number) => void
+  onProgress: (loaded: number) => void,
+  onSent?: () => void
 ): Promise<ZipUploadResponse | null> {
   return new Promise<ZipUploadResponse | null>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -910,6 +914,10 @@ function sendZipChunk(
         onProgress(e.loaded);
       }
     });
+
+    if (onSent) {
+      xhr.upload.addEventListener('load', onSent);
+    }
 
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) {

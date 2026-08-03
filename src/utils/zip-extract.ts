@@ -247,17 +247,23 @@ export async function extractMbtilesFromZip(
       continue;
     }
 
+    // Collisions are tracked case-insensitively even though the extracted
+    // name keeps its original casing. `Chart.mbtiles` and `chart.mbtiles`
+    // are two distinct entries in the archive but the same file on Windows
+    // and macOS, so keying on the exact basename would let the second
+    // silently overwrite the first — and `files` would then name a chart
+    // that no longer exists.
     let name = base;
-    if (used.has(name)) {
+    if (used.has(name.toLowerCase())) {
       const ext = path.extname(base);
       const stem = path.basename(base, ext);
       let n = 2;
-      while (used.has(`${stem}-${n}${ext}`)) {
+      while (used.has(`${stem}-${n}${ext}`.toLowerCase())) {
         n += 1;
       }
       name = `${stem}-${n}${ext}`;
     }
-    used.add(name);
+    used.add(name.toLowerCase());
 
     const target = path.join(destDir, name);
     bytesWritten += await writeEntry(entry, target, bounds.maxTotalBytes - bytesWritten);
