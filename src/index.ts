@@ -2218,7 +2218,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
         const chunkIndex = parsed['x-chunk-index'];
         const totalChunks = parsed['x-total-chunks'];
-        const targetFolder = parsed['x-target-folder'] ?? '/';
+
+        // Folder names are percent-encoded by the client for the same reason
+        // as the filename. Decoding must happen *before* the containment
+        // check, so `isWithinBase` sees the path we'll actually write to —
+        // and so a folder called `Küste` isn't created as `K%C3%BCste`.
+        // A malformed sequence is rejected rather than silently used raw:
+        // at this point it can only be a client bug or an attack.
+        const rawTargetFolder = parsed['x-target-folder'] ?? '/';
+        let targetFolder: string;
+        try {
+          targetFolder = decodeURIComponent(rawTargetFolder);
+        } catch {
+          res.status(400).json({ success: false, error: 'Malformed target folder' });
+          return;
+        }
 
         const basePath = props.chartPath || defaultChartsPath;
         const uploadPath =
@@ -2235,8 +2249,60 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         const quarantineDir = makeQuarantineDir(app.getDataDirPath(), `zipchunk-${uploadId}`);
         const stagedPath = path.join(quarantineDir, 'upload.zip');
 
+        // The single-request route gets its ceiling from busboy's fileSize
+        // limit; this one has to enforce the same bound itself, or an
+        // authenticated client could append chunks until the data volume is
+        // full. Measure what's already staged rather than trusting
+        // Content-Length, which the client controls.
+        let stagedBytes = 0;
+        if (chunkIndex > 0) {
+          try {
+            stagedBytes = fs.statSync(stagedPath).size;
+          } catch {
+            stagedBytes = 0;
+          }
+        }
+        if (stagedBytes >= MAX_ZIP_UPLOAD_BYTES) {
+          cleanupQuarantineDir(quarantineDir);
+          res.status(413).json({
+            success: false,
+            error: `ZIP exceeds the ${MAX_ZIP_UPLOAD_BYTES / (1024 * 1024 * 1024)} GB upload limit`
+          });
+          return;
+        }
+
         const writeStream = fs.createWriteStream(stagedPath, {
           flags: chunkIndex === 0 ? 'w' : 'a'
+        });
+
+        // Abort mid-chunk if this request would carry the staged archive past
+        // the ceiling, so an oversize upload is stopped as it streams rather
+        // than after it has already landed on disk.
+        let overLimit = false;
+        let received = 0;
+        req.on('data', (chunk: Buffer) => {
+          received += chunk.length;
+          if (!overLimit && stagedBytes + received > MAX_ZIP_UPLOAD_BYTES) {
+            overLimit = true;
+            req.unpipe(writeStream);
+            writeStream.destroy();
+            cleanupQuarantineDir(quarantineDir);
+            if (!res.headersSent) {
+              res.status(413).json({
+                success: false,
+                error: `ZIP exceeds the ${MAX_ZIP_UPLOAD_BYTES / (1024 * 1024 * 1024)} GB upload limit`
+              });
+            }
+          }
+        });
+
+        // An abandoned chunked upload would otherwise keep its partial
+        // archive until the next server start, since makeQuarantineDir
+        // registers the dir as active and the sweep skips live entries.
+        req.on('aborted', () => {
+          app.debug(`ZIP chunk upload aborted for ${archiveName}`);
+          writeStream.destroy();
+          cleanupQuarantineDir(quarantineDir);
         });
 
         req.pipe(writeStream);
@@ -2244,6 +2310,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         writeStream.on('finish', () => {
           void (async () => {
             try {
+              if (overLimit) {
+                return;
+              }
               if (chunkIndex + 1 < totalChunks) {
                 app.debug(`ZIP chunk ${chunkIndex + 1}/${totalChunks} for ${archiveName}`);
                 res.json({ received: chunkIndex, total: totalChunks });
@@ -2319,6 +2388,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         });
 
         writeStream.on('error', (err: Error) => {
+          // Destroying the stream on an over-limit abort lands here too; that
+          // path has already answered the request.
+          if (overLimit) {
+            return;
+          }
           app.error(`Error writing ZIP chunk for ${archiveName}: ${err.message}`);
           cleanupQuarantineDir(quarantineDir);
           if (!res.headersSent) {

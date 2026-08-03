@@ -742,6 +742,12 @@ function renderZipUploadOverlay(file: File): boolean {
   return true;
 }
 
+/** Message for an archive the server accepted but found no charts in. */
+function emptyArchiveMessage(archiveName: string, skipped?: number): string {
+  const detail = skipped ? ` (${skipped} other file${skipped !== 1 ? 's' : ''} skipped)` : '';
+  return `"${archiveName}" contained no .mbtiles charts${detail}.`;
+}
+
 /** Read a JSON error out of a response body, falling back to the status. */
 function zipErrorFrom(responseText: string, status: number): string {
   try {
@@ -792,8 +798,12 @@ function performSimpleZipUpload(formData: FormData, file: File): void {
       payload = null;
     }
 
-    if (xhr.status === 200 && payload?.files) {
+    if (xhr.status === 200 && payload?.files?.length) {
       showZipUploadNotification(payload.files.length, file.name);
+    } else if (xhr.status === 200) {
+      // A 200 with no charts is not a success from the user's point of view:
+      // a green tick and an unchanged list reads as "it worked but vanished".
+      showErrorNotification(emptyArchiveMessage(file.name, payload?.skipped));
     } else {
       showErrorNotification(zipErrorFrom(xhr.responseText, xhr.status));
     }
@@ -867,7 +877,11 @@ async function performChunkedZipUpload(file: File): Promise<void> {
 
     isUploadInProgress = false;
     void loadCharts();
-    showZipUploadNotification(finalPayload?.files?.length ?? 0, file.name);
+    if (finalPayload?.files?.length) {
+      showZipUploadNotification(finalPayload.files.length, file.name);
+    } else {
+      showErrorNotification(emptyArchiveMessage(file.name, finalPayload?.skipped));
+    }
   } catch (error) {
     isUploadInProgress = false;
     console.error('Chunked ZIP upload failed:', error);
@@ -921,7 +935,10 @@ function sendZipChunk(
     xhr.setRequestHeader('X-Upload-Filename', encodeURIComponent(meta.filename));
     xhr.setRequestHeader('X-Chunk-Index', String(meta.chunkIndex));
     xhr.setRequestHeader('X-Total-Chunks', String(meta.totalChunks));
-    xhr.setRequestHeader('X-Target-Folder', meta.targetFolder);
+    // Folder names are user-created and can carry non-Latin1 characters,
+    // same constraint as the filename header. Encoded here, decoded server-
+    // side before it's used as a path.
+    xhr.setRequestHeader('X-Target-Folder', encodeURIComponent(meta.targetFolder));
     xhr.send(chunk);
   });
 }
