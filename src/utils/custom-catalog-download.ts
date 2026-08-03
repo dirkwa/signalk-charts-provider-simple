@@ -6,19 +6,19 @@
  * (`encDir`). The S-57 pipeline (`processS57Directory`) then converts the
  * whole tree in a single pass, producing one MBTiles per custom catalog.
  *
- * Extraction is zip-slip-safe: each entry's resolved target is checked
- * against `encDir` before any bytes are written, mirroring the path-safety
- * posture of the rest of the plugin. A single chart that fails to download or
- * extract is logged and skipped rather than failing the whole bundle — a
- * region of dozens of cells shouldn't be lost to one expired URL.
+ * Extraction goes through the shared zip-slip-safe `extractZipSafely`
+ * (`utils/zip-extract.ts`), which preserves each archive's directory
+ * structure — an ENC cell is a `.000` file plus sibling updates, so
+ * flattening would break the conversion. A single chart that fails to
+ * download or extract is logged and skipped rather than failing the whole
+ * bundle — a region of dozens of cells shouldn't be lost to one expired URL.
  */
 
 import fs from 'fs';
 import http from 'http';
 import https from 'https';
 import path from 'path';
-import unzipper from 'unzipper';
-import { isWithinBase } from './path-safety.js';
+import { extractZipSafely } from './zip-extract.js';
 import { noaaEncZipUrl } from './noaa-enc-footprints.js';
 
 export interface EncDownloadHooks {
@@ -82,31 +82,6 @@ function downloadToFile(url: string, dest: string, redirectsLeft = 5): Promise<v
     });
     req.on('error', reject);
   });
-}
-
-async function extractZipSafely(zipPath: string, destDir: string): Promise<number> {
-  const directory = await unzipper.Open.file(zipPath);
-  let written = 0;
-  for (const entry of directory.files) {
-    if (entry.type !== 'File') {
-      continue;
-    }
-    const target = path.join(destDir, entry.path);
-    // Zip-slip guard: never write outside destDir, regardless of entry path.
-    if (!isWithinBase(target, destDir)) {
-      continue;
-    }
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    await new Promise<void>((resolve, reject) => {
-      entry
-        .stream()
-        .pipe(fs.createWriteStream(target))
-        .on('finish', () => resolve())
-        .on('error', reject);
-    });
-    written += 1;
-  }
-  return written;
 }
 
 export async function downloadAndExtractEncs(

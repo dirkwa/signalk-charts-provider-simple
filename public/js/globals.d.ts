@@ -53,6 +53,9 @@ declare global {
     triggerUpload(): void;
     triggerUploadEmpty(): void;
     handleFileUpload(event: Event): void;
+    triggerZipUpload(): void;
+    triggerZipUploadEmpty(): void;
+    handleZipUpload(event: Event): void;
     setViewMode(mode: 'grid' | 'list'): void;
     selectFolder(folder: string | null): void;
     showCreateFolderDialog(): void;
