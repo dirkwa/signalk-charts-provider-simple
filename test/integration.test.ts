@@ -160,6 +160,97 @@ describe('Charts Loader', () => {
   });
 });
 
+describe('Folder groups filtering', () => {
+  type ResourceProvider = Parameters<ExtendedServerAPI['registerResourceProvider']>[0];
+
+  // Drives plugin.start() against a temp chart tree containing
+  // groupA/test-chart.mbtiles. `start()` fires doStartup without awaiting
+  // it, so we poll until the resource provider has been registered.
+  async function startWithChart(
+    folderStateJson?: object,
+    chartFolder = 'groupA'
+  ): Promise<{
+    listed: Record<string, unknown>;
+    stop: () => void;
+    cleanup: () => void;
+  }> {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'folder-groups-'));
+    const chartPath = path.join(tempDir, 'charts');
+    fs.mkdirSync(path.join(chartPath, chartFolder), { recursive: true });
+    fs.copyFileSync(
+      path.join(FIXTURES, 'test-chart.mbtiles'),
+      path.join(chartPath, chartFolder, 'test-chart.mbtiles')
+    );
+
+    const app = createMockApp(tempDir);
+    if (folderStateJson) {
+      fs.writeFileSync(
+        path.join(app.getDataDirPath(), 'folder-state.json'),
+        JSON.stringify(folderStateJson),
+        'utf-8'
+      );
+    }
+
+    let provider: ResourceProvider | undefined;
+    app.registerResourceProvider = (p) => {
+      provider = p;
+    };
+
+    const plugin = pluginFactory(app);
+    plugin.start({ chartPath }, () => {});
+
+    const deadline = Date.now() + 5000;
+    while (!provider && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(provider, 'Resource provider should be registered within 5s');
+
+    const listed = await provider.methods.listResources({});
+    return {
+      listed,
+      stop: () => {
+        void plugin.stop?.();
+      },
+      cleanup: () => {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    };
+  }
+
+  it('serves charts from enabled folders', async () => {
+    const { listed, stop, cleanup } = await startWithChart();
+    try {
+      assert.ok(listed['test-chart'], 'Chart in enabled folder should be listed');
+    } finally {
+      stop();
+      cleanup();
+    }
+  });
+
+  it('hides charts whose folder is disabled', async () => {
+    const { listed, stop, cleanup } = await startWithChart({ groupA: { enabled: false } });
+    try {
+      assert.deepStrictEqual(listed, {}, 'Chart in disabled folder should not be listed');
+    } finally {
+      stop();
+      cleanup();
+    }
+  });
+
+  it('hides charts whose ancestor folder is disabled', async () => {
+    const { listed, stop, cleanup } = await startWithChart(
+      { groupA: { enabled: false } },
+      path.join('groupA', 'inner')
+    );
+    try {
+      assert.deepStrictEqual(listed, {}, 'Chart under a disabled ancestor should not be listed');
+    } finally {
+      stop();
+      cleanup();
+    }
+  });
+});
+
 describe('Tile Serving', () => {
   let charts: Record<string, ChartProvider> | undefined;
   const chartsDir = FIXTURES;

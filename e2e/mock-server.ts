@@ -81,10 +81,12 @@ interface MockState {
       name: string;
       folder: string;
       enabled: boolean;
+      folderEnabled?: boolean;
       downloading?: boolean;
       converting?: boolean;
     }[];
     folders: string[];
+    folderStates?: Record<string, { enabled: boolean; effectiveEnabled: boolean }>;
     basePath: string;
   };
   downloadJobs: {
@@ -132,7 +134,12 @@ const initialState: MockState = {
   converting: {},
   conversions: {},
   catalogs: {},
-  localCharts: { charts: [], folders: ['/'], basePath: '/tmp/charts' },
+  localCharts: {
+    charts: [],
+    folders: ['/'],
+    folderStates: { '/': { enabled: true, effectiveEnabled: true } },
+    basePath: '/tmp/charts'
+  },
   downloadJobs: [],
   catalogUpdates: [],
   downloadFailStatus: null,
@@ -188,6 +195,39 @@ export function startMockServer(
   // current mock state says; the test sets state ahead of time.
   router.get(`${PLUGIN_BASE}/local-charts`, (_req, res) => {
     res.json(state.localCharts);
+  });
+
+  // POST /folders/toggle → flip a folder's enabled flag and cascade the
+  // effective state to descendant folders and their charts, mirroring the
+  // real plugin's ancestor-aware semantics closely enough for UI tests.
+  router.post(`${PLUGIN_BASE}/folders/toggle`, (req, res) => {
+    const { folderPath, enabled } = req.body as { folderPath?: string; enabled?: boolean };
+    if (!folderPath || typeof enabled !== 'boolean') {
+      res.status(400).json({ error: 'folderPath and enabled required' });
+      return;
+    }
+    const folderStates = (state.localCharts.folderStates ??= {});
+    const prior = folderStates[folderPath] ?? { enabled: true, effectiveEnabled: true };
+    folderStates[folderPath] = { enabled, effectiveEnabled: enabled && prior.effectiveEnabled };
+    let chartsAffected = 0;
+    for (const [folder, folderState] of Object.entries(folderStates)) {
+      if (folder === folderPath || folder.startsWith(`${folderPath}/`)) {
+        folderState.effectiveEnabled = enabled && folderState.enabled;
+      }
+    }
+    for (const chart of state.localCharts.charts) {
+      if (chart.folder === folderPath || chart.folder.startsWith(`${folderPath}/`)) {
+        chart.folderEnabled = enabled;
+        chartsAffected++;
+      }
+    }
+    res.json({
+      success: true,
+      message: `Folder ${enabled ? 'enabled' : 'disabled'}`,
+      folderPath,
+      enabled,
+      chartsAffected
+    });
   });
 
   router.get(`${PLUGIN_BASE}/catalog-registry`, (_req, res) => {
