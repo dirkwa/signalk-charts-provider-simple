@@ -212,7 +212,9 @@ describe('Folder groups filtering', () => {
         void plugin.stop?.();
       },
       cleanup: () => {
-        fs.rmSync(tempDir, { recursive: true, force: true });
+        // Windows: retry to ride out transient locks from just-closed
+        // sqlite handles; an open handle would still fail all retries.
+        fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     };
   }

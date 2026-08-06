@@ -260,6 +260,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         clearInterval(catalogUpdateInterval);
         catalogUpdateInterval = null;
       }
+      // Release sqlite handles: on Windows an open handle keeps the
+      // .mbtiles file locked, and Signal K restarts the plugin on every
+      // config save, which would otherwise leak the whole map each time.
+      closeProviderHandles(Object.values(chartProviders));
+      chartProviders = {};
       app.setPluginStatus('stopped');
     },
     registerWithRouter: (router) => {
@@ -608,6 +613,39 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     return isChartEnabled(relativePath) && isFolderPathEnabled(path.dirname(relativePath));
   };
 
+  // findCharts opens a sqlite handle for every chart it finds; any provider
+  // that doesn't make it into (or drops out of) `chartProviders` must be
+  // closed explicitly or the handle leaks — and on Windows keeps the
+  // .mbtiles file locked. Safe to call on live objects being replaced:
+  // tile serving is synchronous from map lookup to handle use, so no
+  // in-flight request can hold a closed handle across an await.
+  const closeProviderHandles = (providers: Iterable<ChartProvider>): void => {
+    for (const provider of providers) {
+      try {
+        provider._mbtilesHandle?.close();
+      } catch {
+        // Already closed — nothing to release.
+      }
+    }
+  };
+
+  const partitionVisibleCharts = (
+    chartPath: string,
+    charts: Record<string, ChartProvider>
+  ): Record<string, ChartProvider> => {
+    const visible: Record<string, ChartProvider> = {};
+    const dropped: ChartProvider[] = [];
+    for (const [identifier, chart] of Object.entries(charts)) {
+      if (isChartVisible(chartPath, chart._filePath || '')) {
+        visible[identifier] = chart;
+      } else {
+        dropped.push(chart);
+      }
+    }
+    closeProviderHandles(dropped);
+    return visible;
+  };
+
   // Load enabled charts into `chartProviders` and prune stale install
   // records. Display-critical: must run (and resolve) before the resource
   // provider is registered so `listResources` has charts to return. Returns
@@ -615,11 +653,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const loadChartProviders = async (chartPath: string): Promise<boolean> => {
     try {
       const charts = await findCharts(chartPath);
-      const enabledCharts = Object.fromEntries(
-        Object.entries(charts).filter(([, chart]) =>
-          isChartVisible(chartPath, chart._filePath || '')
-        )
-      );
+      const enabledCharts = partitionVisibleCharts(chartPath, charts);
 
       app.debug(
         `Chart provider: Found ${Object.keys(charts).length} charts (${Object.keys(enabledCharts).length} enabled) from ${chartPath}.`
@@ -4170,11 +4204,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const chartPath = props.chartPath || defaultChartsPath;
       const charts = await findCharts(chartPath);
 
-      chartProviders = Object.fromEntries(
-        Object.entries(charts).filter(([, chart]) =>
-          isChartVisible(chartPath, chart._filePath || '')
-        )
-      );
+      // Close the handles of the map being replaced — findCharts reopened
+      // every chart, so the old provider objects would otherwise leak.
+      const previous = chartProviders;
+      chartProviders = partitionVisibleCharts(chartPath, charts);
+      closeProviderHandles(Object.values(previous));
 
       app.debug(`Chart providers refreshed: ${Object.keys(chartProviders).length} enabled charts`);
     } catch (error) {
