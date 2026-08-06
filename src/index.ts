@@ -1385,6 +1385,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
+        if (!fs.statSync(fullPath).isDirectory()) {
+          res.status(400).send('Not a folder');
+          return;
+        }
+
         // Diff providers before/after the refresh: a folder toggle can affect
         // many charts (including nested folders), while charts that are
         // individually disabled stay absent on both sides and emit no delta.
@@ -1520,6 +1525,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         if (chartProviders[chartId]) {
           const chartData = sanitizeProvider(chartProviders[chartId], 2);
           emitChartDelta(chartId, chartData);
+        } else {
+          // The move can hide the chart from serving (target folder disabled)
+          // — retract it so v2 clients don't keep a stale entry whose tiles
+          // now 404.
+          emitChartDelta(chartId, null);
         }
 
         res.status(200).json({ success: true, message: 'Chart moved successfully' });
