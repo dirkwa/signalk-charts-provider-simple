@@ -208,18 +208,33 @@ export function startMockServer(
     }
     const folderStates = (state.localCharts.folderStates ??= {});
     const prior = folderStates[folderPath] ?? { enabled: true, effectiveEnabled: true };
-    folderStates[folderPath] = { enabled, effectiveEnabled: enabled && prior.effectiveEnabled };
-    let chartsAffected = 0;
-    for (const [folder, folderState] of Object.entries(folderStates)) {
-      if (folder === folderPath || folder.startsWith(`${folderPath}/`)) {
-        folderState.effectiveEnabled = enabled && folderState.enabled;
+    folderStates[folderPath] = { ...prior, enabled };
+    // Recompute effective state from the raw flag of every ancestor, same
+    // as the real plugin's isFolderPathEnabled() — the requested flag alone
+    // is wrong when a parent folder is itself disabled.
+    const isPathEnabled = (folder: string): boolean => {
+      if (folder === '/') {
+        return true;
       }
+      let prefix = '';
+      for (const segment of folder.split('/')) {
+        prefix = prefix === '' ? segment : `${prefix}/${segment}`;
+        if (!folderStates[prefix]?.enabled) {
+          return false;
+        }
+      }
+      return true;
+    };
+    for (const [folder, folderState] of Object.entries(folderStates)) {
+      folderState.effectiveEnabled = isPathEnabled(folder);
     }
+    let chartsAffected = 0;
     for (const chart of state.localCharts.charts) {
-      if (chart.folder === folderPath || chart.folder.startsWith(`${folderPath}/`)) {
-        chart.folderEnabled = enabled;
+      const nextEnabled = isPathEnabled(chart.folder);
+      if ((chart.folderEnabled ?? true) !== nextEnabled) {
         chartsAffected++;
       }
+      chart.folderEnabled = nextEnabled;
     }
     res.json({
       success: true,

@@ -416,7 +416,7 @@ function renderChartsUI(): void {
       const folderToggle =
         folder === '/'
           ? ''
-          : `<span class="folder-toggle ${state.enabled ? 'enabled' : 'disabled'}" role="button" tabindex="0" title="${state.enabled ? 'Disable' : 'Enable'} all charts in this folder" onclick="toggleFolderEnabled(event, '${manageEscapeAttr(folder)}')">
+          : `<span class="folder-toggle ${state.enabled ? 'enabled' : 'disabled'}" role="button" tabindex="0" title="${state.enabled ? 'Disable' : 'Enable'} all charts in this folder" onclick="toggleFolderEnabled(event, '${manageEscapeAttr(folder)}')" onkeydown="toggleFolderKeydown(event, '${manageEscapeAttr(folder)}')">
               ${state.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
             </span>`;
       html += `<button class="folder-btn ${isActive ? 'active' : ''} ${state.effectiveEnabled ? '' : 'folder-disabled'}" onclick="selectFolder('${manageEscapeAttr(folder)}')" ondragover="handleFolderDragOver(event)" ondrop="handleDropOnFolder(event, '${manageEscapeAttr(folder)}')" ondragleave="handleFolderDragLeave(event)">
@@ -662,6 +662,15 @@ async function toggleFolderEnabled(event: Event, folder: string): Promise<void> 
     console.error('Error toggling folder:', error);
     const message = error instanceof Error ? error.message : String(error);
     alert('Error toggling folder: ' + message);
+  }
+}
+
+// Keyboard support for the toggle (a span with role=button, so Enter/Space
+// don't come for free the way they would on a real <button>).
+function toggleFolderKeydown(event: KeyboardEvent, folder: string): void {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    void toggleFolderEnabled(event, folder);
   }
 }
 
@@ -2408,6 +2417,7 @@ window.setViewMode = setViewMode;
 window.selectFolder = selectFolder;
 window.toggleChart = toggleChart;
 window.toggleFolderEnabled = toggleFolderEnabled;
+window.toggleFolderKeydown = toggleFolderKeydown;
 window.deleteChart = deleteChart;
 window.triggerUpload = triggerUpload;
 window.triggerUploadEmpty = triggerUploadEmpty;

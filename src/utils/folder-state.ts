@@ -9,10 +9,7 @@ let stateFilePath = '';
 // they are stable across platforms and match ScannedChart.folder semantics
 // ('.' and '' both mean the chart root, represented as '/').
 function normalizeFolder(folderPath: string): string {
-  const normalized = folderPath
-    .replace(/\\/g, '/')
-    .replace(/^\.\/+/, '')
-    .replace(/^\/+|\/+$/g, '');
+  const normalized = path.posix.normalize(folderPath.replace(/\\/g, '/')).replace(/^\/+|\/+$/g, '');
   return normalized === '' || normalized === '.' ? '/' : normalized;
 }
 
