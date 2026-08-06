@@ -5,6 +5,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 ## Features
 
 - **Local Chart Management**: MBTiles (raster and vector), with folder organization and enable/disable toggles
+- **Folder Groups**: Enable/disable whole chart folders at once (OpenCPN-style groups, including nested folders); clients like Freeboard-SK see the change live via `resources.charts` deltas
 - **Download Manager**: Built-in download queue with progress tracking and ZIP extraction
 - **Chart Catalog**: Browse and download charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) with automatic update notifications
 - **NOAA Charts**: Draw a coverage region on a map from NOAA band-4 chart footprints; the plugin bundles the overlapping band-3/4/5 ENCs and converts them into a single vector MBTiles named after your chart set
