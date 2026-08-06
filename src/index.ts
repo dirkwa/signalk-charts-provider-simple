@@ -31,6 +31,13 @@ import {
 } from './utils/catalog-manager.js';
 import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state.js';
+import {
+  initFolderState,
+  isFolderEnabled,
+  isFolderPathEnabled,
+  setFolderEnabled,
+  removeFolderState
+} from './utils/folder-state.js';
 import { getCpuBudget, setCpuBudget } from './utils/concurrency.js';
 import { PLUGIN_OWNER_ID } from './utils/container-jobs.js';
 import { getContainerManager, waitForContainerManager } from './utils/container-manager.js';
@@ -387,6 +394,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
 
     initChartState(pluginDataDir);
+    initFolderState(pluginDataDir);
 
     const dataDir = pluginDataDir;
     initCatalogManager(dataDir, app.debug.bind(app));
@@ -592,6 +600,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     void cleanupChartDirectory(chartPath);
   };
 
+  // A chart is served only when its own flag AND every ancestor folder's
+  // flag are enabled; folder state is a separate layer that never rewrites
+  // per-chart state.
+  const isChartVisible = (chartPath: string, filePath: string): boolean => {
+    const relativePath = path.relative(chartPath, filePath);
+    return isChartEnabled(relativePath) && isFolderPathEnabled(path.dirname(relativePath));
+  };
+
   // Load enabled charts into `chartProviders` and prune stale install
   // records. Display-critical: must run (and resolve) before the resource
   // provider is registered so `listResources` has charts to return. Returns
@@ -600,10 +616,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     try {
       const charts = await findCharts(chartPath);
       const enabledCharts = Object.fromEntries(
-        Object.entries(charts).filter(([, chart]) => {
-          const relativePath = path.relative(chartPath, chart._filePath || '');
-          return isChartEnabled(relativePath);
-        })
+        Object.entries(charts).filter(([, chart]) =>
+          isChartVisible(chartPath, chart._filePath || '')
+        )
       );
 
       app.debug(
@@ -804,6 +819,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   });
 
   const ChartToggleBody = Type.Object({
+    enabled: Type.Boolean()
+  });
+
+  // folderPath travels in the body (not a URL param): nested folders contain
+  // '/' and Express 5 rejects encoded %2F in path segments.
+  const FolderToggleBody = Type.Object({
+    folderPath: Type.String({ minLength: 1 }),
     enabled: Type.Boolean()
   });
 
@@ -1158,14 +1180,26 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return {
             ...chart,
             enabled: isChartEnabled(chart.relativePath),
+            folderEnabled: isFolderPathEnabled(chart.folder),
             downloading: downloadingFiles.has(chart.name),
             converting
           };
         });
 
+        const folderStates = Object.fromEntries(
+          folders.map((folder) => [
+            folder,
+            {
+              enabled: isFolderEnabled(folder),
+              effectiveEnabled: isFolderPathEnabled(folder)
+            }
+          ])
+        );
+
         res.json({
           charts: chartsWithState,
           folders: folders,
+          folderStates,
           basePath: chartPath
         });
       } catch (error) {
@@ -1317,10 +1351,75 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
 
         await fs.promises.rmdir(fullPath);
+        removeFolderState(folderPathParam);
         res.status(200).json({ success: true, message: 'Folder deleted successfully' });
       } catch (error) {
         console.error('Error deleting folder:', error);
         res.status(500).send('Error deleting folder');
+      }
+    });
+
+    router.post('/folders/toggle', async (req: Request, res: Response) => {
+      const body = parseBody(FolderToggleBody, req, res);
+      if (!body) {
+        return;
+      }
+      const { folderPath, enabled } = body;
+
+      try {
+        const basePath = props.chartPath || defaultChartsPath;
+        const fullPath = path.join(basePath, folderPath);
+
+        if (!isWithinBase(fullPath, basePath)) {
+          res.status(403).send('Access denied: Invalid path');
+          return;
+        }
+
+        if (path.normalize(fullPath) === path.normalize(basePath)) {
+          res.status(400).send('Cannot toggle the root folder');
+          return;
+        }
+
+        if (!fs.existsSync(fullPath)) {
+          res.status(404).send('Folder not found');
+          return;
+        }
+
+        // Diff providers before/after the refresh: a folder toggle can affect
+        // many charts (including nested folders), while charts that are
+        // individually disabled stay absent on both sides and emit no delta.
+        const before = chartProviders;
+        setFolderEnabled(folderPath, enabled);
+        await refreshChartProviders();
+
+        let chartsAffected = 0;
+        for (const id of Object.keys(before)) {
+          if (!chartProviders[id]) {
+            emitChartDelta(id, null);
+            chartsAffected++;
+          }
+        }
+        for (const id of Object.keys(chartProviders)) {
+          if (!before[id]) {
+            emitChartDelta(id, sanitizeProvider(chartProviders[id], 2));
+            chartsAffected++;
+          }
+        }
+
+        app.debug(
+          `Folder ${folderPath} set to ${enabled ? 'enabled' : 'disabled'} (${chartsAffected} chart delta(s))`
+        );
+
+        res.status(200).json({
+          success: true,
+          message: `Folder ${enabled ? 'enabled' : 'disabled'}`,
+          folderPath,
+          enabled,
+          chartsAffected
+        });
+      } catch (error) {
+        console.error('Error toggling folder state:', error);
+        res.status(500).send('Error toggling folder state');
       }
     });
 
@@ -4062,10 +4161,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const charts = await findCharts(chartPath);
 
       chartProviders = Object.fromEntries(
-        Object.entries(charts).filter(([, chart]) => {
-          const relativePath = path.relative(chartPath, chart._filePath || '');
-          return isChartEnabled(relativePath);
-        })
+        Object.entries(charts).filter(([, chart]) =>
+          isChartVisible(chartPath, chart._filePath || '')
+        )
       );
 
       app.debug(`Chart providers refreshed: ${Object.keys(chartProviders).length} enabled charts`);

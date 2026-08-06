@@ -358,6 +358,19 @@ export interface ChartStateEntry {
 
 export type ChartStateMap = Record<string, ChartStateEntry>;
 
+// ---- Folder State ----
+
+export interface FolderStateEntry {
+  enabled: boolean;
+}
+
+export type FolderStateMap = Record<string, FolderStateEntry>;
+
+export interface FolderStateInfo {
+  enabled: boolean;
+  effectiveEnabled: boolean;
+}
+
 // ---- Callbacks ----
 
 export type StatusCallback = (status: string, message: string) => void;
