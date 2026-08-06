@@ -118,6 +118,8 @@ describe('normalization', () => {
     assert.strictEqual(isFolderEnabled('./a/b'), false);
     assert.strictEqual(isFolderEnabled('a/b/'), false);
     assert.strictEqual(isFolderEnabled('/a/b'), false);
+    assert.strictEqual(isFolderEnabled('a/./b'), false);
+    assert.strictEqual(isFolderEnabled('a//b'), false);
     assert.strictEqual(Object.keys(getAllFolderStates()).length, 1);
   });
 });
