@@ -27,7 +27,7 @@ This is a Signal K server plugin. The single entry is `src/index.ts`, which expo
    - `charts-loader.ts` walks the configured `chartPath` recursively and produces a `Record<string, ChartProvider>` keyed by identifier. It handles both `.mbtiles` files and tilemap directories (with `tilemapresource.xml`).
    - `utils/mbtiles-reader.ts` opens MBTiles via `node:sqlite`. `utils/mbtiles-metadata.ts` reads/writes the `metadata` table (used for chart rename, which marks tiles "USER MODIFIED").
    - `ChartProvider` exposes both `v1` and `v2` shapes (see `src/types.ts`) so the plugin works on Signal K v1 and v2 servers; `serverMajorVersion` is sniffed from `app.config.version`.
-   - `utils/chart-state.ts` persists per-chart enable/disable in the plugin data dir; `utils/file-scanner.ts` enumerates folders for the management UI.
+   - `utils/chart-state.ts` persists per-chart enable/disable in the plugin data dir; `utils/folder-state.ts` does the same per folder (a disabled folder hides all descendant folders' charts; effective visibility is chart-enabled AND folder-path-enabled); `utils/file-scanner.ts` enumerates folders for the management UI.
 
 2. **Convert charts on demand** (write path, requires Docker/Podman via the `signalk-container` plugin — see the integration section below for the API contract).
    - `utils/container-manager.ts` is the discovery + waiting layer for the `signalk-container` plugin's manager API. Converters call `getContainerManager()` after `start()` has resolved it; they never import `dockerode` directly.
