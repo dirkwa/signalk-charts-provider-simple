@@ -75,6 +75,7 @@ declare global {
     closeDuplicateModal(event?: Event): void;
     confirmDuplicate(): void;
     toggleChart(relativePath: string): Promise<void>;
+    toggleFolderEnabled(event: Event, folder: string): Promise<void>;
     handleDragStart(event: DragEvent, chartPath: string): void;
     handleDragOver(event: DragEvent): void;
     handleFolderDragOver(event: DragEvent): void;
