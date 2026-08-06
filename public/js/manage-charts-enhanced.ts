@@ -11,15 +11,25 @@ interface ManageChart {
   dateCreated: number;
   dateModified: number;
   enabled: boolean;
+  /** False when the chart's folder (or an ancestor) is disabled. */
+  folderEnabled?: boolean;
   type?: string;
   isDirectory?: boolean;
   downloading?: boolean;
   converting?: boolean;
 }
 
+interface FolderStateInfo {
+  /** Raw flag for this folder only. */
+  enabled: boolean;
+  /** False when this folder or any ancestor is disabled. */
+  effectiveEnabled: boolean;
+}
+
 interface LocalChartsResponse {
   charts?: ManageChart[];
   folders?: string[];
+  folderStates?: Record<string, FolderStateInfo>;
   basePath?: string;
 }
 
@@ -90,6 +100,7 @@ interface DuplicateWarningOptions {
 let chartsData: ManageChart[] = [];
 let repairableData: RepairableChart[] = [];
 let foldersData: string[] = [];
+let folderStatesData: Record<string, FolderStateInfo> = {};
 let basePath = '';
 let selectedFolder: string | null = null; // null means show all folders
 let viewMode: 'grid' | 'list' = 'grid';
@@ -127,6 +138,7 @@ async function loadCharts(silent = false): Promise<void> {
 
     chartsData = data.charts ?? [];
     foldersData = data.folders ?? [];
+    folderStatesData = data.folderStates ?? {};
     basePath = data.basePath ?? '';
 
     // Surface charts the loader dropped for missing bounds but that can be
@@ -399,8 +411,16 @@ function renderChartsUI(): void {
     html += `<button class="folder-btn ${selectedFolder === null ? 'active' : ''}" onclick="selectFolder(null)">All Folders</button>`;
     foldersData.forEach((folder) => {
       const isActive = selectedFolder === folder;
-      html += `<button class="folder-btn ${isActive ? 'active' : ''}" onclick="selectFolder('${manageEscapeAttr(folder)}')" ondragover="handleFolderDragOver(event)" ondrop="handleDropOnFolder(event, '${manageEscapeAttr(folder)}')" ondragleave="handleFolderDragLeave(event)">
-        ${folderIcon} ${manageEscapeHtml(folder)}
+      const state = folderStatesData[folder] ?? { enabled: true, effectiveEnabled: true };
+      // The root '/' is not toggleable; per-chart toggles cover its charts.
+      const folderToggle =
+        folder === '/'
+          ? ''
+          : `<span class="folder-toggle ${state.enabled ? 'enabled' : 'disabled'}" role="button" tabindex="0" title="${state.enabled ? 'Disable' : 'Enable'} all charts in this folder" onclick="toggleFolderEnabled(event, '${manageEscapeAttr(folder)}')">
+              ${state.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
+            </span>`;
+      html += `<button class="folder-btn ${isActive ? 'active' : ''} ${state.effectiveEnabled ? '' : 'folder-disabled'}" onclick="selectFolder('${manageEscapeAttr(folder)}')" ondragover="handleFolderDragOver(event)" ondrop="handleDropOnFolder(event, '${manageEscapeAttr(folder)}')" ondragleave="handleFolderDragLeave(event)">
+        ${folderIcon} ${manageEscapeHtml(folder)}${folderToggle}
       </button>`;
     });
     html += `</div>`;
@@ -468,16 +488,19 @@ function renderChartCard(chart: ManageChart): string {
   const attrFolder = manageEscapeAttr(chart.folder);
   const attrName = manageEscapeAttr(chart.name);
 
+  const folderOff = chart.folderEnabled === false;
+  const folderOffBadge = folderOff ? `<span class="folder-off-badge">Folder disabled</span>` : '';
+
   if (viewMode === 'grid') {
     return `
-      <div class="chart-card ${chart.enabled ? '' : 'disabled'} ${chart.downloading || chart.converting ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${attrPath}')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${attrFolder}')" data-chart-path="${attrPath}">
+      <div class="chart-card ${chart.enabled ? '' : 'disabled'} ${folderOff ? 'folder-off' : ''} ${chart.downloading || chart.converting ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${attrPath}')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${attrFolder}')" data-chart-path="${attrPath}">
         <div class="chart-card-header">
           <div class="chart-status">
             <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" onclick="toggleChart('${attrPath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
               ${chart.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
             </button>
           </div>
-          <h4>${escName} ${downloadingBadge}</h4>
+          <h4>${escName} ${downloadingBadge}${folderOffBadge}</h4>
         </div>
         <div class="chart-card-body">
           ${
@@ -533,14 +556,14 @@ function renderChartCard(chart: ManageChart): string {
     `;
   } else {
     return `
-      <div class="chart-list-item ${chart.enabled ? '' : 'disabled'} ${chart.downloading || chart.converting ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${attrPath}')" data-chart-path="${attrPath}">
+      <div class="chart-list-item ${chart.enabled ? '' : 'disabled'} ${folderOff ? 'folder-off' : ''} ${chart.downloading || chart.converting ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${attrPath}')" data-chart-path="${attrPath}">
         <div class="chart-list-status">
           <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" onclick="toggleChart('${attrPath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
             ${chart.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
           </button>
         </div>
         <div class="chart-list-info">
-          <div class="chart-list-name">${escName} ${downloadingBadge}</div>
+          <div class="chart-list-name">${escName} ${downloadingBadge}${folderOffBadge}</div>
           <div class="chart-list-meta">
             ${displaySize ? `<span>${manageEscapeHtml(displaySize)}</span>` : ''}
             <span>${manageEscapeHtml(folderDisplay)}</span>
@@ -609,6 +632,36 @@ async function toggleChart(relativePath: string): Promise<void> {
     console.error('Error toggling chart:', error);
     const message = error instanceof Error ? error.message : String(error);
     alert('Error toggling chart: ' + message);
+  }
+}
+
+async function toggleFolderEnabled(event: Event, folder: string): Promise<void> {
+  // The toggle sits inside the folder button — don't also select the folder.
+  event.stopPropagation();
+
+  const currentEnabled = folderStatesData[folder]?.enabled ?? true;
+  const newEnabledState = !currentEnabled;
+
+  try {
+    const response = await fetch(`${MANAGE_API_BASE}/folders/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folderPath: folder, enabled: newEnabledState })
+    });
+
+    if (response.ok) {
+      showFolderToggleNotification(folder, newEnabledState);
+      // Refetch instead of updating optimistically: the toggle cascades to
+      // descendant folders and their charts, which the server computes.
+      await loadCharts(true);
+    } else {
+      const errorText = await response.text();
+      showErrorNotification(`Failed to toggle folder: ${errorText}`);
+    }
+  } catch (error) {
+    console.error('Error toggling folder:', error);
+    const message = error instanceof Error ? error.message : String(error);
+    alert('Error toggling folder: ' + message);
   }
 }
 
@@ -1977,6 +2030,23 @@ function showToggleNotification(chartName: string, enabled: boolean): void {
   fadeOutNotification('toggleNotification', html);
 }
 
+function showFolderToggleNotification(folderName: string, enabled: boolean): void {
+  const html = `
+    <div class="notification-toast" id="folderToggleNotification">
+      <div class="notification-content">
+        <div class="notification-icon ${enabled ? 'success' : 'warning'}">
+          ${enabled ? window.getIcon('checkmark') : window.getIcon('circle')}
+        </div>
+        <div class="notification-text">
+          <div class="notification-title">${enabled ? 'Folder Enabled' : 'Folder Disabled'}</div>
+          <div class="notification-message">${manageEscapeHtml(folderName)}</div>
+        </div>
+      </div>
+    </div>
+  `;
+  fadeOutNotification('folderToggleNotification', html);
+}
+
 function showErrorNotification(message: string): void {
   const html = `
     <div class="notification-toast error" id="errorNotification">
@@ -2337,6 +2407,7 @@ function manageEscapeAttr(str: string | undefined | null): string {
 window.setViewMode = setViewMode;
 window.selectFolder = selectFolder;
 window.toggleChart = toggleChart;
+window.toggleFolderEnabled = toggleFolderEnabled;
 window.deleteChart = deleteChart;
 window.triggerUpload = triggerUpload;
 window.triggerUploadEmpty = triggerUploadEmpty;
