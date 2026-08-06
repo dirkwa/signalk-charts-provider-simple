@@ -80,6 +80,90 @@ test.describe('Manage Charts tab', () => {
     );
   });
 
+  test('renders a disabled folder and its charts grayed out', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/', 'Netherlands'],
+        folderStates: {
+          '/': { enabled: true, effectiveEnabled: true },
+          Netherlands: { enabled: false, effectiveEnabled: false }
+        },
+        charts: [
+          {
+            relativePath: 'Netherlands/nl.mbtiles',
+            name: 'NL Chart',
+            folder: 'Netherlands',
+            enabled: true,
+            folderEnabled: false
+          }
+        ]
+      }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+
+    await expect(page.locator('.folder-btn.folder-disabled')).toHaveCount(1, { timeout: 5000 });
+    await expect(page.locator('.folder-btn.folder-disabled')).toContainText('Netherlands');
+    // The initial (pre-seed) empty load auto-selects the root folder, which
+    // would hide the Netherlands chart — switch back to the all-folders view.
+    await page.getByRole('button', { name: 'All Folders' }).click();
+    await expect(page.locator('.chart-card.folder-off')).toHaveCount(1);
+    await expect(page.locator('.folder-off-badge')).toContainText('Folder disabled');
+    // The root pseudo-folder is never toggleable, so only one toggle renders.
+    await expect(page.locator('.folder-toggle')).toHaveCount(1);
+  });
+
+  test('folder toggle POSTs to /folders/toggle without selecting the folder', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/', 'Netherlands'],
+        folderStates: {
+          '/': { enabled: true, effectiveEnabled: true },
+          Netherlands: { enabled: true, effectiveEnabled: true }
+        },
+        charts: [
+          {
+            relativePath: 'Netherlands/nl.mbtiles',
+            name: 'NL Chart',
+            folder: 'Netherlands',
+            enabled: true,
+            folderEnabled: true
+          }
+        ]
+      }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+
+    const toggle = page.locator('.folder-toggle');
+    await expect(toggle).toBeVisible({ timeout: 5000 });
+    // The initial (pre-seed) empty load auto-selects the root folder, which
+    // would hide the Netherlands chart — switch back to the all-folders view.
+    await page.getByRole('button', { name: 'All Folders' }).click();
+
+    const requestPromise = page.waitForRequest(
+      (request) => request.url().includes('/folders/toggle') && request.method() === 'POST'
+    );
+    await toggle.click();
+    const request = await requestPromise;
+    expect(request.postDataJSON()).toEqual({ folderPath: 'Netherlands', enabled: false });
+
+    // The UI refetches /local-charts; the mock cascaded the state, so the
+    // chart card grays out and the folder button gets the disabled style.
+    await expect(page.locator('.chart-card.folder-off')).toHaveCount(1, { timeout: 5000 });
+    await expect(page.locator('.folder-btn.folder-disabled')).toHaveCount(1);
+    // stopPropagation: clicking the toggle must not select the folder — the
+    // "All Folders" pseudo-entry stays the active one.
+    await expect(page.locator('.folder-btn.active')).toHaveCount(1);
+    await expect(page.locator('.folder-btn.active')).toContainText('All Folders');
+  });
+
   test('offers a ZIP upload control wired to a .zip file input', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     await setMockState(page, {
