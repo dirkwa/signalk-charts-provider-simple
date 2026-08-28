@@ -169,4 +169,63 @@ describe('External chart refresh', () => {
       fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
+
+  it('preserves served charts and reports failure when the scan fails', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-fail-'));
+    const chartPath = path.join(tempDir, 'charts');
+    fs.mkdirSync(chartPath, { recursive: true });
+    fs.copyFileSync(
+      path.join(FIXTURES, 'test-chart.mbtiles'),
+      path.join(chartPath, 'test-chart.mbtiles')
+    );
+
+    const app = createMockApp(tempDir);
+    let provider: ResourceProvider | undefined;
+    app.registerResourceProvider = (p) => {
+      provider = p;
+    };
+
+    const plugin = pluginFactory(app);
+    const { router, handlers } = createRouterStub();
+    plugin.registerWithRouter?.(router);
+    const refreshRoute = handlers.get('post /refresh');
+    assert.ok(refreshRoute, 'POST /refresh route should be registered');
+
+    plugin.start({ chartPath }, () => {});
+
+    const deadline = Date.now() + 5000;
+    while (!provider && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(provider, 'Resource provider should be registered within 5s');
+
+    try {
+      const before = (await provider.methods.listResources({})) as Record<string, unknown>;
+      assert.ok(before['test-chart'], 'chart is served after startup');
+
+      // Make the scan fail deterministically (deleting the directory works
+      // regardless of the user the tests run as — chmod 000 does not stop
+      // root).
+      fs.rmSync(chartPath, { recursive: true, force: true });
+
+      // The hook rejects instead of resolving with the stale chart count
+      const hook = (globalThis as unknown as ChartsProviderRefreshGlobal)[REFRESH_GLOBAL];
+      assert.strictEqual(typeof hook, 'function', 'refresh hook should be published');
+      await assert.rejects(hook!());
+
+      // The route reports 500 rather than { status: 'ok', charts: 0 }
+      const res = makeRes();
+      await refreshRoute({}, res);
+      assert.strictEqual(res.statusCode, 500);
+      assert.deepStrictEqual(res.body, { error: 'Chart refresh failed' });
+
+      // The failed scan must not have replaced the provider map with an
+      // empty one — already-served charts stay served.
+      const after = (await provider.methods.listResources({})) as Record<string, unknown>;
+      assert.ok(after['test-chart'], 'existing chart stays served after failed refresh');
+    } finally {
+      plugin.stop?.();
+      fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
 });

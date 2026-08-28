@@ -48,19 +48,18 @@ function resolveChartType(
 }
 
 export async function findCharts(chartBaseDir: string): Promise<Record<string, ChartProvider>> {
-  try {
-    const results = await findChartsRecursive(chartBaseDir);
-    const filtered = results.filter((c): c is ChartProvider => c !== null);
-    return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
-      result[chart.identifier] = chart;
-      return result;
-    }, {});
-  } catch (err) {
-    console.error(
-      `Error reading charts directory ${chartBaseDir}:${err instanceof Error ? err.message : String(err)}`
-    );
-    return {};
-  }
+  // A directory-read failure must reject so callers can tell a failed scan
+  // apart from an empty-but-readable directory — swallowing it here used to
+  // make an unreadable charts directory look like "zero charts, success".
+  // Individual chart files that fail to open are still skipped
+  // (openMbtilesFile returns null), so one corrupt .mbtiles cannot fail
+  // the walk.
+  const results = await findChartsRecursive(chartBaseDir);
+  const filtered = results.filter((c): c is ChartProvider => c !== null);
+  return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
+    result[chart.identifier] = chart;
+    return result;
+  }, {});
 }
 
 async function findChartsRecursive(currentDir: string): Promise<(ChartProvider | null)[]> {

@@ -152,11 +152,10 @@ describe('Charts Loader', () => {
     }
   });
 
-  it('should handle non-existent directory gracefully', async () => {
-    const charts = await findCharts('/non/existent/path');
-    // Should return undefined or empty object without throwing
-    assert.ok(charts === undefined || Object.keys(charts).length === 0);
-    closeChartHandles(charts);
+  it('should reject for a non-existent directory', async () => {
+    // A failed scan must propagate so callers (refreshChartProviders) can
+    // tell it apart from an empty-but-readable directory.
+    await assert.rejects(findCharts('/non/existent/path'));
   });
 });
 

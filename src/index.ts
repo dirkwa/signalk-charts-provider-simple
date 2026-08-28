@@ -463,7 +463,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // withdrawn in stop().
     (globalThis as unknown as ChartsProviderRefreshGlobal).__signalk_chartsProviderRefresh =
       async (): Promise<number> => {
-        await refreshChartProviders();
+        // Reject (rather than resolve with the stale count) when the rescan
+        // failed, so peer plugins can tell a failed refresh from a successful
+        // one.
+        if (!(await refreshChartProviders())) {
+          throw new Error('Chart providers refresh failed');
+        }
         return Object.keys(chartProviders).length;
       };
 
@@ -2582,18 +2587,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // visible to clients. The in-process `__signalk_chartsProviderRefresh`
     // global does the same without an HTTP round-trip for peer plugins.
     router.post('/refresh', async (_req: Request, res: Response) => {
-      try {
-        await refreshChartProviders();
-        res.json({
-          status: 'ok',
-          charts: Object.keys(chartProviders).length
-        });
-      } catch (error) {
-        app.error(
-          `Chart refresh failed: ${error instanceof Error ? error.message : String(error)}`
-        );
+      // refreshChartProviders never rejects; false means the scan failed
+      // (details already logged) and must surface as 500, not as a
+      // success response with a stale chart count.
+      if (!(await refreshChartProviders())) {
         res.status(500).json({ error: 'Chart refresh failed' });
+        return;
       }
+      res.json({
+        status: 'ok',
+        charts: Object.keys(chartProviders).length
+      });
     });
 
     router.get('/catalog-registry', (_req: Request, res: Response) => {
@@ -4237,7 +4241,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
   };
 
-  const refreshChartProviders = async (): Promise<void> => {
+  // Rescans the charts directory and swaps in the new provider map.
+  // Returns true on success; on a failed scan (findCharts rejects) the
+  // existing chartProviders map is left untouched — an unreadable charts
+  // directory must not drop every served chart — and false is returned so
+  // the refresh hook / POST /refresh can report the failure. Never rejects:
+  // fire-and-forget callers (download completion) rely on that.
+  const refreshChartProviders = async (): Promise<boolean> => {
     try {
       // getDefaultChartsPath() (not the raw field) so a refresh requested
       // before start() has run still resolves the computed default path.
@@ -4251,10 +4261,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       closeProviderHandles(Object.values(previous));
 
       app.debug(`Chart providers refreshed: ${Object.keys(chartProviders).length} enabled charts`);
+      return true;
     } catch (error) {
       app.error(
         `Failed to refresh chart providers: ${error instanceof Error ? error.message : String(error)}`
       );
+      return false;
     }
   };
 
