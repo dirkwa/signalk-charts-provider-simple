@@ -126,6 +126,7 @@ import { downloadAndExtractEncs } from './utils/custom-catalog-download.js';
 import packageJson from '../package.json' with { type: 'json' };
 import type {
   ChartProvider,
+  ChartsProviderRefreshGlobal,
   DownloadJob,
   ExtendedServerAPI,
   IRouter,
@@ -260,6 +261,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         clearInterval(catalogUpdateInterval);
         catalogUpdateInterval = null;
       }
+      // Withdraw the peer-plugin refresh hook (see doStartup).
+      delete (globalThis as unknown as ChartsProviderRefreshGlobal).__signalk_chartsProviderRefresh;
       // Release sqlite handles: on Windows an open handle keeps the
       // .mbtiles file locked, and Signal K restarts the plugin on every
       // config save, which would otherwise leak the whole map each time.
@@ -448,6 +451,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     if (loadOk) {
       app.setPluginStatus('Started');
     }
+
+    // Publish the in-process refresh hook for peer plugins (same pattern
+    // as signalk-container's `__signalk_containerManager` global): chart
+    // PRODUCERS that drop .mbtiles into the charts directory while the
+    // server runs (e.g. signalk-corridor-tile-downloader) need a rescan
+    // to get their files registered — findCharts has no file watcher.
+    // The global is an in-process hand-off: no HTTP round-trip, so it
+    // also works on servers with security enabled. Published as soon as
+    // the display path is live (before the container-manager wait) and
+    // withdrawn in stop().
+    (globalThis as unknown as ChartsProviderRefreshGlobal).__signalk_chartsProviderRefresh =
+      async (): Promise<number> => {
+        await refreshChartProviders();
+        return Object.keys(chartProviders).length;
+      };
 
     // Discover the signalk-container plugin's manager API.  Chart conversion
     // (S-57, BSB raster, Pilot, basemaps) goes through it from 2.0 onward;
@@ -2558,6 +2576,26 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     // ---- Chart Catalog API routes ----
 
+    // External rescan trigger for chart producers and tooling: rescans
+    // the charts directory and re-registers the resource providers, so a
+    // .mbtiles written after startup (no file watcher exists) becomes
+    // visible to clients. The in-process `__signalk_chartsProviderRefresh`
+    // global does the same without an HTTP round-trip for peer plugins.
+    router.post('/refresh', async (_req: Request, res: Response) => {
+      try {
+        await refreshChartProviders();
+        res.json({
+          status: 'ok',
+          charts: Object.keys(chartProviders).length
+        });
+      } catch (error) {
+        app.error(
+          `Chart refresh failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        res.status(500).json({ error: 'Chart refresh failed' });
+      }
+    });
+
     router.get('/catalog-registry', (_req: Request, res: Response) => {
       try {
         const registry = getCatalogRegistry();
@@ -4201,7 +4239,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
   const refreshChartProviders = async (): Promise<void> => {
     try {
-      const chartPath = props.chartPath || defaultChartsPath;
+      // getDefaultChartsPath() (not the raw field) so a refresh requested
+      // before start() has run still resolves the computed default path.
+      const chartPath = props.chartPath || getDefaultChartsPath();
       const charts = await findCharts(chartPath);
 
       // Close the handles of the map being replaced — findCharts reopened
