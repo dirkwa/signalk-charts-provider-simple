@@ -327,6 +327,32 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
   };
 
+  // Message surfaced when chart conversion is needed but the
+  // signalk-container plugin (which owns the container runtime layer from
+  // 2.0 onward) isn't available. Shared by the startup path and the
+  // conversion REST guards so the wording stays identical everywhere.
+  const containerRequiredMessage =
+    'signalk-container plugin required for chart conversion. Install it from the App Store and restart Signal K. Chart display continues to work without it.';
+
+  // True when something actually needs the container runtime: a conversion
+  // still in flight from a previous plugin lifecycle (a config save restarts
+  // the plugin, but module-level converter state survives it),
+  // catalog-installed charts (their updates are download+convert), or saved
+  // chart sets (the NOAA tab is conversion-fed by definition). Pure display
+  // setups — serving existing .mbtiles/tilemaps — never need the runtime.
+  const hasContainerDependentCharts = (): boolean =>
+    getConvertingCount() > 0 ||
+    Object.keys(getInstalledCatalogCharts()).length > 0 ||
+    listCustomCatalogs().length > 0;
+
+  // The user just tried to start an operation that needs the container
+  // runtime and it isn't there. The 503 response explains the problem
+  // inside the tab, but the dashboard status line should carry it too —
+  // that's where plugin health is expected to show up.
+  const reportContainerRuntimeMissing = (): void => {
+    app.setPluginError(containerRequiredMessage);
+  };
+
   const doStartup = async (config: PluginConfig): Promise<void> => {
     app.debug(`** loaded config: ${JSON.stringify(config)}`);
     props = { ...config };
@@ -446,8 +472,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     // Report Started for the display path. Don't clobber a load error
     // (loadChartProviders sets one) — a later setPluginError from the
-    // signalk-container discovery below is allowed to win, since that
-    // message tells the user conversion needs the container plugin.
+    // signalk-container discovery below (only raised when conversion work
+    // actually needs it) is allowed to win over this status.
     if (loadOk) {
       app.setPluginStatus('Started');
     }
@@ -477,8 +503,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // the App Store's `signalk.recommends` declaration in our package.json
     // ensures users are prompted to install signalk-container, but plugin
     // load order is not deterministic, so we wait up to 30 s before giving
-    // up.  A missing manager surfaces as setPluginError but does NOT abort
-    // startup — chart *display* (serving tiles for already-converted
+    // up.  A missing manager only surfaces as setPluginError when something
+    // actually needs the runtime (see hasContainerDependentCharts) and never
+    // aborts startup — chart *display* (serving tiles for already-converted
     // .mbtiles) doesn't need the runtime layer and remains functional.
     // Wipe any quarantine subdirs left behind by a previous server
     // lifecycle. Conversions write into <dataDir>/in-progress/<chartNumber>/
@@ -509,9 +536,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
     if (!containerManager) {
-      app.setPluginError(
-        'signalk-container plugin required for chart conversion. Install it from the App Store and restart Signal K. Chart display continues to work without it.'
-      );
+      // Only raise the missing runtime to an ERROR when something actually
+      // needs it (see hasContainerDependentCharts). A pure display setup
+      // never touches the container layer, and a standing error there just
+      // makes a healthy plugin look broken — the Convert tab already
+      // explains the situation inside the UI when the runtime is missing.
+      if (hasContainerDependentCharts()) {
+        reportContainerRuntimeMissing();
+      } else {
+        console.log(
+          '[charts-provider] signalk-container not available — chart conversion disabled (chart display unaffected)'
+        );
+      }
     } else {
       const runtime = containerManager.getRuntime();
       app.debug(
@@ -2791,6 +2827,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         void (async () => {
           const cm = getContainerManager();
           if (!cm?.getRuntime()) {
+            reportContainerRuntimeMissing();
             cleanupDir(tmpDir);
             res.status(503).json({
               success: false,
@@ -2968,6 +3005,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         if (needsRuntime) {
           const cm = getContainerManager();
           if (!cm?.getRuntime()) {
+            reportContainerRuntimeMissing();
             res.status(503).json({
               success: false,
               error:
@@ -3299,6 +3337,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
       const cm = getContainerManager();
       if (!cm?.getRuntime()) {
+        reportContainerRuntimeMissing();
         res.status(503).json({
           success: false,
           error:
