@@ -393,3 +393,13 @@ export interface TilemapXml {
 // ---- Express route helpers ----
 
 export type { IRouter, Request, Response };
+
+/**
+ * In-process refresh hook published on globalThis for peer plugins,
+ * mirroring signalk-container's `__signalk_containerManager` pattern.
+ * Chart producers call it after writing .mbtiles into the charts
+ * directory so the provider rescans without an HTTP round-trip.
+ */
+export interface ChartsProviderRefreshGlobal {
+  __signalk_chartsProviderRefresh?: () => Promise<number>;
+}
