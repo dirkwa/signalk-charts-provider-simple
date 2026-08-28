@@ -103,6 +103,33 @@ function makeRes(): {
   };
 }
 
+/**
+ * A directory-based chart (tilemap directory), as produced by gdal2tiles.
+ * Unlike an .mbtiles file, it keeps no live DatabaseSync handle, so deleting
+ * the charts directory mid-test cannot be blocked by an open file handle
+ * (EBUSY/EPERM on Windows).
+ */
+function writeTilemapChart(parentDir: string, name: string): void {
+  const chartDir = path.join(parentDir, name);
+  fs.mkdirSync(chartDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(chartDir, 'tilemapresource.xml'),
+    `<?xml version="1.0" encoding="utf-8"?>
+<TileMap version="1.0.0" tilemapservice="http://tms.osgeo.org/1.0.0">
+  <Title>Test Chart</Title>
+  <Abstract>Test Chart</Abstract>
+  <SRS>EPSG:3857</SRS>
+  <BoundingBox minx="-180" miny="-85" maxx="180" maxy="85"/>
+  <TileFormat width="256" height="256" mime-type="image/png" extension="png"/>
+  <TileSets profile="global-mercator">
+    <TileSet href="0" order="0" units-per-pixel="156543.03392804097"/>
+    <TileSet href="1" order="1" units-per-pixel="78271.516964020484"/>
+  </TileSets>
+</TileMap>
+`
+  );
+}
+
 describe('External chart refresh', () => {
   it('registers new .mbtiles via the global hook, the route, and withdraws on stop', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-test-'));
@@ -174,10 +201,9 @@ describe('External chart refresh', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-fail-'));
     const chartPath = path.join(tempDir, 'charts');
     fs.mkdirSync(chartPath, { recursive: true });
-    fs.copyFileSync(
-      path.join(FIXTURES, 'test-chart.mbtiles'),
-      path.join(chartPath, 'test-chart.mbtiles')
-    );
+    // Directory-based chart: no retained DatabaseSync handle, so the
+    // chartPath removal below succeeds on every platform.
+    writeTilemapChart(chartPath, 'test-chart');
 
     const app = createMockApp(tempDir);
     let provider: ResourceProvider | undefined;
