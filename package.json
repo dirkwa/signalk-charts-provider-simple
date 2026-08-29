@@ -12,7 +12,7 @@
     "docs/screenshots"
   ],
   "scripts": {
-    "build": "tsc && npm run build:public",
+    "build": "npm run clean && tsc && npm run build:public",
     "build:watch": "tsc --watch",
     "build:tests": "tsc -p tsconfig.test.json",
     "build:e2e": "tsc -p tsconfig.e2e.json",
@@ -25,7 +25,8 @@
     "lint:fix": "eslint src test e2e public/js playwright.config.ts --fix",
     "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' && eslint src test e2e public/js playwright.config.ts --fix",
     "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' && eslint src test e2e public/js playwright.config.ts",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "clean": "node -e \"for (const d of ['dist','dist-test','dist-e2e']) require('node:fs').rmSync(d,{recursive:true,force:true})\""
   },
   "license": "MIT",
   "keywords": [
