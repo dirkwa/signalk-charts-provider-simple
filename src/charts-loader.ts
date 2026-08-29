@@ -134,12 +134,13 @@ async function findChartsRecursive(
 }
 
 async function openMbtilesFile(file: string, filename: string): Promise<ChartProvider | null> {
-  // Held outside the try so the catch can close it: openMbtiles can succeed
-  // and a later call still throw — getInfo() runs an unguarded SELECT and
-  // raises "no such table: metadata" on a file that is valid sqlite but not a
-  // valid mbtiles. Returning null then skipped the chart while leaking its
-  // handle, and on Windows that locks the very file cleanupChartDirectory
-  // goes on to unlink as invalid.
+  // Held outside the try so the catch can close it if anything after
+  // openMbtiles resolves throws — tile-size probing, or building the provider
+  // from the metadata. Defensive: openMbtiles already validates the file (and
+  // closes its own reader when that probe rejects), and getInfo() below is
+  // memoized from that probe, so no input is known to reach this catch with a
+  // reader open. Cheap insurance on a path that returns null either way,
+  // because an unclosed handle locks the .mbtiles on Windows.
   let reader: MBTilesReader | undefined;
   try {
     reader = await openMbtiles(file);
