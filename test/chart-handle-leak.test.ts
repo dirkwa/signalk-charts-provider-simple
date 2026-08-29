@@ -91,7 +91,7 @@ describe('chart handle lifecycle', { skip: !canCountFds && 'needs /proc/self/fd'
   // directory (deliberately — callers must tell a failed scan from an empty
   // one). An unreadable SUBdirectory throws after earlier charts already hold
   // handles, and those never reach a caller, so nothing else can close them.
-  it('releases the handles it already opened when the walk throws', async () => {
+  it('releases the handles it already opened when the walk throws', async (t) => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handle-throw-'));
     const chartPath = path.join(tempDir, 'charts');
     fs.mkdirSync(chartPath, { recursive: true });
@@ -102,6 +102,22 @@ describe('chart handle lifecycle', { skip: !canCountFds && 'needs /proc/self/fd'
     const unreadable = path.join(chartPath, 'zz-unreadable');
     fs.mkdirSync(unreadable);
     fs.chmodSync(unreadable, 0o000);
+
+    // chmod does not stop root, and CI images often run as root. Skip rather
+    // than assert a rejection that cannot happen — a test that quietly checks
+    // nothing is worse than one that says it did not run.
+    let blocked = false;
+    try {
+      fs.readdirSync(unreadable);
+    } catch {
+      blocked = true;
+    }
+    if (!blocked) {
+      fs.chmodSync(unreadable, 0o755);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      t.skip('chmod does not restrict this user (running as root)');
+      return;
+    }
 
     const before = openMbtilesHandles();
     try {
@@ -116,6 +132,42 @@ describe('chart handle lifecycle', { skip: !canCountFds && 'needs /proc/self/fd'
       );
     } finally {
       fs.chmodSync(unreadable, 0o755);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+  // Two folders can hold the same .mbtiles basename (zip extraction
+  // disambiguates on import; a hand-assembled directory need not), which
+  // yields the same identifier. The loser drops out of the returned map, so
+  // nothing downstream can ever close its handle.
+  it('closes the handle of a provider displaced by an identifier collision', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handle-dup-'));
+    const chartPath = path.join(tempDir, 'charts');
+    for (const folder of ['folderA', 'folderB']) {
+      fs.mkdirSync(path.join(chartPath, folder), { recursive: true });
+      fs.copyFileSync(
+        path.join(FIXTURES, 'test-chart.mbtiles'),
+        path.join(chartPath, folder, 'same.mbtiles')
+      );
+    }
+
+    const before = openMbtilesHandles();
+    try {
+      const charts = await findCharts(chartPath);
+      const providers = Object.values(charts);
+      assert.equal(providers.length, 1, 'the collision leaves one provider');
+
+      // One handle per RETURNED provider: the displaced one is already closed.
+      assert.equal(
+        openMbtilesHandles() - before,
+        providers.length,
+        'the displaced provider must not keep its handle open'
+      );
+
+      for (const provider of providers) {
+        provider._mbtilesHandle?.close();
+      }
+      assert.equal(openMbtilesHandles(), before, 'closing the survivor releases the rest');
+    } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });

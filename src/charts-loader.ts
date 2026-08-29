@@ -65,6 +65,19 @@ export async function findCharts(chartBaseDir: string): Promise<Record<string, C
     const results = await findChartsRecursive(chartBaseDir, opened);
     const filtered = results.filter((c): c is ChartProvider => c !== null);
     return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
+      // Two folders can hold the same .mbtiles basename, which yields the same
+      // identifier (zip extraction disambiguates on import, but a directory
+      // assembled by hand need not). The loser of that collision drops out of
+      // the returned map, so close its handle here — nothing downstream can
+      // reach it, and on Windows it would lock that file for good.
+      const displaced = result[chart.identifier];
+      if (displaced && displaced !== chart) {
+        try {
+          displaced._mbtilesHandle?.close();
+        } catch {
+          // Already closed — nothing to release.
+        }
+      }
       result[chart.identifier] = chart;
       return result;
     }, {});
