@@ -86,4 +86,37 @@ describe('chart handle lifecycle', { skip: !canCountFds && 'needs /proc/self/fd'
         fs.rmSync(tempDir, { recursive: true, force: true });
       });
   });
+
+  // findCharts opens handles as it walks and rejects on an unreadable
+  // directory (deliberately — callers must tell a failed scan from an empty
+  // one). An unreadable SUBdirectory throws after earlier charts already hold
+  // handles, and those never reach a caller, so nothing else can close them.
+  it('releases the handles it already opened when the walk throws', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handle-throw-'));
+    const chartPath = path.join(tempDir, 'charts');
+    fs.mkdirSync(chartPath, { recursive: true });
+    for (const name of ['a.mbtiles', 'b.mbtiles']) {
+      fs.copyFileSync(path.join(FIXTURES, 'test-chart.mbtiles'), path.join(chartPath, name));
+    }
+    // Sorted after the charts, so the walk opens both before it fails.
+    const unreadable = path.join(chartPath, 'zz-unreadable');
+    fs.mkdirSync(unreadable);
+    fs.chmodSync(unreadable, 0o000);
+
+    const before = openMbtilesHandles();
+    try {
+      await assert.rejects(
+        () => findCharts(chartPath),
+        'an unreadable directory must still reject'
+      );
+      assert.equal(
+        openMbtilesHandles(),
+        before,
+        'a walk that threw must not leave chart handles open'
+      );
+    } finally {
+      fs.chmodSync(unreadable, 0o755);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -54,15 +54,37 @@ export async function findCharts(chartBaseDir: string): Promise<Record<string, C
   // Individual chart files that fail to open are still skipped
   // (openMbtilesFile returns null), so one corrupt .mbtiles cannot fail
   // the walk.
-  const results = await findChartsRecursive(chartBaseDir);
-  const filtered = results.filter((c): c is ChartProvider => c !== null);
-  return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
-    result[chart.identifier] = chart;
-    return result;
-  }, {});
+  //
+  // The walk opens a sqlite handle per chart as it goes, and an unreadable
+  // SUBdirectory throws after earlier charts already have theirs. Those
+  // handles never reach a caller, so nothing else can close them — and on
+  // Windows each one locks its .mbtiles. Release them here before
+  // rethrowing; the rejection itself is the contract and must survive.
+  const opened: ChartProvider[] = [];
+  try {
+    const results = await findChartsRecursive(chartBaseDir, opened);
+    const filtered = results.filter((c): c is ChartProvider => c !== null);
+    return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
+      result[chart.identifier] = chart;
+      return result;
+    }, {});
+  } catch (err) {
+    for (const chart of opened) {
+      try {
+        chart._mbtilesHandle?.close();
+      } catch {
+        // Already closed — nothing to release.
+      }
+    }
+    throw err;
+  }
 }
 
-async function findChartsRecursive(currentDir: string): Promise<(ChartProvider | null)[]> {
+async function findChartsRecursive(
+  currentDir: string,
+  /** Every provider opened so far, so a throw mid-walk can still close them. */
+  opened: ChartProvider[]
+): Promise<(ChartProvider | null)[]> {
   const files = await fs.readdir(currentDir, { withFileTypes: true });
   const results: (ChartProvider | null)[][] = [];
 
@@ -73,6 +95,9 @@ async function findChartsRecursive(currentDir: string): Promise<(ChartProvider |
 
     if (isMbtilesFile) {
       const chart = await openMbtilesFile(filePath, file.name);
+      if (chart) {
+        opened.push(chart);
+      }
       results.push([chart]);
     } else if (isDirectory) {
       if (file.name.startsWith('.') || file.name === 'node_modules') {
@@ -84,7 +109,7 @@ async function findChartsRecursive(currentDir: string): Promise<(ChartProvider |
       if (chartInfo) {
         results.push([chartInfo]);
       } else {
-        const subResults = await findChartsRecursive(filePath);
+        const subResults = await findChartsRecursive(filePath, opened);
         results.push(subResults);
       }
     } else {
