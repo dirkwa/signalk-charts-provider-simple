@@ -54,15 +54,50 @@ export async function findCharts(chartBaseDir: string): Promise<Record<string, C
   // Individual chart files that fail to open are still skipped
   // (openMbtilesFile returns null), so one corrupt .mbtiles cannot fail
   // the walk.
-  const results = await findChartsRecursive(chartBaseDir);
-  const filtered = results.filter((c): c is ChartProvider => c !== null);
-  return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
-    result[chart.identifier] = chart;
-    return result;
-  }, {});
+  //
+  // The walk opens a sqlite handle per chart as it goes, and an unreadable
+  // SUBdirectory throws after earlier charts already have theirs. Those
+  // handles never reach a caller, so nothing else can close them — and on
+  // Windows each one locks its .mbtiles. Release them here before
+  // rethrowing; the rejection itself is the contract and must survive.
+  const opened: ChartProvider[] = [];
+  try {
+    const results = await findChartsRecursive(chartBaseDir, opened);
+    const filtered = results.filter((c): c is ChartProvider => c !== null);
+    return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
+      // Two folders can hold the same .mbtiles basename, which yields the same
+      // identifier (zip extraction disambiguates on import, but a directory
+      // assembled by hand need not). The loser of that collision drops out of
+      // the returned map, so close its handle here — nothing downstream can
+      // reach it, and on Windows it would lock that file for good.
+      const displaced = result[chart.identifier];
+      if (displaced && displaced !== chart) {
+        try {
+          displaced._mbtilesHandle?.close();
+        } catch {
+          // Already closed — nothing to release.
+        }
+      }
+      result[chart.identifier] = chart;
+      return result;
+    }, {});
+  } catch (err) {
+    for (const chart of opened) {
+      try {
+        chart._mbtilesHandle?.close();
+      } catch {
+        // Already closed — nothing to release.
+      }
+    }
+    throw err;
+  }
 }
 
-async function findChartsRecursive(currentDir: string): Promise<(ChartProvider | null)[]> {
+async function findChartsRecursive(
+  currentDir: string,
+  /** Every provider opened so far, so a throw mid-walk can still close them. */
+  opened: ChartProvider[]
+): Promise<(ChartProvider | null)[]> {
   const files = await fs.readdir(currentDir, { withFileTypes: true });
   const results: (ChartProvider | null)[][] = [];
 
@@ -73,6 +108,9 @@ async function findChartsRecursive(currentDir: string): Promise<(ChartProvider |
 
     if (isMbtilesFile) {
       const chart = await openMbtilesFile(filePath, file.name);
+      if (chart) {
+        opened.push(chart);
+      }
       results.push([chart]);
     } else if (isDirectory) {
       if (file.name.startsWith('.') || file.name === 'node_modules') {
@@ -84,7 +122,7 @@ async function findChartsRecursive(currentDir: string): Promise<(ChartProvider |
       if (chartInfo) {
         results.push([chartInfo]);
       } else {
-        const subResults = await findChartsRecursive(filePath);
+        const subResults = await findChartsRecursive(filePath, opened);
         results.push(subResults);
       }
     } else {
@@ -96,8 +134,16 @@ async function findChartsRecursive(currentDir: string): Promise<(ChartProvider |
 }
 
 async function openMbtilesFile(file: string, filename: string): Promise<ChartProvider | null> {
+  // Held outside the try so the catch can close it if anything after
+  // openMbtiles resolves throws — tile-size probing, or building the provider
+  // from the metadata. Defensive: openMbtiles already validates the file (and
+  // closes its own reader when that probe rejects), and getInfo() below is
+  // memoized from that probe, so no input is known to reach this catch with a
+  // reader open. Cheap insurance on a path that returns null either way,
+  // because an unclosed handle locks the .mbtiles on Windows.
+  let reader: MBTilesReader | undefined;
   try {
-    const reader = await openMbtiles(file);
+    reader = await openMbtiles(file);
     const metadata = reader.getInfo();
 
     if (!metadata || Object.keys(metadata).length === 0 || metadata.bounds === undefined) {
@@ -146,6 +192,11 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
     return data;
   } catch (e) {
     console.error(`Error loading chart ${file}`, e instanceof Error ? e.message : String(e));
+    try {
+      reader?.close();
+    } catch {
+      // Already closed, or never opened — nothing to release.
+    }
     return null;
   }
 }
