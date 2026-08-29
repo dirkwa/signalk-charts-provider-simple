@@ -134,8 +134,15 @@ async function findChartsRecursive(
 }
 
 async function openMbtilesFile(file: string, filename: string): Promise<ChartProvider | null> {
+  // Held outside the try so the catch can close it: openMbtiles can succeed
+  // and a later call still throw — getInfo() runs an unguarded SELECT and
+  // raises "no such table: metadata" on a file that is valid sqlite but not a
+  // valid mbtiles. Returning null then skipped the chart while leaking its
+  // handle, and on Windows that locks the very file cleanupChartDirectory
+  // goes on to unlink as invalid.
+  let reader: MBTilesReader | undefined;
   try {
-    const reader = await openMbtiles(file);
+    reader = await openMbtiles(file);
     const metadata = reader.getInfo();
 
     if (!metadata || Object.keys(metadata).length === 0 || metadata.bounds === undefined) {
@@ -184,6 +191,11 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
     return data;
   } catch (e) {
     console.error(`Error loading chart ${file}`, e instanceof Error ? e.message : String(e));
+    try {
+      reader?.close();
+    } catch {
+      // Already closed, or never opened — nothing to release.
+    }
     return null;
   }
 }

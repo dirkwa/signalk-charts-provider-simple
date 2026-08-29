@@ -28,6 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { findCharts } from '../dist/charts-loader.js';
+import { DatabaseSync } from 'node:sqlite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, '..', 'test', 'fixtures');
@@ -167,6 +168,36 @@ describe('chart handle lifecycle', { skip: !canCountFds && 'needs /proc/self/fd'
         provider._mbtilesHandle?.close();
       }
       assert.equal(openMbtilesHandles(), before, 'closing the survivor releases the rest');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+  // open() constructs the reader (opening the sqlite handle), then calls
+  // getInfo() as a validity probe. A file that is valid sqlite but not valid
+  // mbtiles makes that probe throw, and open() used to reject WITHOUT closing
+  // the reader it had just built — leaking a handle to a caller that never
+  // received the reader and so could never close it. On Windows that locks the
+  // very file the cleanup sweep goes on to unlink as invalid.
+  it('releases the handle when the validity probe rejects', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handle-probe-'));
+    const chartPath = path.join(tempDir, 'charts');
+    fs.mkdirSync(chartPath, { recursive: true });
+
+    const broken = path.join(chartPath, 'no-metadata.mbtiles');
+    const db = new DatabaseSync(broken);
+    // A tiles table but no metadata table: opens fine, getInfo() throws.
+    db.exec('CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_data BLOB)');
+    db.close();
+
+    const before = openMbtilesHandles();
+    try {
+      const charts = await findCharts(chartPath);
+      assert.equal(Object.keys(charts).length, 0, 'the unloadable chart is skipped');
+      assert.equal(
+        openMbtilesHandles(),
+        before,
+        'a chart that failed to load must not keep its handle open'
+      );
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

@@ -357,11 +357,23 @@ export class MBTilesReader {
 
 export function open(filePath: string): Promise<MBTilesReader> {
   return new Promise((resolve, reject) => {
+    // The constructor opens the sqlite handle; getInfo() is the validity
+    // probe, and it throws for a file that is valid sqlite but not valid
+    // mbtiles ("no such table: metadata"). Rejecting without closing leaked
+    // the handle to a caller that never received the reader and so could
+    // never close it — on Windows locking the very file the cleanup sweep
+    // then tries to unlink as invalid.
+    let reader: MBTilesReader | undefined;
     try {
-      const reader = new MBTilesReader(filePath);
+      reader = new MBTilesReader(filePath);
       reader.getInfo();
       resolve(reader);
     } catch (err) {
+      try {
+        reader?.close();
+      } catch {
+        // Already closed, or never constructed — nothing to release.
+      }
       reject(err);
     }
   });
