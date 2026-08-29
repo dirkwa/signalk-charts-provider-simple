@@ -99,8 +99,13 @@ describe('chart handle lifecycle', { skip: !canCountFds && 'needs /proc/self/fd'
     for (const name of ['a.mbtiles', 'b.mbtiles']) {
       fs.copyFileSync(path.join(FIXTURES, 'test-chart.mbtiles'), path.join(chartPath, name));
     }
-    // Sorted after the charts, so the walk opens both before it fails.
-    const unreadable = path.join(chartPath, 'zz-unreadable');
+    // The unreadable directory lives one level DOWN, so the charts above it
+    // are opened before the recursion reaches it whatever order readdir
+    // returns — fs.readdir does not sort, so a name that merely sorts last is
+    // not a guarantee.
+    const subDir = path.join(chartPath, 'nested');
+    fs.mkdirSync(subDir);
+    const unreadable = path.join(subDir, 'unreadable');
     fs.mkdirSync(unreadable);
     fs.chmodSync(unreadable, 0o000);
 
