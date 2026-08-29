@@ -694,8 +694,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   };
 
   const cleanupChartDirectory = async (chartPath: string): Promise<void> => {
+    // findCharts opens a sqlite handle per chart. This rescan's handles are
+    // never stored in chartProviders, so stop() cannot reach them and they
+    // leak — on Windows keeping every .mbtiles locked, which fails the very
+    // unlink this function performs and any later attempt to delete the
+    // directory. Closed in the finally below, on every path.
+    let scanned: ChartProvider[] = [];
     try {
       const charts = await findCharts(chartPath);
+      scanned = Object.values(charts);
       const allFiles = await scanChartsRecursively(chartPath);
       const validPaths = new Set(
         Object.values(charts)
@@ -750,6 +757,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       cleanOrphans(chartPath);
     } catch (e) {
       app.debug(`Error cleaning chart directory: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      // Also on the error path: a scan that failed partway still opened
+      // handles for the charts it did reach.
+      closeProviderHandles(scanned);
     }
   };
 
