@@ -719,7 +719,7 @@ function renderUpdatesSection(): void {
       const isInQueue = queuePosition !== null;
       const isWaiting = queuePosition !== null && queuePosition > 0;
 
-      let actionHtml = '';
+      let actionHtml: string;
       if (conversionError) {
         actionHtml = `
           <div class="catalog-conversion-error">
@@ -1117,7 +1117,7 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
         ? new Date(chart.zipfile_datetime_iso8601).toLocaleDateString()
         : '';
 
-      let actionHtml = '';
+      let actionHtml: string;
       if (conversionError) {
         actionHtml = `
           <div class="catalog-conversion-error">

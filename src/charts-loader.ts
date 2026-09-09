@@ -206,7 +206,7 @@ function parseVectorLayers(layers: VectorLayer[]): string[] {
 }
 
 async function directoryToMapInfo(file: string, identifier: string): Promise<ChartProvider | null> {
-  let info: Partial<ChartProvider> | null = null;
+  let info: Partial<ChartProvider> | null;
 
   const tilemapResource = path.join(file, 'tilemapresource.xml');
   const metadataJson = path.join(file, 'metadata.json');

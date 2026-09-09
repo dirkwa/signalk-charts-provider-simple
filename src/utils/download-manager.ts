@@ -311,7 +311,7 @@ class DownloadManager extends EventEmitter {
         break;
       } catch (error) {
         if (isCancelled(job)) {
-          throw new Error('Cancelled by user');
+          throw new Error('Cancelled by user', { cause: error });
         }
         if (!(error instanceof TransientDownloadError)) {
           throw error;

@@ -853,7 +853,7 @@ function performSimpleZipUpload(formData: FormData, file: File): void {
     isUploadInProgress = false;
     void loadCharts();
 
-    let payload: ZipUploadResponse | null = null;
+    let payload: ZipUploadResponse | null;
     try {
       payload = JSON.parse(xhr.responseText) as ZipUploadResponse;
     } catch {

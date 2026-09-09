@@ -130,7 +130,7 @@ export async function promoteQuarantine(
   const backups: { live: string; backup: string }[] = [];
   for (const filename of filenames) {
     const livePath = path.join(targetDir, filename);
-    let exists = false;
+    let exists: boolean;
     try {
       await fs.promises.access(livePath, fs.constants.F_OK);
       exists = true;

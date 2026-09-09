@@ -1008,7 +1008,7 @@ async function runTileJoin(
     if (!onPercent || expectedBytes <= 0) {
       return;
     }
-    let size = 0;
+    let size: number;
     try {
       size = fs.statSync(outputMbtiles).size;
     } catch {
@@ -1582,7 +1582,8 @@ export async function processS57Zip(
       extracted = await extractZip(zipPath, encDir);
     } catch (zipErr) {
       throw new Error(
-        `Downloaded file is not a valid ZIP archive (${zipErr instanceof Error ? zipErr.message : String(zipErr)}). The server may have returned an error page instead.`
+        `Downloaded file is not a valid ZIP archive (${zipErr instanceof Error ? zipErr.message : String(zipErr)}). The server may have returned an error page instead.`,
+        { cause: zipErr }
       );
     }
     debug(`Extracted ${extracted.length} files from ZIP`);
