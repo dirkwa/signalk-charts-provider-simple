@@ -68,7 +68,17 @@ jobs:
         run: npm install
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: |
+          # The runner image ships Google's Chrome apt repo, and
+          # `--with-deps` runs apt-get update across every configured repo.
+          # A corrupt index there ("Hash Sum mismatch") fails this step
+          # before Chromium is even downloaded. Playwright needs nothing
+          # from that repo, so drop it first. Match on content rather than a
+          # fixed filename: the image has used both google-chrome.list and
+          # deb822 .sources for it.
+          sudo grep -rl 'dl\.google\.com/linux/chrome' /etc/apt/sources.list.d/ 2>/dev/null \
+            | sudo xargs -r rm -f
+          npx playwright install --with-deps chromium
 
       - name: Run Playwright e2e tests
         run: npm run test:e2e
