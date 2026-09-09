@@ -27,12 +27,12 @@
  * Run with: node test/fixtures/create-test-vector-mbtiles.mjs
  */
 
-// ESM because geojson-vt 4 is ESM-only (no CJS entry to require()).
+// ESM because geojson-vt is ESM-only (no CJS entry to require()).
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { gzipSync } from 'node:zlib';
-import geojsonvt from 'geojson-vt';
+import GeoJSONVT from 'geojson-vt';
 import vtpbf from 'vt-pbf';
 
 const outputPath = path.join(import.meta.dirname, 'test-vector-chart.mbtiles');
@@ -115,7 +115,7 @@ const vtOptions = { maxZoom: 10, indexMaxZoom: 0, buffer: 64, extent: 4096 };
 function makeTile(layersSpec, z, x, y) {
   const layers = {};
   for (const [layerName, fc] of Object.entries(layersSpec)) {
-    const tile = geojsonvt(fc, vtOptions).getTile(z, x, y);
+    const tile = new GeoJSONVT(fc, vtOptions).getTile(z, x, y);
     if (!tile) {
       throw new Error(`Fixture generation failed: no features in ${layerName} at ${z}/${x}/${y}`);
     }

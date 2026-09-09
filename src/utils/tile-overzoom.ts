@@ -26,7 +26,7 @@
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { PbfReader } from 'pbf';
 import { VectorTile } from '@mapbox/vector-tile';
-import geojsonvt from 'geojson-vt';
+import GeoJSONVT from 'geojson-vt';
 import { fromGeojsonVt } from 'vt-pbf';
 import type { Feature } from 'geojson';
 import type { MBTilesReader } from './mbtiles-reader.js';
@@ -98,7 +98,7 @@ class LruMap<K, V> {
 
 interface AncestorEntry {
   // One geojson-vt index per source layer.
-  indexes: Map<string, ReturnType<typeof geojsonvt>>;
+  indexes: Map<string, GeoJSONVT>;
   slices: number;
 }
 
@@ -210,7 +210,7 @@ function buildAncestorEntry(raw: Buffer, az: number, ax: number, ay: number): An
       // simplifies the intermediate drill-down tiles; at the requested zoom
       // it is ~3/4096 of a tile, below what the ancestor's own quantization
       // already lost, and it nearly halves index memory vs tolerance 0.
-      geojsonvt(
+      new GeoJSONVT(
         { type: 'FeatureCollection', features },
         { maxZoom: 24, indexMaxZoom: 0, tolerance: 3, buffer: 64, extent: 4096 }
       )

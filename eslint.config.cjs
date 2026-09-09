@@ -135,7 +135,7 @@ module.exports = [
   // Test fixtures are one-off setup scripts, not under test. Plain-CJS
   // fixtures keep the `.cjs` extension so they stay parseable as CJS now
   // that the package is `"type": "module"`; fixtures that import ESM-only
-  // dependencies (geojson-vt 4) are `.mjs` — see the block below.
+  // dependencies (geojson-vt) are `.mjs` — see the block below.
   {
     files: ['test/fixtures/**/*.cjs'],
     plugins: {
