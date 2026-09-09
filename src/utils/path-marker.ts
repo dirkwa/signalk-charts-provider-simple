@@ -24,7 +24,7 @@ export interface ChartPathMarker {
 // container filesystem. Best-effort — a wrapped runtime that hides them won't
 // be flagged. Used only for marker diagnostics, not for behaviour gating.
 export function detectContainerHints(): ContainerHints {
-  let isLikelyContainer = false;
+  let isLikelyContainer: boolean;
   try {
     isLikelyContainer = fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
   } catch {

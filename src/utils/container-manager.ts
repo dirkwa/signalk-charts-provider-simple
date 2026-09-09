@@ -212,9 +212,11 @@ export async function waitForContainerManager(opts: {
       // remaining budget so a stuck runtime detection doesn't hang us past it.
       if (typeof candidate.whenReady === 'function') {
         const remaining = deadline - Date.now();
+        // No `signalledWait = true` here: every path below this point
+        // returns, so the store would be dead. The guard still prevents a
+        // duplicate callback when a previous iteration already signalled.
         if (!signalledWait) {
           opts.onWaitingStatus?.();
-          signalledWait = true;
         }
         // Swallow whenReady() rejections AND synchronous throws: callers
         // rely on the documented contract that this function resolves

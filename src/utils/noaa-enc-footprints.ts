@@ -467,7 +467,8 @@ export async function getFootprintIndex(
         return cached.index;
       }
       throw new Error(
-        `Could not fetch NOAA ENC footprints and no cached copy is available: ${msg}`
+        `Could not fetch NOAA ENC footprints and no cached copy is available: ${msg}`,
+        { cause: err }
       );
     } finally {
       inFlight = null;
