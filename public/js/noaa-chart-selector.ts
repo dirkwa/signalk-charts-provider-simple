@@ -178,12 +178,18 @@ function initCustomCatalogMap(): void {
   ccMap = L.map(el, { worldCopyJump: true, minZoom: 2 }).setView([37.8, -96], 4);
   // OpenSeaMap = OSM base + a seamark overlay. Tiles need internet; if they
   // fail the footprints stay fully usable, so selection still works offline.
+  // The Signal K server sends Referrer-Policy: no-referrer, which strips the
+  // Referer from tile requests; OSM's usage policy then answers with an "Access
+  // blocked" placeholder tile. A per-image policy overrides the document one and
+  // sends the bare origin only, never the page path or query.
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 18,
+    referrerPolicy: 'origin',
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(ccMap);
   L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
     maxZoom: 18,
+    referrerPolicy: 'origin',
     attribution: 'Seamarks &copy; OpenSeaMap'
   }).addTo(ccMap);
   ccFootprintLayer = L.layerGroup().addTo(ccMap);
