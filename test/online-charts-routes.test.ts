@@ -173,7 +173,9 @@ describe('online chart routes', () => {
       registerResourceProvider: (p: ResourceProvider) => {
         provider = p;
       },
-      handleMessage: () => {}
+      handleMessage: () => {},
+      getSelfPath: (p: string) =>
+        p === 'navigation.position' ? { value: { latitude: 24.55, longitude: -81.8 } } : undefined
     } as unknown as ExtendedServerAPI;
 
     plugin = pluginFactory(app);
@@ -252,7 +254,11 @@ describe('online chart routes', () => {
 
   it('reports the chart as added in the catalog registry', async () => {
     const res = await call(handlers.get('get /catalog-registry'), {});
-    const body = res.body as { onlineAdded: Record<string, string[]> };
+    const body = res.body as {
+      onlineAdded: Record<string, string[]>;
+      position: { latitude: number; longitude: number } | null;
+    };
+    assert.deepStrictEqual(body.position, { latitude: 24.55, longitude: -81.8 });
     assert.deepStrictEqual(body.onlineAdded['nws-radar-conus'], [
       path.join('Online Charts', 'nws-radar-conus-2.onlinechart.json')
     ]);

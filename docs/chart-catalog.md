@@ -111,6 +111,11 @@ temporal). Before adding a source, confirm that:
 Write the name and description for a non-technical boater: say what the chart
 shows and where, not how it is served.
 
+An entry's `bbox` is the extent the service draws, and chart plotters clip the
+layer to it, so it must cover all of the data. When the useful area is
+narrower (a geostationary satellite's full disk becomes too oblique to use
+near its edge), give it as `coverage`; only the "Near me" filter reads it.
+
 **When the workflow warns that a chartcatalogs file is not indexed.** chartcatalogs
 added a catalog. It is still published (so no chart disappears), but without
 location or type facets, so "Near me" and the Type filter skip it. Add the file

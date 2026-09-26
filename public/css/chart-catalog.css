@@ -77,6 +77,40 @@
     color: var(--md-sys-color-secondary-container);
 }
 
+/* The filter bar's rows stack tightly and wrap on narrow screens. */
+.catalog-filter-use,
+.catalog-filter-categories {
+    margin-bottom: 0;
+    flex-wrap: wrap;
+}
+
+.catalog-filter-types {
+    flex-wrap: wrap;
+}
+
+.catalog-filter-divider {
+    width: 1px;
+    align-self: stretch;
+    background: var(--md-sys-color-outline-variant);
+}
+
+.category-filter-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.catalog-filter-more {
+    margin-left: auto;
+    padding: 8px 12px;
+    border: none;
+    background: transparent;
+    color: var(--md-sys-color-primary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
 /* Catalog Card */
 .catalog-card {
     background: var(--md-sys-color-surface-container);

@@ -445,7 +445,9 @@ test.describe('Chart Catalog tab', () => {
     });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
 
-    await expect(page.locator('[data-catalog-filter="online"]')).toContainText('2');
+    await expect(
+      page.locator('[data-filter-group="use"][data-filter-value="stream"]')
+    ).toContainText('2');
     await page.locator('[data-catalog-toggle="online:weather"]').click();
     const row = page.locator('.online-chart-row', { hasText: 'NWS Radar' });
     await expect(row).toContainText('Needs internet');
@@ -459,11 +461,226 @@ test.describe('Chart Catalog tab', () => {
     });
     await expect(row.locator('.installed-badge')).toHaveText('Added');
 
-    // Already-added charts show as added; the Online filter hides downloads.
-    await page.locator('[data-catalog-filter="online"]').click();
+    // Already-added charts show as added; Stream hides the downloads.
+    await page.locator('[data-filter-group="use"][data-filter-value="stream"]').click();
     await page.locator('[data-catalog-toggle="online:navigation"]').click();
     const seamap = page.locator('.online-chart-row', { hasText: 'Open Waters Seamap' });
     await expect(seamap.locator('.installed-badge')).toHaveText('Added');
     await expect(seamap).toContainText('Not for navigation');
+  });
+  test('filters by use, category, type and position', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    const online = (id: string, category: string, type: string, bbox: number[]) => ({
+      id,
+      name: id,
+      description: `${id} description`,
+      category,
+      provider: 'p',
+      license: 'l',
+      licenseUrl: 'https://example.com',
+      bbox,
+      chart: { type }
+    });
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'NOAA_MBTiles_Catalog.xml',
+          label: 'NOAA Vector Charts',
+          category: 'mbtiles',
+          chartCount: 46,
+          cachedAt: '2026-05-07T10:00:00Z',
+          // Crosses the antimeridian: Guam eastward to the US east coast.
+          facets: { category: 'navigation', format: 'mbtiles', bbox: [144, -15, -64, 72] }
+        },
+        {
+          file: 'DE_IENC_Catalog.xml',
+          label: 'Germany Inland ENC',
+          category: 'ienc',
+          chartCount: 42,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'enc', bbox: [5.8, 47.2, 15.1, 55.1] }
+        }
+      ],
+      online: [
+        online('us-radar', 'weather', 'WMS', [-130, 20, -60, 55]),
+        online('eu-radar', 'weather', 'WMS', [1.5, 45.7, 18.7, 56.2]),
+        online('world-map', 'basemap', 'mapstyleJSON', [-180, -85, 180, 85])
+      ],
+      position: { latitude: 24.55, longitude: -81.8 }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    const cards = page.locator('.catalog-card');
+    await expect(cards).toHaveCount(4); // 2 downloads + Weather + Base Maps groups
+
+    const btn = (group: string, value: string) =>
+      page.locator(`[data-filter-group="${group}"][data-filter-value="${value}"]`);
+
+    // Download only.
+    await btn('use', 'download').click();
+    await expect(cards).toHaveCount(2);
+    await btn('use', 'all').click();
+
+    // Weather: one group; counts reflect the other active filters.
+    await btn('categories', 'weather').click();
+    await expect(cards).toHaveCount(1);
+    await expect(btn('use', 'download')).toContainText('0');
+
+    // Near Key West: the US radar only (the EU radar is far away).
+    await btn('nearMe', '').click();
+    await page.locator('[data-catalog-toggle="online:weather"]').click();
+    await expect(page.locator('.online-chart-row')).toHaveCount(1);
+    await expect(page.locator('.online-chart-row')).toContainText('us-radar');
+
+    // Near me + navigation: the antimeridian-crossing NOAA box, not Germany.
+    await btn('categories', 'weather').click();
+    await btn('categories', 'navigation').click();
+    await expect(cards).toHaveCount(1);
+    await expect(cards).toContainText('NOAA Vector Charts');
+
+    // Type filters live behind "More filters".
+    await btn('categories', 'navigation').click();
+    await btn('nearMe', '').click();
+    await expect(btn('formats', 'enc')).toHaveCount(0);
+    await btn('showTypes', '').click();
+    await btn('formats', 'mapstyle').click();
+    await expect(cards).toHaveCount(1);
+    await expect(cards).toContainText('Base Maps');
+  });
+
+  test('disables Near me when the server has no position', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'X_Catalog.xml',
+          label: 'X',
+          category: 'rnc',
+          chartCount: 1,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'rnc', bbox: [0, 0, 1, 1] }
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('[data-filter-group="nearMe"]')).toBeDisabled();
+  });
+  test('a saved Near me without a position hides nothing', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('chartCatalogFilters', JSON.stringify({ nearMe: true }));
+    });
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'X_Catalog.xml',
+          label: 'Some Charts',
+          category: 'rnc',
+          chartCount: 1,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'rnc', bbox: [0, 0, 1, 1] }
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('.catalog-card')).toHaveCount(1);
+    await expect(page.locator('[data-filter-group="nearMe"]')).toContainText('no position yet');
+  });
+
+  test('survives corrupt saved filters', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        'chartCatalogFilters',
+        JSON.stringify({ categories: null, use: 'bogus', formats: 'enc' })
+      );
+    });
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    const registry = [
+      {
+        file: 'X_Catalog.xml',
+        label: 'Some Charts',
+        category: 'rnc',
+        chartCount: 1,
+        cachedAt: '2026-05-07T10:00:00Z',
+        facets: { category: 'navigation', format: 'rnc', bbox: [0, 0, 1, 1] }
+      }
+    ];
+    await setMockState(page, { registry });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('.catalog-card')).toHaveCount(1);
+  });
+
+  test('keeps a saved filter the catalog no longer uses visible and clearable', async ({
+    page
+  }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('chartCatalogFilters', JSON.stringify({ categories: ['depth'] }));
+    });
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'X_Catalog.xml',
+          label: 'Some Charts',
+          category: 'rnc',
+          chartCount: 1,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'rnc', bbox: [0, 0, 1, 1] }
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('#catalogList')).toContainText('No charts match');
+    await expect(
+      page.locator('[data-filter-group="categories"][data-filter-value="depth"]')
+    ).toHaveAttribute('aria-pressed', 'true');
+    await page.locator('#catalogList [data-filter-group="clear"]').click();
+    await expect(page.locator('.catalog-card')).toHaveCount(1);
+  });
+
+  test("uses a satellite's useful coverage, not its full disk, for Near me", async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [],
+      online: [
+        {
+          id: 'meteosat',
+          name: 'Meteosat',
+          description: 'd',
+          category: 'weather',
+          provider: 'p',
+          license: 'l',
+          licenseUrl: 'https://example.com',
+          bbox: [-81, -81, 81, 81],
+          coverage: [-65, -65, 65, 65],
+          chart: { type: 'WMS' }
+        }
+      ],
+      position: { latitude: 24.55, longitude: -81.8 }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('[data-filter-group="nearMe"]')).toContainText('0');
+  });
+
+  test('Near me reaches across the antimeridian', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [],
+      online: [
+        {
+          id: 'tonga',
+          name: 'Tonga',
+          description: 'd',
+          category: 'navigation',
+          provider: 'p',
+          license: 'l',
+          licenseUrl: 'https://example.com',
+          bbox: [-179.5, -20, -170, -10],
+          chart: { type: 'WMS' }
+        }
+      ],
+      position: { latitude: -15, longitude: 179.8 }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('[data-filter-group="nearMe"]')).toContainText('1');
   });
 });

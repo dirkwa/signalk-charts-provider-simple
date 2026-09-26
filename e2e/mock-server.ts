@@ -54,6 +54,8 @@ interface MockState {
   onlineAdded: Record<string, string[]>;
   // Bodies POSTed to /online-charts, so specs can assert what the UI sent.
   onlineAddRequests: unknown[];
+  // The boat's position for "Near me" (null: none known).
+  position: { latitude: number; longitude: number } | null;
   // When set, POST /catalog-registry/refresh swaps the registry to this (and
   // optionally a new status) — lets a test script a refresh outcome.
   refreshRegistry: MockState['registry'] | null;
@@ -134,6 +136,7 @@ const initialState: MockState = {
   online: [],
   onlineAdded: {},
   onlineAddRequests: [],
+  position: null,
   refreshRegistry: null,
   refreshStatus: null,
   installed: {},
@@ -259,7 +262,8 @@ export function startMockServer(
       catalogStatus: state.catalogStatus,
       sources: state.sources,
       online: state.online,
-      onlineAdded: state.onlineAdded
+      onlineAdded: state.onlineAdded,
+      position: state.position
     });
   });
 
@@ -278,8 +282,13 @@ export function startMockServer(
       catalogStatus: state.catalogStatus,
       sources: state.sources,
       online: state.online,
-      onlineAdded: state.onlineAdded
+      onlineAdded: state.onlineAdded,
+      position: state.position
     });
+  });
+
+  router.get(`${PLUGIN_BASE}/vessel-position`, (_req, res) => {
+    res.json({ position: state.position });
   });
 
   router.post(`${PLUGIN_BASE}/online-charts`, (req, res) => {

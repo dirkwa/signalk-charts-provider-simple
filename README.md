@@ -95,7 +95,7 @@ The interface provides five tabs:
    - One-click download for MBTiles charts (NOAA)
    - Download & convert for S-57 ENC, BSB raster, Pilot Charts, and basemaps
    - Automatic update notifications (Signal K delta + tab badge)
-   - Category filtering (MBTiles / RNC / IENC / General)
+   - Filters: **Download** (works offline) or **Stream** (needs internet); what the chart shows (Navigation, Weather, Depth & Seabed, Base maps, Overlays); chart type under "More filters"; and **Near me**, using the boat's position
 
 5. **NOAA Charts**:
    - Build a named **chart set** of NOAA ENC coverage by clicking band-4 footprints on a map (Leaflet + OpenSeaMap)

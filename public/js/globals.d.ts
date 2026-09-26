@@ -29,7 +29,6 @@ declare global {
     handleCustomCatalogsTabActive(): void;
 
     // chart-catalog.ts
-    setCatalogFilter(category: string): void;
     toggleCatalog(catalogFile: string): Promise<void>;
     downloadCatalogChart(
       chartNumber: string,

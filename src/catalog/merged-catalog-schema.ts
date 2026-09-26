@@ -130,6 +130,11 @@ function onlineChartEntryProps<C extends TSchema, T extends TSchema>(chart: C, t
     category: ChartCategorySchema,
     regions: RegionTagsSchema,
     bbox: BboxSchema,
+    // Where the chart is actually useful, when narrower than the data
+    // extent: a satellite's full disk is `bbox` (what a plotter draws), but
+    // imagery near the disk's edge is too oblique to be worth offering as
+    // "near". Only location filters use it.
+    coverage: Type.Optional(BboxSchema),
     provider: Type.String({ minLength: 1 }),
     attribution: Type.String({ minLength: 1 }),
     license: Type.String({ minLength: 1 }),
@@ -270,6 +275,9 @@ export const OnlineChartReadSchema = Type.Object({
   description: Type.String(),
   category: Type.String(),
   bbox: BboxSchema,
+  // Only a location-filter hint; a consumer checks it before use rather than
+  // dropping the entry over it.
+  coverage: Type.Optional(Type.Unknown()),
   provider: Type.String(),
   attribution: Type.Optional(Type.String()),
   license: Type.String(),

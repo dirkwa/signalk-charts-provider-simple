@@ -8,8 +8,11 @@ type CatalogCategory = 'mbtiles' | 'rnc' | 'ienc' | 'general';
 interface CatalogRegistryEntry {
   file: string;
   label: string;
+  /** The download bucket (drives how a chart is fetched and converted). */
   category: CatalogCategory;
   chartCount: number | null;
+  /** What the filters use; each absent when the catalog doesn't carry it. */
+  facets?: { category?: string; format?: string; bbox?: number[] };
 }
 
 interface UrlClassification {
@@ -62,6 +65,9 @@ interface OnlineCatalogChart {
   license: string;
   licenseUrl: string;
   notForNavigation?: boolean;
+  bbox: number[];
+  /** Where the chart is useful, when narrower than bbox; for Near me only. */
+  coverage?: unknown;
   chart: { type: string };
   temporal?: { kind: string };
 }
@@ -71,6 +77,8 @@ interface CatalogRegistryResponse {
   online?: OnlineCatalogChart[];
   /** catalogId → chart-folder paths of its .onlinechart.json files. */
   onlineAdded?: Record<string, string[]>;
+  /** The boat's position, for "Near me"; null when the server has none. */
+  position?: { latitude: number; longitude: number } | null;
   installed?: Record<string, CatalogInstall>;
   converting?: Record<string, boolean>;
   catalogStatus?: CatalogStatus;
@@ -136,7 +144,18 @@ let catalogInitialized = false;
 let catalogRegistry: CatalogRegistryEntry[] = [];
 let catalogInstalled: Record<string, CatalogInstall> = {};
 let catalogUpdates: CatalogUpdate[] = [];
-let activeCategoryFilter: CatalogCategory | 'all' | 'online' = 'all';
+// Chart Catalog filters. Options within a group combine with OR (none
+// selected means all); groups combine with AND.
+interface CatalogFilters {
+  use: 'all' | 'download' | 'stream';
+  categories: string[];
+  formats: string[];
+  nearMe: boolean;
+  showTypes: boolean;
+}
+const FILTERS_STORAGE_KEY = 'chartCatalogFilters';
+let catalogFilters: CatalogFilters = loadCatalogFilters();
+let vesselPosition: { latitude: number; longitude: number } | null = null;
 let onlineCatalog: OnlineCatalogChart[] = [];
 let onlineAdded: Record<string, string[]> = {};
 const onlineAdding = new Set<string>();
@@ -305,6 +324,7 @@ async function initCatalogTab(): Promise<void> {
   }
   catalogUpdateBadgeInterval = setInterval(() => {
     void refreshUpdateBadge();
+    void refreshVesselPosition();
   }, 60000);
 }
 
@@ -314,15 +334,16 @@ function wireCatalogClickHandlers(): void {
 
   if (filterBar && !filterBar.dataset['catalogHandlerWired']) {
     filterBar.addEventListener('click', (ev) => {
-      const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>(
-        '[data-catalog-filter]'
+      const target = (ev.target as HTMLElement | null)?.closest<HTMLButtonElement>(
+        '[data-filter-group]'
       );
-      if (!target) {
+      if (!target || target.disabled) {
         return;
       }
-      const cat = target.dataset['catalogFilter'] as CatalogCategory | 'all' | 'online' | undefined;
-      if (cat) {
-        setCatalogFilter(cat);
+      const group = target.dataset['filterGroup'];
+      const value = target.dataset['filterValue'] ?? '';
+      if (group) {
+        applyCatalogFilter(group, value);
       }
     });
     filterBar.dataset['catalogHandlerWired'] = '1';
@@ -341,6 +362,12 @@ function wireCatalogClickHandlers(): void {
         if (file) {
           void toggleCatalog(file);
         }
+        return;
+      }
+
+      // "Clear filters" in the empty-list message.
+      if (target.closest('[data-filter-group="clear"]')) {
+        applyCatalogFilter('clear', '');
         return;
       }
 
@@ -583,6 +610,7 @@ function applyRegistryResponse(data: CatalogRegistryResponse): void {
   catalogRegistry = incoming;
   onlineCatalog = data.online ?? [];
   onlineAdded = data.onlineAdded ?? {};
+  vesselPosition = data.position ?? null;
   catalogInstalled = data.installed ?? {};
   catalogConverting = data.converting ?? {};
   renderFilterBar();
@@ -1002,49 +1030,347 @@ async function waitForConversion(chartNumber: string): Promise<void> {
   }
 }
 
+const CATEGORY_LABELS: Record<string, string> = {
+  navigation: 'Navigation',
+  weather: 'Weather',
+  depth: 'Depth & Seabed',
+  basemap: 'Base maps',
+  overlay: 'Overlays'
+};
+
+const FORMAT_LABELS: Record<string, string> = {
+  mbtiles: 'MBTiles',
+  enc: 'ENC (S-57)',
+  rnc: 'Raster (RNC)',
+  shapefile: 'Shapefile',
+  wms: 'WMS',
+  wmts: 'WMTS',
+  mapstyle: 'Map style',
+  tiles: 'Tiles'
+};
+
+// An online chart's Type-filter facet, from its chart resource type.
+const ONLINE_TYPE_FORMATS: Record<string, string> = {
+  WMS: 'wms',
+  WMTS: 'wmts',
+  mapstyleJSON: 'mapstyle',
+  tilelayer: 'tiles',
+  tileJSON: 'tiles'
+};
+
+// How far outside a chart's box still counts as "near": about 60 nm, so a
+// boat just off a coverage edge (or at anchor outside a harbor chart's box)
+// still sees it.
+const NEAR_ME_MARGIN_DEG = 1;
+
+/**
+ * Follow a GPS fix that arrives (or is lost) after the tab opened, so Near
+ * me enables itself without a reload. Only re-renders when that changes
+ * what the filters can show.
+ */
+async function refreshVesselPosition(): Promise<void> {
+  try {
+    const response = await fetch(`${CATALOG_API_BASE}/vessel-position`);
+    if (!response.ok) {
+      return;
+    }
+    const { position } = (await response.json()) as {
+      position: { latitude: number; longitude: number } | null;
+    };
+    const moved =
+      (position === null) !== (vesselPosition === null) ||
+      (position !== null &&
+        vesselPosition !== null &&
+        (Math.abs(position.latitude - vesselPosition.latitude) > 0.05 ||
+          Math.abs(position.longitude - vesselPosition.longitude) > 0.05));
+    if (moved) {
+      vesselPosition = position;
+      renderFilterBar();
+      renderCatalogList();
+    }
+  } catch {
+    // Next minute's poll will try again.
+  }
+}
+
+function loadCatalogFilters(): CatalogFilters {
+  const defaults: CatalogFilters = {
+    use: 'all',
+    categories: [],
+    formats: [],
+    nearMe: false,
+    showTypes: false
+  };
+  let saved: Record<string, unknown> = {};
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(FILTERS_STORAGE_KEY) ?? 'null');
+    if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+      saved = raw as Record<string, unknown>;
+    }
+  } catch {
+    // Unreadable or unavailable storage: start from the defaults.
+  }
+  // Each field falls back on its own, so one bad value (a hand edit, an
+  // older version's format) can't leave the tab stuck on an empty list.
+  const strings = (v: unknown) =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  const use = saved.use;
+  return {
+    use: use === 'download' || use === 'stream' ? use : defaults.use,
+    categories: strings(saved.categories),
+    formats: strings(saved.formats),
+    nearMe: saved.nearMe === true,
+    showTypes: saved.showTypes === true
+  };
+}
+
+function saveCatalogFilters(): void {
+  try {
+    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(catalogFilters));
+  } catch {
+    // Remembering filters is a convenience; private windows may refuse it.
+  }
+}
+
+/** One thing the filters apply to: a downloadable catalog or an online chart. */
+interface FilterItem {
+  use: 'download' | 'stream';
+  category: string | undefined;
+  format: string | undefined;
+  bbox: number[] | undefined;
+}
+
+/** A label map lookup that never picks up Object.prototype names. */
+function ownLabel(map: Record<string, string>, key: string): string | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
+function isBbox(v: unknown): v is number[] {
+  return Array.isArray(v) && v.length === 4 && v.every((n) => Number.isFinite(n));
+}
+
+function registryFilterItem(entry: CatalogRegistryEntry): FilterItem {
+  return {
+    use: 'download',
+    category: entry.facets?.category,
+    format: entry.facets?.format,
+    bbox: entry.facets?.bbox
+  };
+}
+
+function onlineFilterItem(chart: OnlineCatalogChart): FilterItem {
+  return {
+    use: 'stream',
+    category: chart.category,
+    format: ownLabel(ONLINE_TYPE_FORMATS, chart.chart.type),
+    // A satellite's full disk is its bbox, but only its useful coverage
+    // should count as "near".
+    bbox: isBbox(chart.coverage) ? chart.coverage : chart.bbox
+  };
+}
+
+/** Whether `bbox` ([w, s, e, n], west > east crossing the antimeridian) is near the boat. */
+function isNearVessel(bbox: number[] | undefined): boolean {
+  if (!vesselPosition || !isBbox(bbox)) {
+    return false;
+  }
+  const [west = 0, south = 0, east = 0, north = 0] = bbox;
+  const { latitude, longitude } = vesselPosition;
+  const m = NEAR_ME_MARGIN_DEG;
+  if (latitude < south - m || latitude > north + m) {
+    return false;
+  }
+  // A degree of longitude shrinks toward the poles; widen the margin so it
+  // stays about the same distance.
+  const mLon = m / Math.max(Math.cos((latitude * Math.PI) / 180), 0.05);
+  const span = west <= east ? east - west : east + 360 - west;
+  if (span + 2 * mLon >= 360) {
+    return true;
+  }
+  // Measure eastward from the widened west edge, modulo 360, so boxes and
+  // margins that cross the antimeridian need no special case.
+  const offset = (((longitude - (west - mLon)) % 360) + 360) % 360;
+  return offset <= span + 2 * mLon;
+}
+
+type FilterGroup = 'use' | 'categories' | 'formats' | 'nearMe';
+
+/** Whether an item passes every active filter group except `skip`. */
+function passesFilters(item: FilterItem, skip?: FilterGroup): boolean {
+  const f = catalogFilters;
+  if (skip !== 'use' && f.use !== 'all' && item.use !== f.use) {
+    return false;
+  }
+  if (
+    skip !== 'categories' &&
+    f.categories.length > 0 &&
+    !f.categories.includes(item.category ?? '')
+  ) {
+    return false;
+  }
+  if (skip !== 'formats' && f.formats.length > 0 && !f.formats.includes(item.format ?? '')) {
+    return false;
+  }
+  // Without a position Near me can't apply (and its button is disabled), so
+  // a saved "on" must not hide everything.
+  if (skip !== 'nearMe' && f.nearMe && vesselPosition !== null && !isNearVessel(item.bbox)) {
+    return false;
+  }
+  return true;
+}
+
+function allFilterItems(): FilterItem[] {
+  return [...catalogRegistry.map(registryFilterItem), ...onlineCatalog.map(onlineFilterItem)];
+}
+
+/**
+ * How many items an option would show given the other active groups, which
+ * is what a faceted filter's count should promise.
+ */
+function optionCount(group: FilterGroup, matches: (item: FilterItem) => boolean): number {
+  return allFilterItems().filter((item) => passesFilters(item, group) && matches(item)).length;
+}
+
+function filterButton(
+  group: string,
+  value: string,
+  label: string,
+  active: boolean,
+  count: number | null,
+  extra = ''
+): string {
+  return `
+    <button type="button" class="category-filter-btn ${active ? 'active' : ''}" aria-pressed="${active ? 'true' : 'false'}"
+            data-filter-group="${catalogEscapeAttr(group)}" data-filter-value="${catalogEscapeAttr(value)}" ${extra}>
+      ${catalogEscapeHtml(label)}
+      ${count !== null ? `<span class="category-count">${count}</span>` : ''}
+    </button>`;
+}
+
 function renderFilterBar(): void {
   const filterBar = document.getElementById('catalogFilterBar');
   if (!filterBar) {
     return;
   }
-
-  const categories: { key: CatalogCategory | 'all' | 'online'; label: string }[] = [
-    { key: 'all', label: 'All' },
-    { key: 'mbtiles', label: 'MBTiles' },
-    { key: 'rnc', label: 'RNC' },
-    { key: 'ienc', label: 'IENC' },
-    { key: 'general', label: 'General' },
-    { key: 'online', label: 'Online' }
-  ];
-
-  const onlineGroups = onlineCatalogGroups().length;
-  const counts: Record<string, number> = {
-    all: catalogRegistry.length + onlineGroups,
-    online: onlineGroups
+  const f = catalogFilters;
+  const items = allFilterItems();
+  const present = (
+    key: 'category' | 'format',
+    labels: Record<string, string>,
+    selected: string[]
+  ) => {
+    // Selected options always show, even at 0, so a saved choice the
+    // catalog no longer uses can still be switched off.
+    const keys = new Set([
+      ...items.map((i) => i[key]).filter((v): v is string => v !== undefined),
+      ...selected
+    ]);
+    // Known values in their fixed order, then anything newer the catalog uses.
+    return [
+      ...Object.keys(labels).filter((k) => keys.has(k)),
+      ...[...keys].filter((k) => !Object.hasOwn(labels, k)).sort()
+    ];
   };
-  catalogRegistry.forEach((c) => {
-    counts[c.category] = (counts[c.category] ?? 0) + 1;
-  });
+
+  const useOptions: [CatalogFilters['use'], string][] = [
+    ['all', 'All'],
+    ['download', 'Download (works offline)'],
+    ['stream', 'Stream (needs internet)']
+  ];
+  const useRow = useOptions
+    .map(([value, label]) =>
+      filterButton(
+        'use',
+        value,
+        label,
+        f.use === value,
+        optionCount('use', (i) => value === 'all' || i.use === value)
+      )
+    )
+    .join('');
+
+  const categoryRow = present('category', CATEGORY_LABELS, f.categories)
+    .map((c) =>
+      filterButton(
+        'categories',
+        c,
+        ownLabel(CATEGORY_LABELS, c) ?? c,
+        f.categories.includes(c),
+        optionCount('categories', (i) => i.category === c)
+      )
+    )
+    .join('');
+
+  // The reason Near me is off must be readable on a touch screen, where a
+  // tooltip never shows, so it goes in the label.
+  const nearMe = filterButton(
+    'nearMe',
+    '',
+    vesselPosition ? 'Near me' : 'Near me (no position yet)',
+    f.nearMe && vesselPosition !== null,
+    vesselPosition ? optionCount('nearMe', (i) => isNearVessel(i.bbox)) : null,
+    vesselPosition ? 'title="Charts that cover the boat\'s current position"' : 'disabled'
+  );
+
+  const typeRow = f.showTypes
+    ? `<div class="category-filter catalog-filter-types">
+        ${present('format', FORMAT_LABELS, f.formats)
+          .map((t) =>
+            filterButton(
+              'formats',
+              t,
+              ownLabel(FORMAT_LABELS, t) ?? t,
+              f.formats.includes(t),
+              optionCount('formats', (i) => i.format === t)
+            )
+          )
+          .join('')}
+      </div>`
+    : '';
 
   filterBar.innerHTML = `
-    <div class="category-filter">
-      ${categories
-        .map(
-          (cat) => `
-        <button class="category-filter-btn ${activeCategoryFilter === cat.key ? 'active' : ''}"
-                data-catalog-filter="${catalogEscapeAttr(cat.key)}">
-          ${catalogEscapeHtml(cat.label)}
-          <span class="category-count">${counts[cat.key] ?? 0}</span>
-        </button>
-      `
-        )
-        .join('')}
+    <div class="category-filter catalog-filter-use">${useRow}</div>
+    <div class="category-filter catalog-filter-categories">
+      ${categoryRow}
+      <span class="catalog-filter-divider"></span>
+      ${nearMe}
+      <button type="button" class="catalog-filter-more" aria-expanded="${f.showTypes ? 'true' : 'false'}" data-filter-group="showTypes" data-filter-value="">
+        ${f.showTypes ? 'Fewer filters' : 'More filters'}${f.formats.length > 0 ? ` (${f.formats.length})` : ''}
+      </button>
     </div>
+    ${typeRow}
   `;
 }
 
-function setCatalogFilter(category: CatalogCategory | 'all' | 'online'): void {
-  activeCategoryFilter = category;
+function applyCatalogFilter(group: string, value: string): void {
+  const f = catalogFilters;
+  const toggle = (list: string[]) =>
+    list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+  switch (group) {
+    case 'use':
+      if (value === 'all' || value === 'download' || value === 'stream') {
+        f.use = value;
+      }
+      break;
+    case 'categories':
+      f.categories = toggle(f.categories);
+      break;
+    case 'formats':
+      f.formats = toggle(f.formats);
+      break;
+    case 'nearMe':
+      f.nearMe = !f.nearMe;
+      break;
+    case 'showTypes':
+      f.showTypes = !f.showTypes;
+      break;
+    case 'clear':
+      catalogFilters = { ...f, use: 'all', categories: [], formats: [], nearMe: false };
+      break;
+    default:
+      return;
+  }
+  saveCatalogFilters();
   renderFilterBar();
   renderCatalogList();
 }
@@ -1070,17 +1396,17 @@ function renderCatalogList(): void {
     clearRegistryBanner();
   }
 
-  const filtered =
-    activeCategoryFilter === 'all'
-      ? catalogRegistry
-      : catalogRegistry.filter((c) => c.category === activeCategoryFilter);
-  const groups =
-    activeCategoryFilter === 'all' || activeCategoryFilter === 'online'
-      ? onlineCatalogGroups()
-      : [];
+  const filtered = catalogRegistry.filter((c) => passesFilters(registryFilterItem(c)));
+  const groups = onlineCatalogGroups(
+    onlineCatalog.filter((c) => passesFilters(onlineFilterItem(c)))
+  );
 
   if (filtered.length === 0 && groups.length === 0) {
-    listEl.innerHTML = `<div class="catalog-empty">No catalogs in this category.</div>`;
+    listEl.innerHTML = `
+      <div class="catalog-empty">
+        No charts match these filters.
+        <button type="button" class="catalog-filter-more" data-filter-group="clear" data-filter-value="">Clear filters</button>
+      </div>`;
     return;
   }
 
@@ -1090,10 +1416,10 @@ function renderCatalogList(): void {
 }
 
 /** Online charts grouped by category, in a fixed, boater-friendly order. */
-function onlineCatalogGroups(): [string, OnlineCatalogChart[]][] {
+function onlineCatalogGroups(charts: OnlineCatalogChart[]): [string, OnlineCatalogChart[]][] {
   const order = Object.keys(ONLINE_GROUP_LABELS);
   const groups = new Map<string, OnlineCatalogChart[]>();
-  for (const chart of onlineCatalog) {
+  for (const chart of charts) {
     const list = groups.get(chart.category) ?? [];
     list.push(chart);
     groups.set(chart.category, list);
@@ -1939,7 +2265,6 @@ function catalogEscapeId(str: string | undefined | null): string {
   return encodeURIComponent(str).replace(/%/g, '__');
 }
 
-window.setCatalogFilter = setCatalogFilter;
 window.toggleCatalog = toggleCatalog;
 window.downloadCatalogChart = downloadCatalogChart;
 window.dismissConversionError = dismissConversionError;

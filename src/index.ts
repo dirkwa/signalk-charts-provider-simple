@@ -36,6 +36,7 @@ import {
 } from './utils/catalog-manager.js';
 import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { capabilitiesUrlFor } from './utils/time-dimension.js';
+import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import {
   chartIdFromFilename,
@@ -2850,6 +2851,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     });
 
+    // The boat's position, for the Chart Catalog's "Near me" filter.
+    const vesselPosition = () => readVesselPosition(app.getSelfPath('navigation.position'));
+
+    // Polled by the Chart Catalog so "Near me" follows a GPS fix that
+    // arrives (or is lost) after the tab opened, without reloading the
+    // whole catalog.
+    router.get('/vessel-position', (_req: Request, res: Response) => {
+      res.json({ position: vesselPosition() });
+    });
+
     const catalogRegistryResponse = async () => {
       if (!onlineAddedCache) {
         const added: Record<string, string[]> = {};
@@ -2866,7 +2877,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         catalogStatus: getCatalogStatus(),
         sources: getCatalogSources(),
         online: getOnlineCatalogCharts(),
-        onlineAdded: added
+        onlineAdded: added,
+        position: vesselPosition()
       };
     };
 

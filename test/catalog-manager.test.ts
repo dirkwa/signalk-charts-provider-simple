@@ -792,6 +792,46 @@ describe('CatalogManager', () => {
     });
   });
 
+  describe('getCatalogRegistry() facets', () => {
+    it('passes filter facets through, dropping only a malformed bbox', async () => {
+      stubFetch({
+        status: 200,
+        body: mergedCatalog({ 'GOOD_Catalog.xml': [], 'BADBOX_Catalog.xml': [] }, 1, {
+          'GOOD_Catalog.xml': { category: 'navigation', format: 'rnc', bbox: [1, 2, 3, 4] },
+          'BADBOX_Catalog.xml': { category: 'depth', bbox: [1, 2, 3] }
+        })
+      });
+      await refreshCatalog();
+      mock.restoreAll();
+      const facets = Object.fromEntries(getCatalogRegistry().map((r) => [r.file, r.facets]));
+      assert.deepStrictEqual(facets['GOOD_Catalog.xml'], {
+        category: 'navigation',
+        format: 'rnc',
+        bbox: [1, 2, 3, 4]
+      });
+      assert.deepStrictEqual(facets['BADBOX_Catalog.xml'], {
+        category: 'depth',
+        format: 'mbtiles'
+      });
+    });
+
+    it('keeps a catalog whose facets have the wrong type, without them', async () => {
+      stubFetch({
+        status: 200,
+        body: mergedCatalog({ 'ODD_RNC_Catalog.xml': [] }, 1, {
+          'ODD_RNC_Catalog.xml': { category: 42, format: ['rnc'] }
+        })
+      });
+      await refreshCatalog();
+      mock.restoreAll();
+      const entry = getCatalogRegistry().find((r) => r.file === 'ODD_RNC_Catalog.xml');
+      assert.ok(entry, 'the catalog must still be listed');
+      assert.deepStrictEqual(entry.facets, { bbox: [-180, -85, 180, 85] });
+      // The download bucket falls back to the file name.
+      assert.strictEqual(entry.category, 'rnc');
+    });
+  });
+
   describe('getCatalogRegistry() download categories', () => {
     it('maps format facets, and file names when a catalog is unindexed', async () => {
       stubFetch({

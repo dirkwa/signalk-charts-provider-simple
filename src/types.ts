@@ -1,7 +1,7 @@
 import type { ServerAPI } from '@signalk/server-api';
 import type { IRouter, Request, Response } from 'express';
 import type { MBTilesReader } from './utils/mbtiles-reader.js';
-import type { MergedCatalog } from './catalog/merged-catalog-schema.js';
+import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
 import type { ChartTimeBlock } from './utils/time-dimension.js';
 
 // ---- Plugin Configuration ----
@@ -212,6 +212,12 @@ import type { CatalogRegistryEntry } from './utils/catalog-schemas.js';
 export interface CatalogRegistryInfo extends CatalogRegistryEntry {
   chartCount: number | null;
   cachedAt: string | null;
+  /**
+   * What the Chart Catalog filters on, from the catalog's index. `category`
+   * above is the download bucket (classifyUrl); these are the user-facing
+   * facets, each absent when the catalog doesn't carry it.
+   */
+  facets: { category?: string; format?: string; bbox?: Bbox };
 }
 
 // Result of the last attempt to download the merged chart catalog. Drives the

@@ -5,8 +5,10 @@ import { Value } from '@sinclair/typebox/value';
 import {
   MERGED_CATALOG_SCHEMA_VERSION,
   MergedCatalogChartSchema,
+  BboxSchema,
   MergedCatalogSchema,
   OnlineChartReadSchema,
+  type Bbox,
   type MergedCatalogChart,
   type OnlineCatalogChart
 } from '../catalog/merged-catalog-schema.js';
@@ -47,7 +49,12 @@ const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 const ChartcatalogsReadSchema = Type.Object({
   file: Type.String({ minLength: 1 }),
   label: Type.String({ minLength: 1 }),
-  format: Type.Optional(Type.String()),
+  // Facets are checked separately: a malformed one only loses that facet
+  // (its filter, or the download bucket falls back to the file name), never
+  // the catalog.
+  format: Type.Optional(Type.Unknown()),
+  category: Type.Optional(Type.Unknown()),
+  bbox: Type.Optional(Type.Unknown()),
   header: Type.Object({ title: Type.String() }),
   charts: Type.Array(Type.Unknown())
 });
@@ -56,6 +63,8 @@ interface ChartcatalogsEntry {
   file: string;
   label: string;
   format: string | undefined;
+  category: string | undefined;
+  bbox: Bbox | undefined;
   header: CatalogHeader;
   charts: MergedCatalogChart[];
 }
@@ -173,7 +182,9 @@ export function interpretCatalog(raw: unknown): InterpretedCatalog {
     chartcatalogs.set(entry.file, {
       file: entry.file,
       label: entry.label,
-      format: entry.format,
+      format: typeof entry.format === 'string' ? entry.format : undefined,
+      category: typeof entry.category === 'string' ? entry.category : undefined,
+      bbox: Value.Check(BboxSchema, entry.bbox) ? entry.bbox : undefined,
       header: readHeader(entry.header),
       charts
     });
@@ -209,8 +220,9 @@ export function interpretCatalog(raw: unknown): InterpretedCatalog {
 }
 
 /**
- * The bucket the download flow (`classifyUrl`) and the Chart Catalog filter
- * use, from the catalog's format facet. A catalog the index doesn't know
+ * The bucket the download flow (`classifyUrl`) uses and the catalog card's
+ * badge shows, from the catalog's format facet (the filters use the facets
+ * themselves). A catalog the index doesn't know
  * yet has no facet, so fall back to its file name.
  */
 function downloadCategory(entry: ChartcatalogsEntry): CatalogCategory {
@@ -503,7 +515,12 @@ export function getCatalogRegistry(): CatalogRegistryInfo[] {
     label: entry.label,
     category: downloadCategory(entry),
     chartCount: entry.charts.length,
-    cachedAt: fetchedAt
+    cachedAt: fetchedAt,
+    facets: {
+      ...(entry.category !== undefined ? { category: entry.category } : {}),
+      ...(entry.format !== undefined ? { format: entry.format } : {}),
+      ...(entry.bbox !== undefined ? { bbox: entry.bbox } : {})
+    }
   }));
 }
 
