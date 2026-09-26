@@ -159,6 +159,8 @@ export function onlineChartProvider(
     scale: 250000,
     ...(tileSize !== undefined ? { tileSize } : {}),
     ...(chart.defaultOpacity !== undefined ? { defaultOpacity: chart.defaultOpacity } : {}),
+    ...(entry.temporal ? { refreshInterval: entry.temporal.refreshInterval } : {}),
+    _catalogId: entry.id,
     v1: { tilemapUrl: chart.url, chartLayers: layers },
     v2: {
       url: chart.url,

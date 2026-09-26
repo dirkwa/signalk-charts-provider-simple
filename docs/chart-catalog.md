@@ -56,6 +56,21 @@ the catalog reaches every boat on its next catalog refresh, and a chart whose
 entry is removed from the catalog stays listed in Manage Charts, marked as no
 longer available, instead of silently disappearing.
 
+## Time-varying online charts
+
+Entries with a `temporal` block (radar, satellite, forecasts) are served with a
+`time` block and a `refreshInterval`, following the Plotter Extensions API's
+`charts.time` convention, so a chart plotter can offer a time slider and
+animation. The plugin keeps the `time` block current by reading the service's
+capabilities document at the entry's refresh interval, only for enabled charts,
+and only while a chart plotter is actually reading the chart: a chart that is
+added but not displayed costs no data, which matters on a boat's metered
+connection (some capabilities documents are megabytes). Entries that share a
+capabilities document share one download. Services describe their timelines in
+several forms (explicit lists, regular intervals, lists of intervals with gaps,
+and "now"/"current" markers); all are reduced to the entry's `window` and kept
+on the service's own time grid.
+
 ## How publishing works
 
 `.github/workflows/publish-catalog.yml` runs every six hours, on changes to the

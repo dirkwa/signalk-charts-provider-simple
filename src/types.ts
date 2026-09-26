@@ -2,6 +2,7 @@ import type { ServerAPI } from '@signalk/server-api';
 import type { IRouter, Request, Response } from 'express';
 import type { MBTilesReader } from './utils/mbtiles-reader.js';
 import type { MergedCatalog } from './catalog/merged-catalog-schema.js';
+import type { ChartTimeBlock } from './utils/time-dimension.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -67,6 +68,12 @@ export interface ChartProvider {
   tileSize?: number;
   /** Suggested opacity for overlays such as weather layers (online charts). */
   defaultOpacity?: number;
+  /** Time-varying online charts: how often a plotter should re-read the chart, in ms. */
+  refreshInterval?: number;
+  /** Time-varying online charts: the timeline on offer (charts.time convention). */
+  time?: ChartTimeBlock;
+  /** Online charts: the catalog entry served, so its timeline can be updated in place. */
+  _catalogId?: string;
 
   v1: ChartV1Data;
   v2: ChartV2Data;
@@ -88,6 +95,8 @@ export interface SanitizedChart {
   layers?: string[];
   tileSize?: number;
   defaultOpacity?: number;
+  refreshInterval?: number;
+  time?: ChartTimeBlock;
 }
 
 // ---- Repairable charts ----

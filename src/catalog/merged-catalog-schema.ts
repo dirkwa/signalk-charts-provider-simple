@@ -101,6 +101,7 @@ const onlineChartTemporalProps = {
   }),
   refreshInterval: Type.Integer({
     minimum: 60000,
+    maximum: 86400000,
     description: 'How often to re-read the timeline, in milliseconds.'
   }),
   window: Type.Optional(
@@ -286,7 +287,7 @@ export const OnlineChartReadSchema = Type.Object({
   temporal: Type.Optional(
     Type.Object({
       kind: Type.String(),
-      refreshInterval: Type.Integer({ minimum: 60000 }),
+      refreshInterval: Type.Integer({ minimum: 60000, maximum: 86400000 }),
       window: Type.Optional(Type.String()),
       capabilitiesUrl: Type.Optional(HttpsUrl)
     })

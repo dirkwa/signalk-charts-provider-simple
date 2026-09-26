@@ -35,6 +35,8 @@ import {
   trackInstall
 } from './utils/catalog-manager.js';
 import { cleanCatalogTitle } from './utils/catalog-title.js';
+import { capabilitiesUrlFor } from './utils/time-dimension.js';
+import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import {
   chartIdFromFilename,
   collectChartIds,
@@ -181,6 +183,79 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // computed once and cleared whenever the chart folder may have changed
   // (every change goes through refreshChartProviders).
   let onlineAddedCache: Record<string, string[]> | null = null;
+
+  // Keeps time-varying online charts' timelines current. An update is
+  // applied to the served chart in place and announced as a delta; with
+  // nothing but `time` changed, plotters absorb it without reloading.
+  const timePoller = new TimeDimensionPoller(
+    (catalogId, time) => {
+      for (const [id, provider] of Object.entries(chartProviders)) {
+        if (provider._catalogId === catalogId) {
+          if (time) {
+            provider.time = time;
+          } else {
+            delete provider.time;
+          }
+          emitChartDelta(id, sanitizeProvider(provider, 2));
+        }
+      }
+    },
+    (msg) => app.debug(msg)
+  );
+  // Off between stop() and the next start, so a late refresh (a finished
+  // download, say) can't restart polling for a stopped plugin.
+  let onlineTimeActive = false;
+
+  /** A client read these charts: keep their timelines fresh while it does. */
+  const touchOnlineTime = (providers: Iterable<ChartProvider>): void => {
+    for (const provider of providers) {
+      if (provider._catalogId) {
+        timePoller.touch(provider._catalogId);
+      }
+    }
+  };
+
+  /**
+   * After the served chart map changes: give online charts the timeline
+   * already known for them, and poll exactly the time-varying entries now
+   * being served.
+   */
+  const syncOnlineTime = (): void => {
+    if (!onlineTimeActive) {
+      timePoller.sync([]);
+      return;
+    }
+    const targets = new Map<string, PollTarget>();
+    for (const provider of Object.values(chartProviders)) {
+      const catalogId = provider._catalogId;
+      const entry = catalogId ? resolveOnlineChart(catalogId) : undefined;
+      if (!catalogId || !entry?.temporal) {
+        continue;
+      }
+      const time = timePoller.get(catalogId);
+      if (time) {
+        provider.time = time;
+      }
+      const { chart, temporal } = entry;
+      const layer = chart.layers?.[0];
+      if ((chart.type !== 'WMS' && chart.type !== 'WMTS') || !layer) {
+        continue;
+      }
+      // One malformed entry must not stop the others (or blank the charts).
+      try {
+        targets.set(catalogId, {
+          catalogId,
+          capabilitiesUrl: temporal.capabilitiesUrl ?? capabilitiesUrlFor(chart.url, chart.type),
+          layer,
+          window: { kind: temporal.kind, window: temporal.window },
+          refreshInterval: temporal.refreshInterval
+        });
+      } catch (error) {
+        app.debug(`time: ${catalogId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    timePoller.sync([...targets.values()]);
+  };
   let props: PluginConfig = {
     chartPath: ''
   };
@@ -279,6 +354,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     },
     stop: () => {
       setCatalogChangedListener(null);
+      onlineTimeActive = false;
+      timePoller.stop();
       if (catalogUpdateInterval) {
         clearInterval(catalogUpdateInterval);
         catalogUpdateInterval = null;
@@ -516,6 +593,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // resolved — so charts vanished from the chart list on hosts without
     // signalk-container installed.
     app.debug(`Start chart provider. Chart path: ${chartPath}`);
+    onlineTimeActive = true;
     const loadOk = await loadChartProviders(chartPath);
 
     if (serverMajorVersion === 2) {
@@ -775,6 +853,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const previous = chartProviders;
       chartProviders = enabledCharts;
       closeProviderHandles(Object.values(previous));
+      syncOnlineTime();
 
       pruneStaleInstalls(Object.keys(charts));
       return true;
@@ -4428,6 +4507,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         methods: {
           listResources: (params) => {
             app.debug(`** listResources() ${JSON.stringify(params)}`);
+            touchOnlineTime(Object.values(chartProviders));
             return Promise.resolve(
               Object.fromEntries(
                 Object.entries(chartProviders).map(([k, provider]) => [
@@ -4441,6 +4521,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             app.debug(`** getResource() ${id}`);
             const provider = chartProviders[id];
             if (provider) {
+              touchOnlineTime([provider]);
               return Promise.resolve(sanitizeProvider(provider, 2));
             } else {
               throw new Error('Chart not found!');
@@ -4478,6 +4559,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const previous = chartProviders;
       chartProviders = partitionVisibleCharts(chartPath, charts);
       closeProviderHandles(Object.values(previous));
+      syncOnlineTime();
 
       app.debug(`Chart providers refreshed: ${Object.keys(chartProviders).length} enabled charts`);
       return true;
@@ -4598,7 +4680,16 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
       : '';
   }
 
-  const { _filePath, _fileFormat, _mbtilesHandle, _flipY, v1: _v1, v2: _v2, ...rest } = provider;
+  const {
+    _filePath,
+    _fileFormat,
+    _mbtilesHandle,
+    _flipY,
+    _catalogId,
+    v1: _v1,
+    v2: _v2,
+    ...rest
+  } = provider;
   return { ...rest, ...v };
 };
 

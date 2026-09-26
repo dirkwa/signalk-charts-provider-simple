@@ -113,11 +113,21 @@ const CATALOG = {
         url: 'https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows',
         layers: ['conus_bref_qcd']
       },
+      temporal: { kind: 'observation', refreshInterval: 300000, window: 'PT3H' },
       use: 'stream',
       format: 'wms'
     }
   ]
 };
+
+/** Radar capabilities with three frames ending a few minutes ago. */
+function radarCapabilities(): string {
+  const t = (minutesAgo: number) =>
+    new Date(Date.now() - minutesAgo * 60000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  return `<WMS_Capabilities><Capability><Layer><Layer><Name>conus_bref_qcd</Name>
+    <Dimension name="time" units="ISO8601">${t(10)},${t(6)},${t(2)}</Dimension>
+  </Layer></Layer></Capability></WMS_Capabilities>`;
+}
 
 describe('online chart routes', () => {
   let tempDir: string;
@@ -145,8 +155,13 @@ describe('online chart routes', () => {
       path.join(pluginDataDir, 'catalog-cache', 'merged-catalog.json'),
       JSON.stringify({ fetchedAt: new Date().toISOString(), etag: null, catalog: CATALOG })
     );
-    // Offline: the plugin serves the cached catalog.
-    mock.method(globalThis, 'fetch', () => Promise.reject(new TypeError('offline')));
+    // The catalog can't be downloaded (the plugin serves its cached copy);
+    // the radar's capabilities document can.
+    mock.method(globalThis, 'fetch', (url: string) =>
+      url.includes('GetCapabilities')
+        ? Promise.resolve(new Response(radarCapabilities(), { status: 200 }))
+        : Promise.reject(new TypeError('offline'))
+    );
 
     const app = {
       config: { configPath: tempDir, ssl: false, version: '2.0.0', getExternalPort: () => 3000 },
@@ -218,6 +233,21 @@ describe('online chart routes', () => {
 
     const v1res = await call(v1Handlers.get('get /resources/charts'), {});
     assert.ok(!(v1res.body as Record<string, unknown>)['nws-radar-conus-2']);
+  });
+
+  it("serves a time-varying chart's timeline, read from its capabilities", async () => {
+    type Served = { refreshInterval?: number; time?: { current: boolean; values?: string[] } };
+    let served: Served | undefined;
+    const deadline = Date.now() + 5000;
+    while (!served?.time && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+      served = ((await provider!.methods.listResources({})) as Record<string, Served>)[
+        'nws-radar-conus-2'
+      ];
+    }
+    assert.strictEqual(served?.refreshInterval, 300000);
+    assert.strictEqual(served.time?.current, true);
+    assert.strictEqual(served.time.values?.length, 3);
   });
 
   it('reports the chart as added in the catalog registry', async () => {
