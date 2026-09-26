@@ -10,26 +10,44 @@ import { findCharts, findRepairableCharts } from './charts-loader.js';
 import {
   checkForUpdates,
   classifyUrl,
-  fetchCatalog,
-  fetchCatalogRegistry,
-  getCachedCatalog,
+  getCatalogData,
   getCatalogRegistry,
+  getCatalogSources,
+  getCatalogStatus,
   getCatalogsWithInstalledCharts,
   getConvertingCharts,
   getConvertingCount,
   getInstalledCatalogCharts,
-  getRegistryStatus,
+  getOnlineCatalogChart,
+  getOnlineCatalogCharts,
+  hasCatalog,
   initCatalogManager,
+  refreshCatalog,
+  refreshCatalogIfStale,
   pruneStaleInstalls,
   removeInstall,
   removeInstallByFilename,
   renameInstallFilename,
   rollbackInstall,
+  setCatalogChangedListener,
   setConvertingState,
   setInstallFilename,
   trackInstall
 } from './utils/catalog-manager.js';
 import { cleanCatalogTitle } from './utils/catalog-title.js';
+import { capabilitiesUrlFor } from './utils/time-dimension.js';
+import { readVesselPosition } from './utils/vessel-position.js';
+import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
+import {
+  chartIdFromFilename,
+  collectChartIds,
+  findOnlineChartFiles,
+  isOnlineChartFile,
+  renameOnlineChartFile,
+  readOnlineChartFile,
+  writeOnlineChartFile,
+  type OnlineChartResolver
+} from './utils/online-charts.js';
 import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state.js';
 import {
   initFolderState,
@@ -160,6 +178,88 @@ const chartTilesPath = `/signalk/v1/api/resources/charts`;
 
 const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let chartProviders: Record<string, ChartProvider> = {};
+  const resolveOnlineChart: OnlineChartResolver = (catalogId) => getOnlineCatalogChart(catalogId);
+  // catalogId → chart-folder paths of its .onlinechart.json files, for the
+  // Chart Catalog's "Added" state. The catalog tab polls often, so this is
+  // computed once and cleared whenever the chart folder may have changed
+  // (every change goes through refreshChartProviders).
+  let onlineAddedCache: Record<string, string[]> | null = null;
+  // Bumped on every invalidation, so a scan that started before one can't
+  // store its now-stale result.
+  let onlineAddedGeneration = 0;
+
+  // Keeps time-varying online charts' timelines current. An update is
+  // applied to the served chart in place and announced as a delta; with
+  // nothing but `time` changed, plotters absorb it without reloading.
+  const timePoller = new TimeDimensionPoller(
+    (catalogId, time) => {
+      for (const [id, provider] of Object.entries(chartProviders)) {
+        if (provider._catalogId === catalogId) {
+          if (time) {
+            provider.time = time;
+          } else {
+            delete provider.time;
+          }
+          emitChartDelta(id, sanitizeProvider(provider, 2));
+        }
+      }
+    },
+    (msg) => app.debug(msg)
+  );
+  // Off between stop() and the next start, so a late refresh (a finished
+  // download, say) can't restart polling for a stopped plugin.
+  let onlineTimeActive = false;
+
+  /** A client read these charts: keep their timelines fresh while it does. */
+  const touchOnlineTime = (providers: Iterable<ChartProvider>): void => {
+    for (const provider of providers) {
+      if (provider._catalogId) {
+        timePoller.touch(provider._catalogId);
+      }
+    }
+  };
+
+  /**
+   * After the served chart map changes: give online charts the timeline
+   * already known for them, and poll exactly the time-varying entries now
+   * being served.
+   */
+  const syncOnlineTime = (): void => {
+    if (!onlineTimeActive) {
+      timePoller.sync([]);
+      return;
+    }
+    const targets = new Map<string, PollTarget>();
+    for (const provider of Object.values(chartProviders)) {
+      const catalogId = provider._catalogId;
+      const entry = catalogId ? resolveOnlineChart(catalogId) : undefined;
+      if (!catalogId || !entry?.temporal) {
+        continue;
+      }
+      const time = timePoller.get(catalogId);
+      if (time) {
+        provider.time = time;
+      }
+      const { chart, temporal } = entry;
+      const layer = chart.layers?.[0];
+      if ((chart.type !== 'WMS' && chart.type !== 'WMTS') || !layer) {
+        continue;
+      }
+      // One malformed entry must not stop the others (or blank the charts).
+      try {
+        targets.set(catalogId, {
+          catalogId,
+          capabilitiesUrl: temporal.capabilitiesUrl ?? capabilitiesUrlFor(chart.url, chart.type),
+          layer,
+          window: { kind: temporal.kind, window: temporal.window },
+          refreshInterval: temporal.refreshInterval
+        });
+      } catch (error) {
+        app.debug(`time: ${catalogId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    timePoller.sync([...targets.values()]);
+  };
   let props: PluginConfig = {
     chartPath: ''
   };
@@ -257,6 +357,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     },
     stop: () => {
+      setCatalogChangedListener(null);
+      onlineTimeActive = false;
+      timePoller.stop();
       if (catalogUpdateInterval) {
         clearInterval(catalogUpdateInterval);
         catalogUpdateInterval = null;
@@ -299,6 +402,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             case 'mbtiles':
               serveTileFromMbtiles(res, provider, iz, ix, iy);
               return;
+            case 'online':
+              // Online charts are fetched from their provider by the chart
+              // plotter; there are no local tiles to serve.
+              res.sendStatus(404);
+              return;
             default:
               console.log(`Unknown chart provider fileformat ${String(provider._fileFormat)}`);
               res.status(500).send();
@@ -306,10 +414,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
       );
 
+      // Online charts are v2-only: v1 clients expect a {z}/{x}/{y} tile
+      // template in tilemapUrl, and an online chart's URL is a WMS/WMTS
+      // endpoint or a style document.
       router.get('/resources/charts/:identifier', (req: Request, res: Response) => {
         const { identifier } = req.params as Record<string, string>;
         const provider = chartProviders[identifier];
-        if (provider) {
+        if (provider && provider._fileFormat !== 'online') {
           res.json(sanitizeProvider(provider));
         } else {
           res.status(404).send('Not found');
@@ -318,7 +429,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       router.get('/resources/charts', (_req: Request, res: Response) => {
         const sanitized = Object.fromEntries(
-          Object.entries(chartProviders).map(([k, provider]) => [k, sanitizeProvider(provider)])
+          Object.entries(chartProviders)
+            .filter(([, provider]) => provider._fileFormat !== 'online')
+            .map(([k, provider]) => [k, sanitizeProvider(provider)])
         );
         res.json(sanitized);
       });
@@ -431,6 +544,27 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     initFolderState(pluginDataDir);
 
     const dataDir = pluginDataDir;
+    // A catalog update can change what an online chart points at, or make
+    // one resolvable for the first time; re-serve them all.
+    setCatalogChangedListener(() => {
+      const onlineBefore = Object.keys(chartProviders).filter(
+        (id) => chartProviders[id]?._fileFormat === 'online'
+      );
+      void refreshChartProviders().then(() => {
+        for (const [id, provider] of Object.entries(chartProviders)) {
+          if (provider._fileFormat === 'online') {
+            emitChartDelta(id, sanitizeProvider(provider, 2));
+          }
+        }
+        // Charts whose entry left the catalog are no longer served; retract
+        // them so connected plotters drop them too.
+        for (const id of onlineBefore) {
+          if (!chartProviders[id]) {
+            emitChartDelta(id, null);
+          }
+        }
+      });
+    });
     initCatalogManager(dataDir, app.debug.bind(app));
     initNoaaEncFootprints(dataDir, app.debug.bind(app));
     initCustomCatalogManager(dataDir, app.debug.bind(app));
@@ -463,6 +597,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // resolved — so charts vanished from the chart list on hosts without
     // signalk-container installed.
     app.debug(`Start chart provider. Chart path: ${chartPath}`);
+    onlineTimeActive = true;
     const loadOk = await loadChartProviders(chartPath);
 
     if (serverMajorVersion === 2) {
@@ -711,13 +846,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // true on success, false if the chart directory could not be read.
   const loadChartProviders = async (chartPath: string): Promise<boolean> => {
     try {
-      const charts = await findCharts(chartPath);
+      const charts = await findCharts(chartPath, resolveOnlineChart);
       const enabledCharts = partitionVisibleCharts(chartPath, charts);
 
       app.debug(
         `Chart provider: Found ${Object.keys(charts).length} charts (${Object.keys(enabledCharts).length} enabled) from ${chartPath}.`
       );
+      // A catalog download can trigger a refresh while this initial load
+      // runs; close whatever map it installed so its handles don't leak.
+      const previous = chartProviders;
       chartProviders = enabledCharts;
+      closeProviderHandles(Object.values(previous));
+      syncOnlineTime();
 
       pruneStaleInstalls(Object.keys(charts));
       return true;
@@ -737,7 +877,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // directory. Closed in the finally below, on every path.
     let scanned: ChartProvider[] = [];
     try {
-      const charts = await findCharts(chartPath);
+      const charts = await findCharts(chartPath, resolveOnlineChart);
       scanned = Object.values(charts);
       const allFiles = await scanChartsRecursively(chartPath);
       const validPaths = new Set(
@@ -946,6 +1086,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const RenameChartBody = Type.Object({
     chartPath: Type.String({ minLength: 1 }),
     newName: Type.String({ minLength: 1, pattern: '\\.mbtiles$' })
+  });
+
+  const AddOnlineChartBody = Type.Object({
+    catalogId: Type.String({ minLength: 1 }),
+    folder: Type.String({ minLength: 1 })
   });
 
   const ChartMetadataBody = Type.Object({
@@ -1281,12 +1426,30 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               break;
             }
           }
+          const onlineEntry = chart.online ? resolveOnlineChart(chart.online.catalogId) : undefined;
           return {
             ...chart,
             enabled: isChartEnabled(chart.relativePath),
             folderEnabled: isFolderPathEnabled(chart.folder),
             downloading: downloadingFiles.has(chart.name),
-            converting
+            converting,
+            ...(chart.online
+              ? {
+                  online: {
+                    ...chart.online,
+                    // False when the catalog no longer lists the entry (or
+                    // hasn't downloaded yet): the file stays, but nothing
+                    // is served for it.
+                    available: onlineEntry !== undefined,
+                    // Distinguishes "not in the catalog" from "no catalog yet"
+                    // (first run offline, or a catalog this version can't read).
+                    catalogLoaded: hasCatalog(),
+                    type: onlineEntry?.chart.type ?? null,
+                    category: onlineEntry?.category ?? null,
+                    temporal: onlineEntry?.temporal !== undefined
+                  }
+                }
+              : {})
           };
         });
 
@@ -1341,7 +1504,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           }
 
           await refreshChartProviders();
-          const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+          const chartId = chartIdFromFilename(path.basename(chartPathParam));
           emitChartDelta(chartId, null);
 
           // Primary path: reverse-lookup by the on-disk filename. The
@@ -1363,7 +1526,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           res.status(200).send('Chart deleted successfully');
         } else {
           await refreshChartProviders();
-          const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+          const chartId = chartIdFromFilename(path.basename(chartPathParam));
           emitChartDelta(chartId, null);
 
           // Primary path: reverse-lookup by the on-disk filename. The
@@ -1547,7 +1710,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         await refreshChartProviders();
 
-        const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+        const chartId = chartIdFromFilename(path.basename(chartPathParam));
 
         if (enabled) {
           if (chartProviders[chartId]) {
@@ -1607,6 +1770,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
+        // A rename over an existing file would silently replace that chart.
+        if (targetPath !== sourcePath && fs.existsSync(targetPath)) {
+          res.status(409).send('A chart with this name already exists in the target folder');
+          return;
+        }
+
         const targetDir = path.dirname(targetPath);
         if (!fs.existsSync(targetDir)) {
           app.debug(`Creating target directory: ${targetDir}`);
@@ -1624,7 +1793,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         await refreshChartProviders();
 
-        const chartId = path.basename(chartPathBody).replace(/\.mbtiles$/, '');
+        const chartId = chartIdFromFilename(path.basename(chartPathBody));
 
         if (chartProviders[chartId]) {
           const chartData = sanitizeProvider(chartProviders[chartId], 2);
@@ -1655,6 +1824,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const { chartPath: chartPathBody, newName } = body;
 
       app.debug(`Rename chart request: chartPath=${chartPathBody}, newName=${newName}`);
+
+      // Only an MBTiles file can take an .mbtiles name. Online charts are
+      // renamed through /chart-metadata; renaming their file here would
+      // hide them from discovery.
+      if (!/\.mbtiles$/i.test(chartPathBody)) {
+        res.status(400).send('Only MBTiles charts can be renamed this way');
+        return;
+      }
 
       // Schema enforced the .mbtiles suffix; this guard rejects path
       // injection inside the stem (`../foo.mbtiles`, `a/b.mbtiles`, …).
@@ -1724,8 +1901,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         await refreshChartProviders();
 
-        const oldChartId = path.basename(chartPathBody).replace(/\.mbtiles$/, '');
-        const newChartId = path.basename(targetPath).replace(/\.mbtiles$/, '');
+        const oldChartId = chartIdFromFilename(path.basename(chartPathBody));
+        const newChartId = chartIdFromFilename(path.basename(targetPath));
 
         emitChartDelta(oldChartId, null);
 
@@ -1886,6 +2063,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
+        if (isOnlineChartFile(fullPath)) {
+          // An online chart's name lives in its .onlinechart.json file.
+          if (!renameOnlineChartFile(fullPath, name)) {
+            res.status(400).send('Unreadable online chart file');
+            return;
+          }
+          await refreshChartProviders();
+          const onlineId = chartIdFromFilename(path.basename(chartPathParam));
+          if (chartProviders[onlineId]) {
+            emitChartDelta(onlineId, sanitizeProvider(chartProviders[onlineId], 2));
+          }
+          res.json({ success: true, message: 'Chart name updated' });
+          return;
+        }
+
         if (!fullPath.endsWith('.mbtiles')) {
           res.status(400).send('Metadata editing only available for MBTiles charts');
           return;
@@ -1909,7 +2101,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         await refreshChartProviders();
 
-        const chartId = path.basename(chartPathParam).replace(/\.mbtiles$/, '');
+        const chartId = chartIdFromFilename(path.basename(chartPathParam));
         if (chartProviders[chartId]) {
           const chartData = sanitizeProvider(chartProviders[chartId], 2);
           emitChartDelta(chartId, chartData);
@@ -1937,6 +2129,29 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         if (!fs.existsSync(fullPath)) {
           res.status(404).send('Chart not found');
+          return;
+        }
+
+        if (isOnlineChartFile(fullPath)) {
+          const file = readOnlineChartFile(fullPath);
+          const entry = file ? resolveOnlineChart(file.catalogId) : undefined;
+          res.json({
+            name: file?.name,
+            catalogId: file?.catalogId,
+            available: entry !== undefined,
+            ...(entry
+              ? {
+                  description: entry.description,
+                  provider: entry.provider,
+                  attribution: entry.attribution,
+                  license: entry.license,
+                  licenseUrl: entry.licenseUrl,
+                  type: entry.chart.type,
+                  url: entry.chart.url,
+                  layers: entry.chart.layers
+                }
+              : {})
+          });
           return;
         }
 
@@ -2647,46 +2862,112 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     });
 
-    router.get('/catalog-registry', (_req: Request, res: Response) => {
-      try {
-        const registry = getCatalogRegistry();
-        const installed = getInstalledCatalogCharts();
-        const convertingCharts = getConvertingCharts();
-        res.json({
-          registry,
-          installed,
-          converting: convertingCharts,
-          registryStatus: getRegistryStatus()
-        });
-      } catch (error) {
-        console.error('Error fetching catalog registry:', error);
-        res.status(500).json({ error: 'Failed to fetch catalog registry' });
-      }
+    // The boat's position, for the Chart Catalog's "Near me" filter.
+    const vesselPosition = () => readVesselPosition(app.getSelfPath('navigation.position'));
+
+    // Polled by the Chart Catalog so "Near me" follows a GPS fix that
+    // arrives (or is lost) after the tab opened, without reloading the
+    // whole catalog.
+    router.get('/vessel-position', (_req: Request, res: Response) => {
+      res.json({ position: vesselPosition() });
     });
 
-    // Force a re-fetch of the catalog index from GitHub (the Refresh button).
-    // Awaits the fetch so the response reflects the just-attempted result, but
-    // swallows the rejection — registryStatus carries the reason (rate-limited
-    // / offline / error) so the UI can message accurately.
+    const catalogRegistryResponse = async () => {
+      let added = onlineAddedCache;
+      if (!added) {
+        const generation = onlineAddedGeneration;
+        // Keyed by ids read from chart files, which may be anything
+        // ("constructor", "__proto__"), so no inherited keys.
+        const scanned = Object.create(null) as Record<string, string[]>;
+        for (const ref of await findOnlineChartFiles(props.chartPath || defaultChartsPath)) {
+          (scanned[ref.catalogId] ??= []).push(ref.relativePath);
+        }
+        if (generation === onlineAddedGeneration) {
+          onlineAddedCache = scanned;
+        }
+        added = scanned;
+      }
+      return {
+        registry: getCatalogRegistry(),
+        installed: getInstalledCatalogCharts(),
+        converting: getConvertingCharts(),
+        catalogStatus: getCatalogStatus(),
+        sources: getCatalogSources(),
+        online: getOnlineCatalogCharts(),
+        onlineAdded: added,
+        position: vesselPosition()
+      };
+    };
+
+    router.get('/catalog-registry', (_req: Request, res: Response) => {
+      void (async () => {
+        try {
+          // On a first run there is no cached catalog yet, and the UI does
+          // not re-poll, so wait for the startup download (bounded by its
+          // timeout) rather than showing an empty tab.
+          if (hasCatalog()) {
+            refreshCatalogIfStale();
+          } else {
+            await refreshCatalog();
+          }
+          res.json(await catalogRegistryResponse());
+        } catch (error) {
+          console.error('Error fetching catalog registry:', error);
+          res.status(500).json({ error: 'Failed to fetch catalog registry' });
+        }
+      })();
+    });
+
+    // Re-download the merged chart catalog (the Refresh button). Awaited so
+    // the response reflects the attempt; refreshCatalog never rejects, and
+    // catalogStatus carries the reason when it fails.
     router.post('/catalog-registry/refresh', (_req: Request, res: Response) => {
       void (async () => {
         try {
-          await fetchCatalogRegistry().catch((err: unknown) => {
-            app.debug(
-              `Catalog registry refresh failed: ${err instanceof Error ? err.message : String(err)}`
-            );
-          });
-          res.json({
-            registry: getCatalogRegistry(),
-            installed: getInstalledCatalogCharts(),
-            converting: getConvertingCharts(),
-            registryStatus: getRegistryStatus()
-          });
+          await refreshCatalog();
+          res.json(await catalogRegistryResponse());
         } catch (error) {
-          // The refresh itself is awaited+swallowed above; this only fires if
-          // building the response throws.
           console.error('Error building catalog refresh response:', error);
           res.status(500).json({ error: 'Failed to build catalog refresh response' });
+        }
+      })();
+    });
+
+    // Add an online chart from the catalog: write its .onlinechart.json into
+    // the chosen folder, where Manage Charts and chart serving pick it up.
+    router.post('/online-charts', (req: Request, res: Response) => {
+      const body = parseBody(AddOnlineChartBody, req, res);
+      if (!body) {
+        return;
+      }
+      void (async () => {
+        try {
+          const entry = resolveOnlineChart(body.catalogId);
+          if (!entry) {
+            res.status(404).json({ success: false, error: 'Unknown online chart' });
+            return;
+          }
+          const basePath = props.chartPath || defaultChartsPath;
+          const dir = body.folder === '/' ? basePath : path.join(basePath, body.folder);
+          // Hidden folders are skipped by every scan, so a chart written
+          // there would never appear.
+          const hidden = body.folder.split(/[\\/]/).some((seg) => seg.startsWith('.'));
+          if (!isWithinBase(dir, basePath) || hidden) {
+            res.status(403).json({ success: false, error: 'Access denied: Invalid path' });
+            return;
+          }
+          const takenIds = await collectChartIds(basePath);
+          const filename = writeOnlineChartFile(dir, entry.id, entry.name, takenIds);
+          const relativePath = path.relative(basePath, path.join(dir, filename));
+          await refreshChartProviders();
+          const chartId = chartIdFromFilename(filename);
+          if (chartProviders[chartId]) {
+            emitChartDelta(chartId, sanitizeProvider(chartProviders[chartId], 2));
+          }
+          res.json({ success: true, relativePath });
+        } catch (error) {
+          console.error('Error adding online chart:', error);
+          res.status(500).json({ success: false, error: 'Failed to add online chart' });
         }
       })();
     });
@@ -2742,10 +3023,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/catalog/:catalogFile', async (req: Request, res: Response) => {
+    router.get('/catalog/:catalogFile', (req: Request, res: Response) => {
       try {
         const catalogFile = (req.params as Record<string, string>).catalogFile;
-        const data = await fetchCatalog(catalogFile);
+        const data = getCatalogData(catalogFile);
         if (!data) {
           res.status(404).json({ error: 'Catalog not found or unavailable' });
           return;
@@ -2772,11 +3053,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           charts: augmentedCharts
         });
       } catch (error) {
-        const cached = getCachedCatalog((req.params as Record<string, string>).catalogFile);
-        if (cached) {
-          res.json(cached);
-          return;
-        }
         console.error('Error fetching catalog:', error);
         res.status(500).json({ error: 'Failed to fetch catalog' });
       }
@@ -3040,7 +3316,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         // original title into metadata.description). Manual uploads
         // don't go through this path so they keep the existing
         // 'S-57 <chartNumber>' default.
-        const cachedCatalog = getCachedCatalog(catalogFile);
+        const cachedCatalog = getCatalogData(catalogFile);
         const chartTitle = cachedCatalog?.charts.find((c) => c.number === chartNumber)?.title;
 
         if (classification.format === 's57-zip') {
@@ -4260,6 +4536,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         methods: {
           listResources: (params) => {
             app.debug(`** listResources() ${JSON.stringify(params)}`);
+            touchOnlineTime(Object.values(chartProviders));
             return Promise.resolve(
               Object.fromEntries(
                 Object.entries(chartProviders).map(([k, provider]) => [
@@ -4273,6 +4550,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             app.debug(`** getResource() ${id}`);
             const provider = chartProviders[id];
             if (provider) {
+              touchOnlineTime([provider]);
               return Promise.resolve(sanitizeProvider(provider, 2));
             } else {
               throw new Error('Chart not found!');
@@ -4298,17 +4576,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // the refresh hook / POST /refresh can report the failure. Never rejects:
   // fire-and-forget callers (download completion) rely on that.
   const refreshChartProviders = async (): Promise<boolean> => {
+    onlineAddedCache = null;
+    onlineAddedGeneration++;
     try {
       // getDefaultChartsPath() (not the raw field) so a refresh requested
       // before start() has run still resolves the computed default path.
       const chartPath = props.chartPath || getDefaultChartsPath();
-      const charts = await findCharts(chartPath);
+      const charts = await findCharts(chartPath, resolveOnlineChart);
 
       // Close the handles of the map being replaced — findCharts reopened
       // every chart, so the old provider objects would otherwise leak.
       const previous = chartProviders;
       chartProviders = partitionVisibleCharts(chartPath, charts);
       closeProviderHandles(Object.values(previous));
+      syncOnlineTime();
 
       app.debug(`Chart providers refreshed: ${Object.keys(chartProviders).length} enabled charts`);
       return true;
@@ -4323,16 +4604,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const startCatalogUpdateChecker = (): void => {
     const doCheck = async (): Promise<void> => {
       try {
-        const catalogsToCheck = getCatalogsWithInstalledCharts();
-        if (catalogsToCheck.length === 0) {
+        if (getCatalogsWithInstalledCharts().length === 0) {
           return;
         }
 
-        app.debug(`Checking ${catalogsToCheck.length} catalog(s) for chart updates`);
-
-        for (const catalogFile of catalogsToCheck) {
-          await fetchCatalog(catalogFile);
-        }
+        app.debug('Checking the chart catalog for chart updates');
+        await refreshCatalog();
 
         const updates = checkForUpdates();
         if (updates.length > 0) {
@@ -4433,7 +4710,16 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
       : '';
   }
 
-  const { _filePath, _fileFormat, _mbtilesHandle, _flipY, v1: _v1, v2: _v2, ...rest } = provider;
+  const {
+    _filePath,
+    _fileFormat,
+    _mbtilesHandle,
+    _flipY,
+    _catalogId,
+    v1: _v1,
+    v2: _v2,
+    ...rest
+  } = provider;
   return { ...rest, ...v };
 };
 

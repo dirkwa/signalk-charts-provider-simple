@@ -206,12 +206,18 @@ reviews:
 
         ## Catalog manager + install tracking
 
-        `utils/catalog-manager.ts` fetches catalogs from
-        `chartcatalogs.github.io` and tracks installed catalog charts
-        so update notifications fire. The install state is persisted
-        per chart; `pruneStaleInstalls` reaps entries whose files
-        have disappeared. Flag any direct catalog HTTP fetch outside
-        this module.
+        `utils/catalog-manager.ts` downloads the merged chart catalog
+        (chartcatalogs.github.io plus curated online charts) that this
+        repo publishes to GitHub Pages, and tracks installed catalog
+        charts so update notifications fire. It must read the catalog
+        under the published compatibility policy (ignore unknown
+        fields, skip unreadable entries, reject only a different
+        `schemaVersion`); see `docs/chart-catalog.md`. The install
+        state is persisted per chart; `pruneStaleInstalls` reaps
+        entries whose files have disappeared. Flag any direct catalog
+        HTTP fetch in the plugin outside this module. The publish and
+        preview CLIs under `src/catalog/` are CI and contributor tools,
+        not plugin code, and are the exception.
 
         ## Echo comments
 

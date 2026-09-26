@@ -1,18 +1,11 @@
 /**
- * TypeBox schemas + safe-parse helpers for the catalog manager's JSON
- * read paths (cached catalog files, installs map, registry cache, GitHub
- * API response).
- *
- * Why: every read site previously did `JSON.parse(...) as CatalogData` and
- * trusted the bytes. A hand-edited or corrupted cache file would put a
- * malformed shape into memory and surface as a `Cannot read properties of
- * undefined` later, far from the actual cause. With these schemas a bad
- * cache is rejected at the read boundary; the manager falls back to
- * "no cache" / "no installs" and the next refresh writes a clean file.
- *
- * The XML parse path is *not* covered here — xml2js's arrays-of-strings
- * shape is awkward to model in TypeBox and the function already filters
- * per-entry with a try/catch.
+ * TypeBox schemas + safe-parse helpers for the catalog manager. The installs
+ * map is the one JSON read path validated here: a hand-edited or corrupted
+ * `catalog-installs.json` is rejected at the read boundary and the manager
+ * falls back to "no installs" instead of surfacing a `Cannot read properties
+ * of undefined` far from the cause. The chartcatalogs shapes here define the
+ * types the UI and download flow use; the merged catalog itself is validated
+ * by `catalog/merged-catalog-schema.ts`.
  */
 
 import { Type, type Static } from '@sinclair/typebox';
@@ -80,18 +73,6 @@ export const CatalogInstallSchema = Type.Recursive((Self) =>
 
 export const CatalogInstallsMapSchema = Type.Record(Type.String(), CatalogInstallSchema);
 
-export const CatalogRegistryCacheSchema = Type.Array(CatalogRegistryEntrySchema);
-
-// Shape returned by GitHub's contents API for a directory listing. We
-// only consume `name`; the real response has many more fields, so the
-// schema validates one field by-name and ignores the rest via
-// additionalProperties (TypeBox default).
-export const GithubContentsListingSchema = Type.Array(
-  Type.Object({
-    name: Type.String()
-  })
-);
-
 export type CatalogCategory = Static<typeof CatalogCategorySchema>;
 export type CatalogRegistryEntry = Static<typeof CatalogRegistryEntrySchema>;
 export type CatalogChart = Static<typeof CatalogChartSchema>;
@@ -99,8 +80,6 @@ export type CatalogHeader = Static<typeof CatalogHeaderSchema>;
 export type CatalogData = Static<typeof CatalogDataSchema>;
 export type CatalogInstall = Static<typeof CatalogInstallSchema>;
 export type CatalogInstallsMap = Static<typeof CatalogInstallsMapSchema>;
-export type CatalogRegistryCache = Static<typeof CatalogRegistryCacheSchema>;
-export type GithubContentsListing = Static<typeof GithubContentsListingSchema>;
 
 /**
  * Validate `input` against `schema`. On success returns the typed value;

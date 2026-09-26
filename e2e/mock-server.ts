@@ -28,15 +28,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Mock state.  Each top-level key is what the corresponding REST
 // endpoint returns.  Tests overwrite via PUT /__mock/state, partial
 // updates merge; full reset via POST /__mock/reset.
-interface RegistryStatusMock {
-  status: 'ok' | 'rate_limited' | 'error' | 'never';
-  isRateLimited: boolean;
-  remaining: number | null;
-  resetAt: number | null;
-  retryAfter: number | null;
+interface CatalogStatusMock {
+  status: 'ok' | 'error' | 'incompatible' | 'never';
   lastAttemptAt: number | null;
   lastSuccessAt: number | null;
   httpStatus: number | null;
+  message: string | null;
 }
 
 interface MockState {
@@ -47,12 +44,22 @@ interface MockState {
     chartCount: number | null;
     cachedAt: string | null;
   }[];
-  // Status surfaced with the registry; tests set this to drive rate-limit UI.
-  registryStatus: RegistryStatusMock;
+  // Status surfaced with the registry; tests set this to drive the
+  // offline / incompatible-catalog messages.
+  catalogStatus: CatalogStatusMock;
+  // Attribution block returned with the registry, as the catalog provides it.
+  sources: unknown;
+  // Curated online charts, and which ones have .onlinechart.json files.
+  online: unknown[];
+  onlineAdded: Record<string, string[]>;
+  // Bodies POSTed to /online-charts, so specs can assert what the UI sent.
+  onlineAddRequests: unknown[];
+  // The boat's position for "Near me" (null: none known).
+  position: { latitude: number; longitude: number } | null;
   // When set, POST /catalog-registry/refresh swaps the registry to this (and
   // optionally a new status) — lets a test script a refresh outcome.
   refreshRegistry: MockState['registry'] | null;
-  refreshStatus: RegistryStatusMock | null;
+  refreshStatus: CatalogStatusMock | null;
   installed: Record<
     string,
     { catalogFile: string; zipfile_datetime_iso8601: string; installedAt: string }
@@ -109,25 +116,30 @@ interface MockState {
   // When set, POST /catalog/download responds with this HTTP status and an
   // error body so tests can exercise the update-failure path.
   downloadFailStatus: number | null;
+  // When set, POST /online-charts answers with this status and an HTML
+  // body, like a proxy error page.
+  onlineAddFailStatus: number | null;
   s57PodmanAvailable: boolean;
   podmanVersion: string | null;
   containerRuntimeEngine: string | null;
 }
 
-const okStatus: RegistryStatusMock = {
+const okStatus: CatalogStatusMock = {
   status: 'ok',
-  isRateLimited: false,
-  remaining: 50,
-  resetAt: null,
-  retryAfter: null,
   lastAttemptAt: null,
   lastSuccessAt: null,
-  httpStatus: 200
+  httpStatus: 200,
+  message: null
 };
 
 const initialState: MockState = {
   registry: [],
-  registryStatus: okStatus,
+  catalogStatus: okStatus,
+  sources: null,
+  online: [],
+  onlineAdded: {},
+  onlineAddRequests: [],
+  position: null,
   refreshRegistry: null,
   refreshStatus: null,
   installed: {},
@@ -143,6 +155,7 @@ const initialState: MockState = {
   downloadJobs: [],
   catalogUpdates: [],
   downloadFailStatus: null,
+  onlineAddFailStatus: null,
   s57PodmanAvailable: true,
   podmanVersion: 'podman version 5.4.2',
   containerRuntimeEngine: 'podman'
@@ -250,7 +263,11 @@ export function startMockServer(
       registry: state.registry,
       installed: state.installed,
       converting: state.converting,
-      registryStatus: state.registryStatus
+      catalogStatus: state.catalogStatus,
+      sources: state.sources,
+      online: state.online,
+      onlineAdded: state.onlineAdded,
+      position: state.position
     });
   });
 
@@ -260,14 +277,34 @@ export function startMockServer(
       state.registry = state.refreshRegistry;
     }
     if (state.refreshStatus !== null) {
-      state.registryStatus = state.refreshStatus;
+      state.catalogStatus = state.refreshStatus;
     }
     res.json({
       registry: state.registry,
       installed: state.installed,
       converting: state.converting,
-      registryStatus: state.registryStatus
+      catalogStatus: state.catalogStatus,
+      sources: state.sources,
+      online: state.online,
+      onlineAdded: state.onlineAdded,
+      position: state.position
     });
+  });
+
+  router.get(`${PLUGIN_BASE}/vessel-position`, (_req, res) => {
+    res.json({ position: state.position });
+  });
+
+  router.post(`${PLUGIN_BASE}/online-charts`, (req, res) => {
+    const body = req.body as { catalogId: string; folder: string };
+    state.onlineAddRequests.push(body);
+    if (state.onlineAddFailStatus !== null) {
+      res.status(state.onlineAddFailStatus).type('html').send('<html>Bad Gateway</html>');
+      return;
+    }
+    const relativePath = `${body.folder}/${body.catalogId}.onlinechart.json`;
+    (state.onlineAdded[body.catalogId] ??= []).push(relativePath);
+    res.json({ success: true, relativePath });
   });
 
   router.get(`${PLUGIN_BASE}/catalog/:file`, (req, res) => {

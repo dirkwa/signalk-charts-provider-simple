@@ -1,6 +1,8 @@
 import type { ServerAPI } from '@signalk/server-api';
 import type { IRouter, Request, Response } from 'express';
 import type { MBTilesReader } from './utils/mbtiles-reader.js';
+import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
+import type { ChartTimeBlock } from './utils/time-dimension.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -44,7 +46,7 @@ export interface ChartV2Data {
   tileSize?: number;
 }
 
-export type ChartFileFormat = 'mbtiles' | 'directory';
+export type ChartFileFormat = 'mbtiles' | 'directory' | 'online';
 export type ChartType = 'tilelayer' | string;
 
 export interface ChartProvider {
@@ -64,6 +66,14 @@ export interface ChartProvider {
   scale: number;
   /** Detected tile pixel size (256/512) when known; see ChartV2Data.tileSize. */
   tileSize?: number;
+  /** Suggested opacity for overlays such as weather layers (online charts). */
+  defaultOpacity?: number;
+  /** Time-varying online charts: how often a plotter should re-read the chart, in ms. */
+  refreshInterval?: number;
+  /** Time-varying online charts: the timeline on offer (charts.time convention). */
+  time?: ChartTimeBlock;
+  /** Online charts: the catalog entry served, so its timeline can be updated in place. */
+  _catalogId?: string;
 
   v1: ChartV1Data;
   v2: ChartV2Data;
@@ -84,6 +94,9 @@ export interface SanitizedChart {
   url?: string;
   layers?: string[];
   tileSize?: number;
+  defaultOpacity?: number;
+  refreshInterval?: number;
+  time?: ChartTimeBlock;
 }
 
 // ---- Repairable charts ----
@@ -199,24 +212,31 @@ import type { CatalogRegistryEntry } from './utils/catalog-schemas.js';
 export interface CatalogRegistryInfo extends CatalogRegistryEntry {
   chartCount: number | null;
   cachedAt: string | null;
+  /**
+   * What the Chart Catalog filters on, from the catalog's index. `category`
+   * above is the download bucket (classifyUrl); these are the user-facing
+   * facets, each absent when the catalog doesn't carry it.
+   */
+  facets: { category?: string; format?: string; bbox?: Bbox };
 }
 
-// Result of the last attempt to fetch the catalog index from GitHub. Drives
-// UI messaging when the registry is empty or a refresh fails — notably so a
-// GitHub rate-limit (HTTP 403, remaining 0) reads as "rate limited, retry at
-// X" instead of the wrong "you may be offline".
-export type RegistryFetchStatus = 'ok' | 'rate_limited' | 'error' | 'never';
+// Result of the last attempt to download the merged chart catalog. Drives the
+// Chart Catalog tab's message when a refresh fails or the catalog is unusable.
+// `incompatible` means the published catalog uses a newer schemaVersion than
+// this plugin reads, which only a plugin update fixes.
+export type CatalogFetchStatus = 'ok' | 'error' | 'incompatible' | 'never';
 
-export interface RegistryStatus {
-  status: RegistryFetchStatus;
-  isRateLimited: boolean;
-  remaining: number | null; // x-ratelimit-remaining
-  resetAt: number | null; // x-ratelimit-reset, epoch ms
-  retryAfter: number | null; // retry-after header, seconds
+export interface CatalogStatus {
+  status: CatalogFetchStatus;
   lastAttemptAt: number | null;
   lastSuccessAt: number | null;
   httpStatus: number | null; // null for network/timeout errors
+  message: string | null;
 }
+
+// Where each part of the merged catalog comes from, and where to report
+// problems with it (shown as attribution in the Chart Catalog tab).
+export type CatalogSources = MergedCatalog['sources'];
 
 export type UrlFormat =
   | 'mbtiles'
@@ -348,6 +368,8 @@ export interface ScannedChart {
   format?: string;
   type?: string;
   isDirectory?: boolean;
+  /** Set for `.onlinechart.json` files: the catalog entry they stand for. */
+  online?: { catalogId: string; unreadable?: boolean };
 }
 
 // ---- Chart State ----

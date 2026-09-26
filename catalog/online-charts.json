@@ -1,0 +1,423 @@
+{
+  "charts": [
+    {
+      "id": "openwaters-seamap",
+      "name": "Open Waters Seamap",
+      "description": "Worldwide nautical-style map with buoys, lights and depth shading, built from OpenStreetMap and open seabed data. Good everywhere, but not an official chart.",
+      "category": "navigation",
+      "regions": ["global"],
+      "bbox": [-180, -85, 180, 85],
+      "provider": "Open Waters",
+      "attribution": "© Open Waters: Seamap (https://openwaters.io/charts/seamap), data © OpenStreetMap contributors",
+      "license": "CC BY 4.0 (tiles), ODbL (OpenStreetMap data)",
+      "licenseUrl": "https://openwaters.io/charts/seamap",
+      "notForNavigation": true,
+      "chart": {
+        "type": "mapstyleJSON",
+        "url": "https://tiles.openwaters.io/seamap/style.json"
+      }
+    },
+    {
+      "id": "noaa-nautical-charts",
+      "name": "NOAA Nautical Charts",
+      "description": "Official U.S. nautical charts in the familiar paper-chart style, updated weekly with Notice to Mariners corrections. Covers U.S. coasts, the Great Lakes, Alaska, Hawaii and U.S. territories.",
+      "category": "navigation",
+      "regions": ["us", "us-conus", "us-alaska", "us-hawaii", "us-territories", "great-lakes"],
+      "bbox": [144, -15, -64, 72],
+      "provider": "NOAA Office of Coast Survey",
+      "attribution": "NOAA Office of Coast Survey",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://nauticalcharts.noaa.gov/data/gis-data-and-services.html",
+      "chart": {
+        "type": "WMTS",
+        "url": "https://gis.charttools.noaa.gov/arcgis/rest/services/MarineChart_Services/NOAACharts/MapServer/WMTS",
+        "layers": ["MarineChart_Services_NOAACharts"]
+      }
+    },
+    {
+      "id": "chs-nautical-charts",
+      "name": "Canadian Nautical Charts",
+      "description": "Canadian Hydrographic Service electronic charts for Canadian coastal and inland waters.",
+      "category": "navigation",
+      "regions": ["canada", "great-lakes"],
+      "bbox": [-141, 41, -52, 84],
+      "provider": "Canadian Hydrographic Service (Fisheries and Oceans Canada)",
+      "attribution": "Contains information licensed under the Open Government Licence – Canada",
+      "license": "Open Government Licence – Canada",
+      "licenseUrl": "https://open.canada.ca/en/open-government-licence-canada",
+      "notForNavigation": true,
+      "chart": {
+        "type": "WMS",
+        "url": "https://egisp.dfo-mpo.gc.ca/arcgis/rest/services/chs/ENC_MaritimeChartService/MapServer/exts/MaritimeChartService/WMSServer",
+        "layers": ["0", "1", "2", "3", "4", "5", "6", "7", "9", "10", "11"]
+      }
+    },
+    {
+      "id": "gebco-ocean-depths",
+      "name": "GEBCO Ocean Depths",
+      "description": "Shaded relief of the world's ocean floor and land. Useful for seeing where deep water, banks and seamounts are; not detailed enough for navigation.",
+      "category": "depth",
+      "regions": ["global"],
+      "bbox": [-180, -85, 180, 85],
+      "provider": "GEBCO Compilation Group",
+      "attribution": "Imagery reproduced from the GEBCO Grid, GEBCO Compilation Group",
+      "license": "Public domain (attribution requested)",
+      "licenseUrl": "https://www.gebco.net/data-products/gridded-bathymetry/terms-of-use",
+      "notForNavigation": true,
+      "chart": {
+        "type": "WMS",
+        "url": "https://wms.gebco.net/mapserv",
+        "layers": ["GEBCO_LATEST"]
+      }
+    },
+    {
+      "id": "emodnet-european-depths",
+      "name": "European Seabed Depths",
+      "description": "Detailed depth shading for European seas, from the North Atlantic and Arctic to the Mediterranean and Black Sea.",
+      "category": "depth",
+      "regions": ["europe", "north-sea", "baltic", "mediterranean", "atlantic"],
+      "bbox": [-70.5, 11, 43, 85],
+      "provider": "EMODnet Bathymetry",
+      "attribution": "EMODnet Bathymetry Consortium (CC BY 4.0)",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://emodnet.ec.europa.eu/en/terms-use-emodnet-online-services-data-and-data-products",
+      "notForNavigation": true,
+      "chart": {
+        "type": "tilelayer",
+        "url": "https://tiles.emodnet-bathymetry.eu/latest/mean_atlas_land/web_mercator/{z}/{x}/{y}.png",
+        "maxzoom": 15
+      }
+    },
+    {
+      "id": "nws-radar-conus",
+      "name": "NWS Radar – Continental US",
+      "description": "Rain and thunderstorm radar for the lower 48 states and nearby coastal waters. A new image about every 2 minutes, with the last 2 hours available for playback.",
+      "category": "weather",
+      "regions": ["us", "us-conus", "great-lakes"],
+      "bbox": [-130, 20, -60, 55],
+      "provider": "NOAA / National Weather Service",
+      "attribution": "NOAA / National Weather Service",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://www.weather.gov/disclaimer",
+      "chart": {
+        "type": "WMS",
+        "url": "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows",
+        "layers": ["conus_bref_qcd"],
+        "defaultOpacity": 0.7
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 300000, "window": "PT2H" }
+    },
+    {
+      "id": "nws-radar-alaska",
+      "name": "NWS Radar – Alaska",
+      "description": "Rain and thunderstorm radar for Alaska and its coastal waters, with the last 2 hours available for playback.",
+      "category": "weather",
+      "regions": ["us", "us-alaska"],
+      "bbox": [-176, 50, -126, 72],
+      "provider": "NOAA / National Weather Service",
+      "attribution": "NOAA / National Weather Service",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://www.weather.gov/disclaimer",
+      "chart": {
+        "type": "WMS",
+        "url": "https://opengeo.ncep.noaa.gov/geoserver/alaska/alaska_bref_qcd/ows",
+        "layers": ["alaska_bref_qcd"],
+        "defaultOpacity": 0.7
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 300000, "window": "PT2H" }
+    },
+    {
+      "id": "nws-radar-hawaii",
+      "name": "NWS Radar – Hawaii",
+      "description": "Rain and thunderstorm radar around the Hawaiian Islands, with the last 2 hours available for playback.",
+      "category": "weather",
+      "regions": ["us", "us-hawaii", "pacific"],
+      "bbox": [-164, 15, -151, 26],
+      "provider": "NOAA / National Weather Service",
+      "attribution": "NOAA / National Weather Service",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://www.weather.gov/disclaimer",
+      "chart": {
+        "type": "WMS",
+        "url": "https://opengeo.ncep.noaa.gov/geoserver/hawaii/hawaii_bref_qcd/ows",
+        "layers": ["hawaii_bref_qcd"],
+        "defaultOpacity": 0.7
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 300000, "window": "PT2H" }
+    },
+    {
+      "id": "nws-radar-caribbean",
+      "name": "NWS Radar – Puerto Rico & Caribbean",
+      "description": "Rain and thunderstorm radar for Puerto Rico, the U.S. Virgin Islands and the surrounding Caribbean, with the last 2 hours available for playback.",
+      "category": "weather",
+      "regions": ["us", "us-territories", "caribbean"],
+      "bbox": [-90, 10, -60, 25],
+      "provider": "NOAA / National Weather Service",
+      "attribution": "NOAA / National Weather Service",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://www.weather.gov/disclaimer",
+      "chart": {
+        "type": "WMS",
+        "url": "https://opengeo.ncep.noaa.gov/geoserver/carib/carib_bref_qcd/ows",
+        "layers": ["carib_bref_qcd"],
+        "defaultOpacity": 0.7
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 300000, "window": "PT2H" }
+    },
+    {
+      "id": "nws-radar-guam",
+      "name": "NWS Radar – Guam & Marianas",
+      "description": "Rain and thunderstorm radar around Guam and the Northern Mariana Islands, with the last 2 hours available for playback.",
+      "category": "weather",
+      "regions": ["us", "us-territories", "pacific"],
+      "bbox": [140, 9, 150, 18],
+      "provider": "NOAA / National Weather Service",
+      "attribution": "NOAA / National Weather Service",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://www.weather.gov/disclaimer",
+      "chart": {
+        "type": "WMS",
+        "url": "https://opengeo.ncep.noaa.gov/geoserver/guam/guam_bref_qcd/ows",
+        "layers": ["guam_bref_qcd"],
+        "defaultOpacity": 0.7
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 300000, "window": "PT2H" }
+    },
+    {
+      "id": "nws-warnings",
+      "name": "NWS Storm & Special Marine Warnings",
+      "description": "Active tornado, severe thunderstorm, flash flood and Special Marine Warning areas for all U.S. waters. Lines up with the NWS radar loop.",
+      "category": "weather",
+      "regions": ["us", "us-conus", "us-alaska", "us-hawaii", "us-territories"],
+      "bbox": [140, 9, -60, 72],
+      "provider": "NOAA / National Weather Service",
+      "attribution": "NOAA / National Weather Service",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://www.weather.gov/disclaimer",
+      "chart": {
+        "type": "WMS",
+        "url": "https://opengeo.ncep.noaa.gov/geoserver/wwa/warnings/ows",
+        "layers": ["warnings"]
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 300000, "window": "PT2H" }
+    },
+    {
+      "id": "goes-east-geocolor",
+      "name": "Satellite Clouds – Americas & Atlantic",
+      "description": "True-color satellite view of clouds by day and infrared by night from the GOES-East satellite, covering the Americas and the Atlantic. About an hour behind real time.",
+      "category": "weather",
+      "regions": ["north-america", "south-america", "caribbean", "atlantic"],
+      "bbox": [-156, -81, 6, 81],
+      "coverage": [-140, -65, -10, 65],
+      "provider": "NASA GIBS (NOAA GOES-East)",
+      "attribution": "NASA Worldview / GIBS",
+      "license": "NASA open data",
+      "licenseUrl": "https://www.earthdata.nasa.gov/engage/open-data-services-software-policies/data-use-guidance",
+      "chart": {
+        "type": "WMS",
+        "url": "https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi",
+        "layers": ["GOES-East_ABI_GeoColor"]
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 600000, "window": "PT3H" }
+    },
+    {
+      "id": "goes-west-geocolor",
+      "name": "Satellite Clouds – Pacific",
+      "description": "True-color satellite view of clouds by day and infrared by night from the GOES-West satellite, covering the eastern and central Pacific, Hawaii, Alaska and the west coast of the Americas. About an hour behind real time.",
+      "category": "weather",
+      "regions": ["pacific", "north-america", "us-hawaii", "us-alaska"],
+      "bbox": [150, -81, -65, 81],
+      "coverage": [158, -65, -105, 65],
+      "provider": "NASA GIBS (NOAA GOES-West)",
+      "attribution": "NASA Worldview / GIBS",
+      "license": "NASA open data",
+      "licenseUrl": "https://www.earthdata.nasa.gov/engage/open-data-services-software-policies/data-use-guidance",
+      "chart": {
+        "type": "WMS",
+        "url": "https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi",
+        "layers": ["GOES-West_ABI_GeoColor"]
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 600000, "window": "PT3H" }
+    },
+    {
+      "id": "eccc-radar",
+      "name": "Canada & US Radar",
+      "description": "Rainfall radar from Canadian and U.S. radars combined, covering Canada, the Great Lakes and the northern U.S. The last 3 hours are available for playback.",
+      "category": "weather",
+      "regions": ["canada", "us-conus", "great-lakes", "north-america"],
+      "bbox": [-170, 17, -50, 67],
+      "provider": "Environment and Climate Change Canada",
+      "attribution": "Data Source: Environment and Climate Change Canada",
+      "license": "ECCC Data Servers End-use Licence",
+      "licenseUrl": "https://eccc-msc.github.io/open-data/licence/readme_en/",
+      "chart": {
+        "type": "WMS",
+        "url": "https://geo.weather.gc.ca/geomet",
+        "layers": ["RADAR_1KM_RRAI"],
+        "defaultOpacity": 0.7
+      },
+      "temporal": {
+        "kind": "observation",
+        "refreshInterval": 360000,
+        "window": "PT3H",
+        "capabilitiesUrl": "https://geo.weather.gc.ca/geomet?service=WMS&version=1.3.0&request=GetCapabilities&layer=RADAR_1KM_RRAI"
+      }
+    },
+    {
+      "id": "eccc-global-waves",
+      "name": "Global Wave Height Forecast",
+      "description": "Forecast significant wave height (wind waves and swell combined) for all the world's oceans, hour by hour for the next few days.",
+      "category": "weather",
+      "regions": ["global"],
+      "bbox": [-180, -80, 180, 80],
+      "provider": "Environment and Climate Change Canada",
+      "attribution": "Data Source: Environment and Climate Change Canada",
+      "license": "ECCC Data Servers End-use Licence",
+      "licenseUrl": "https://eccc-msc.github.io/open-data/licence/readme_en/",
+      "chart": {
+        "type": "WMS",
+        "url": "https://geo.weather.gc.ca/geomet",
+        "layers": ["GDWPS_25km_HTSGW_PT1H"],
+        "defaultOpacity": 0.6
+      },
+      "temporal": {
+        "kind": "forecast",
+        "refreshInterval": 3600000,
+        "window": "P4D",
+        "capabilitiesUrl": "https://geo.weather.gc.ca/geomet?service=WMS&version=1.3.0&request=GetCapabilities&layer=GDWPS_25km_HTSGW_PT1H"
+      }
+    },
+    {
+      "id": "eccc-global-winds",
+      "name": "Global Wind Forecast",
+      "description": "Forecast surface wind speed and direction for the whole world, for the next several days.",
+      "category": "weather",
+      "regions": ["global"],
+      "bbox": [-180, -90, 180, 90],
+      "provider": "Environment and Climate Change Canada",
+      "attribution": "Data Source: Environment and Climate Change Canada",
+      "license": "ECCC Data Servers End-use Licence",
+      "licenseUrl": "https://eccc-msc.github.io/open-data/licence/readme_en/",
+      "chart": {
+        "type": "WMS",
+        "url": "https://geo.weather.gc.ca/geomet",
+        "layers": ["GDPS_15km_Winds_10m"]
+      },
+      "temporal": {
+        "kind": "forecast",
+        "refreshInterval": 3600000,
+        "window": "P5D",
+        "capabilitiesUrl": "https://geo.weather.gc.ca/geomet?service=WMS&version=1.3.0&request=GetCapabilities&layer=GDPS_15km_Winds_10m"
+      }
+    },
+    {
+      "id": "eumetsat-geocolour",
+      "name": "Satellite Clouds – Europe, Africa & Atlantic",
+      "description": "True-color satellite view of clouds by day and infrared by night from Meteosat, covering Europe, Africa and the eastern Atlantic. A new image every 10 minutes.",
+      "category": "weather",
+      "regions": ["europe", "africa", "atlantic", "mediterranean"],
+      "bbox": [-81, -81, 81, 81],
+      "coverage": [-65, -65, 65, 65],
+      "provider": "EUMETSAT",
+      "attribution": "Contains modified EUMETSAT Meteosat data",
+      "license": "EUMETSAT Data Policy (Core data: free and unrestricted, attribution required)",
+      "licenseUrl": "https://www-cdn.eumetsat.int/files/2026-01/45173%20-%20Data_Policy.pdf",
+      "chart": {
+        "type": "WMS",
+        "url": "https://view.eumetsat.int/geoserver/mtg_fd/rgb_geocolour/ows",
+        "layers": ["rgb_geocolour"]
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 600000, "window": "PT3H" }
+    },
+    {
+      "id": "eumetsat-lightning",
+      "name": "Lightning – Europe, Africa & Atlantic",
+      "description": "Recent lightning detected by the Meteosat Lightning Imager over Europe, Africa and the eastern Atlantic, updated every 5 minutes.",
+      "category": "weather",
+      "regions": ["europe", "africa", "atlantic", "mediterranean"],
+      "bbox": [-81, -81, 81, 81],
+      "coverage": [-65, -65, 65, 65],
+      "provider": "EUMETSAT",
+      "attribution": "Contains modified EUMETSAT Meteosat data",
+      "license": "EUMETSAT Data Policy (Core data: free and unrestricted, attribution required)",
+      "licenseUrl": "https://www-cdn.eumetsat.int/files/2026-01/45173%20-%20Data_Policy.pdf",
+      "chart": {
+        "type": "WMS",
+        "url": "https://view.eumetsat.int/geoserver/mtg_fd/li_afa/ows",
+        "layers": ["li_afa"]
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 300000, "window": "PT2H" }
+    },
+    {
+      "id": "dwd-radar",
+      "name": "Germany Rain Radar",
+      "description": "Rain radar for Germany, the German Bight and the western Baltic, every 5 minutes, including a 2-hour short-range forecast of where the rain is heading.",
+      "category": "weather",
+      "regions": ["germany", "europe", "north-sea", "baltic"],
+      "bbox": [1.5, 45.7, 18.7, 56.2],
+      "provider": "Deutscher Wetterdienst",
+      "attribution": "Source: Deutscher Wetterdienst",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://www.dwd.de/DE/service/rechtliche_hinweise/rechtliche_hinweise_node.html",
+      "chart": {
+        "type": "WMS",
+        "url": "https://maps.dwd.de/geoserver/dwd/Niederschlagsradar/ows",
+        "layers": ["Niederschlagsradar"],
+        "defaultOpacity": 0.7
+      },
+      "temporal": { "kind": "observation", "refreshInterval": 300000, "window": "PT2H" }
+    },
+    {
+      "id": "dwd-european-waves",
+      "name": "European Seas Wave Forecast",
+      "description": "Forecast significant wave height for European seas, from the Bay of Biscay and North Sea to the Baltic, Mediterranean and Black Sea, for the next 5 days.",
+      "category": "weather",
+      "regions": ["europe", "north-sea", "baltic", "mediterranean", "atlantic"],
+      "bbox": [-10.5, 30, 42, 66],
+      "provider": "Deutscher Wetterdienst",
+      "attribution": "Source: Deutscher Wetterdienst",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://www.dwd.de/DE/service/rechtliche_hinweise/rechtliche_hinweise_node.html",
+      "chart": {
+        "type": "WMS",
+        "url": "https://maps.dwd.de/geoserver/dwd/Ewam_reg005x010_fd_sl_SWH/ows",
+        "layers": ["Ewam_reg005x010_fd_sl_SWH"],
+        "defaultOpacity": 0.6
+      },
+      "temporal": { "kind": "forecast", "refreshInterval": 3600000, "window": "P5D" }
+    },
+    {
+      "id": "openfreemap-liberty",
+      "name": "OpenFreeMap Street Map",
+      "description": "Clean, detailed worldwide street and land map from OpenStreetMap. Handy as a background for harbors and shore-side navigation.",
+      "category": "basemap",
+      "regions": ["global"],
+      "bbox": [-180, -85, 180, 85],
+      "provider": "OpenFreeMap",
+      "attribution": "OpenFreeMap © OpenMapTiles Data from OpenStreetMap",
+      "license": "ODbL (OpenStreetMap data), free to use",
+      "licenseUrl": "https://openfreemap.org/",
+      "chart": {
+        "type": "mapstyleJSON",
+        "url": "https://tiles.openfreemap.org/styles/liberty"
+      }
+    },
+    {
+      "id": "usgs-aerial-imagery",
+      "name": "USGS Aerial Imagery",
+      "description": "High-resolution aerial photos of the United States. Great for seeing marinas, anchorages and shorelines as they really look.",
+      "category": "basemap",
+      "regions": ["us", "us-conus", "us-alaska", "us-hawaii", "us-territories"],
+      "bbox": [-180, 17, -64, 72],
+      "provider": "U.S. Geological Survey",
+      "attribution": "U.S. Geological Survey, The National Map",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+      "chart": {
+        "type": "tilelayer",
+        "url": "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
+        "maxzoom": 16
+      }
+    }
+  ]
+}

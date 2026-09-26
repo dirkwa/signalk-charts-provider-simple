@@ -2,6 +2,12 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import { parseStringPromise } from 'xml2js';
 import { open as openMbtiles } from './utils/mbtiles-reader.js';
+import {
+  isOnlineChartFile,
+  onlineChartProvider,
+  readOnlineChartFile,
+  type OnlineChartResolver
+} from './utils/online-charts.js';
 import type { MBTilesReader } from './utils/mbtiles-reader.js';
 import type {
   ChartProvider,
@@ -47,7 +53,14 @@ function resolveChartType(
   return 'tilelayer';
 }
 
-export async function findCharts(chartBaseDir: string): Promise<Record<string, ChartProvider>> {
+/**
+ * @param resolveOnline Looks up the catalog entry an `.onlinechart.json`
+ *   file refers to. Online charts whose entry is unknown are not served.
+ */
+export async function findCharts(
+  chartBaseDir: string,
+  resolveOnline: OnlineChartResolver = () => undefined
+): Promise<Record<string, ChartProvider>> {
   // A directory-read failure must reject so callers can tell a failed scan
   // apart from an empty-but-readable directory — swallowing it here used to
   // make an unreadable charts directory look like "zero charts, success".
@@ -62,7 +75,7 @@ export async function findCharts(chartBaseDir: string): Promise<Record<string, C
   // rethrowing; the rejection itself is the contract and must survive.
   const opened: ChartProvider[] = [];
   try {
-    const results = await findChartsRecursive(chartBaseDir, opened);
+    const results = await findChartsRecursive(chartBaseDir, opened, resolveOnline);
     const filtered = results.filter((c): c is ChartProvider => c !== null);
     return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
       // Two folders can hold the same .mbtiles basename, which yields the same
@@ -96,7 +109,8 @@ export async function findCharts(chartBaseDir: string): Promise<Record<string, C
 async function findChartsRecursive(
   currentDir: string,
   /** Every provider opened so far, so a throw mid-walk can still close them. */
-  opened: ChartProvider[]
+  opened: ChartProvider[],
+  resolveOnline: OnlineChartResolver
 ): Promise<(ChartProvider | null)[]> {
   const files = await fs.readdir(currentDir, { withFileTypes: true });
   const results: (ChartProvider | null)[][] = [];
@@ -112,6 +126,9 @@ async function findChartsRecursive(
         opened.push(chart);
       }
       results.push([chart]);
+    } else if (file.isFile() && isOnlineChartFile(file.name)) {
+      const online = readOnlineChartFile(filePath);
+      results.push([online ? onlineChartProvider(filePath, online, resolveOnline) : null]);
     } else if (isDirectory) {
       if (file.name.startsWith('.') || file.name === 'node_modules') {
         results.push([]);
@@ -122,7 +139,7 @@ async function findChartsRecursive(
       if (chartInfo) {
         results.push([chartInfo]);
       } else {
-        const subResults = await findChartsRecursive(filePath, opened);
+        const subResults = await findChartsRecursive(filePath, opened, resolveOnline);
         results.push(subResults);
       }
     } else {

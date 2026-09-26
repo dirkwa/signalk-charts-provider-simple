@@ -1,0 +1,36 @@
+name: Suggest an online chart
+description: Know a free weather, chart, depth or map service that belongs in the Chart Catalog? Tell us about it.
+labels: ['catalog']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Online charts stream from their provider, so they need a service that anyone may use from
+        a chart plotter for free, without an account or key. You don't need to know the technical
+        details; a link to the service and where you found it is enough to start.
+  - type: input
+    id: name
+    attributes:
+      label: What is it?
+      description: e.g. "Danish wind forecast from DMI" or "Swedish sea charts".
+    validations:
+      required: true
+  - type: input
+    id: link
+    attributes:
+      label: Link to the service or its web page
+      description: The page that describes the service, or its WMS/WMTS/tile address if you know it.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What does it show, and where?
+      description: The area it covers and why it is useful on a boat.
+    validations:
+      required: true
+  - type: input
+    id: license
+    attributes:
+      label: License or terms of use (if you know them)
+      description: A link to the provider's terms, or "don't know".

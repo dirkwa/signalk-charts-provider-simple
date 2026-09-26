@@ -1,4 +1,5 @@
-// Chart Catalog tab — browse and download charts from chartcatalogs.github.io
+// Chart Catalog tab — browse the merged chart catalog (chartcatalogs.github.io
+// downloads plus curated online charts) and install charts from it
 
 const CATALOG_API_BASE = '/plugins/signalk-charts-provider-simple';
 
@@ -7,8 +8,11 @@ type CatalogCategory = 'mbtiles' | 'rnc' | 'ienc' | 'general';
 interface CatalogRegistryEntry {
   file: string;
   label: string;
+  /** The download bucket (drives how a chart is fetched and converted). */
   category: CatalogCategory;
   chartCount: number | null;
+  /** What the filters use; each absent when the catalog doesn't carry it. */
+  facets?: { category?: string; format?: string; bbox?: number[] };
 }
 
 interface UrlClassification {
@@ -34,24 +38,51 @@ interface CatalogInstall {
   catalogFile: string;
 }
 
-type RegistryFetchStatus = 'ok' | 'rate_limited' | 'error' | 'never';
+type CatalogFetchStatus = 'ok' | 'error' | 'incompatible' | 'never';
 
-interface RegistryStatus {
-  status: RegistryFetchStatus;
-  isRateLimited: boolean;
-  remaining: number | null;
-  resetAt: number | null; // epoch ms
-  retryAfter: number | null; // seconds
+interface CatalogStatus {
+  status: CatalogFetchStatus;
   lastAttemptAt: number | null;
   lastSuccessAt: number | null;
   httpStatus: number | null;
+  message: string | null;
+}
+
+interface CatalogSources {
+  chartcatalogs: { homepage: string; issues: string };
+  online: { homepage: string; issues: string };
+}
+
+type OnlineCategory = 'navigation' | 'weather' | 'depth' | 'basemap' | 'overlay';
+
+/** A curated online chart, as the catalog lists it. */
+interface OnlineCatalogChart {
+  id: string;
+  name: string;
+  description: string;
+  category: OnlineCategory | string;
+  provider: string;
+  license: string;
+  licenseUrl: string;
+  notForNavigation?: boolean;
+  bbox: number[];
+  /** Where the chart is useful, when narrower than bbox; for Near me only. */
+  coverage?: unknown;
+  chart: { type: string };
+  temporal?: { kind: string };
 }
 
 interface CatalogRegistryResponse {
   registry?: CatalogRegistryEntry[];
+  online?: OnlineCatalogChart[];
+  /** catalogId → chart-folder paths of its .onlinechart.json files. */
+  onlineAdded?: Record<string, string[]>;
+  /** The boat's position, for "Near me"; null when the server has none. */
+  position?: { latitude: number; longitude: number } | null;
   installed?: Record<string, CatalogInstall>;
   converting?: Record<string, boolean>;
-  registryStatus?: RegistryStatus;
+  catalogStatus?: CatalogStatus;
+  sources?: CatalogSources | null;
 }
 
 interface LocalChartsResponse {
@@ -113,7 +144,38 @@ let catalogInitialized = false;
 let catalogRegistry: CatalogRegistryEntry[] = [];
 let catalogInstalled: Record<string, CatalogInstall> = {};
 let catalogUpdates: CatalogUpdate[] = [];
-let activeCategoryFilter: CatalogCategory | 'all' = 'all';
+// Chart Catalog filters. Options within a group combine with OR (none
+// selected means all); groups combine with AND.
+interface CatalogFilters {
+  use: 'all' | 'download' | 'stream';
+  categories: string[];
+  formats: string[];
+  nearMe: boolean;
+  showTypes: boolean;
+}
+const FILTERS_STORAGE_KEY = 'chartCatalogFilters';
+let catalogFilters: CatalogFilters = loadCatalogFilters();
+let vesselPosition: { latitude: number; longitude: number } | null = null;
+let onlineCatalog: OnlineCatalogChart[] = [];
+let onlineAdded: Record<string, string[]> = {};
+const onlineAdding = new Set<string>();
+
+// The list is sectioned by category, in this boater-friendly order; place
+// is left to the Near me filter. A section's online charts share one card,
+// whose key uses a prefix no chartcatalogs file name can have, so it can
+// share expandedCatalogs with the download catalogs.
+const ONLINE_KEY_PREFIX = 'online:';
+const SECTION_LABELS: Record<string, string> = {
+  navigation: 'Navigation Charts',
+  weather: 'Weather',
+  depth: 'Depth & Seabed',
+  basemap: 'Base Maps & Imagery',
+  overlay: 'Marine Overlays'
+};
+const OTHER_SECTION = 'other';
+// A folder of its own means online charts can be switched off together
+// (e.g. offshore, with no internet) by disabling one folder.
+const ONLINE_DEFAULT_FOLDER = 'Online Charts';
 const expandedCatalogs = new Set<string>();
 const catalogChartData: Record<string, CatalogData> = {};
 let catalogFolders: string[] = ['/'];
@@ -160,7 +222,10 @@ document.addEventListener('charts-changed', () => {
     // dropdown stayed stale until the next download or tab re-init.
     const [registryOk] = await Promise.all([loadCatalogRegistry(), loadFolders()]);
     await Promise.all(
-      wereExpanded.map(async (catalogFile) => {
+      // Online groups are rendered from the registry; there's nothing to fetch.
+      wereExpanded
+        .filter((key) => !key.startsWith(ONLINE_KEY_PREFIX))
+        .map(async (catalogFile) => {
         try {
           const resp = await fetch(
             `${CATALOG_API_BASE}/catalog/${encodeURIComponent(catalogFile)}`
@@ -200,17 +265,11 @@ async function initCatalogTab(): Promise<void> {
 
   output.innerHTML = `
     <div class="catalog-container">
-      <div class="catalog-source-note">
-        Chart data sourced from
-        <a href="https://chartcatalogs.github.io/" target="_blank" rel="noopener">chartcatalogs.github.io</a>
-        &mdash; a community-maintained catalog. Download links may be outdated or unavailable.
-        If a download fails, please report it to the
-        <a href="https://github.com/chartcatalogs/catalogs/issues" target="_blank" rel="noopener">catalog issue tracker</a>.
-      </div>
+      <div id="catalogSourceNote" class="catalog-source-note">${sourceNoteHtml(null)}</div>
       <div id="catalogPodmanWarning"></div>
       <div id="catalogUpdatesSection"></div>
       <div id="catalogToolbar" class="catalog-toolbar">
-        <button type="button" class="btn-catalog-refresh" data-catalog-refresh title="Re-fetch the catalog index from GitHub">
+        <button type="button" class="btn-catalog-refresh" data-catalog-refresh title="Download the latest chart catalog">
           <span class="btn-catalog-refresh-label">Refresh catalog index</span>
         </button>
       </div>
@@ -271,6 +330,7 @@ async function initCatalogTab(): Promise<void> {
   }
   catalogUpdateBadgeInterval = setInterval(() => {
     void refreshUpdateBadge();
+    void refreshVesselPosition();
   }, 60000);
 }
 
@@ -280,15 +340,16 @@ function wireCatalogClickHandlers(): void {
 
   if (filterBar && !filterBar.dataset['catalogHandlerWired']) {
     filterBar.addEventListener('click', (ev) => {
-      const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>(
-        '[data-catalog-filter]'
+      const target = (ev.target as HTMLElement | null)?.closest<HTMLButtonElement>(
+        '[data-filter-group]'
       );
-      if (!target) {
+      if (!target || target.disabled) {
         return;
       }
-      const cat = target.dataset['catalogFilter'] as CatalogCategory | 'all' | undefined;
-      if (cat) {
-        setCatalogFilter(cat);
+      const group = target.dataset['filterGroup'];
+      const value = target.dataset['filterValue'] ?? '';
+      if (group) {
+        applyCatalogFilter(group, value);
       }
     });
     filterBar.dataset['catalogHandlerWired'] = '1';
@@ -306,6 +367,21 @@ function wireCatalogClickHandlers(): void {
         const file = expand.dataset['catalogToggle'];
         if (file) {
           void toggleCatalog(file);
+        }
+        return;
+      }
+
+      // "Clear filters" in the empty-list message.
+      if (target.closest('[data-filter-group="clear"]')) {
+        applyCatalogFilter('clear', '');
+        return;
+      }
+
+      const add = target.closest<HTMLElement>('[data-online-add]');
+      if (add) {
+        const catalogId = add.dataset['onlineAdd'];
+        if (catalogId) {
+          void addOnlineChart(catalogId);
         }
         return;
       }
@@ -449,61 +525,69 @@ function wireCatalogClickHandlers(): void {
 let registryLoadSeq = 0;
 let catalogRefreshInFlight = false;
 // Last status from the registry endpoint, so renderCatalogList() can show an
-// accurate empty-state message (rate-limited / offline) instead of a generic
-// "No catalogs" that would clobber it on the next poll-driven re-render.
-let lastRegistryStatus: RegistryStatus | undefined;
+// accurate empty-state message instead of a generic "No catalogs" that would
+// clobber it on the next poll-driven re-render.
+let lastCatalogStatus: CatalogStatus | undefined;
 
-// Human-friendly "try again …" from the rate-limit reset time. Uses LOCAL
-// time (never UTC) plus a relative hint; falls back to retry-after / "shortly".
-function formatRateLimitReset(status: RegistryStatus): string {
-  const { resetAt, retryAfter } = status;
-  if (!resetAt) {
-    if (retryAfter) {
-      const mins = Math.max(1, Math.ceil(retryAfter / 60));
-      return `in about ${mins} minute${mins === 1 ? '' : 's'}`;
-    }
-    return 'shortly';
+const DEFAULT_CATALOG_SOURCES: CatalogSources = {
+  chartcatalogs: {
+    homepage: 'https://chartcatalogs.github.io/',
+    issues: 'https://github.com/chartcatalogs/catalogs/issues'
+  },
+  online: {
+    homepage: 'https://github.com/dirkwa/signalk-charts-provider-simple',
+    issues:
+      'https://github.com/dirkwa/signalk-charts-provider-simple/issues/new?template=catalog-problem.yml'
   }
-  const local = new Date(resetAt).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-  const mins = Math.max(0, Math.ceil((resetAt - Date.now()) / 60000));
-  return mins > 0
-    ? `at ${local} (in about ${mins} minute${mins === 1 ? '' : 's'})`
-    : `at ${local}`;
+};
+
+// Attribution for both halves of the merged catalog, each with the tracker
+// its problems belong in. The links come from the catalog itself once loaded.
+function sourceNoteHtml(sources: CatalogSources | null | undefined): string {
+  const { chartcatalogs, online } = sources ?? DEFAULT_CATALOG_SOURCES;
+  // The links come from a downloaded file; only ever render https hrefs.
+  const link = (href: string, fallback: string, text: string) =>
+    `<a href="${catalogEscapeAttr(/^https:\/\//.test(href) ? href : fallback)}" target="_blank" rel="noopener">${text}</a>`;
+  const d = DEFAULT_CATALOG_SOURCES;
+  return `
+    Downloadable charts come from ${link(chartcatalogs.homepage, d.chartcatalogs.homepage, 'chartcatalogs.github.io')}
+    &mdash; a community-maintained catalog. Download links may be outdated or unavailable;
+    if a download fails, please report it to the ${link(chartcatalogs.issues, d.chartcatalogs.issues, 'chartcatalogs issue tracker')}.
+    Problems with online charts can be reported ${link(online.issues, d.online.issues, 'here')}.`;
 }
 
-// HTML for the empty-list placeholder, classed so CSS tints rate-limit
-// (warning) vs offline/error differently. Crucially never says "offline" for
-// a rate-limit.
-function registryEmptyMessageHtml(status: RegistryStatus | undefined): string {
-  if (status?.isRateLimited) {
-    return `<div class="catalog-error catalog-error-rate-limit"><strong>GitHub rate limit reached.</strong> The chart catalog index is fetched from GitHub, which limits anonymous requests. Please try again ${formatRateLimitReset(status)}, then click Refresh.</div>`;
+function renderSourceNote(sources: CatalogSources | null | undefined): void {
+  const el = document.getElementById('catalogSourceNote');
+  if (el) {
+    el.innerHTML = sourceNoteHtml(sources);
   }
-  if (status?.status === 'error') {
-    return `<div class="catalog-error">Could not fetch the chart catalog index from GitHub. Check this device's internet connection, then click Refresh. Previously cached catalogs reappear once it succeeds.</div>`;
+}
+
+// HTML for the empty-list placeholder when there is no catalog to show. The
+// server's message names the actual cause (offline, unavailable, damaged,
+// or needs a plugin update).
+function registryEmptyMessageHtml(status: CatalogStatus | undefined): string {
+  if ((status?.status === 'error' || status?.status === 'incompatible') && status.message) {
+    return `<div class="catalog-error">${catalogEscapeHtml(status.message)}</div>`;
   }
-  return `<div class="catalog-error">No catalogs available yet. Click Refresh to fetch the catalog index from GitHub.</div>`;
+  return `<div class="catalog-error">No catalogs available yet. Click Refresh to download the chart catalog.</div>`;
 }
 
 // Non-destructive banner shown ABOVE a populated list when a refresh failed —
 // so we never blank the cached cards just to report the failure.
 function showRegistryBanner(
-  status: RegistryStatus | undefined,
-  source: 'github' | 'server' = 'github'
+  status: CatalogStatus | undefined,
+  source: 'catalog' | 'server' = 'catalog'
 ): void {
   const el = document.getElementById('catalogRegistryBanner');
   if (!el) {
     return;
   }
   let msg: string;
-  if (status?.isRateLimited) {
-    msg = `Showing cached catalogs. GitHub rate limit reached — try refresh again ${formatRateLimitReset(status)}.`;
-  } else if (source === 'server') {
-    msg = 'Showing cached catalogs. Could not reach the Signal K server to refresh the index.';
+  if (source === 'server') {
+    msg = 'Showing the last downloaded catalog. Could not reach the Signal K server to refresh it.';
   } else {
-    msg = 'Showing cached catalogs. Could not reach GitHub to refresh the index.';
+    msg = `Showing the last downloaded catalog. ${catalogEscapeHtml(status?.message ?? 'Could not download a newer one.')}`;
   }
   el.innerHTML = `<div class="catalog-banner catalog-banner-warning">${msg}</div>`;
 }
@@ -520,8 +604,9 @@ function clearRegistryBanner(): void {
 // placeholder only when there's nothing cached to show.
 function applyRegistryResponse(data: CatalogRegistryResponse): void {
   const incoming = data.registry ?? [];
-  const status = data.registryStatus;
-  lastRegistryStatus = status;
+  const status = data.catalogStatus;
+  lastCatalogStatus = status;
+  renderSourceNote(data.sources);
 
   if (incoming.length === 0 && catalogRegistry.length > 0) {
     showRegistryBanner(status);
@@ -529,11 +614,14 @@ function applyRegistryResponse(data: CatalogRegistryResponse): void {
   }
 
   catalogRegistry = incoming;
+  onlineCatalog = data.online ?? [];
+  onlineAdded = data.onlineAdded ?? {};
+  vesselPosition = data.position ?? null;
   catalogInstalled = data.installed ?? {};
   catalogConverting = data.converting ?? {};
   renderFilterBar();
   // renderCatalogList handles both the populated and empty-registry cases
-  // (the latter via registryEmptyMessageHtml + lastRegistryStatus), so a
+  // (the latter via registryEmptyMessageHtml + lastCatalogStatus), so a
   // later poll-driven re-render keeps showing the right message.
   renderCatalogList();
 }
@@ -561,7 +649,7 @@ async function loadCatalogRegistry(): Promise<boolean> {
     if (seq !== registryLoadSeq) {
       return false;
     }
-    // Failure reaching OUR server (not GitHub). Keep a populated list.
+    // Failure reaching OUR server (not the catalog). Keep a populated list.
     if (catalogRegistry.length === 0) {
       const listEl = document.getElementById('catalogList');
       if (listEl) {
@@ -574,7 +662,7 @@ async function loadCatalogRegistry(): Promise<boolean> {
   }
 }
 
-// Refresh-button handler: force a GitHub re-fetch on demand, with a disabled/
+// Refresh-button handler: re-download the catalog on demand, with a disabled/
 // spinner state and the same never-blank + stale-guard rules as the load path.
 async function doCatalogRefresh(btn: HTMLButtonElement): Promise<void> {
   if (catalogRefreshInFlight) {
@@ -749,7 +837,8 @@ function renderUpdatesSection(): void {
             <button class="btn-catalog-log" data-catalog-log="${catalogEscapeAttr(update.chartNumber)}">Logs</button>
           </div>`;
       } else {
-        actionHtml = `<select class="catalog-folder-select catalog-update-folder-select" id="catalog-update-folder-${escapedNum}">
+        actionHtml = `<label class="catalog-folder-label" for="catalog-update-folder-${escapedNum}">Save to</label>
+           <select class="catalog-folder-select catalog-update-folder-select" id="catalog-update-folder-${escapedNum}">
             ${buildFolderOptions(update.installedFolder)}
            </select>
            <button class="btn-catalog-download"
@@ -948,44 +1037,347 @@ async function waitForConversion(chartNumber: string): Promise<void> {
   }
 }
 
+const CATEGORY_LABELS: Record<string, string> = {
+  navigation: 'Navigation',
+  weather: 'Weather',
+  depth: 'Depth & Seabed',
+  basemap: 'Base maps',
+  overlay: 'Overlays'
+};
+
+const FORMAT_LABELS: Record<string, string> = {
+  mbtiles: 'MBTiles',
+  enc: 'ENC (S-57)',
+  rnc: 'Raster (RNC)',
+  shapefile: 'Shapefile',
+  wms: 'WMS',
+  wmts: 'WMTS',
+  mapstyle: 'Map style',
+  tiles: 'Tiles'
+};
+
+// An online chart's Type-filter facet, from its chart resource type.
+const ONLINE_TYPE_FORMATS: Record<string, string> = {
+  WMS: 'wms',
+  WMTS: 'wmts',
+  mapstyleJSON: 'mapstyle',
+  tilelayer: 'tiles',
+  tileJSON: 'tiles'
+};
+
+// How far outside a chart's box still counts as "near": about 60 nm, so a
+// boat just off a coverage edge (or at anchor outside a harbor chart's box)
+// still sees it.
+const NEAR_ME_MARGIN_DEG = 1;
+
+/**
+ * Follow a GPS fix that arrives (or is lost) after the tab opened, so Near
+ * me enables itself without a reload. Only re-renders when that changes
+ * what the filters can show.
+ */
+async function refreshVesselPosition(): Promise<void> {
+  try {
+    const response = await fetch(`${CATALOG_API_BASE}/vessel-position`);
+    if (!response.ok) {
+      return;
+    }
+    const { position } = (await response.json()) as {
+      position: { latitude: number; longitude: number } | null;
+    };
+    const moved =
+      (position === null) !== (vesselPosition === null) ||
+      (position !== null &&
+        vesselPosition !== null &&
+        (Math.abs(position.latitude - vesselPosition.latitude) > 0.05 ||
+          Math.abs(position.longitude - vesselPosition.longitude) > 0.05));
+    if (moved) {
+      vesselPosition = position;
+      renderFilterBar();
+      renderCatalogList();
+    }
+  } catch {
+    // Next minute's poll will try again.
+  }
+}
+
+function loadCatalogFilters(): CatalogFilters {
+  const defaults: CatalogFilters = {
+    use: 'all',
+    categories: [],
+    formats: [],
+    nearMe: false,
+    showTypes: false
+  };
+  let saved: Record<string, unknown> = {};
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(FILTERS_STORAGE_KEY) ?? 'null');
+    if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+      saved = raw as Record<string, unknown>;
+    }
+  } catch {
+    // Unreadable or unavailable storage: start from the defaults.
+  }
+  // Each field falls back on its own, so one bad value (a hand edit, an
+  // older version's format) can't leave the tab stuck on an empty list.
+  const strings = (v: unknown) =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  const use = saved.use;
+  return {
+    use: use === 'download' || use === 'stream' ? use : defaults.use,
+    categories: strings(saved.categories),
+    formats: strings(saved.formats),
+    nearMe: saved.nearMe === true,
+    showTypes: saved.showTypes === true
+  };
+}
+
+function saveCatalogFilters(): void {
+  try {
+    localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(catalogFilters));
+  } catch {
+    // Remembering filters is a convenience; private windows may refuse it.
+  }
+}
+
+/** One thing the filters apply to: a downloadable catalog or an online chart. */
+interface FilterItem {
+  use: 'download' | 'stream';
+  category: string | undefined;
+  format: string | undefined;
+  bbox: number[] | undefined;
+}
+
+/** A label map lookup that never picks up Object.prototype names. */
+function ownLabel(map: Record<string, string>, key: string): string | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
+function isBbox(v: unknown): v is number[] {
+  return Array.isArray(v) && v.length === 4 && v.every((n) => Number.isFinite(n));
+}
+
+function registryFilterItem(entry: CatalogRegistryEntry): FilterItem {
+  return {
+    use: 'download',
+    category: entry.facets?.category,
+    format: entry.facets?.format,
+    bbox: entry.facets?.bbox
+  };
+}
+
+function onlineFilterItem(chart: OnlineCatalogChart): FilterItem {
+  return {
+    use: 'stream',
+    category: chart.category,
+    format: ownLabel(ONLINE_TYPE_FORMATS, chart.chart.type),
+    // A satellite's full disk is its bbox, but only its useful coverage
+    // should count as "near".
+    bbox: isBbox(chart.coverage) ? chart.coverage : chart.bbox
+  };
+}
+
+/** Whether `bbox` ([w, s, e, n], west > east crossing the antimeridian) is near the boat. */
+function isNearVessel(bbox: number[] | undefined): boolean {
+  if (!vesselPosition || !isBbox(bbox)) {
+    return false;
+  }
+  const [west = 0, south = 0, east = 0, north = 0] = bbox;
+  const { latitude, longitude } = vesselPosition;
+  const m = NEAR_ME_MARGIN_DEG;
+  if (latitude < south - m || latitude > north + m) {
+    return false;
+  }
+  // A degree of longitude shrinks toward the poles; widen the margin so it
+  // stays about the same distance.
+  const mLon = m / Math.max(Math.cos((latitude * Math.PI) / 180), 0.05);
+  const span = west <= east ? east - west : east + 360 - west;
+  if (span + 2 * mLon >= 360) {
+    return true;
+  }
+  // Measure eastward from the widened west edge, modulo 360, so boxes and
+  // margins that cross the antimeridian need no special case.
+  const offset = (((longitude - (west - mLon)) % 360) + 360) % 360;
+  return offset <= span + 2 * mLon;
+}
+
+type FilterGroup = 'use' | 'categories' | 'formats' | 'nearMe';
+
+/** Whether an item passes every active filter group except `skip`. */
+function passesFilters(item: FilterItem, skip?: FilterGroup): boolean {
+  const f = catalogFilters;
+  if (skip !== 'use' && f.use !== 'all' && item.use !== f.use) {
+    return false;
+  }
+  if (
+    skip !== 'categories' &&
+    f.categories.length > 0 &&
+    !f.categories.includes(item.category ?? '')
+  ) {
+    return false;
+  }
+  if (skip !== 'formats' && f.formats.length > 0 && !f.formats.includes(item.format ?? '')) {
+    return false;
+  }
+  // Without a position Near me can't apply (and its button is disabled), so
+  // a saved "on" must not hide everything.
+  if (skip !== 'nearMe' && f.nearMe && vesselPosition !== null && !isNearVessel(item.bbox)) {
+    return false;
+  }
+  return true;
+}
+
+function allFilterItems(): FilterItem[] {
+  return [...catalogRegistry.map(registryFilterItem), ...onlineCatalog.map(onlineFilterItem)];
+}
+
+/**
+ * How many items an option would show given the other active groups, which
+ * is what a faceted filter's count should promise.
+ */
+function optionCount(group: FilterGroup, matches: (item: FilterItem) => boolean): number {
+  return allFilterItems().filter((item) => passesFilters(item, group) && matches(item)).length;
+}
+
+function filterButton(
+  group: string,
+  value: string,
+  label: string,
+  active: boolean,
+  count: number | null,
+  extra = ''
+): string {
+  return `
+    <button type="button" class="category-filter-btn ${active ? 'active' : ''}" aria-pressed="${active ? 'true' : 'false'}"
+            data-filter-group="${catalogEscapeAttr(group)}" data-filter-value="${catalogEscapeAttr(value)}" ${extra}>
+      ${catalogEscapeHtml(label)}
+      ${count !== null ? `<span class="category-count">${count}</span>` : ''}
+    </button>`;
+}
+
 function renderFilterBar(): void {
   const filterBar = document.getElementById('catalogFilterBar');
   if (!filterBar) {
     return;
   }
+  const f = catalogFilters;
+  const items = allFilterItems();
+  const present = (
+    key: 'category' | 'format',
+    labels: Record<string, string>,
+    selected: string[]
+  ) => {
+    // Selected options always show, even at 0, so a saved choice the
+    // catalog no longer uses can still be switched off.
+    const keys = new Set([
+      ...items.map((i) => i[key]).filter((v): v is string => v !== undefined),
+      ...selected
+    ]);
+    // Known values in their fixed order, then anything newer the catalog uses.
+    return [
+      ...Object.keys(labels).filter((k) => keys.has(k)),
+      ...[...keys].filter((k) => !Object.hasOwn(labels, k)).sort()
+    ];
+  };
 
-  const categories: { key: CatalogCategory | 'all'; label: string }[] = [
-    { key: 'all', label: 'All' },
-    { key: 'mbtiles', label: 'MBTiles' },
-    { key: 'rnc', label: 'RNC' },
-    { key: 'ienc', label: 'IENC' },
-    { key: 'general', label: 'General' }
+  const useOptions: [CatalogFilters['use'], string][] = [
+    ['all', 'All'],
+    ['download', 'Download (works offline)'],
+    ['stream', 'Stream (needs internet)']
   ];
+  const useRow = useOptions
+    .map(([value, label]) =>
+      filterButton(
+        'use',
+        value,
+        label,
+        f.use === value,
+        optionCount('use', (i) => value === 'all' || i.use === value)
+      )
+    )
+    .join('');
 
-  const counts: Record<string, number> = { all: catalogRegistry.length };
-  catalogRegistry.forEach((c) => {
-    counts[c.category] = (counts[c.category] ?? 0) + 1;
-  });
+  const categoryRow = present('category', CATEGORY_LABELS, f.categories)
+    .map((c) =>
+      filterButton(
+        'categories',
+        c,
+        ownLabel(CATEGORY_LABELS, c) ?? c,
+        f.categories.includes(c),
+        optionCount('categories', (i) => i.category === c)
+      )
+    )
+    .join('');
+
+  // The reason Near me is off must be readable on a touch screen, where a
+  // tooltip never shows, so it goes in the label.
+  const nearMe = filterButton(
+    'nearMe',
+    '',
+    vesselPosition ? 'Near me' : 'Near me (no position yet)',
+    f.nearMe && vesselPosition !== null,
+    vesselPosition ? optionCount('nearMe', (i) => isNearVessel(i.bbox)) : null,
+    vesselPosition ? 'title="Charts that cover the boat\'s current position"' : 'disabled'
+  );
+
+  const typeRow = f.showTypes
+    ? `<div class="category-filter catalog-filter-types">
+        ${present('format', FORMAT_LABELS, f.formats)
+          .map((t) =>
+            filterButton(
+              'formats',
+              t,
+              ownLabel(FORMAT_LABELS, t) ?? t,
+              f.formats.includes(t),
+              optionCount('formats', (i) => i.format === t)
+            )
+          )
+          .join('')}
+      </div>`
+    : '';
 
   filterBar.innerHTML = `
-    <div class="category-filter">
-      ${categories
-        .map(
-          (cat) => `
-        <button class="category-filter-btn ${activeCategoryFilter === cat.key ? 'active' : ''}"
-                data-catalog-filter="${catalogEscapeAttr(cat.key)}">
-          ${catalogEscapeHtml(cat.label)}
-          <span class="category-count">${counts[cat.key] ?? 0}</span>
-        </button>
-      `
-        )
-        .join('')}
+    <div class="category-filter catalog-filter-use">${useRow}</div>
+    <div class="category-filter catalog-filter-categories">
+      ${categoryRow}
+      <span class="catalog-filter-divider"></span>
+      ${nearMe}
+      <button type="button" class="catalog-filter-more" aria-expanded="${f.showTypes ? 'true' : 'false'}" data-filter-group="showTypes" data-filter-value="">
+        ${f.showTypes ? 'Fewer filters' : 'More filters'}${f.formats.length > 0 ? ` (${f.formats.length})` : ''}
+      </button>
     </div>
+    ${typeRow}
   `;
 }
 
-function setCatalogFilter(category: CatalogCategory | 'all'): void {
-  activeCategoryFilter = category;
+function applyCatalogFilter(group: string, value: string): void {
+  const f = catalogFilters;
+  const toggle = (list: string[]) =>
+    list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+  switch (group) {
+    case 'use':
+      if (value === 'all' || value === 'download' || value === 'stream') {
+        f.use = value;
+      }
+      break;
+    case 'categories':
+      f.categories = toggle(f.categories);
+      break;
+    case 'formats':
+      f.formats = toggle(f.formats);
+      break;
+    case 'nearMe':
+      f.nearMe = !f.nearMe;
+      break;
+    case 'showTypes':
+      f.showTypes = !f.showTypes;
+      break;
+    case 'clear':
+      catalogFilters = { ...f, use: 'all', categories: [], formats: [], nearMe: false };
+      break;
+    default:
+      return;
+  }
+  saveCatalogFilters();
   renderFilterBar();
   renderCatalogList();
 }
@@ -995,34 +1387,205 @@ function renderCatalogList(): void {
   if (!listEl) {
     return;
   }
-  // Whole registry empty → show the status-aware reason (rate-limited /
+  // Whole registry empty → show the status-aware reason (incompatible /
   // offline / "click Refresh"), not a generic line that would clobber the
   // message a poll-driven re-render would otherwise wipe.
-  if (catalogRegistry.length === 0) {
-    listEl.innerHTML = registryEmptyMessageHtml(lastRegistryStatus);
+  if (catalogRegistry.length === 0 && onlineCatalog.length === 0) {
+    listEl.innerHTML = registryEmptyMessageHtml(lastCatalogStatus);
     return;
   }
 
-  // A successful populated render means the registry is fine — drop any
-  // stale "showing cached catalogs" banner from a prior failed refresh.
-  clearRegistryBanner();
+  // A populated list may still be the last good catalog after a failed
+  // refresh; say so rather than implying it is current.
+  if (lastCatalogStatus?.status === 'error' || lastCatalogStatus?.status === 'incompatible') {
+    showRegistryBanner(lastCatalogStatus);
+  } else {
+    clearRegistryBanner();
+  }
 
-  const filtered =
-    activeCategoryFilter === 'all'
-      ? catalogRegistry
-      : catalogRegistry.filter((c) => c.category === activeCategoryFilter);
+  const filtered = catalogRegistry.filter((c) => passesFilters(registryFilterItem(c)));
+  const online = onlineCatalog.filter((c) => passesFilters(onlineFilterItem(c)));
 
-  if (filtered.length === 0) {
-    listEl.innerHTML = `<div class="catalog-empty">No catalogs in this category.</div>`;
+  if (filtered.length === 0 && online.length === 0) {
+    listEl.innerHTML = `
+      <div class="catalog-empty">
+        No charts match these filters.
+        <button type="button" class="catalog-filter-more" data-filter-group="clear" data-filter-value="">Clear filters</button>
+      </div>`;
     return;
   }
 
-  listEl.innerHTML = filtered.map((catalog) => renderCatalogCard(catalog)).join('');
+  listEl.innerHTML = catalogSections(filtered, online)
+    .map((section) => renderCatalogSection(section))
+    .join('');
+}
+
+interface CatalogSection {
+  category: string;
+  online: OnlineCatalogChart[];
+  downloads: CatalogRegistryEntry[];
+}
+
+function sectionOf(category: string | undefined): string {
+  return category && ownLabel(SECTION_LABELS, category) ? category : OTHER_SECTION;
+}
+
+/** Everything that passed the filters, sectioned by category in a fixed order. */
+function catalogSections(
+  downloads: CatalogRegistryEntry[],
+  online: OnlineCatalogChart[]
+): CatalogSection[] {
+  const sections = new Map<string, CatalogSection>();
+  const sectionFor = (category: string) => {
+    let section = sections.get(category);
+    if (!section) {
+      section = { category, online: [], downloads: [] };
+      sections.set(category, section);
+    }
+    return section;
+  };
+  for (const chart of online) {
+    sectionFor(sectionOf(chart.category)).online.push(chart);
+  }
+  for (const catalog of downloads) {
+    sectionFor(sectionOf(catalog.facets?.category)).downloads.push(catalog);
+  }
+  const order = Object.keys(SECTION_LABELS);
+  const rank = (c: string) => (order.includes(c) ? order.indexOf(c) : order.length);
+  return [...sections.values()]
+    .sort((a, b) => rank(a.category) - rank(b.category))
+    .map((section) => ({
+      ...section,
+      // Most download catalogs are named for a country or waterway.
+      downloads: section.downloads.sort((a, b) => a.label.localeCompare(b.label))
+    }));
+}
+
+function renderCatalogSection(section: CatalogSection): string {
+  const label = ownLabel(SECTION_LABELS, section.category) ?? 'Other Charts';
+  return `
+    <section class="catalog-section">
+      <h2 class="catalog-section-title">${catalogEscapeHtml(label)}</h2>
+      ${section.online.length > 0 ? renderOnlineGroupCard(section.category, section.online) : ''}
+      ${section.downloads.map((catalog) => renderCatalogCard(catalog)).join('')}
+    </section>`;
+}
+
+function renderOnlineGroupCard(category: string, charts: OnlineCatalogChart[]): string {
+  const key = ONLINE_KEY_PREFIX + category;
+  const isExpanded = expandedCatalogs.has(key);
+  const label = 'Online charts';
+  return `
+    <div class="catalog-card online ${isExpanded ? 'expanded' : ''}" id="catalog-card-${catalogEscapeId(key)}">
+      <div class="catalog-card-header" data-catalog-toggle="${catalogEscapeAttr(key)}">
+        <div class="catalog-expand-icon">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
+          </svg>
+        </div>
+        <div class="catalog-card-title">${catalogEscapeHtml(label)}</div>
+        <div class="catalog-card-meta">
+          <span class="catalog-chart-count">${charts.length} ${charts.length === 1 ? 'chart' : 'charts'}</span>
+          <span class="format-badge online">Online</span>
+        </div>
+      </div>
+      <div class="catalog-card-body" id="catalog-body-${catalogEscapeId(key)}">
+        ${isExpanded ? renderOnlineChartList(charts) : ''}
+      </div>
+    </div>
+  `;
+}
+
+/** Where an online chart has been added; an own-key lookup, so no id reads an inherited value. */
+function addedPaths(catalogId: string): string[] {
+  return Object.hasOwn(onlineAdded, catalogId) ? (onlineAdded[catalogId] ?? []) : [];
+}
+
+function renderOnlineChartList(charts: OnlineCatalogChart[]): string {
+  return charts
+    .map((chart) => {
+      const added = addedPaths(chart.id).length > 0;
+      const adding = onlineAdding.has(chart.id);
+      const licenseLink = /^https:\/\//.test(chart.licenseUrl)
+        ? `<a href="${catalogEscapeAttr(chart.licenseUrl)}" target="_blank" rel="noopener">${catalogEscapeHtml(chart.license)}</a>`
+        : catalogEscapeHtml(chart.license);
+      const badges = [
+        '<span class="online-badge" title="Streamed from its provider; shows nothing without an internet connection">Needs internet</span>',
+        chart.temporal
+          ? `<span class="online-badge live" title="Updates automatically; recent images can be played back">${chart.temporal.kind === 'forecast' ? 'Forecast' : 'Live'}</span>`
+          : '',
+        chart.notForNavigation
+          ? '<span class="online-badge caution">Not for navigation</span>'
+          : ''
+      ].join('');
+      const action = added
+        ? '<span class="installed-badge">Added</span>'
+        : `
+          <label class="catalog-folder-label" for="online-folder-${catalogEscapeId(chart.id)}">Save to</label>
+          <select class="catalog-folder-select" id="online-folder-${catalogEscapeId(chart.id)}">
+            ${buildFolderOptions(ONLINE_DEFAULT_FOLDER)}
+          </select>
+          <button class="btn-catalog-download" data-online-add="${catalogEscapeAttr(chart.id)}" ${adding ? 'disabled' : ''}>
+            ${adding ? 'Adding…' : 'Add'}
+          </button>`;
+      return `
+        <div class="catalog-chart-row online-chart-row">
+          <div class="chart-row-info">
+            <div class="chart-row-number">${catalogEscapeHtml(chart.name)} ${badges}</div>
+            <div class="chart-row-title">${catalogEscapeHtml(chart.description)}</div>
+            <div class="online-row-source">${catalogEscapeHtml(chart.provider)} · ${licenseLink}</div>
+          </div>
+          <div class="chart-row-actions">${action}</div>
+        </div>`;
+    })
+    .join('');
+}
+
+async function addOnlineChart(catalogId: string): Promise<void> {
+  if (onlineAdding.has(catalogId)) {
+    return;
+  }
+  const folderEl = document.getElementById(
+    `online-folder-${catalogEscapeId(catalogId)}`
+  ) as HTMLSelectElement | null;
+  const folder = folderEl?.value ?? ONLINE_DEFAULT_FOLDER;
+  onlineAdding.add(catalogId);
+  renderCatalogList();
+  try {
+    const response = await fetch(`${CATALOG_API_BASE}/online-charts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ catalogId, folder })
+    });
+    let result: { success?: boolean; relativePath?: string; error?: string } = {};
+    try {
+      result = (await response.json()) as typeof result;
+    } catch {
+      // A proxy error page isn't JSON; report the HTTP status instead.
+    }
+    if (!response.ok || !result.success || !result.relativePath) {
+      throw new Error(result.error ?? `HTTP ${response.status}`);
+    }
+    onlineAdded[catalogId] = [...addedPaths(catalogId), result.relativePath];
+    if (!catalogFolders.includes(folder)) {
+      catalogFolders = [...catalogFolders, folder];
+    }
+    document.dispatchEvent(new CustomEvent('charts-changed'));
+  } catch (error) {
+    console.error('Failed to add online chart:', error);
+    alert(`Could not add the chart: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    onlineAdding.delete(catalogId);
+    renderCatalogList();
+  }
 }
 
 function renderCatalogCard(catalog: CatalogRegistryEntry): string {
   const isExpanded = expandedCatalogs.has(catalog.file);
-  const chartCountText = catalog.chartCount !== null ? `${catalog.chartCount} charts` : '';
+  const chartCountText =
+    catalog.chartCount !== null
+      ? `${catalog.chartCount} ${catalog.chartCount === 1 ? 'chart' : 'charts'}`
+      : '';
 
   return `
     <div class="catalog-card ${isExpanded ? 'expanded' : ''}" id="catalog-card-${catalogEscapeId(catalog.file)}">
@@ -1046,6 +1609,16 @@ function renderCatalogCard(catalog: CatalogRegistryEntry): string {
 }
 
 async function toggleCatalog(catalogFile: string): Promise<void> {
+  // Online groups are already in memory; there is nothing to fetch.
+  if (catalogFile.startsWith(ONLINE_KEY_PREFIX)) {
+    if (expandedCatalogs.has(catalogFile)) {
+      expandedCatalogs.delete(catalogFile);
+    } else {
+      expandedCatalogs.add(catalogFile);
+    }
+    renderCatalogList();
+    return;
+  }
   if (expandedCatalogs.has(catalogFile)) {
     expandedCatalogs.delete(catalogFile);
     renderCatalogList();
@@ -1168,13 +1741,13 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
           showZoomSelector && s57PodmanAvailable
             ? `
           <span class="catalog-zoom-label">Zoom</span>
-          <select class="catalog-zoom-select" id="catalog-minzoom-${catalogEscapeId(chart.number)}">
+          <select class="catalog-zoom-select" id="catalog-minzoom-${downloadRowId(catalogFile, chart.number)}">
             ${[4, 5, 6, 7, 8, 9, 10, 11, 12]
               .map((z) => `<option value="${z}" ${z === 4 ? 'selected' : ''}>${z}</option>`)
               .join('')}
           </select>
           <span class="catalog-zoom-dash">-</span>
-          <select class="catalog-zoom-select" id="catalog-maxzoom-${catalogEscapeId(chart.number)}">
+          <select class="catalog-zoom-select" id="catalog-maxzoom-${downloadRowId(catalogFile, chart.number)}">
             ${[12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
               .map((z) => `<option value="${z}" ${z === 18 ? 'selected' : ''}>${z}</option>`)
               .join('')}
@@ -1185,7 +1758,8 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
         actionHtml = `
           ${podmanHint}
           ${zoomHtml}
-          <select class="catalog-folder-select" id="catalog-folder-${catalogEscapeId(chart.number)}">
+          <label class="catalog-folder-label" for="catalog-folder-${downloadRowId(catalogFile, chart.number)}">Save to</label>
+          <select class="catalog-folder-select" id="catalog-folder-${downloadRowId(catalogFile, chart.number)}">
             ${buildFolderOptions(defaultFolder)}
           </select>
           <button class="btn-catalog-download" ${btnDisabled}
@@ -1221,15 +1795,15 @@ async function downloadCatalogChart(
   zipfileDatetime: string
 ): Promise<void> {
   const folderSelect = document.getElementById(
-    `catalog-folder-${catalogEscapeId(chartNumber)}`
+    `catalog-folder-${downloadRowId(catalogFile, chartNumber)}`
   ) as HTMLSelectElement | null;
   const targetFolder = folderSelect ? folderSelect.value : '/';
 
   const minzoomSelect = document.getElementById(
-    `catalog-minzoom-${catalogEscapeId(chartNumber)}`
+    `catalog-minzoom-${downloadRowId(catalogFile, chartNumber)}`
   ) as HTMLSelectElement | null;
   const maxzoomSelect = document.getElementById(
-    `catalog-maxzoom-${catalogEscapeId(chartNumber)}`
+    `catalog-maxzoom-${downloadRowId(catalogFile, chartNumber)}`
   ) as HTMLSelectElement | null;
   const minzoom = minzoomSelect ? parseInt(minzoomSelect.value, 10) : undefined;
   const maxzoom = maxzoomSelect ? parseInt(maxzoomSelect.value, 10) : undefined;
@@ -1731,6 +2305,14 @@ function catalogEscapeAttr(str: string | undefined | null): string {
     .replace(/>/g, '&gt;');
 }
 
+/**
+ * The id suffix for a download row's controls. Two catalogs can list the
+ * same chart number, so the catalog is part of it.
+ */
+function downloadRowId(catalogFile: string, chartNumber: string): string {
+  return catalogEscapeId(JSON.stringify([catalogFile, chartNumber]));
+}
+
 function catalogEscapeId(str: string | undefined | null): string {
   if (!str) {
     return '';
@@ -1742,7 +2324,6 @@ function catalogEscapeId(str: string | undefined | null): string {
   return encodeURIComponent(str).replace(/%/g, '__');
 }
 
-window.setCatalogFilter = setCatalogFilter;
 window.toggleCatalog = toggleCatalog;
 window.downloadCatalogChart = downloadCatalogChart;
 window.dismissConversionError = dismissConversionError;

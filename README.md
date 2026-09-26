@@ -8,6 +8,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 - **Folder Groups**: Enable/disable whole chart folders at once (OpenCPN-style groups, including nested folders); clients like Freeboard-SK see the change live via `resources.charts` deltas
 - **Download Manager**: Built-in download queue with progress tracking and ZIP extraction
 - **Chart Catalog**: Browse and download charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) with automatic update notifications
+- **Online Charts**: Add weather radar and satellite, online nautical charts, depth layers and base maps from the Chart Catalog with one click — no download, no conversion
 - **NOAA Charts**: Draw a coverage region on a map from NOAA band-4 chart footprints; the plugin bundles the overlapping band-3/4/5 ENCs and converts them into a single vector MBTiles named after your chart set
 - **S-57 ENC Conversion**: Convert IENC/ENC charts to vector MBTiles with full S-52 symbology in Freeboard-SK
 - **BSB Raster Conversion**: Convert BSB/KAP raster charts and Pilot Charts to raster MBTiles
@@ -88,11 +89,13 @@ The interface provides five tabs:
    - Live conversion progress with log viewer
 
 4. **Chart Catalog**:
-   - Dynamic catalog from [chartcatalogs.github.io](https://chartcatalogs.github.io/)
+   - Downloadable charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) and a curated list of online charts, in one list, sectioned by what the charts show, with **Near me** narrowing each section to where you are
+   - **Online charts** (weather radar and satellite, online nautical charts, depths, base maps): press **Add** and the chart appears in Manage Charts and in your chart plotter. They stream from their provider, so they need an internet connection to display. They go into an "Online Charts" folder by default, so you can switch them all off at once when you're offline
+   - Live weather layers (radar, satellite, forecasts) keep their recent images or forecast steps up to date, so chart plotters with a time slider (Freeboard-SK) can play them back
    - One-click download for MBTiles charts (NOAA)
    - Download & convert for S-57 ENC, BSB raster, Pilot Charts, and basemaps
    - Automatic update notifications (Signal K delta + tab badge)
-   - Category filtering (MBTiles / RNC / IENC / General)
+   - Filters: **Download** (works offline) or **Stream** (needs internet); what the chart shows (Navigation, Weather, Depth & Seabed, Base maps, Overlays); chart type under "More filters"; and **Near me**, using the boat's position
 
 5. **NOAA Charts**:
    - Build a named **chart set** of NOAA ENC coverage by clicking band-4 footprints on a map (Leaflet + OpenSeaMap)
@@ -185,6 +188,12 @@ Inspired by [Signal K Charts Plugin](https://github.com/SignalK/charts-plugin) b
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+**Online charts in the Chart Catalog** are curated in this repository. To add or fix one, see
+[Maintaining the catalog](docs/chart-catalog.md#maintaining-the-catalog). If you know a good
+free service but don't want to write the entry yourself, open a
+[Suggest an online chart](https://github.com/dirkwa/signalk-charts-provider-simple/issues/new?template=suggest-online-chart.yml)
+issue.
 
 ## Support
 

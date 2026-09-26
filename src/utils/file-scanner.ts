@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ScannedChart } from '../types.js';
+import { isOnlineChartFile, readOnlineChartFile } from './online-charts.js';
 
 interface ChartMetadata {
   name?: string;
@@ -108,6 +109,24 @@ export async function scanChartsRecursively(
         dateCreated: stats.birthtimeMs,
         dateModified: stats.mtimeMs,
         enabled: true
+      });
+    } else if (entry.isFile() && isOnlineChartFile(entry.name)) {
+      // An unreadable file is still listed, so it can be seen and deleted.
+      const file = readOnlineChartFile(fullPath);
+      const stats = await fs.promises.stat(fullPath);
+      const relativePath = path.relative(basePath, fullPath);
+      const folder = path.dirname(relativePath) || '/';
+      charts.push({
+        name: entry.name,
+        chartName: file?.name ?? entry.name,
+        size: null,
+        path: fullPath,
+        relativePath,
+        folder: folder === '.' ? '/' : folder,
+        dateCreated: stats.birthtimeMs,
+        dateModified: stats.mtimeMs,
+        enabled: true,
+        online: file ? { catalogId: file.catalogId } : { catalogId: '', unreadable: true }
       });
     }
   }

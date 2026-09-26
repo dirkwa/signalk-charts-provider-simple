@@ -49,6 +49,26 @@ test.describe('Manage Charts tab', () => {
     await expect(page.locator('#manageOutput')).toContainText('Bar Chart', { timeout: 5000 });
   });
 
+  test('remembers the chosen view across reloads', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/'],
+        charts: [{ relativePath: 'foo.mbtiles', name: 'Foo Chart', folder: '/', enabled: true }]
+      }
+    });
+    await page.reload();
+    await expect(page.locator('#manageOutput .chart-grid')).toBeVisible();
+
+    await page.getByTitle('List View').click();
+    await expect(page.locator('#manageOutput .chart-list')).toBeVisible();
+
+    await page.reload();
+    await expect(page.locator('#manageOutput .chart-list')).toBeVisible();
+    await expect(page.getByTitle('List View')).toHaveClass(/active/);
+  });
+
   test('renders empty state when /local-charts returns no charts', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     await setMockState(page, {
@@ -234,5 +254,68 @@ test.describe('Manage Charts tab', () => {
       return sawClick;
     });
     expect(clicked).toBe(true);
+  });
+  test('shows online charts by name with their badges', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/', 'Online Charts'],
+        charts: [
+          {
+            relativePath: 'Online Charts/nws-radar-conus.onlinechart.json',
+            name: 'nws-radar-conus.onlinechart.json',
+            chartName: 'NWS Radar – Continental US',
+            folder: 'Online Charts',
+            enabled: true,
+            online: {
+              catalogId: 'nws-radar-conus',
+              available: true,
+              catalogLoaded: true,
+              type: 'WMS'
+            }
+          },
+          {
+            relativePath: 'Online Charts/gone.onlinechart.json',
+            name: 'gone.onlinechart.json',
+            chartName: 'Retired Layer',
+            folder: 'Online Charts',
+            enabled: true,
+            online: { catalogId: 'gone', available: false, catalogLoaded: true, type: null }
+          },
+          {
+            relativePath: 'Online Charts/joels.onlinechart.json',
+            name: 'joels.onlinechart.json',
+            chartName: "Joel's radar');window.pwned=1;('",
+            folder: 'Online Charts',
+            enabled: true,
+            online: { catalogId: 'x', available: false, catalogLoaded: false, type: null }
+          }
+        ]
+      }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+
+    await page.locator('.folder-btn', { hasText: 'Online Charts' }).first().click();
+    const radar = page.locator('.chart-card', { hasText: 'NWS Radar – Continental US' });
+    await expect(radar).toContainText('Needs internet', { timeout: 5000 });
+    await expect(radar).toContainText('ONLINE');
+    await expect(radar).not.toContainText('No longer available');
+    const gone = page.locator('.chart-card', { hasText: 'Retired Layer' });
+    await expect(gone).toContainText('No longer available');
+
+    // No catalog yet is not the same as "removed from the catalog".
+    const waiting = page.locator('.chart-card', { hasText: "Joel's radar" });
+    await expect(waiting).toContainText('Waiting for chart catalog');
+
+    // A display name never reaches inline handler JS: Delete still works for
+    // a name with quotes, shows the name, and runs nothing from it.
+    await waiting.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.locator('.delete-modal')).toContainText("Joel's radar");
+    expect(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBe(
+      undefined
+    );
   });
 });
