@@ -46,6 +46,16 @@ fails, and revalidates with the ETag so an unchanged catalog is not downloaded
 again. Development servers can point it at a fork's Pages site with the
 `CHARTS_CATALOG_URL` environment variable.
 
+## Adding online charts
+
+Pressing **Add** on an online chart writes `<catalogId>.onlinechart.json` into
+the chosen chart folder (by default "Online Charts"). The file holds only the
+catalog id and the chart's display name; the plugin looks the entry up in the
+downloaded catalog whenever it serves the chart. So a corrected URL or layer in
+the catalog reaches every boat on its next catalog refresh, and a chart whose
+entry is removed from the catalog stays listed in Manage Charts, marked as no
+longer available, instead of silently disappearing.
+
 ## How publishing works
 
 `.github/workflows/publish-catalog.yml` runs every six hours, on changes to the

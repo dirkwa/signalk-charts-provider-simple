@@ -84,6 +84,7 @@ declare global {
     handleDrop(event: DragEvent, targetFolder: string): void;
     handleDropOnFolder(event: DragEvent, targetFolder: string): Promise<void>;
     showChartInfo(chartPath: string): Promise<void>;
+    renameOnlineChart(chartPath: string): Promise<void>;
     closeChartInfoModal(event?: Event): void;
     editChartMetadata(): void;
     cancelEditMetadata(): void;

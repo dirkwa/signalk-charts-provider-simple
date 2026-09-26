@@ -6,9 +6,9 @@ import {
   MERGED_CATALOG_SCHEMA_VERSION,
   MergedCatalogChartSchema,
   MergedCatalogSchema,
-  MergedOnlineChartSchema,
+  OnlineChartReadSchema,
   type MergedCatalogChart,
-  type MergedOnlineChart
+  type OnlineCatalogChart
 } from '../catalog/merged-catalog-schema.js';
 import type {
   CatalogCategory,
@@ -70,7 +70,7 @@ interface LoadedCatalog {
   contentHash: string;
   sources: CatalogSources | null;
   chartcatalogs: Map<string, ChartcatalogsEntry>;
-  online: MergedOnlineChart[];
+  online: OnlineCatalogChart[];
 }
 
 /** On-disk form of the last good download, so the tab works across restarts. */
@@ -89,6 +89,10 @@ const catalogStatus: CatalogStatus = {
   httpStatus: null,
   message: null
 };
+
+// Called after a download replaces the catalog with different content, so
+// the plugin can re-resolve and re-announce the online charts it serves.
+let catalogChangedListener: (() => void) | null = null;
 
 // Single-flight guard: the fetch at init, the UI's first-load and staleness
 // checks and a Refresh click must not issue concurrent downloads.
@@ -175,9 +179,9 @@ export function interpretCatalog(raw: unknown): InterpretedCatalog {
     });
   }
 
-  const online: MergedOnlineChart[] = [];
+  const online: OnlineCatalogChart[] = [];
   for (const entry of obj.online as unknown[]) {
-    if (Value.Check(MergedOnlineChartSchema, entry)) {
+    if (Value.Check(OnlineChartReadSchema, entry)) {
       online.push(entry);
     } else {
       skippedEntries++;
@@ -426,8 +430,12 @@ async function doRefreshCatalog(): Promise<void> {
       return;
     }
     const etag = response.headers.get('etag');
+    const previousHash = loaded?.contentHash ?? null;
     if (!applyCatalog(raw, now, etag)) {
       return;
+    }
+    if (loaded?.contentHash !== previousHash) {
+      catalogChangedListener?.();
     }
     saveCatalogCache({ fetchedAt: now, etag, catalog: raw });
     debug(
@@ -471,9 +479,18 @@ export function getCatalogSources(): CatalogSources | null {
   return loaded ? loaded.sources : null;
 }
 
-/** Online charts from the catalog (served and added from stage 3 on). */
-export function getOnlineCatalogCharts(): MergedOnlineChart[] {
+/** The curated online charts in the catalog. */
+export function getOnlineCatalogCharts(): OnlineCatalogChart[] {
   return loaded ? [...loaded.online] : [];
+}
+
+export function getOnlineCatalogChart(id: string): OnlineCatalogChart | undefined {
+  return loaded?.online.find((c) => c.id === id);
+}
+
+/** Register (or, with null, remove) the catalog-changed callback. */
+export function setCatalogChangedListener(listener: (() => void) | null): void {
+  catalogChangedListener = listener;
 }
 
 export function getCatalogRegistry(): CatalogRegistryInfo[] {

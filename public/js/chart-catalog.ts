@@ -50,8 +50,27 @@ interface CatalogSources {
   online: { homepage: string; issues: string };
 }
 
+type OnlineCategory = 'navigation' | 'weather' | 'depth' | 'basemap' | 'overlay';
+
+/** A curated online chart, as the catalog lists it. */
+interface OnlineCatalogChart {
+  id: string;
+  name: string;
+  description: string;
+  category: OnlineCategory | string;
+  provider: string;
+  license: string;
+  licenseUrl: string;
+  notForNavigation?: boolean;
+  chart: { type: string };
+  temporal?: { kind: string };
+}
+
 interface CatalogRegistryResponse {
   registry?: CatalogRegistryEntry[];
+  online?: OnlineCatalogChart[];
+  /** catalogId → chart-folder paths of its .onlinechart.json files. */
+  onlineAdded?: Record<string, string[]>;
   installed?: Record<string, CatalogInstall>;
   converting?: Record<string, boolean>;
   catalogStatus?: CatalogStatus;
@@ -117,7 +136,24 @@ let catalogInitialized = false;
 let catalogRegistry: CatalogRegistryEntry[] = [];
 let catalogInstalled: Record<string, CatalogInstall> = {};
 let catalogUpdates: CatalogUpdate[] = [];
-let activeCategoryFilter: CatalogCategory | 'all' = 'all';
+let activeCategoryFilter: CatalogCategory | 'all' | 'online' = 'all';
+let onlineCatalog: OnlineCatalogChart[] = [];
+let onlineAdded: Record<string, string[]> = {};
+const onlineAdding = new Set<string>();
+
+// Online charts are grouped into one card per category. Card keys use a
+// prefix no chartcatalogs file name can have, so they share expandedCatalogs.
+const ONLINE_KEY_PREFIX = 'online:';
+const ONLINE_GROUP_LABELS: Record<string, string> = {
+  navigation: 'Online Nautical Charts',
+  weather: 'Weather',
+  depth: 'Depth & Seabed',
+  basemap: 'Base Maps & Imagery',
+  overlay: 'Marine Overlays'
+};
+// A folder of its own means online charts can be switched off together
+// (e.g. offshore, with no internet) by disabling one folder.
+const ONLINE_DEFAULT_FOLDER = 'Online Charts';
 const expandedCatalogs = new Set<string>();
 const catalogChartData: Record<string, CatalogData> = {};
 let catalogFolders: string[] = ['/'];
@@ -284,7 +320,7 @@ function wireCatalogClickHandlers(): void {
       if (!target) {
         return;
       }
-      const cat = target.dataset['catalogFilter'] as CatalogCategory | 'all' | undefined;
+      const cat = target.dataset['catalogFilter'] as CatalogCategory | 'all' | 'online' | undefined;
       if (cat) {
         setCatalogFilter(cat);
       }
@@ -304,6 +340,15 @@ function wireCatalogClickHandlers(): void {
         const file = expand.dataset['catalogToggle'];
         if (file) {
           void toggleCatalog(file);
+        }
+        return;
+      }
+
+      const add = target.closest<HTMLElement>('[data-online-add]');
+      if (add) {
+        const catalogId = add.dataset['onlineAdd'];
+        if (catalogId) {
+          void addOnlineChart(catalogId);
         }
         return;
       }
@@ -536,6 +581,8 @@ function applyRegistryResponse(data: CatalogRegistryResponse): void {
   }
 
   catalogRegistry = incoming;
+  onlineCatalog = data.online ?? [];
+  onlineAdded = data.onlineAdded ?? {};
   catalogInstalled = data.installed ?? {};
   catalogConverting = data.converting ?? {};
   renderFilterBar();
@@ -961,15 +1008,20 @@ function renderFilterBar(): void {
     return;
   }
 
-  const categories: { key: CatalogCategory | 'all'; label: string }[] = [
+  const categories: { key: CatalogCategory | 'all' | 'online'; label: string }[] = [
     { key: 'all', label: 'All' },
     { key: 'mbtiles', label: 'MBTiles' },
     { key: 'rnc', label: 'RNC' },
     { key: 'ienc', label: 'IENC' },
-    { key: 'general', label: 'General' }
+    { key: 'general', label: 'General' },
+    { key: 'online', label: 'Online' }
   ];
 
-  const counts: Record<string, number> = { all: catalogRegistry.length };
+  const onlineGroups = onlineCatalogGroups().length;
+  const counts: Record<string, number> = {
+    all: catalogRegistry.length + onlineGroups,
+    online: onlineGroups
+  };
   catalogRegistry.forEach((c) => {
     counts[c.category] = (counts[c.category] ?? 0) + 1;
   });
@@ -991,7 +1043,7 @@ function renderFilterBar(): void {
   `;
 }
 
-function setCatalogFilter(category: CatalogCategory | 'all'): void {
+function setCatalogFilter(category: CatalogCategory | 'all' | 'online'): void {
   activeCategoryFilter = category;
   renderFilterBar();
   renderCatalogList();
@@ -1005,7 +1057,7 @@ function renderCatalogList(): void {
   // Whole registry empty → show the status-aware reason (incompatible /
   // offline / "click Refresh"), not a generic line that would clobber the
   // message a poll-driven re-render would otherwise wipe.
-  if (catalogRegistry.length === 0) {
+  if (catalogRegistry.length === 0 && onlineCatalog.length === 0) {
     listEl.innerHTML = registryEmptyMessageHtml(lastCatalogStatus);
     return;
   }
@@ -1022,18 +1074,142 @@ function renderCatalogList(): void {
     activeCategoryFilter === 'all'
       ? catalogRegistry
       : catalogRegistry.filter((c) => c.category === activeCategoryFilter);
+  const groups =
+    activeCategoryFilter === 'all' || activeCategoryFilter === 'online'
+      ? onlineCatalogGroups()
+      : [];
 
-  if (filtered.length === 0) {
+  if (filtered.length === 0 && groups.length === 0) {
     listEl.innerHTML = `<div class="catalog-empty">No catalogs in this category.</div>`;
     return;
   }
 
-  listEl.innerHTML = filtered.map((catalog) => renderCatalogCard(catalog)).join('');
+  listEl.innerHTML =
+    groups.map(([category, charts]) => renderOnlineGroupCard(category, charts)).join('') +
+    filtered.map((catalog) => renderCatalogCard(catalog)).join('');
+}
+
+/** Online charts grouped by category, in a fixed, boater-friendly order. */
+function onlineCatalogGroups(): [string, OnlineCatalogChart[]][] {
+  const order = Object.keys(ONLINE_GROUP_LABELS);
+  const groups = new Map<string, OnlineCatalogChart[]>();
+  for (const chart of onlineCatalog) {
+    const list = groups.get(chart.category) ?? [];
+    list.push(chart);
+    groups.set(chart.category, list);
+  }
+  const rank = (c: string) => (order.includes(c) ? order.indexOf(c) : order.length);
+  return [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
+}
+
+function renderOnlineGroupCard(category: string, charts: OnlineCatalogChart[]): string {
+  const key = ONLINE_KEY_PREFIX + category;
+  const isExpanded = expandedCatalogs.has(key);
+  const label = ONLINE_GROUP_LABELS[category] ?? category;
+  return `
+    <div class="catalog-card online ${isExpanded ? 'expanded' : ''}" id="catalog-card-${catalogEscapeId(key)}">
+      <div class="catalog-card-header" data-catalog-toggle="${catalogEscapeAttr(key)}">
+        <div class="catalog-expand-icon">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
+          </svg>
+        </div>
+        <div class="catalog-card-title">${catalogEscapeHtml(label)}</div>
+        <div class="catalog-card-meta">
+          <span class="catalog-chart-count">${charts.length} ${charts.length === 1 ? 'chart' : 'charts'}</span>
+          <span class="format-badge online">Online</span>
+        </div>
+      </div>
+      <div class="catalog-card-body" id="catalog-body-${catalogEscapeId(key)}">
+        ${isExpanded ? renderOnlineChartList(charts) : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderOnlineChartList(charts: OnlineCatalogChart[]): string {
+  return charts
+    .map((chart) => {
+      const added = (onlineAdded[chart.id] ?? []).length > 0;
+      const adding = onlineAdding.has(chart.id);
+      const licenseLink = /^https:\/\//.test(chart.licenseUrl)
+        ? `<a href="${catalogEscapeAttr(chart.licenseUrl)}" target="_blank" rel="noopener">${catalogEscapeHtml(chart.license)}</a>`
+        : catalogEscapeHtml(chart.license);
+      const badges = [
+        '<span class="online-badge" title="Streamed from its provider; shows nothing without an internet connection">Needs internet</span>',
+        chart.temporal
+          ? `<span class="online-badge live" title="Updates automatically; recent images can be played back">${chart.temporal.kind === 'forecast' ? 'Forecast' : 'Live'}</span>`
+          : '',
+        chart.notForNavigation
+          ? '<span class="online-badge caution">Not for navigation</span>'
+          : ''
+      ].join('');
+      const action = added
+        ? '<span class="installed-badge">Added</span>'
+        : `
+          <select class="catalog-folder-select" id="online-folder-${catalogEscapeId(chart.id)}">
+            ${buildFolderOptions(ONLINE_DEFAULT_FOLDER)}
+          </select>
+          <button class="btn-catalog-download" data-online-add="${catalogEscapeAttr(chart.id)}" ${adding ? 'disabled' : ''}>
+            ${adding ? 'Adding…' : 'Add'}
+          </button>`;
+      return `
+        <div class="catalog-chart-row online-chart-row">
+          <div class="chart-row-info">
+            <div class="chart-row-number">${catalogEscapeHtml(chart.name)} ${badges}</div>
+            <div class="chart-row-title">${catalogEscapeHtml(chart.description)}</div>
+            <div class="online-row-source">${catalogEscapeHtml(chart.provider)} · ${licenseLink}</div>
+          </div>
+          <div class="chart-row-actions">${action}</div>
+        </div>`;
+    })
+    .join('');
+}
+
+async function addOnlineChart(catalogId: string): Promise<void> {
+  if (onlineAdding.has(catalogId)) {
+    return;
+  }
+  const folderEl = document.getElementById(
+    `online-folder-${catalogEscapeId(catalogId)}`
+  ) as HTMLSelectElement | null;
+  const folder = folderEl?.value ?? ONLINE_DEFAULT_FOLDER;
+  onlineAdding.add(catalogId);
+  renderCatalogList();
+  try {
+    const response = await fetch(`${CATALOG_API_BASE}/online-charts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ catalogId, folder })
+    });
+    const result = (await response.json()) as {
+      success?: boolean;
+      relativePath?: string;
+      error?: string;
+    };
+    if (!response.ok || !result.success || !result.relativePath) {
+      throw new Error(result.error ?? `HTTP ${response.status}`);
+    }
+    onlineAdded[catalogId] = [...(onlineAdded[catalogId] ?? []), result.relativePath];
+    if (!catalogFolders.includes(folder)) {
+      catalogFolders = [...catalogFolders, folder];
+    }
+    document.dispatchEvent(new CustomEvent('charts-changed'));
+  } catch (error) {
+    console.error('Failed to add online chart:', error);
+    alert(`Could not add the chart: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    onlineAdding.delete(catalogId);
+    renderCatalogList();
+  }
 }
 
 function renderCatalogCard(catalog: CatalogRegistryEntry): string {
   const isExpanded = expandedCatalogs.has(catalog.file);
-  const chartCountText = catalog.chartCount !== null ? `${catalog.chartCount} charts` : '';
+  const chartCountText =
+    catalog.chartCount !== null
+      ? `${catalog.chartCount} ${catalog.chartCount === 1 ? 'chart' : 'charts'}`
+      : '';
 
   return `
     <div class="catalog-card ${isExpanded ? 'expanded' : ''}" id="catalog-card-${catalogEscapeId(catalog.file)}">
@@ -1057,6 +1233,16 @@ function renderCatalogCard(catalog: CatalogRegistryEntry): string {
 }
 
 async function toggleCatalog(catalogFile: string): Promise<void> {
+  // Online groups are already in memory; there is nothing to fetch.
+  if (catalogFile.startsWith(ONLINE_KEY_PREFIX)) {
+    if (expandedCatalogs.has(catalogFile)) {
+      expandedCatalogs.delete(catalogFile);
+    } else {
+      expandedCatalogs.add(catalogFile);
+    }
+    renderCatalogList();
+    return;
+  }
   if (expandedCatalogs.has(catalogFile)) {
     expandedCatalogs.delete(catalogFile);
     renderCatalogList();

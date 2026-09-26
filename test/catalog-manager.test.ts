@@ -24,7 +24,8 @@ import {
   interpretCatalog,
   pruneStaleInstalls,
   refreshCatalog,
-  refreshCatalogIfStale
+  refreshCatalogIfStale,
+  setCatalogChangedListener
 } from '../dist/utils/catalog-manager.js';
 import type { CatalogInstall } from '../dist/types.js';
 
@@ -729,6 +730,37 @@ describe('CatalogManager', () => {
       assert.strictEqual(result.skippedEntries, 2);
     });
 
+    it('keeps an online chart in an unknown category, skips one of an unknown type', () => {
+      const online = (overrides: Record<string, unknown>) => ({
+        id: 'x',
+        name: 'X',
+        description: 'd',
+        category: 'weather',
+        regions: ['global'],
+        bbox: [-180, -85, 180, 85],
+        provider: 'p',
+        attribution: 'a',
+        license: 'l',
+        licenseUrl: 'https://example.com',
+        chart: { type: 'WMS', url: 'https://example.com/ows', layers: ['a'] },
+        use: 'stream',
+        format: 'wms',
+        ...overrides
+      });
+      const raw = mergedCatalog({}) as { online: unknown[] };
+      raw.online.push(
+        online({ id: 'tides', category: 'tides', regions: 'not-a-list' }),
+        online({ id: 'holo', chart: { type: 'Hologram', url: 'https://example.com' } })
+      );
+      const result = interpretCatalog(raw);
+      assert.ok(result.ok);
+      assert.deepStrictEqual(
+        result.catalog.online.map((c) => c.id),
+        ['tides']
+      );
+      assert.strictEqual(result.skippedEntries, 1);
+    });
+
     it('ignores unknown fields', () => {
       const raw = mergedCatalog({ 'X_Catalog.xml': [] }, 1, {
         'X_Catalog.xml': { futureField: { anything: 1 } }
@@ -982,6 +1014,44 @@ describe('CatalogManager', () => {
       mock.restoreAll();
       assert.ok(!fs.existsSync(path.join(cacheDir, '_registry.json')));
       await initCatalogManagerOffline();
+    });
+
+    it('tells the listener when downloaded content changes, and only then', async () => {
+      const withHash = (hash: string) => {
+        const raw = mergedCatalog({ 'R_Catalog.xml': [CHART] }) as Record<string, unknown>;
+        raw.contentHash = hash.repeat(64);
+        return raw;
+      };
+      stubFetch({ status: 200, body: withHash('a'), etag: '"a"' });
+      await refreshCatalog();
+      mock.restoreAll();
+
+      let calls = 0;
+      setCatalogChangedListener(() => {
+        calls++;
+      });
+      try {
+        stubFetch({ status: 304 });
+        await refreshCatalog();
+        mock.restoreAll();
+        stubFetch({ status: 200, body: withHash('a') });
+        await refreshCatalog();
+        mock.restoreAll();
+        assert.strictEqual(calls, 0, 'unchanged content must not notify');
+
+        stubFetch({ status: 200, body: withHash('b') });
+        await refreshCatalog();
+        mock.restoreAll();
+        assert.strictEqual(calls, 1);
+
+        setCatalogChangedListener(null);
+        stubFetch({ status: 200, body: withHash('c') });
+        await refreshCatalog();
+        assert.strictEqual(calls, 1, 'a removed listener is not called');
+      } finally {
+        setCatalogChangedListener(null);
+        mock.restoreAll();
+      }
     });
 
     it('removes the per-file caches the GitHub-based catalog left behind', async () => {

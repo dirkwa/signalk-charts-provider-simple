@@ -413,4 +413,57 @@ test.describe('Chart Catalog tab', () => {
     const banner = page.locator('#catalogRegistryBanner .catalog-banner-warning');
     await expect(banner).toContainText(/Update the plugin/i);
   });
+  test('lists online charts by category and adds one to a folder', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [],
+      online: [
+        {
+          id: 'nws-radar-conus',
+          name: 'NWS Radar – Continental US',
+          description: 'Rain radar for the lower 48 states.',
+          category: 'weather',
+          provider: 'NOAA / National Weather Service',
+          license: 'Public domain (U.S. Government)',
+          licenseUrl: 'https://www.weather.gov/disclaimer',
+          chart: { type: 'WMS' },
+          temporal: { kind: 'observation' }
+        },
+        {
+          id: 'openwaters-seamap',
+          name: 'Open Waters Seamap',
+          description: 'Worldwide nautical-style map.',
+          category: 'navigation',
+          provider: 'Open Waters',
+          license: 'CC BY 4.0',
+          licenseUrl: 'https://openwaters.io/charts/seamap',
+          notForNavigation: true,
+          chart: { type: 'mapstyleJSON' }
+        }
+      ],
+      onlineAdded: { 'openwaters-seamap': ['Online Charts/openwaters-seamap.onlinechart.json'] }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+
+    await expect(page.locator('[data-catalog-filter="online"]')).toContainText('2');
+    await page.locator('[data-catalog-toggle="online:weather"]').click();
+    const row = page.locator('.online-chart-row', { hasText: 'NWS Radar' });
+    await expect(row).toContainText('Needs internet');
+    await expect(row).toContainText('Live');
+
+    const request = page.waitForRequest('**/online-charts');
+    await row.locator('[data-online-add]').click();
+    expect((await request).postDataJSON()).toEqual({
+      catalogId: 'nws-radar-conus',
+      folder: 'Online Charts'
+    });
+    await expect(row.locator('.installed-badge')).toHaveText('Added');
+
+    // Already-added charts show as added; the Online filter hides downloads.
+    await page.locator('[data-catalog-filter="online"]').click();
+    await page.locator('[data-catalog-toggle="online:navigation"]').click();
+    const seamap = page.locator('.online-chart-row', { hasText: 'Open Waters Seamap' });
+    await expect(seamap.locator('.installed-badge')).toHaveText('Added');
+    await expect(seamap).toContainText('Not for navigation');
+  });
 });

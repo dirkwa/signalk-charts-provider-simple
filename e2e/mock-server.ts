@@ -49,6 +49,11 @@ interface MockState {
   catalogStatus: CatalogStatusMock;
   // Attribution block returned with the registry, as the catalog provides it.
   sources: unknown;
+  // Curated online charts, and which ones have .onlinechart.json files.
+  online: unknown[];
+  onlineAdded: Record<string, string[]>;
+  // Bodies POSTed to /online-charts, so specs can assert what the UI sent.
+  onlineAddRequests: unknown[];
   // When set, POST /catalog-registry/refresh swaps the registry to this (and
   // optionally a new status) — lets a test script a refresh outcome.
   refreshRegistry: MockState['registry'] | null;
@@ -126,6 +131,9 @@ const initialState: MockState = {
   registry: [],
   catalogStatus: okStatus,
   sources: null,
+  online: [],
+  onlineAdded: {},
+  onlineAddRequests: [],
   refreshRegistry: null,
   refreshStatus: null,
   installed: {},
@@ -249,7 +257,9 @@ export function startMockServer(
       installed: state.installed,
       converting: state.converting,
       catalogStatus: state.catalogStatus,
-      sources: state.sources
+      sources: state.sources,
+      online: state.online,
+      onlineAdded: state.onlineAdded
     });
   });
 
@@ -266,8 +276,18 @@ export function startMockServer(
       installed: state.installed,
       converting: state.converting,
       catalogStatus: state.catalogStatus,
-      sources: state.sources
+      sources: state.sources,
+      online: state.online,
+      onlineAdded: state.onlineAdded
     });
+  });
+
+  router.post(`${PLUGIN_BASE}/online-charts`, (req, res) => {
+    const body = req.body as { catalogId: string; folder: string };
+    state.onlineAddRequests.push(body);
+    const relativePath = `${body.folder}/${body.catalogId}.onlinechart.json`;
+    (state.onlineAdded[body.catalogId] ??= []).push(relativePath);
+    res.json({ success: true, relativePath });
   });
 
   router.get(`${PLUGIN_BASE}/catalog/:file`, (req, res) => {

@@ -253,6 +253,46 @@ export const MergedCatalogSchema = Type.Object(
   }
 );
 
+// ---- Consumer read schema (lenient) ----
+
+/**
+ * What a consumer of the published catalog needs from an online chart entry
+ * to list, add and serve it. Unlike the published schema it accepts any
+ * category string (a consumer shows an unknown one under its own name) but
+ * keeps the chart `type` closed, because a consumer can't promise a chart
+ * plotter will draw a type it doesn't know. Facets it doesn't use (regions,
+ * format) are left unchecked and so are not part of the type.
+ */
+export const OnlineChartReadSchema = Type.Object({
+  id: Type.String({ minLength: 1 }),
+  name: Type.String({ minLength: 1 }),
+  description: Type.String(),
+  category: Type.String(),
+  bbox: BboxSchema,
+  provider: Type.String(),
+  attribution: Type.Optional(Type.String()),
+  license: Type.String(),
+  licenseUrl: Type.String(),
+  notForNavigation: Type.Optional(Type.Boolean()),
+  chart: Type.Object({
+    type: OnlineChartTypeSchema,
+    url: HttpsUrl,
+    layers: Type.Optional(Type.Array(Type.String())),
+    minzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
+    maxzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
+    tileSize: Type.Optional(Type.Number()),
+    defaultOpacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 }))
+  }),
+  temporal: Type.Optional(
+    Type.Object({
+      kind: Type.String(),
+      refreshInterval: Type.Integer({ minimum: 60000 }),
+      window: Type.Optional(Type.String()),
+      capabilitiesUrl: Type.Optional(HttpsUrl)
+    })
+  )
+});
+
 export type ChartUse = Static<typeof ChartUseSchema>;
 export type ChartCategory = Static<typeof ChartCategorySchema>;
 export type ChartFormat = Static<typeof ChartFormatSchema>;
@@ -266,6 +306,7 @@ export type MergedCatalogChart = Static<typeof MergedCatalogChartSchema>;
 export type MergedChartcatalogsCatalog = Static<typeof MergedChartcatalogsCatalogSchema>;
 export type MergedOnlineChart = Static<typeof MergedOnlineChartSchema>;
 export type MergedCatalog = Static<typeof MergedCatalogSchema>;
+export type OnlineCatalogChart = Static<typeof OnlineChartReadSchema>;
 
 /** The published JSON Schema document, with the root identifiers it needs. */
 export function publishedJsonSchema(id: string): Record<string, unknown> {

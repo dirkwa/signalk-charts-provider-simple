@@ -17,6 +17,17 @@ interface ManageChart {
   isDirectory?: boolean;
   downloading?: boolean;
   converting?: boolean;
+  /** Set for online charts added from the Chart Catalog. */
+  online?: {
+    catalogId: string;
+    /** False when the catalog doesn't list the chart (see catalogLoaded). */
+    available: boolean;
+    /** False until a chart catalog has been downloaded or read from cache. */
+    catalogLoaded: boolean;
+    /** The .onlinechart.json file couldn't be read; it can only be deleted. */
+    unreadable?: boolean;
+    type: string | null;
+  };
 }
 
 interface FolderStateInfo {
@@ -66,6 +77,12 @@ interface RepairableChartsResponse {
 
 interface ChartMetadata {
   name?: string;
+  // Online charts: the catalog entry they stand for.
+  catalogId?: string;
+  provider?: string;
+  license?: string;
+  url?: string;
+  layers?: string[];
   description?: string;
   version?: string;
   type?: string;
@@ -479,17 +496,37 @@ function renderChartCard(chart: ManageChart): string {
       ? `<span class="downloading-badge"><span class="spinner-small"></span> Converting</span>`
       : '';
 
-  const typeBadge = isDir
-    ? `<span class="chart-type-badge enc">${manageEscapeHtml((chart.type ?? 'S-57').toUpperCase())}</span>`
-    : '';
+  const typeBadge = chart.online
+    ? `<span class="chart-type-badge online"${chart.online.type ? ` title="${manageEscapeAttr(chart.online.type)}"` : ''}>ONLINE</span>`
+    : isDir
+      ? `<span class="chart-type-badge enc">${manageEscapeHtml((chart.type ?? 'S-57').toUpperCase())}</span>`
+      : '';
 
-  const escName = manageEscapeHtml(chart.name);
+  const online = chart.online;
+  const escName = manageEscapeHtml(online ? (chart.chartName ?? chart.name) : chart.name);
   const attrPath = manageEscapeAttr(chart.relativePath);
   const attrFolder = manageEscapeAttr(chart.folder);
+  // Only ever the file name: these values land inside inline onclick JS,
+  // where attribute escaping is undone before the script is parsed, so
+  // free text such as an online chart's display name must never go here.
   const attrName = manageEscapeAttr(chart.name);
 
   const folderOff = chart.folderEnabled === false;
   const folderOffBadge = folderOff ? `<span class="folder-off-badge">Folder disabled</span>` : '';
+  let onlineState = '';
+  if (online?.unreadable) {
+    onlineState = `<span class="folder-off-badge" title="This online chart file is damaged and can't be read; delete it and add the chart again">Damaged file</span>`;
+  } else if (online && !online.catalogLoaded) {
+    onlineState = `<span class="folder-off-badge" title="The chart catalog hasn't been downloaded yet; this chart appears once it has">Waiting for chart catalog</span>`;
+  } else if (online && !online.available) {
+    onlineState = `<span class="folder-off-badge" title="The chart catalog no longer lists this chart, so it is not served">No longer available</span>`;
+  }
+  const onlineBadges = online
+    ? `<span class="online-badge" title="Streamed from its provider; shows nothing without an internet connection">Needs internet</span>${onlineState}`
+    : '';
+  const renameAction = online
+    ? `renameOnlineChart('${attrPath}')`
+    : `showRenameDialog('${attrPath}', '${attrName}', '${attrFolder}')`;
 
   if (viewMode === 'grid') {
     return `
@@ -500,7 +537,7 @@ function renderChartCard(chart: ManageChart): string {
               ${chart.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
             </button>
           </div>
-          <h4>${escName} ${downloadingBadge}${folderOffBadge}</h4>
+          <h4>${escName} ${downloadingBadge}${folderOffBadge}${onlineBadges}</h4>
         </div>
         <div class="chart-card-body">
           ${
@@ -514,7 +551,7 @@ function renderChartCard(chart: ManageChart): string {
               : ''
           }
           ${
-            chart.chartName
+            chart.chartName && !online
               ? `
           <div class="chart-meta-row">
             <span class="meta-label">📊 Chart:</span>
@@ -543,7 +580,7 @@ function renderChartCard(chart: ManageChart): string {
               ? `<button class="btn btn-sm btn-info" onclick="showChartInfo('${attrPath}')" title="View chart metadata">
             Meta
           </button>
-          <button class="btn btn-sm btn-secondary" onclick="showRenameDialog('${attrPath}', '${attrName}', '${attrFolder}')" title="Rename chart">
+          <button class="btn btn-sm btn-secondary" onclick="${renameAction}" title="Rename chart">
             Rename
           </button>`
               : ''
@@ -563,7 +600,7 @@ function renderChartCard(chart: ManageChart): string {
           </button>
         </div>
         <div class="chart-list-info">
-          <div class="chart-list-name">${escName} ${downloadingBadge}${folderOffBadge}</div>
+          <div class="chart-list-name">${escName} ${downloadingBadge}${folderOffBadge}${onlineBadges}</div>
           <div class="chart-list-meta">
             ${displaySize ? `<span>${manageEscapeHtml(displaySize)}</span>` : ''}
             <span>${manageEscapeHtml(folderDisplay)}</span>
@@ -578,7 +615,7 @@ function renderChartCard(chart: ManageChart): string {
               ? `<button class="btn btn-sm btn-info" onclick="showChartInfo('${attrPath}')" title="View chart metadata">
             Meta
           </button>
-          <button class="btn btn-sm btn-secondary" onclick="showRenameDialog('${attrPath}', '${attrName}', '${attrFolder}')" title="Rename chart">
+          <button class="btn btn-sm btn-secondary" onclick="${renameAction}" title="Rename chart">
             Rename
           </button>`
               : ''
@@ -675,9 +712,12 @@ function toggleFolderKeydown(event: KeyboardEvent, folder: string): void {
 }
 
 function deleteChart(relativePath: string, name: string): void {
+  // Online charts are known by the name inside their file, not the file
+  // name, so look it up rather than pass it through the inline handler.
+  const chart = chartsData.find((c) => c.relativePath === relativePath);
   showDeleteConfirmation({
     type: 'chart',
-    name: name,
+    name: chart?.online ? (chart.chartName ?? name) : name,
     onConfirm: async () => {
       try {
         const response = await fetch(
@@ -1658,6 +1698,15 @@ async function createFolder(folderName: string): Promise<void> {
   }
 }
 
+// An online chart's name lives inside its .onlinechart.json, not in its file
+// name, so renaming edits it through the metadata dialog.
+async function renameOnlineChart(chartPath: string): Promise<void> {
+  await showChartInfo(chartPath);
+  if (currentMetadata) {
+    editChartMetadata();
+  }
+}
+
 function showRenameDialog(chartPath: string, currentName: string, folder: string): void {
   const nameWithoutExtension = currentName.replace(/\.mbtiles$/, '');
 
@@ -2242,6 +2291,8 @@ function renderMetadataModal(metadata: ChartMetadata): void {
         } catch {
           return manageEscapeHtml(safeStr(value));
         }
+      case 'layers':
+        return manageEscapeHtml(Array.isArray(value) ? value.join(', ') : safeStr(value));
       case 'tileCount':
         return parseInt(safeStr(value), 10).toLocaleString();
       case 'minzoom':
@@ -2257,6 +2308,11 @@ function renderMetadataModal(metadata: ChartMetadata): void {
   const metadataRows: { label: string; key: keyof ChartMetadata; editable?: boolean }[] = [
     { label: 'Chart Name', key: 'name', editable: true },
     { label: 'Description', key: 'description' },
+    { label: 'Provider', key: 'provider' },
+    { label: 'License', key: 'license' },
+    { label: 'Service URL', key: 'url' },
+    { label: 'Layers', key: 'layers' },
+    { label: 'Catalog Entry', key: 'catalogId' },
     { label: 'Version', key: 'version' },
     { label: 'Type', key: 'type' },
     { label: 'Format', key: 'format' },
@@ -2285,7 +2341,10 @@ function renderMetadataModal(metadata: ChartMetadata): void {
 
   const infoIcon = window.getIcon('info', true);
 
-  const warningHTML = isEditMode
+  // The legal notice is about altering chart files; renaming an online
+  // chart only changes its label.
+  const warningHTML =
+    isEditMode && !metadata.catalogId
     ? `
     <div class="delete-modal-warning" style="margin-bottom: 16px;">
       ${window.getIcon('warning')} <strong>Legal Notice:</strong> You are about to modify chart metadata. The Signal K community is not responsible for any illegal use of this feature. Charts must only be modified for personal use. Distribution of modified charts may violate copyright laws.
@@ -2369,12 +2428,19 @@ async function saveChartMetadata(): Promise<void> {
 
     if (currentMetadata) {
       currentMetadata.name = newChartName;
-      currentMetadata.description = 'USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY';
+      // Only an MBTiles edit stamps the file; renaming an online chart
+      // changes nothing but its label.
+      if (!currentMetadata.catalogId) {
+        currentMetadata.description = 'USER MODIFIED - DO NOT DISTRIBUTE - PERSONAL USE ONLY';
+      }
       isEditMode = false;
       renderMetadataModal(currentMetadata);
     }
 
     showSuccessNotification('Chart metadata updated successfully');
+    // The card shows the chart's name, which just changed.
+    document.dispatchEvent(new CustomEvent('charts-changed'));
+    void loadCharts();
   } catch (error) {
     console.error('Error saving chart metadata:', error);
     const message = error instanceof Error ? error.message : String(error);
@@ -2447,6 +2513,7 @@ window.confirmDelete = confirmDelete;
 window.closeDuplicateModal = closeDuplicateModal;
 window.confirmDuplicate = confirmDuplicate;
 window.showChartInfo = showChartInfo;
+window.renameOnlineChart = renameOnlineChart;
 window.editChartMetadata = editChartMetadata;
 window.cancelEditMetadata = cancelEditMetadata;
 window.saveChartMetadata = saveChartMetadata;

@@ -45,7 +45,7 @@ export interface ChartV2Data {
   tileSize?: number;
 }
 
-export type ChartFileFormat = 'mbtiles' | 'directory';
+export type ChartFileFormat = 'mbtiles' | 'directory' | 'online';
 export type ChartType = 'tilelayer' | string;
 
 export interface ChartProvider {
@@ -65,6 +65,8 @@ export interface ChartProvider {
   scale: number;
   /** Detected tile pixel size (256/512) when known; see ChartV2Data.tileSize. */
   tileSize?: number;
+  /** Suggested opacity for overlays such as weather layers (online charts). */
+  defaultOpacity?: number;
 
   v1: ChartV1Data;
   v2: ChartV2Data;
@@ -85,6 +87,7 @@ export interface SanitizedChart {
   url?: string;
   layers?: string[];
   tileSize?: number;
+  defaultOpacity?: number;
 }
 
 // ---- Repairable charts ----
@@ -350,6 +353,8 @@ export interface ScannedChart {
   format?: string;
   type?: string;
   isDirectory?: boolean;
+  /** Set for `.onlinechart.json` files: the catalog entry they stand for. */
+  online?: { catalogId: string; unreadable?: boolean };
 }
 
 // ---- Chart State ----
