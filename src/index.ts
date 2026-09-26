@@ -2876,7 +2876,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       let added = onlineAddedCache;
       if (!added) {
         const generation = onlineAddedGeneration;
-        const scanned: Record<string, string[]> = {};
+        // Keyed by ids read from chart files, which may be anything
+        // ("constructor", "__proto__"), so no inherited keys.
+        const scanned = Object.create(null) as Record<string, string[]>;
         for (const ref of await findOnlineChartFiles(props.chartPath || defaultChartsPath)) {
           (scanned[ref.catalogId] ??= []).push(ref.relativePath);
         }

@@ -288,4 +288,21 @@ describe('online chart routes', () => {
     const v2 = (await provider!.methods.listResources({})) as Record<string, { name: string }>;
     assert.strictEqual(v2['nws-radar-conus-2']?.name, 'My radar');
   });
+
+  it('lists added charts whose file names an inherited key as its catalog id', async () => {
+    for (const id of ['constructor', '__proto__']) {
+      fs.writeFileSync(
+        path.join(chartPath, `odd-${id}.onlinechart.json`),
+        JSON.stringify({ catalogId: id, name: id })
+      );
+    }
+    await call(handlers.get('post /refresh'), {});
+    const res = await call(handlers.get('get /catalog-registry'), {});
+    assert.strictEqual(res.statusCode, 200);
+    const added = (res.body as { onlineAdded: Record<string, string[]> }).onlineAdded;
+    assert.deepStrictEqual(added.constructor, ['odd-constructor.onlinechart.json']);
+    assert.deepStrictEqual(Object.getOwnPropertyDescriptor(added, '__proto__')?.value, [
+      'odd-__proto__.onlinechart.json'
+    ]);
+  });
 });

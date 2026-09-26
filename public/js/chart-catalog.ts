@@ -1496,10 +1496,15 @@ function renderOnlineGroupCard(category: string, charts: OnlineCatalogChart[]): 
   `;
 }
 
+/** Where an online chart has been added; an own-key lookup, so no id reads an inherited value. */
+function addedPaths(catalogId: string): string[] {
+  return Object.hasOwn(onlineAdded, catalogId) ? (onlineAdded[catalogId] ?? []) : [];
+}
+
 function renderOnlineChartList(charts: OnlineCatalogChart[]): string {
   return charts
     .map((chart) => {
-      const added = (onlineAdded[chart.id] ?? []).length > 0;
+      const added = addedPaths(chart.id).length > 0;
       const adding = onlineAdding.has(chart.id);
       const licenseLink = /^https:\/\//.test(chart.licenseUrl)
         ? `<a href="${catalogEscapeAttr(chart.licenseUrl)}" target="_blank" rel="noopener">${catalogEscapeHtml(chart.license)}</a>`
@@ -1561,7 +1566,7 @@ async function addOnlineChart(catalogId: string): Promise<void> {
     if (!response.ok || !result.success || !result.relativePath) {
       throw new Error(result.error ?? `HTTP ${response.status}`);
     }
-    onlineAdded[catalogId] = [...(onlineAdded[catalogId] ?? []), result.relativePath];
+    onlineAdded[catalogId] = [...addedPaths(catalogId), result.relativePath];
     if (!catalogFolders.includes(folder)) {
       catalogFolders = [...catalogFolders, folder];
     }
