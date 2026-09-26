@@ -49,6 +49,26 @@ test.describe('Manage Charts tab', () => {
     await expect(page.locator('#manageOutput')).toContainText('Bar Chart', { timeout: 5000 });
   });
 
+  test('remembers the chosen view across reloads', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/'],
+        charts: [{ relativePath: 'foo.mbtiles', name: 'Foo Chart', folder: '/', enabled: true }]
+      }
+    });
+    await page.reload();
+    await expect(page.locator('#manageOutput .chart-grid')).toBeVisible();
+
+    await page.getByTitle('List View').click();
+    await expect(page.locator('#manageOutput .chart-list')).toBeVisible();
+
+    await page.reload();
+    await expect(page.locator('#manageOutput .chart-list')).toBeVisible();
+    await expect(page.getByTitle('List View')).toHaveClass(/active/);
+  });
+
   test('renders empty state when /local-charts returns no charts', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     await setMockState(page, {

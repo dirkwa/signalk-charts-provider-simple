@@ -160,16 +160,19 @@ let onlineCatalog: OnlineCatalogChart[] = [];
 let onlineAdded: Record<string, string[]> = {};
 const onlineAdding = new Set<string>();
 
-// Online charts are grouped into one card per category. Card keys use a
-// prefix no chartcatalogs file name can have, so they share expandedCatalogs.
+// The list is sectioned by category, in this boater-friendly order; place
+// is left to the Near me filter. A section's online charts share one card,
+// whose key uses a prefix no chartcatalogs file name can have, so it can
+// share expandedCatalogs with the download catalogs.
 const ONLINE_KEY_PREFIX = 'online:';
-const ONLINE_GROUP_LABELS: Record<string, string> = {
-  navigation: 'Online Nautical Charts',
+const SECTION_LABELS: Record<string, string> = {
+  navigation: 'Navigation Charts',
   weather: 'Weather',
   depth: 'Depth & Seabed',
   basemap: 'Base Maps & Imagery',
   overlay: 'Marine Overlays'
 };
+const OTHER_SECTION = 'other';
 // A folder of its own means online charts can be switched off together
 // (e.g. offshore, with no internet) by disabling one folder.
 const ONLINE_DEFAULT_FOLDER = 'Online Charts';
@@ -219,7 +222,10 @@ document.addEventListener('charts-changed', () => {
     // dropdown stayed stale until the next download or tab re-init.
     const [registryOk] = await Promise.all([loadCatalogRegistry(), loadFolders()]);
     await Promise.all(
-      wereExpanded.map(async (catalogFile) => {
+      // Online groups are rendered from the registry; there's nothing to fetch.
+      wereExpanded
+        .filter((key) => !key.startsWith(ONLINE_KEY_PREFIX))
+        .map(async (catalogFile) => {
         try {
           const resp = await fetch(
             `${CATALOG_API_BASE}/catalog/${encodeURIComponent(catalogFile)}`
@@ -831,7 +837,8 @@ function renderUpdatesSection(): void {
             <button class="btn-catalog-log" data-catalog-log="${catalogEscapeAttr(update.chartNumber)}">Logs</button>
           </div>`;
       } else {
-        actionHtml = `<select class="catalog-folder-select catalog-update-folder-select" id="catalog-update-folder-${escapedNum}">
+        actionHtml = `<label class="catalog-folder-label" for="catalog-update-folder-${escapedNum}">Save to</label>
+           <select class="catalog-folder-select catalog-update-folder-select" id="catalog-update-folder-${escapedNum}">
             ${buildFolderOptions(update.installedFolder)}
            </select>
            <button class="btn-catalog-download"
@@ -1397,11 +1404,9 @@ function renderCatalogList(): void {
   }
 
   const filtered = catalogRegistry.filter((c) => passesFilters(registryFilterItem(c)));
-  const groups = onlineCatalogGroups(
-    onlineCatalog.filter((c) => passesFilters(onlineFilterItem(c)))
-  );
+  const online = onlineCatalog.filter((c) => passesFilters(onlineFilterItem(c)));
 
-  if (filtered.length === 0 && groups.length === 0) {
+  if (filtered.length === 0 && online.length === 0) {
     listEl.innerHTML = `
       <div class="catalog-empty">
         No charts match these filters.
@@ -1410,28 +1415,66 @@ function renderCatalogList(): void {
     return;
   }
 
-  listEl.innerHTML =
-    groups.map(([category, charts]) => renderOnlineGroupCard(category, charts)).join('') +
-    filtered.map((catalog) => renderCatalogCard(catalog)).join('');
+  listEl.innerHTML = catalogSections(filtered, online)
+    .map((section) => renderCatalogSection(section))
+    .join('');
 }
 
-/** Online charts grouped by category, in a fixed, boater-friendly order. */
-function onlineCatalogGroups(charts: OnlineCatalogChart[]): [string, OnlineCatalogChart[]][] {
-  const order = Object.keys(ONLINE_GROUP_LABELS);
-  const groups = new Map<string, OnlineCatalogChart[]>();
-  for (const chart of charts) {
-    const list = groups.get(chart.category) ?? [];
-    list.push(chart);
-    groups.set(chart.category, list);
+interface CatalogSection {
+  category: string;
+  online: OnlineCatalogChart[];
+  downloads: CatalogRegistryEntry[];
+}
+
+function sectionOf(category: string | undefined): string {
+  return category && ownLabel(SECTION_LABELS, category) ? category : OTHER_SECTION;
+}
+
+/** Everything that passed the filters, sectioned by category in a fixed order. */
+function catalogSections(
+  downloads: CatalogRegistryEntry[],
+  online: OnlineCatalogChart[]
+): CatalogSection[] {
+  const sections = new Map<string, CatalogSection>();
+  const sectionFor = (category: string) => {
+    let section = sections.get(category);
+    if (!section) {
+      section = { category, online: [], downloads: [] };
+      sections.set(category, section);
+    }
+    return section;
+  };
+  for (const chart of online) {
+    sectionFor(sectionOf(chart.category)).online.push(chart);
   }
+  for (const catalog of downloads) {
+    sectionFor(sectionOf(catalog.facets?.category)).downloads.push(catalog);
+  }
+  const order = Object.keys(SECTION_LABELS);
   const rank = (c: string) => (order.includes(c) ? order.indexOf(c) : order.length);
-  return [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
+  return [...sections.values()]
+    .sort((a, b) => rank(a.category) - rank(b.category))
+    .map((section) => ({
+      ...section,
+      // Most download catalogs are named for a country or waterway.
+      downloads: section.downloads.sort((a, b) => a.label.localeCompare(b.label))
+    }));
+}
+
+function renderCatalogSection(section: CatalogSection): string {
+  const label = ownLabel(SECTION_LABELS, section.category) ?? 'Other Charts';
+  return `
+    <section class="catalog-section">
+      <h2 class="catalog-section-title">${catalogEscapeHtml(label)}</h2>
+      ${section.online.length > 0 ? renderOnlineGroupCard(section.category, section.online) : ''}
+      ${section.downloads.map((catalog) => renderCatalogCard(catalog)).join('')}
+    </section>`;
 }
 
 function renderOnlineGroupCard(category: string, charts: OnlineCatalogChart[]): string {
   const key = ONLINE_KEY_PREFIX + category;
   const isExpanded = expandedCatalogs.has(key);
-  const label = ONLINE_GROUP_LABELS[category] ?? category;
+  const label = 'Online charts';
   return `
     <div class="catalog-card online ${isExpanded ? 'expanded' : ''}" id="catalog-card-${catalogEscapeId(key)}">
       <div class="catalog-card-header" data-catalog-toggle="${catalogEscapeAttr(key)}">
@@ -1473,6 +1516,7 @@ function renderOnlineChartList(charts: OnlineCatalogChart[]): string {
       const action = added
         ? '<span class="installed-badge">Added</span>'
         : `
+          <label class="catalog-folder-label" for="online-folder-${catalogEscapeId(chart.id)}">Save to</label>
           <select class="catalog-folder-select" id="online-folder-${catalogEscapeId(chart.id)}">
             ${buildFolderOptions(ONLINE_DEFAULT_FOLDER)}
           </select>
@@ -1691,13 +1735,13 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
           showZoomSelector && s57PodmanAvailable
             ? `
           <span class="catalog-zoom-label">Zoom</span>
-          <select class="catalog-zoom-select" id="catalog-minzoom-${catalogEscapeId(chart.number)}">
+          <select class="catalog-zoom-select" id="catalog-minzoom-${downloadRowId(catalogFile, chart.number)}">
             ${[4, 5, 6, 7, 8, 9, 10, 11, 12]
               .map((z) => `<option value="${z}" ${z === 4 ? 'selected' : ''}>${z}</option>`)
               .join('')}
           </select>
           <span class="catalog-zoom-dash">-</span>
-          <select class="catalog-zoom-select" id="catalog-maxzoom-${catalogEscapeId(chart.number)}">
+          <select class="catalog-zoom-select" id="catalog-maxzoom-${downloadRowId(catalogFile, chart.number)}">
             ${[12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
               .map((z) => `<option value="${z}" ${z === 18 ? 'selected' : ''}>${z}</option>`)
               .join('')}
@@ -1708,7 +1752,8 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
         actionHtml = `
           ${podmanHint}
           ${zoomHtml}
-          <select class="catalog-folder-select" id="catalog-folder-${catalogEscapeId(chart.number)}">
+          <label class="catalog-folder-label" for="catalog-folder-${downloadRowId(catalogFile, chart.number)}">Save to</label>
+          <select class="catalog-folder-select" id="catalog-folder-${downloadRowId(catalogFile, chart.number)}">
             ${buildFolderOptions(defaultFolder)}
           </select>
           <button class="btn-catalog-download" ${btnDisabled}
@@ -1744,15 +1789,15 @@ async function downloadCatalogChart(
   zipfileDatetime: string
 ): Promise<void> {
   const folderSelect = document.getElementById(
-    `catalog-folder-${catalogEscapeId(chartNumber)}`
+    `catalog-folder-${downloadRowId(catalogFile, chartNumber)}`
   ) as HTMLSelectElement | null;
   const targetFolder = folderSelect ? folderSelect.value : '/';
 
   const minzoomSelect = document.getElementById(
-    `catalog-minzoom-${catalogEscapeId(chartNumber)}`
+    `catalog-minzoom-${downloadRowId(catalogFile, chartNumber)}`
   ) as HTMLSelectElement | null;
   const maxzoomSelect = document.getElementById(
-    `catalog-maxzoom-${catalogEscapeId(chartNumber)}`
+    `catalog-maxzoom-${downloadRowId(catalogFile, chartNumber)}`
   ) as HTMLSelectElement | null;
   const minzoom = minzoomSelect ? parseInt(minzoomSelect.value, 10) : undefined;
   const maxzoom = maxzoomSelect ? parseInt(maxzoomSelect.value, 10) : undefined;
@@ -2252,6 +2297,14 @@ function catalogEscapeAttr(str: string | undefined | null): string {
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/**
+ * The id suffix for a download row's controls. Two catalogs can list the
+ * same chart number, so the catalog is part of it.
+ */
+function downloadRowId(catalogFile: string, chartNumber: string): string {
+  return catalogEscapeId(JSON.stringify([catalogFile, chartNumber]));
 }
 
 function catalogEscapeId(str: string | undefined | null): string {

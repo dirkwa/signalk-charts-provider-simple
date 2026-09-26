@@ -111,6 +111,20 @@
     white-space: nowrap;
 }
 
+/* Category sections */
+.catalog-section + .catalog-section {
+    margin-top: var(--md-sys-spacing-5);
+}
+
+.catalog-section-title {
+    margin: 0 0 var(--md-sys-spacing-2);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
 /* Catalog Card */
 .catalog-card {
     background: var(--md-sys-color-surface-container);
@@ -405,6 +419,12 @@ select.catalog-zoom-select:hover {
 }
 
 /* Folder select inline */
+.catalog-folder-label {
+    font-size: 11px;
+    color: var(--md-sys-color-on-surface-variant);
+    white-space: nowrap;
+}
+
 select.catalog-folder-select,
 select.catalog-folder-select:focus,
 select.catalog-folder-select:hover {
@@ -767,8 +787,21 @@ option.catalog-folder-option-new {
         padding-left: 0;
     }
 
+    .chart-row-info {
+        flex-basis: 100%;
+    }
+
     .chart-row-actions {
         order: 2;
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    /* Wraps to its own line beside its label when the zoom selectors
+       leave too little room, rather than shrinking to a sliver. */
+    .chart-row-actions select.catalog-folder-select {
+        flex: 1 1 8rem;
+        min-width: 8rem;
     }
 
     .category-filter {
@@ -881,8 +914,9 @@ option.catalog-folder-option-new {
     }
 
     .catalog-update-folder-select {
-        max-width: 100%;
-        width: 100%;
+        max-width: none;
+        flex: 1 1 auto;
+        min-width: 0;
     }
 }
 

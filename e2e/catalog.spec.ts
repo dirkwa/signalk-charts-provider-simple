@@ -453,6 +453,7 @@ test.describe('Chart Catalog tab', () => {
     await expect(row).toContainText('Needs internet');
     await expect(row).toContainText('Live');
 
+    await expect(row.getByLabel('Save to')).toHaveValue('Online Charts');
     const request = page.waitForRequest('**/online-charts');
     await row.locator('[data-online-add]').click();
     expect((await request).postDataJSON()).toEqual({
@@ -468,6 +469,48 @@ test.describe('Chart Catalog tab', () => {
     await expect(seamap.locator('.installed-badge')).toHaveText('Added');
     await expect(seamap).toContainText('Not for navigation');
   });
+  test('two catalogs listing the same chart number keep their own folders', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    const catalog = (file: string) => ({
+      fetchedAt: '2026-05-07T10:00:00Z',
+      catalogFile: file,
+      header: { title: file },
+      charts: [
+        {
+          number: '11451',
+          title: 'Miami to Marathon',
+          format: 'MBTiles',
+          zipfile_location: `https://example.com/${file}/11451.mbtiles`,
+          zipfile_datetime_iso8601: '2026-05-01T00:00:00Z',
+          urlClassification: { supported: true, format: 'mbtiles', label: 'MBTiles' }
+        }
+      ]
+    });
+    const entry = (file: string, label: string) => ({
+      file,
+      label,
+      category: 'mbtiles',
+      chartCount: 1,
+      cachedAt: '2026-05-07T10:00:00Z'
+    });
+    await setMockState(page, {
+      registry: [entry('A.xml', 'Alpha Charts'), entry('B.xml', 'Beta Charts')],
+      catalogs: { 'A.xml': catalog('A.xml'), 'B.xml': catalog('B.xml') }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await page.getByText('Alpha Charts').click();
+    await page.getByText('Beta Charts').click();
+
+    const beta = page.locator('#catalog-card-B\\.xml .catalog-chart-row');
+    await expect(beta.getByLabel('Save to')).toHaveValue('Beta Charts');
+    const request = page.waitForRequest('**/catalog/download');
+    await beta.locator('[data-catalog-download]').click();
+    expect((await request).postDataJSON()).toMatchObject({
+      catalogFile: 'B.xml',
+      targetFolder: 'Beta Charts'
+    });
+  });
+
   test('filters by use, category, type and position', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     const online = (id: string, category: string, type: string, bbox: number[]) => ({
@@ -511,6 +554,15 @@ test.describe('Chart Catalog tab', () => {
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
     const cards = page.locator('.catalog-card');
     await expect(cards).toHaveCount(4); // 2 downloads + Weather + Base Maps groups
+    // Sectioned by category, in a fixed order; downloads sorted by name.
+    await expect(page.locator('.catalog-section-title')).toHaveText([
+      'Navigation Charts',
+      'Weather',
+      'Base Maps & Imagery'
+    ]);
+    await expect(
+      page.locator('.catalog-section').first().locator('.catalog-card-title')
+    ).toHaveText(['Germany Inland ENC', 'NOAA Vector Charts']);
 
     const btn = (group: string, value: string) =>
       page.locator(`[data-filter-group="${group}"][data-filter-value="${value}"]`);
@@ -544,7 +596,7 @@ test.describe('Chart Catalog tab', () => {
     await btn('showTypes', '').click();
     await btn('formats', 'mapstyle').click();
     await expect(cards).toHaveCount(1);
-    await expect(cards).toContainText('Base Maps');
+    await expect(page.locator('.catalog-section-title')).toHaveText(['Base Maps & Imagery']);
   });
 
   test('disables Near me when the server has no position', async ({ page }) => {

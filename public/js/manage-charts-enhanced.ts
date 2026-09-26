@@ -120,7 +120,8 @@ let foldersData: string[] = [];
 let folderStatesData: Record<string, FolderStateInfo> = {};
 let basePath = '';
 let selectedFolder: string | null = null; // null means show all folders
-let viewMode: 'grid' | 'list' = 'grid';
+const VIEW_MODE_STORAGE_KEY = 'manageChartsViewMode';
+let viewMode: 'grid' | 'list' = loadViewMode();
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
 let isUploadInProgress = false;
 
@@ -629,8 +630,22 @@ function renderChartCard(chart: ManageChart): string {
   }
 }
 
+function loadViewMode(): 'grid' | 'list' {
+  try {
+    return localStorage.getItem(VIEW_MODE_STORAGE_KEY) === 'list' ? 'list' : 'grid';
+  } catch {
+    // Unavailable storage (a private window): use the default view.
+    return 'grid';
+  }
+}
+
 function setViewMode(mode: 'grid' | 'list'): void {
   viewMode = mode;
+  try {
+    localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Remembering the view is a convenience; private windows may refuse it.
+  }
   renderChartsUI();
 }
 
