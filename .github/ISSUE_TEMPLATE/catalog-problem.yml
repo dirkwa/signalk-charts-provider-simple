@@ -1,0 +1,42 @@
+name: Online chart problem
+description: Report a broken or wrong online chart in the Chart Catalog (weather, online nautical charts, depths, base maps).
+labels: ['catalog']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for **online** charts in the Chart Catalog, the ones you **Add** rather than
+        **Download**. Problems with downloadable charts (ENC, RNC, MBTiles) come from
+        chartcatalogs.github.io; please report those to the
+        [chartcatalogs issue tracker](https://github.com/chartcatalogs/catalogs/issues) instead.
+  - type: input
+    id: chart
+    attributes:
+      label: Chart name
+      description: As shown in the Chart Catalog, e.g. "NWS Radar – Continental US".
+    validations:
+      required: true
+  - type: dropdown
+    id: problem
+    attributes:
+      label: What is wrong?
+      options:
+        - The chart shows nothing, or an error
+        - The chart shows old or stuck images
+        - The chart is in the wrong place, or the wrong area
+        - The description, name or license is wrong
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Where you were looking (area and zoom), when it happened, and what you saw. A screenshot helps.
+    validations:
+      required: true
+  - type: input
+    id: plotter
+    attributes:
+      label: Chart plotter app and version
+      description: e.g. Freeboard-SK 2.33

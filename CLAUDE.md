@@ -38,6 +38,15 @@ This is a Signal K server plugin. The single entry is `src/index.ts`, which expo
    - `utils/download-manager.ts` is a queue with progress for direct-URL downloads and ZIP extraction.
    - **NOAA Charts** (the `NOAA Charts` tab; UI calls each bundle a "chart set"): `utils/noaa-enc-footprints.ts` fetches + disk-caches NOAA's `enc.geojson`, reprojects EPSG:3857→4326, and exposes the band-4 map list plus the band-3/4/5 bbox-overlap inclusion math (all pure/testable). `utils/custom-catalog-manager.ts` persists each chart set as JSON under `<dataDir>/custom-catalogs/` (safe-slug ids, path-traversal-checked) and evaluates freshness. `utils/custom-catalog-download.ts` stages every selected ENC ZIP into one combined tree (zip-slip-safe). The `/custom-catalogs*` routes in `index.ts` drive download → `processS57Directory` (one combined conversion) → quarantine promote, producing one MBTiles per chart set. Server-side modules/routes keep the generic `custom-catalog` names; only the UI (tab `public/js/noaa-chart-selector.ts`) is NOAA-specific, since NOAA is currently the only free ENC source.
 
+### Merged chart catalog (`src/catalog/`, `catalog/`)
+
+The Chart Catalog is backed by one merged catalog file that this repo publishes to GitHub Pages (see `docs/chart-catalog.md` for the why). It combines chartcatalogs.github.io (downloadable charts) with the curated online charts in `catalog/online-charts.json`, plus the per-file facets (label, category, format, regions, bbox) in `catalog/chartcatalogs-index.json`.
+
+- `src/catalog/merged-catalog-schema.ts` holds **all** catalog schemas: strict ones for the hand-edited sources, tolerant ones for the published file. Published-file compatibility policy: additive changes keep `schemaVersion`; consumers ignore unknown fields and skip entries they can't interpret, never the whole file.
+- `src/catalog/build-merged-catalog.ts` is pure (no I/O): merge, content hash, carry-forward of broken upstream files, the drop guard and the publish decision. `src/catalog/publish-catalog-cli.ts` is the I/O shell that `.github/workflows/publish-catalog.yml` runs; it is excluded from the npm package.
+- `src/catalog/chartcatalogs-xml.ts` is the only chartcatalogs XML parser; the catalog manager and the build both use it.
+- The content hash deliberately ignores timestamps and the upstream commit, so hourly chartcatalogs header-only commits don't republish.
+
 ### `signalk-container` integration
 
 From 2.0 onward, every container-runtime call (image pulls, helper-job execution, mount resolution, orphan cleanup) goes through the `signalk-container` plugin instead of `dockerode`. `utils/container-manager.ts` is a thin shim:

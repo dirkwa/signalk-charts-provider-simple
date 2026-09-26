@@ -1,0 +1,94 @@
+name: Publish chart catalog
+
+# Builds the merged chart catalog (chartcatalogs.github.io + catalog/online-charts.json)
+# and publishes it to this repo's GitHub Pages site, where the Chart Catalog tab
+# downloads it. Deploys only when the content hash differs from what is already
+# published, so most scheduled runs end after the build job.
+
+on:
+  schedule:
+    # chartcatalogs commits hourly, but nearly always only to refresh header
+    # timestamps, which the content hash ignores. Every 6 hours keeps chart
+    # update notifications close to upstream without churning Pages.
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Publish even if unchanged, or if the drop guard objects'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'catalog/**'
+      - 'src/catalog/**'
+      - '.github/workflows/publish-catalog.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-catalog
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.build.outputs.changed }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Fetch chartcatalogs
+        run: git clone --depth 1 https://github.com/chartcatalogs/catalogs.git "$RUNNER_TEMP/chartcatalogs"
+
+      - name: Build catalog
+        id: build
+        env:
+          FORCE: ${{ inputs.force && '--force' || '' }}
+        run: |
+          node dist/catalog/publish-catalog-cli.js \
+            --chartcatalogs "$RUNNER_TEMP/chartcatalogs" \
+            --commit "$(git -C "$RUNNER_TEMP/chartcatalogs" rev-parse HEAD)" \
+            --index catalog/chartcatalogs-index.json \
+            --online catalog/online-charts.json \
+            --out "$RUNNER_TEMP/site" \
+            --repo "$GITHUB_REPOSITORY" \
+            --published-url "https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/catalog.json" \
+            $FORCE
+
+      - name: Upload Pages artifact
+        if: steps.build.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

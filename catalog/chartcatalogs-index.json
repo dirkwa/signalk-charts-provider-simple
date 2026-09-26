@@ -1,0 +1,191 @@
+{
+  "ACE_BUOY_Catalog.xml": {
+    "label": "US Inland Rivers Buoy Overlay (USACE)",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["us", "us-conus"],
+    "bbox": [-104, 28, -79, 49]
+  },
+  "AR_RNC_Catalog.xml": {
+    "label": "Argentina Raster Charts",
+    "category": "navigation",
+    "format": "rnc",
+    "regions": ["ar", "south-america"],
+    "bbox": [-74, -56, -53, -21]
+  },
+  "AT_IENC_Catalog.xml": {
+    "label": "Austria Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["at", "europe"],
+    "bbox": [9.5, 46.4, 17.2, 49]
+  },
+  "BG_IENC_Catalog.xml": {
+    "label": "Bulgaria Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["bg", "europe"],
+    "bbox": [22.3, 41.2, 28.7, 44.3]
+  },
+  "BR_IENC_Catalog.xml": {
+    "label": "Brazil Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["br", "south-america"],
+    "bbox": [-74, -34, -28, 6]
+  },
+  "BR_RNC_Catalog.xml": {
+    "label": "Brazil Raster Charts",
+    "category": "navigation",
+    "format": "rnc",
+    "regions": ["br", "south-america"],
+    "bbox": [-74, -34, -28, 6]
+  },
+  "CH_IENC_Catalog.xml": {
+    "label": "Switzerland Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["ch", "europe"],
+    "bbox": [5.9, 45.8, 10.5, 47.8]
+  },
+  "CZ_IENC_Catalog.xml": {
+    "label": "Czech Republic Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["cz", "europe"],
+    "bbox": [12.1, 48.5, 18.9, 51.1]
+  },
+  "DE_IENC_Catalog.xml": {
+    "label": "Germany Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["de", "europe"],
+    "bbox": [5.8, 47.2, 15.1, 55.1]
+  },
+  "EURIS_IENC_Catalog.xml": {
+    "label": "European Inland Waterways ENC (EuRIS)",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["europe"],
+    "bbox": [-5, 41, 30, 56]
+  },
+  "FR_IENC_Catalog.xml": {
+    "label": "France Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["fr", "europe"],
+    "bbox": [-5.2, 41.3, 9.6, 51.1]
+  },
+  "FR_IENC_RHONE_Catalog.xml": {
+    "label": "France Rhône Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["fr", "europe"],
+    "bbox": [3.5, 43.2, 6.5, 47.9]
+  },
+  "GEBCO_MBTiles_Catalog.xml": {
+    "label": "GEBCO World Ocean Depths (MBTiles)",
+    "category": "depth",
+    "format": "mbtiles",
+    "regions": ["global"],
+    "bbox": [-180, -85, 180, 85]
+  },
+  "GSHHG_Catalog.xml": {
+    "label": "World Basemap Polygons (GSHHG)",
+    "category": "basemap",
+    "format": "shapefile",
+    "regions": ["global"],
+    "bbox": [-180, -85, 180, 85]
+  },
+  "HR_IENC_Catalog.xml": {
+    "label": "Croatia Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["hr", "europe"],
+    "bbox": [13.4, 42.3, 19.5, 46.6]
+  },
+  "HU_IENC_Catalog.xml": {
+    "label": "Hungary Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["hu", "europe"],
+    "bbox": [16.1, 45.7, 22.9, 48.6]
+  },
+  "NL_IENC_Catalog.xml": {
+    "label": "Netherlands Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["nl", "europe"],
+    "bbox": [3.3, 50.7, 7.3, 53.6]
+  },
+  "NOAA_MBTiles_Catalog.xml": {
+    "label": "NOAA Vector Charts (MBTiles)",
+    "category": "navigation",
+    "format": "mbtiles",
+    "regions": ["us", "us-conus", "us-alaska", "us-hawaii", "us-territories", "great-lakes"],
+    "bbox": [144, -15, -64, 72]
+  },
+  "NZ_RNC_Catalog.xml": {
+    "label": "New Zealand Raster Charts",
+    "category": "navigation",
+    "format": "rnc",
+    "regions": ["nz", "australia-nz", "pacific"],
+    "bbox": [165, -48, 179.9, -33]
+  },
+  "OSMSHP_Catalog.xml": {
+    "label": "OpenStreetMap World Basemap (Shapefiles)",
+    "category": "basemap",
+    "format": "shapefile",
+    "regions": ["global"],
+    "bbox": [-180, -85, 180, 85]
+  },
+  "PE_RNC_Catalog.xml": {
+    "label": "Peru Raster Charts",
+    "category": "navigation",
+    "format": "rnc",
+    "regions": ["pe", "south-america", "pacific"],
+    "bbox": [-82, -19, -68, 0]
+  },
+  "PILOT_Catalog.xml": {
+    "label": "World Pilot Charts",
+    "category": "navigation",
+    "format": "rnc",
+    "regions": ["global"],
+    "bbox": [-180, -85, 180, 85]
+  },
+  "PL_IENC_Catalog.xml": {
+    "label": "Poland Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["pl", "europe"],
+    "bbox": [14.1, 49, 24.2, 54.9]
+  },
+  "RO_IENC_Catalog.xml": {
+    "label": "Romania Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["ro", "europe"],
+    "bbox": [20.2, 43.6, 29.8, 48.3]
+  },
+  "RS_IENC_Catalog.xml": {
+    "label": "Serbia Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["rs", "europe"],
+    "bbox": [18.8, 42.2, 23.1, 46.2]
+  },
+  "SCS_ENC_Catalog.xml": {
+    "label": "South China Sea ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["asia", "pacific"],
+    "bbox": [99, -3, 125, 25]
+  },
+  "SK_IENC_Catalog.xml": {
+    "label": "Slovakia Inland ENC",
+    "category": "navigation",
+    "format": "enc",
+    "regions": ["sk", "europe"],
+    "bbox": [16.8, 47.7, 22.6, 49.7]
+  }
+}

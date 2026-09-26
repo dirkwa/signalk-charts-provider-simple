@@ -1,10 +1,9 @@
 import fs from 'fs';
 import https from 'https';
 import path from 'path';
-import { parseStringPromise } from 'xml2js';
+import { parseChartcatalogsXml } from '../catalog/chartcatalogs-xml.js';
 import type {
   CatalogCategory,
-  CatalogChart,
   CatalogData,
   CatalogInstall,
   CatalogInstallsMap,
@@ -266,46 +265,7 @@ function isCacheFresh(cached: CatalogData | null): boolean {
 }
 
 async function parseCatalogXml(xmlData: string, catalogFile: string): Promise<CatalogData> {
-  const result: unknown = await parseStringPromise(xmlData);
-
-  if (typeof result !== 'object' || result === null) {
-    throw new Error('Invalid XML parse result');
-  }
-
-  const parsed = result as Record<string, unknown>;
-  const root = (parsed.RncProductCatalogChartCatalogs ?? parsed.EncProductCatalogcellCatalogs) as
-    Record<string, unknown> | undefined;
-
-  if (!root) {
-    throw new Error('Unexpected XML root element');
-  }
-
-  const headerArr = root.Header as Array<Record<string, string[]>> | undefined;
-  const headerNode = headerArr?.[0] ?? {};
-  const header = {
-    title: headerNode.title?.[0] ?? '',
-    dateCreated: headerNode.date_created?.[0] ?? '',
-    dateValid: headerNode.date_valid?.[0] ?? ''
-  };
-
-  const chartNodes = (root.chart ?? root.cell ?? []) as Array<Record<string, string[]>>;
-  const charts: CatalogChart[] = chartNodes
-    .map((node): CatalogChart | null => {
-      try {
-        return {
-          number: node.number?.[0] ?? node.name?.[0] ?? '',
-          title: node.title?.[0] ?? node.lname?.[0] ?? '',
-          format: node.format?.[0] ?? '',
-          zipfile_location: node.zipfile_location?.[0] ?? '',
-          zipfile_datetime_iso8601: node.zipfile_datetime_iso8601?.[0] ?? ''
-        };
-      } catch {
-        debug(`Skipping malformed chart entry in ${catalogFile}`);
-        return null;
-      }
-    })
-    .filter((c): c is CatalogChart => c !== null && !!c.number && !!c.zipfile_location);
-
+  const { header, charts } = await parseChartcatalogsXml(xmlData);
   return {
     fetchedAt: new Date().toISOString(),
     catalogFile,
