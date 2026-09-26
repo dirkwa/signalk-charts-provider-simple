@@ -223,38 +223,45 @@ test.describe('Chart Catalog tab', () => {
     await expect(page.locator('[data-catalog-refresh]')).toBeVisible();
   });
 
-  test('rate-limited empty registry shows warning copy + reset time, not "offline"', async ({
+  test('an empty catalog that failed to download shows a connectivity message', async ({
     page
   }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
-    const resetAt = Date.now() + 42 * 60_000;
     await setMockState(page, {
       registry: [],
-      registryStatus: {
-        status: 'rate_limited',
-        isRateLimited: true,
-        remaining: 0,
-        resetAt,
-        retryAfter: 3600,
+      catalogStatus: {
+        status: 'error',
         lastAttemptAt: Date.now(),
         lastSuccessAt: null,
-        httpStatus: 403
+        httpStatus: null,
+        message:
+          "Could not reach the chart catalog. Check this device's internet connection, then click Refresh."
       }
     });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
-
-    const msg = page.locator('.catalog-error-rate-limit');
-    await expect(msg).toBeVisible();
-    await expect(msg).toContainText(/GitHub rate limit reached/i);
-    await expect(msg).not.toContainText(/offline/i);
-    await expect(msg).toContainText(/in about \d+ minutes?/);
+    await expect(page.locator('.catalog-error')).toContainText(/internet connection/i);
   });
 
-  test('a failed (rate-limited) refresh keeps the cached cards, shows a banner', async ({
-    page
-  }) => {
+  test('an incompatible catalog tells the user to update the plugin', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
-    // Start populated; script the refresh to come back empty + rate-limited.
+    await setMockState(page, {
+      registry: [],
+      catalogStatus: {
+        status: 'incompatible',
+        lastAttemptAt: Date.now(),
+        lastSuccessAt: null,
+        httpStatus: 200,
+        message:
+          'The chart catalog uses a newer format than this version of the plugin. Update the plugin to see it.'
+      }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('.catalog-error')).toContainText(/Update the plugin/i);
+  });
+
+  test('a failed refresh keeps the cached cards and shows a banner', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    // The server keeps serving the last good catalog when a download fails.
     await setMockState(page, {
       registry: [
         {
@@ -265,16 +272,13 @@ test.describe('Chart Catalog tab', () => {
           cachedAt: '2026-05-07T10:00:00Z'
         }
       ],
-      refreshRegistry: [],
       refreshStatus: {
-        status: 'rate_limited',
-        isRateLimited: true,
-        remaining: 0,
-        resetAt: Date.now() + 3_600_000,
-        retryAfter: 3600,
+        status: 'error',
         lastAttemptAt: Date.now(),
         lastSuccessAt: null,
-        httpStatus: 403
+        httpStatus: null,
+        message:
+          "Could not reach the chart catalog. Check this device's internet connection, then click Refresh."
       }
     });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
@@ -282,17 +286,13 @@ test.describe('Chart Catalog tab', () => {
 
     await page.locator('[data-catalog-refresh]').click();
 
-    // Cards must NOT be blanked; a non-destructive banner explains why,
-    // and a GitHub rate-limit blames GitHub (not the Signal K server).
     await expect(page.locator('.catalog-card')).toHaveCount(1);
     const banner = page.locator('#catalogRegistryBanner .catalog-banner-warning');
-    await expect(banner).toContainText(/cached catalogs/i);
-    await expect(banner).toContainText(/GitHub rate limit/i);
+    await expect(banner).toContainText(/last downloaded catalog/i);
+    await expect(banner).toContainText(/internet connection/i);
   });
 
-  test('a refresh that cannot reach the Signal K server blames the server, not GitHub', async ({
-    page
-  }) => {
+  test('a refresh that cannot reach the Signal K server blames the server', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     await setMockState(page, {
       registry: [
@@ -314,7 +314,6 @@ test.describe('Chart Catalog tab', () => {
 
     const banner = page.locator('#catalogRegistryBanner .catalog-banner-warning');
     await expect(banner).toContainText(/Signal K server/i);
-    await expect(banner).not.toContainText(/GitHub/i);
     // Cards still present (never blanked on a transport failure).
     await expect(page.locator('.catalog-card')).toHaveCount(1);
   });
@@ -323,15 +322,13 @@ test.describe('Chart Catalog tab', () => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     await setMockState(page, {
       registry: [],
-      registryStatus: {
+      catalogStatus: {
         status: 'error',
-        isRateLimited: false,
-        remaining: null,
-        resetAt: null,
-        retryAfter: null,
         lastAttemptAt: Date.now(),
         lastSuccessAt: null,
-        httpStatus: null
+        httpStatus: null,
+        message:
+          "Could not reach the chart catalog. Check this device's internet connection, then click Refresh."
       },
       refreshRegistry: [
         {
@@ -344,13 +341,10 @@ test.describe('Chart Catalog tab', () => {
       ],
       refreshStatus: {
         status: 'ok',
-        isRateLimited: false,
-        remaining: 49,
-        resetAt: null,
-        retryAfter: null,
         lastAttemptAt: Date.now(),
         lastSuccessAt: Date.now(),
-        httpStatus: 200
+        httpStatus: 200,
+        message: null
       }
     });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
@@ -361,5 +355,62 @@ test.describe('Chart Catalog tab', () => {
 
     await expect(page.locator('.catalog-card')).toHaveCount(1);
     await expect(page.locator('#catalogRegistryBanner')).toBeEmpty();
+  });
+
+  test('credits both catalog sources with their issue trackers', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, { registry: [] });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    const note = page.locator('#catalogSourceNote');
+    await expect(
+      note.locator('a[href="https://github.com/chartcatalogs/catalogs/issues"]')
+    ).toBeVisible();
+    await expect(note.locator('a[href*="template=catalog-problem.yml"]')).toBeVisible();
+  });
+  test('uses catalog-provided source links, but never a non-https one', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [],
+      sources: {
+        chartcatalogs: {
+          homepage: 'https://chartcatalogs.github.io/',
+          issues: 'https://example.org/cc-issues',
+          license: 'CC0-1.0'
+        },
+        online: { homepage: 'https://example.org', issues: 'javascript:alert(1)' }
+      }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    const note = page.locator('#catalogSourceNote');
+    await expect(note.locator('a[href="https://example.org/cc-issues"]')).toBeVisible();
+    await expect(note.locator('a[href^="javascript:"]')).toHaveCount(0);
+    await expect(note.locator('a[href*="template=catalog-problem.yml"]')).toBeVisible();
+  });
+
+  test('an incompatible catalog over a populated list shows a banner', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'DE_IENC.xml',
+          label: 'Germany Inland ENC',
+          category: 'ienc',
+          chartCount: 3,
+          cachedAt: '2026-05-07T10:00:00Z'
+        }
+      ],
+      catalogStatus: {
+        status: 'incompatible',
+        lastAttemptAt: Date.now(),
+        lastSuccessAt: null,
+        httpStatus: 200,
+        message:
+          'The chart catalog uses a newer format than this version of the plugin. Update the plugin to see it.'
+      }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('.catalog-card')).toHaveCount(1);
+    const banner = page.locator('#catalogRegistryBanner .catalog-banner-warning');
+    await expect(banner).toContainText(/Update the plugin/i);
   });
 });

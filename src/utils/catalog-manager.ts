@@ -1,82 +1,98 @@
 import fs from 'fs';
-import https from 'https';
 import path from 'path';
-import { parseChartcatalogsXml } from '../catalog/chartcatalogs-xml.js';
+import { Type } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
+import {
+  MERGED_CATALOG_SCHEMA_VERSION,
+  MergedCatalogChartSchema,
+  MergedCatalogSchema,
+  MergedOnlineChartSchema,
+  type MergedCatalogChart,
+  type MergedOnlineChart
+} from '../catalog/merged-catalog-schema.js';
 import type {
   CatalogCategory,
   CatalogData,
+  CatalogHeader,
   CatalogInstall,
   CatalogInstallsMap,
-  CatalogRegistryEntry,
   CatalogRegistryInfo,
+  CatalogSources,
+  CatalogStatus,
   CatalogUpdate,
   DebugFunction,
-  RegistryStatus,
   UrlClassification
 } from '../types.js';
-import {
-  CatalogDataSchema,
-  CatalogInstallsMapSchema,
-  CatalogRegistryCacheSchema,
-  GithubContentsListingSchema,
-  safeParse
-} from './catalog-schemas.js';
+import { CatalogInstallsMapSchema, safeParse } from './catalog-schemas.js';
 
-const CATALOG_BASE_URL = 'https://raw.githubusercontent.com/chartcatalogs/catalogs/master/';
-const CATALOG_GITHUB_API = 'https://api.github.com/repos/chartcatalogs/catalogs/contents/';
+// The merged catalog (chartcatalogs.github.io + curated online charts) that
+// this repo's publish-catalog workflow builds and serves from GitHub Pages.
+// CHARTS_CATALOG_URL points a development server at a fork's Pages site.
+const DEFAULT_CATALOG_URL = 'https://dirkwa.github.io/signalk-charts-provider-simple/catalog.json';
 
-const COUNTRY_CODES: Record<string, string> = {
-  AR: 'Argentina',
-  AT: 'Austria',
-  BE: 'Belgium',
-  BG: 'Bulgaria',
-  BR: 'Brazil',
-  CH: 'Switzerland',
-  CZ: 'Czech Republic',
-  DE: 'Germany',
-  FR: 'France',
-  HR: 'Croatia',
-  HU: 'Hungary',
-  NL: 'Netherlands',
-  NZ: 'New Zealand',
-  PE: 'Peru',
-  PL: 'Poland',
-  RO: 'Romania',
-  RS: 'Serbia',
-  SK: 'Slovakia',
-  SCS: 'South China Sea'
-};
+const CATALOG_CACHE_FILE = 'merged-catalog.json';
+const FETCH_TIMEOUT_MS = 20000;
 
-let catalogRegistry: CatalogRegistryEntry[] = [];
+// The catalog is republished at most every few hours, so re-checking more
+// often than this when the UI opens only costs bandwidth.
+const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
-// Result of the last GitHub registry-fetch attempt — surfaced to the UI so an
-// empty/failed fetch can show an accurate reason (rate-limited vs offline vs
-// generic error) instead of a misleading "you may be offline".
-const registryStatus: RegistryStatus = {
-  status: 'never',
-  isRateLimited: false,
-  remaining: null,
-  resetAt: null,
-  retryAfter: null,
-  lastAttemptAt: null,
-  lastSuccessAt: null,
-  httpStatus: null
-};
+/**
+ * What this plugin needs from a chartcatalogs entry, and nothing more. The
+ * published schema also constrains facets (category, regions, bbox) with
+ * closed value lists; checking those here would drop a whole catalog over a
+ * new facet value this version never reads, which the compatibility policy
+ * promises is an additive change.
+ */
+const ChartcatalogsReadSchema = Type.Object({
+  file: Type.String({ minLength: 1 }),
+  label: Type.String({ minLength: 1 }),
+  format: Type.Optional(Type.String()),
+  header: Type.Object({ title: Type.String() }),
+  charts: Type.Array(Type.Unknown())
+});
 
-// Single-flight guard: the up-front fetch at init plus a Refresh-button click
-// (or two clicks) must not issue concurrent GitHub requests. A call while one
-// is in flight returns the in-progress promise.
-let inFlightRegistryFetch: Promise<CatalogRegistryEntry[]> | null = null;
-
-function parseHeaderInt(v: string | string[] | undefined): number | null {
-  if (v === undefined) {
-    return null;
-  }
-  const n = parseInt(Array.isArray(v) ? (v[0] ?? '') : v, 10);
-  return Number.isFinite(n) ? n : null;
+interface ChartcatalogsEntry {
+  file: string;
+  label: string;
+  format: string | undefined;
+  header: CatalogHeader;
+  charts: MergedCatalogChart[];
 }
 
-const CACHE_MAX_AGE_MS = 60 * 60 * 1000;
+/** The downloaded catalog, reduced to the entries this plugin can read. */
+interface LoadedCatalog {
+  fetchedAt: string;
+  etag: string | null;
+  /** The file as downloaded, so a 304 can refresh the cache's timestamp. */
+  raw: unknown;
+  generatedAt: string;
+  contentHash: string;
+  sources: CatalogSources | null;
+  chartcatalogs: Map<string, ChartcatalogsEntry>;
+  online: MergedOnlineChart[];
+}
+
+/** On-disk form of the last good download, so the tab works across restarts. */
+interface CatalogCacheFile {
+  fetchedAt: string;
+  etag: string | null;
+  catalog: unknown;
+}
+
+let catalogUrl = DEFAULT_CATALOG_URL;
+let loaded: LoadedCatalog | null = null;
+const catalogStatus: CatalogStatus = {
+  status: 'never',
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  httpStatus: null,
+  message: null
+};
+
+// Single-flight guard: the fetch at init, the UI's first-load and staleness
+// checks and a Refresh click must not issue concurrent downloads.
+let inFlightRefresh: Promise<void> | null = null;
 
 let dataDir = '';
 let cacheDir = '';
@@ -85,85 +101,199 @@ let installs: CatalogInstallsMap = {};
 const converting: Record<string, true> = {};
 let debug: DebugFunction = () => {};
 
-function deriveCategory(filename: string): CatalogCategory {
-  if (filename.includes('MBTiles')) {
+export type InterpretedCatalog =
+  | {
+      ok: true;
+      catalog: Omit<LoadedCatalog, 'fetchedAt' | 'etag' | 'raw'>;
+      skippedEntries: number;
+      skippedCharts: number;
+    }
+  | { ok: false; reason: 'invalid' | 'incompatible'; message: string };
+
+function readHeader(header: Record<string, unknown>): CatalogHeader {
+  const text = (v: unknown) => (typeof v === 'string' ? v : undefined);
+  return {
+    title: text(header.title) ?? '',
+    dateCreated: text(header.dateCreated),
+    dateValid: text(header.dateValid)
+  };
+}
+
+const DAMAGED = 'The downloaded chart catalog is damaged. Try Refresh again later.';
+
+/**
+ * Read a downloaded catalog under the published compatibility policy:
+ * unknown fields and facet values are ignored, and entries and charts are
+ * validated one at a time, so something this version cannot interpret is
+ * skipped rather than taking its neighbours with it. Only a newer
+ * `schemaVersion` - a breaking change - makes the file unusable.
+ */
+export function interpretCatalog(raw: unknown): InterpretedCatalog {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, reason: 'invalid', message: DAMAGED };
+  }
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.schemaVersion !== 'number') {
+    return { ok: false, reason: 'invalid', message: DAMAGED };
+  }
+  if (obj.schemaVersion > MERGED_CATALOG_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      reason: 'incompatible',
+      message:
+        'The chart catalog uses a newer format than this version of the plugin. Update the plugin to see it.'
+    };
+  }
+  if (
+    obj.schemaVersion !== MERGED_CATALOG_SCHEMA_VERSION ||
+    typeof obj.contentHash !== 'string' ||
+    typeof obj.generatedAt !== 'string' ||
+    !Array.isArray(obj.chartcatalogs) ||
+    !Array.isArray(obj.online)
+  ) {
+    return { ok: false, reason: 'invalid', message: DAMAGED };
+  }
+
+  let skippedEntries = 0;
+  let skippedCharts = 0;
+  const chartcatalogs = new Map<string, ChartcatalogsEntry>();
+  for (const entry of obj.chartcatalogs as unknown[]) {
+    if (!Value.Check(ChartcatalogsReadSchema, entry)) {
+      skippedEntries++;
+      continue;
+    }
+    const charts = entry.charts.filter((c): c is MergedCatalogChart =>
+      Value.Check(MergedCatalogChartSchema, c)
+    );
+    skippedCharts += entry.charts.length - charts.length;
+    chartcatalogs.set(entry.file, {
+      file: entry.file,
+      label: entry.label,
+      format: entry.format,
+      header: readHeader(entry.header),
+      charts
+    });
+  }
+
+  const online: MergedOnlineChart[] = [];
+  for (const entry of obj.online as unknown[]) {
+    if (Value.Check(MergedOnlineChartSchema, entry)) {
+      online.push(entry);
+    } else {
+      skippedEntries++;
+    }
+  }
+
+  // Source links end up as hrefs in the tab, so they must be the https URLs
+  // the schema describes; a bad block only loses the links, not the catalog.
+  const sources = Value.Check(MergedCatalogSchema.properties.sources, obj.sources)
+    ? obj.sources
+    : null;
+
+  return {
+    ok: true,
+    catalog: {
+      generatedAt: obj.generatedAt,
+      contentHash: obj.contentHash,
+      sources,
+      chartcatalogs,
+      online
+    },
+    skippedEntries,
+    skippedCharts
+  };
+}
+
+/**
+ * The bucket the download flow (`classifyUrl`) and the Chart Catalog filter
+ * use, from the catalog's format facet. A catalog the index doesn't know
+ * yet has no facet, so fall back to its file name.
+ */
+function downloadCategory(entry: ChartcatalogsEntry): CatalogCategory {
+  switch (entry.format) {
+    case 'mbtiles':
+      return 'mbtiles';
+    case 'enc':
+      return 'ienc';
+    case 'rnc':
+      return 'rnc';
+    case undefined:
+      break;
+    default:
+      return 'general';
+  }
+  const file = entry.file;
+  if (file.includes('MBTiles')) {
     return 'mbtiles';
   }
-  if (filename.includes('_IENC_') || filename.includes('_ENC_')) {
+  if (file.includes('_IENC_') || file.includes('_ENC_')) {
     return 'ienc';
   }
-  if (filename.includes('_RNC_')) {
+  if (file.includes('_RNC_')) {
     return 'rnc';
   }
   return 'general';
 }
 
-function deriveLabel(filename: string): string {
-  const base = filename.replace('_Catalog.xml', '');
-
-  if (base === 'NOAA_MBTiles') {
-    return 'NOAA Vector Charts (MBTiles)';
+function applyCatalog(raw: unknown, fetchedAt: string, etag: string | null): boolean {
+  const result = interpretCatalog(raw);
+  if (!result.ok) {
+    catalogStatus.status = result.reason === 'incompatible' ? 'incompatible' : 'error';
+    catalogStatus.message = result.message;
+    return false;
   }
-  if (base === 'GSHHG') {
-    return 'World Basemap Polygons (GSHHG)';
+  if (result.skippedEntries > 0 || result.skippedCharts > 0) {
+    debug(
+      `Chart catalog: skipped ${String(result.skippedEntries)} entries and ${String(result.skippedCharts)} charts this version cannot read`
+    );
   }
-  if (base === 'PILOT') {
-    return 'World Pilot Charts';
-  }
-  if (base === 'OSMSHP') {
-    return 'OpenStreetMap Shapefiles';
-  }
-  if (base === 'ACE_BUOY') {
-    return 'ACE Buoy Charts';
-  }
-  if (base === 'EURIS_IENC') {
-    return 'European RIS Inland ENC';
-  }
-
-  const parts = base.split('_');
-  const code = parts[0];
-  const country = COUNTRY_CODES[code] ?? code;
-  const type = parts.slice(1).join(' ');
-
-  if (type.includes('IENC')) {
-    return `${country} Inland ENC`;
-  }
-  if (type.includes('ENC')) {
-    return `${country} ENC`;
-  }
-  if (type.includes('RNC')) {
-    return `${country} Raster Charts`;
-  }
-  if (type.includes('RHONE')) {
-    return `${country} Rhone Inland ENC`;
-  }
-
-  return `${country} ${type}`;
+  loaded = { ...result.catalog, fetchedAt, etag, raw };
+  removeLegacyCacheFiles();
+  return true;
 }
 
-function loadRegistryCache(): void {
-  const cachePath = path.join(cacheDir, '_registry.json');
+function loadCatalogCache(): void {
+  const cachePath = path.join(cacheDir, CATALOG_CACHE_FILE);
   try {
-    if (fs.existsSync(cachePath)) {
-      const raw: unknown = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
-      const parsed = safeParse(CatalogRegistryCacheSchema, raw);
-      if (parsed) {
-        catalogRegistry = parsed;
-      } else {
-        debug('Discarding registry cache — shape did not match schema');
+    if (!fs.existsSync(cachePath)) {
+      return;
+    }
+    const cached = JSON.parse(fs.readFileSync(cachePath, 'utf-8')) as Partial<CatalogCacheFile>;
+    if (typeof cached.fetchedAt === 'string') {
+      applyCatalog(cached.catalog, cached.fetchedAt, cached.etag ?? null);
+    }
+  } catch {
+    debug('Discarding chart catalog cache - unreadable');
+  }
+}
+
+// Written to a temporary file and renamed into place, so a power cut mid-
+// write can't leave a truncated cache that an offline boat then discards.
+function saveCatalogCache(cache: CatalogCacheFile): void {
+  const cachePath = path.join(cacheDir, CATALOG_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(cache), 'utf-8');
+    fs.renameSync(tmpPath, cachePath);
+  } catch (error) {
+    debug(
+      `Error writing chart catalog cache: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+// Before the merged catalog, the tab cached the GitHub file listing and one
+// JSON file per chartcatalogs catalog here. Removed once a merged catalog
+// has loaded, so a failed first download doesn't leave the user with nothing.
+function removeLegacyCacheFiles(): void {
+  try {
+    for (const name of fs.readdirSync(cacheDir)) {
+      if (name === '_registry.json' || name.endsWith('_Catalog.json')) {
+        fs.rmSync(path.join(cacheDir, name), { force: true });
       }
     }
   } catch {
-    // JSON parse error — file is corrupted, leave registry empty.
-  }
-}
-
-function saveRegistryCache(): void {
-  const cachePath = path.join(cacheDir, '_registry.json');
-  try {
-    fs.writeFileSync(cachePath, JSON.stringify(catalogRegistry, null, 2), 'utf-8');
-  } catch {
-    // ignore
+    // Best effort; stale files are harmless.
   }
 }
 
@@ -224,195 +354,154 @@ function saveInstalls(): void {
   }
 }
 
-function readCacheFile(catalogFile: string): CatalogData | null {
-  const cachePath = path.join(cacheDir, catalogFile.replace('.xml', '.json'));
-  try {
-    if (fs.existsSync(cachePath)) {
-      const data = fs.readFileSync(cachePath, 'utf-8');
-      const raw: unknown = JSON.parse(data);
-      const parsed = safeParse(CatalogDataSchema, raw);
-      if (!parsed) {
-        debug(`Discarding cache for ${catalogFile} — shape did not match schema`);
-        return null;
-      }
-      return parsed;
-    }
-  } catch (error) {
-    debug(
-      `Error reading cache for ${catalogFile}: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-  return null;
-}
-
-function writeCacheFile(catalogFile: string, data: CatalogData): void {
-  const cachePath = path.join(cacheDir, catalogFile.replace('.xml', '.json'));
-  try {
-    fs.writeFileSync(cachePath, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (error) {
-    debug(
-      `Error writing cache for ${catalogFile}: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-}
-
-function isCacheFresh(cached: CatalogData | null): boolean {
-  if (!cached?.fetchedAt) {
-    return false;
-  }
-  const age = Date.now() - new Date(cached.fetchedAt).getTime();
-  return age < CACHE_MAX_AGE_MS;
-}
-
-async function parseCatalogXml(xmlData: string, catalogFile: string): Promise<CatalogData> {
-  const { header, charts } = await parseChartcatalogsXml(xmlData);
-  return {
-    fetchedAt: new Date().toISOString(),
-    catalogFile,
-    header,
-    charts
-  };
-}
-
 export function initCatalogManager(dataDirPath: string, debugFn: DebugFunction): void {
   dataDir = dataDirPath;
   cacheDir = path.join(dataDir, 'catalog-cache');
   installsFilePath = path.join(dataDir, 'catalog-installs.json');
   debug = debugFn || (() => {});
+  catalogUrl = process.env.CHARTS_CATALOG_URL || DEFAULT_CATALOG_URL;
+  loaded = null;
+  // A plugin restart starts the staleness clock over, so the UI's first
+  // visit re-checks rather than trusting a success from the previous start.
+  catalogStatus.lastSuccessAt = null;
 
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true });
   }
 
   loadInstalls();
-  loadRegistryCache();
+  loadCatalogCache();
 
-  fetchCatalogRegistry().catch((err: unknown) => {
-    debug(`Failed to fetch catalog registry: ${err instanceof Error ? err.message : String(err)}`);
-  });
+  refreshCatalog().catch(() => undefined);
 }
 
-export function fetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
-  if (inFlightRegistryFetch) {
-    return inFlightRegistryFetch;
+/**
+ * Download the merged catalog. Never rejects: the outcome is recorded in
+ * `getCatalogStatus()`, and a failed refresh keeps the last good catalog.
+ */
+export function refreshCatalog(): Promise<void> {
+  if (inFlightRefresh) {
+    return inFlightRefresh;
   }
-  inFlightRegistryFetch = doFetchCatalogRegistry().finally(() => {
-    inFlightRegistryFetch = null;
+  inFlightRefresh = doRefreshCatalog().finally(() => {
+    inFlightRefresh = null;
   });
-  return inFlightRegistryFetch;
+  return inFlightRefresh;
 }
 
-function doFetchCatalogRegistry(): Promise<CatalogRegistryEntry[]> {
-  return new Promise((resolve, reject) => {
-    registryStatus.lastAttemptAt = Date.now();
-    const req = https
-      .get(
-        CATALOG_GITHUB_API,
-        { headers: { 'User-Agent': 'signalk-charts-provider-simple' } },
-        (response) => {
-          // Read rate-limit headers on EVERY response (success and failure),
-          // so `remaining` is current even on a 200.
-          const remaining = parseHeaderInt(response.headers['x-ratelimit-remaining']);
-          const resetSec = parseHeaderInt(response.headers['x-ratelimit-reset']);
-          const retryAfter = parseHeaderInt(response.headers['retry-after']);
-          if (remaining !== null) {
-            registryStatus.remaining = remaining;
-          }
-          if (resetSec !== null) {
-            registryStatus.resetAt = resetSec * 1000;
-          }
-          registryStatus.retryAfter = retryAfter;
-          registryStatus.httpStatus = response.statusCode ?? null;
+async function doRefreshCatalog(): Promise<void> {
+  catalogStatus.lastAttemptAt = Date.now();
+  let response: Response;
+  try {
+    response = await fetchCatalogFile(loaded?.etag ?? null);
+    // A 304 answers the ETag of a catalog this start no longer holds (a
+    // restart while a request was in flight); ask for the full file instead.
+    if (response.status === 304 && !loaded) {
+      response = await fetchCatalogFile(null);
+    }
+  } catch (error) {
+    catalogStatus.status = 'error';
+    catalogStatus.httpStatus = null;
+    catalogStatus.message =
+      "Could not reach the chart catalog. Check this device's internet connection, then click Refresh.";
+    debug(
+      `Chart catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return;
+  }
 
-          if (response.statusCode !== 200) {
-            // Classify off THIS response's header (the local `remaining`), not
-            // the persisted field — a 403/429 without an x-ratelimit-remaining
-            // header must not inherit a previous response's 0 and get
-            // mislabeled rate-limited.
-            const rateLimited =
-              (response.statusCode === 403 || response.statusCode === 429) && remaining === 0;
-            registryStatus.isRateLimited = rateLimited;
-            registryStatus.status = rateLimited ? 'rate_limited' : 'error';
-            response.resume();
-            reject(new Error(`GitHub API returned ${response.statusCode}`));
-            return;
-          }
+  catalogStatus.httpStatus = response.status;
+  const now = new Date().toISOString();
 
-          let data = '';
-          response.on('data', (chunk: Buffer) => {
-            data += chunk.toString();
-          });
+  if (response.status === 304 && loaded) {
+    loaded.fetchedAt = now;
+    saveCatalogCache({ fetchedAt: now, etag: loaded.etag, catalog: loaded.raw });
+  } else if (response.ok) {
+    let raw: unknown;
+    try {
+      raw = await response.json();
+    } catch {
+      catalogStatus.status = 'error';
+      catalogStatus.message = DAMAGED;
+      return;
+    }
+    const etag = response.headers.get('etag');
+    if (!applyCatalog(raw, now, etag)) {
+      return;
+    }
+    saveCatalogCache({ fetchedAt: now, etag, catalog: raw });
+    debug(
+      `Chart catalog: ${String(loaded?.chartcatalogs.size ?? 0)} chartcatalogs catalogs, ${String(loaded?.online.length ?? 0)} online charts`
+    );
+  } else {
+    catalogStatus.status = 'error';
+    catalogStatus.message = `The chart catalog is not available right now (HTTP ${String(response.status)}). Try Refresh again later.`;
+    return;
+  }
+  catalogStatus.status = 'ok';
+  catalogStatus.message = null;
+  catalogStatus.lastSuccessAt = Date.now();
+}
 
-          response.on('end', () => {
-            try {
-              const raw: unknown = JSON.parse(data);
-              const files = safeParse(GithubContentsListingSchema, raw);
-              if (!files) {
-                // Reached GitHub (200) but the body was malformed — a generic
-                // error, definitively not a rate limit.
-                registryStatus.isRateLimited = false;
-                registryStatus.status = 'error';
-                reject(new Error('GitHub API response did not match expected shape'));
-                return;
-              }
-              const xmlFiles: CatalogRegistryEntry[] = files
-                .filter((f) => f.name.endsWith('_Catalog.xml'))
-                .map((f) => ({
-                  file: f.name,
-                  label: deriveLabel(f.name),
-                  category: deriveCategory(f.name)
-                }));
-
-              if (xmlFiles.length > 0) {
-                catalogRegistry = xmlFiles;
-                saveRegistryCache();
-                debug(`Catalog registry: ${xmlFiles.length} catalogs from GitHub`);
-              }
-              // A successful fetch means we are not rate-limited; clear the
-              // rate-limit metadata so a stale reset/retry time can't leak into
-              // the UI later (resetAt/retryAfter are only meaningful while
-              // isRateLimited).
-              registryStatus.isRateLimited = false;
-              registryStatus.status = 'ok';
-              registryStatus.resetAt = null;
-              registryStatus.retryAfter = null;
-              registryStatus.lastSuccessAt = Date.now();
-              resolve(xmlFiles);
-            } catch (err) {
-              registryStatus.isRateLimited = false;
-              registryStatus.status = 'error';
-              reject(err);
-            }
-          });
-        }
-      )
-      .on('error', (err) => {
-        // Network/DNS failure or timeout — genuinely offline-ish, NOT a rate
-        // limit. httpStatus stays null so the UI shows the connectivity copy.
-        registryStatus.status = 'error';
-        registryStatus.isRateLimited = false;
-        registryStatus.httpStatus = null;
-        reject(err);
-      });
-    req.setTimeout(15000, () => {
-      req.destroy(new Error('GitHub API request timed out after 15s'));
-    });
+function fetchCatalogFile(etag: string | null): Promise<Response> {
+  return fetch(catalogUrl, {
+    headers: etag ? { 'If-None-Match': etag } : {},
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
   });
 }
 
-export function getRegistryStatus(): RegistryStatus {
-  return { ...registryStatus };
+/** Whether any catalog (downloaded now or cached earlier) is available. */
+export function hasCatalog(): boolean {
+  return loaded !== null;
+}
+
+/** Refresh in the background when the last success is old; for UI opens. */
+export function refreshCatalogIfStale(): void {
+  const last = catalogStatus.lastSuccessAt;
+  if (last === null || Date.now() - last > STALE_AFTER_MS) {
+    refreshCatalog().catch(() => undefined);
+  }
+}
+
+export function getCatalogStatus(): CatalogStatus {
+  return { ...catalogStatus };
+}
+
+export function getCatalogSources(): CatalogSources | null {
+  return loaded ? loaded.sources : null;
+}
+
+/** Online charts from the catalog (served and added from stage 3 on). */
+export function getOnlineCatalogCharts(): MergedOnlineChart[] {
+  return loaded ? [...loaded.online] : [];
 }
 
 export function getCatalogRegistry(): CatalogRegistryInfo[] {
-  return catalogRegistry.map((entry) => {
-    const cached = readCacheFile(entry.file);
-    return {
-      ...entry,
-      chartCount: cached ? cached.charts.length : null,
-      cachedAt: cached ? cached.fetchedAt : null
-    };
-  });
+  if (!loaded) {
+    return [];
+  }
+  const fetchedAt = loaded.fetchedAt;
+  return [...loaded.chartcatalogs.values()].map((entry) => ({
+    file: entry.file,
+    label: entry.label,
+    category: downloadCategory(entry),
+    chartCount: entry.charts.length,
+    cachedAt: fetchedAt
+  }));
+}
+
+/** One chartcatalogs catalog in the shape the tab and download flow use. */
+export function getCatalogData(catalogFile: string): CatalogData | null {
+  const entry = loaded?.chartcatalogs.get(catalogFile);
+  if (!loaded || !entry) {
+    return null;
+  }
+  return {
+    fetchedAt: loaded.fetchedAt,
+    catalogFile,
+    header: entry.header,
+    charts: entry.charts
+  };
 }
 
 export function classifyUrl(
@@ -460,75 +549,6 @@ export function classifyUrl(
     return { supported: true, format: 'rnc-zip', label: 'BSB raster (requires Podman)' };
   }
   return { supported: false, format: 'unknown', label: 'Unknown format - not yet supported' };
-}
-
-export function fetchCatalog(catalogFile: string): Promise<CatalogData> {
-  const registryEntry = catalogRegistry.find((r) => r.file === catalogFile);
-  if (!registryEntry) {
-    return Promise.reject(new Error(`Unknown catalog: ${catalogFile}`));
-  }
-
-  const cached = readCacheFile(catalogFile);
-  if (cached && isCacheFresh(cached)) {
-    return Promise.resolve(cached);
-  }
-
-  const url = CATALOG_BASE_URL + catalogFile;
-
-  return new Promise((resolve, reject) => {
-    const req = https
-      .get(url, (response) => {
-        if (response.statusCode !== 200) {
-          response.resume();
-          const err = new Error(`HTTP ${response.statusCode} fetching ${catalogFile}`);
-          if (cached) {
-            debug(`${err.message}, using stale cache`);
-            resolve(cached);
-          } else {
-            reject(err);
-          }
-          return;
-        }
-
-        let xmlData = '';
-        response.on('data', (chunk: Buffer) => {
-          xmlData += chunk.toString();
-        });
-
-        response.on('end', () => {
-          parseCatalogXml(xmlData, catalogFile)
-            .then((parsed) => {
-              writeCacheFile(catalogFile, parsed);
-              resolve(parsed);
-            })
-            .catch((parseErr: unknown) => {
-              debug(
-                `Parse error for ${catalogFile}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`
-              );
-              if (cached) {
-                resolve(cached);
-              } else {
-                reject(parseErr);
-              }
-            });
-        });
-      })
-      .on('error', (error) => {
-        debug(`Network error fetching ${catalogFile}: ${error.message}`);
-        if (cached) {
-          resolve(cached);
-        } else {
-          reject(error);
-        }
-      });
-    req.setTimeout(15000, () => {
-      req.destroy(new Error(`Catalog fetch timed out after 15s: ${catalogFile}`));
-    });
-  });
-}
-
-export function getCachedCatalog(catalogFile: string): CatalogData | null {
-  return readCacheFile(catalogFile);
 }
 
 export function trackInstall(
@@ -693,7 +713,7 @@ export function checkForUpdates(): CatalogUpdate[] {
   const updates: CatalogUpdate[] = [];
 
   for (const [chartNumber, install] of Object.entries(installs)) {
-    const cached = readCacheFile(install.catalogFile);
+    const cached = getCatalogData(install.catalogFile);
     if (!cached?.charts) {
       continue;
     }

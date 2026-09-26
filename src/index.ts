@@ -10,16 +10,18 @@ import { findCharts, findRepairableCharts } from './charts-loader.js';
 import {
   checkForUpdates,
   classifyUrl,
-  fetchCatalog,
-  fetchCatalogRegistry,
-  getCachedCatalog,
+  getCatalogData,
   getCatalogRegistry,
+  getCatalogSources,
+  getCatalogStatus,
   getCatalogsWithInstalledCharts,
   getConvertingCharts,
   getConvertingCount,
   getInstalledCatalogCharts,
-  getRegistryStatus,
+  hasCatalog,
   initCatalogManager,
+  refreshCatalog,
+  refreshCatalogIfStale,
   pruneStaleInstalls,
   removeInstall,
   removeInstallByFilename,
@@ -2647,44 +2649,42 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     });
 
-    router.get('/catalog-registry', (_req: Request, res: Response) => {
-      try {
-        const registry = getCatalogRegistry();
-        const installed = getInstalledCatalogCharts();
-        const convertingCharts = getConvertingCharts();
-        res.json({
-          registry,
-          installed,
-          converting: convertingCharts,
-          registryStatus: getRegistryStatus()
-        });
-      } catch (error) {
-        console.error('Error fetching catalog registry:', error);
-        res.status(500).json({ error: 'Failed to fetch catalog registry' });
-      }
+    const catalogRegistryResponse = () => ({
+      registry: getCatalogRegistry(),
+      installed: getInstalledCatalogCharts(),
+      converting: getConvertingCharts(),
+      catalogStatus: getCatalogStatus(),
+      sources: getCatalogSources()
     });
 
-    // Force a re-fetch of the catalog index from GitHub (the Refresh button).
-    // Awaits the fetch so the response reflects the just-attempted result, but
-    // swallows the rejection — registryStatus carries the reason (rate-limited
-    // / offline / error) so the UI can message accurately.
+    router.get('/catalog-registry', (_req: Request, res: Response) => {
+      void (async () => {
+        try {
+          // On a first run there is no cached catalog yet, and the UI does
+          // not re-poll, so wait for the startup download (bounded by its
+          // timeout) rather than showing an empty tab.
+          if (hasCatalog()) {
+            refreshCatalogIfStale();
+          } else {
+            await refreshCatalog();
+          }
+          res.json(catalogRegistryResponse());
+        } catch (error) {
+          console.error('Error fetching catalog registry:', error);
+          res.status(500).json({ error: 'Failed to fetch catalog registry' });
+        }
+      })();
+    });
+
+    // Re-download the merged chart catalog (the Refresh button). Awaited so
+    // the response reflects the attempt; refreshCatalog never rejects, and
+    // catalogStatus carries the reason when it fails.
     router.post('/catalog-registry/refresh', (_req: Request, res: Response) => {
       void (async () => {
         try {
-          await fetchCatalogRegistry().catch((err: unknown) => {
-            app.debug(
-              `Catalog registry refresh failed: ${err instanceof Error ? err.message : String(err)}`
-            );
-          });
-          res.json({
-            registry: getCatalogRegistry(),
-            installed: getInstalledCatalogCharts(),
-            converting: getConvertingCharts(),
-            registryStatus: getRegistryStatus()
-          });
+          await refreshCatalog();
+          res.json(catalogRegistryResponse());
         } catch (error) {
-          // The refresh itself is awaited+swallowed above; this only fires if
-          // building the response throws.
           console.error('Error building catalog refresh response:', error);
           res.status(500).json({ error: 'Failed to build catalog refresh response' });
         }
@@ -2742,10 +2742,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/catalog/:catalogFile', async (req: Request, res: Response) => {
+    router.get('/catalog/:catalogFile', (req: Request, res: Response) => {
       try {
         const catalogFile = (req.params as Record<string, string>).catalogFile;
-        const data = await fetchCatalog(catalogFile);
+        const data = getCatalogData(catalogFile);
         if (!data) {
           res.status(404).json({ error: 'Catalog not found or unavailable' });
           return;
@@ -2772,11 +2772,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           charts: augmentedCharts
         });
       } catch (error) {
-        const cached = getCachedCatalog((req.params as Record<string, string>).catalogFile);
-        if (cached) {
-          res.json(cached);
-          return;
-        }
         console.error('Error fetching catalog:', error);
         res.status(500).json({ error: 'Failed to fetch catalog' });
       }
@@ -3040,7 +3035,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         // original title into metadata.description). Manual uploads
         // don't go through this path so they keep the existing
         // 'S-57 <chartNumber>' default.
-        const cachedCatalog = getCachedCatalog(catalogFile);
+        const cachedCatalog = getCatalogData(catalogFile);
         const chartTitle = cachedCatalog?.charts.find((c) => c.number === chartNumber)?.title;
 
         if (classification.format === 's57-zip') {
@@ -4323,16 +4318,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const startCatalogUpdateChecker = (): void => {
     const doCheck = async (): Promise<void> => {
       try {
-        const catalogsToCheck = getCatalogsWithInstalledCharts();
-        if (catalogsToCheck.length === 0) {
+        if (getCatalogsWithInstalledCharts().length === 0) {
           return;
         }
 
-        app.debug(`Checking ${catalogsToCheck.length} catalog(s) for chart updates`);
-
-        for (const catalogFile of catalogsToCheck) {
-          await fetchCatalog(catalogFile);
-        }
+        app.debug('Checking the chart catalog for chart updates');
+        await refreshCatalog();
 
         const updates = checkForUpdates();
         if (updates.length > 0) {

@@ -447,13 +447,6 @@ option.catalog-folder-option-new {
     font-size: 14px;
 }
 
-/* Rate-limit is a warning (tertiary), not an error (red): the device is
- * online, just throttled by GitHub. */
-.catalog-error.catalog-error-rate-limit {
-    background: var(--md-sys-color-tertiary-container);
-    color: var(--md-sys-color-on-tertiary-container);
-}
-
 /* Catalog toolbar (Refresh button row) */
 .catalog-toolbar {
     display: flex;
@@ -492,8 +485,8 @@ option.catalog-folder-option-new {
     color: var(--md-sys-color-on-surface-variant);
 }
 
-/* Non-destructive banner above a populated list (refresh failed / rate-limited
- * while cached catalogs are still shown). */
+/* Non-destructive banner above a populated list (a refresh failed while the
+ * last downloaded catalog is still shown). */
 .catalog-banner {
     padding: var(--md-sys-spacing-2) var(--md-sys-spacing-4);
     border-radius: var(--md-sys-shape-corner-medium);

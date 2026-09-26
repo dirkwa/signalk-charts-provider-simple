@@ -1,6 +1,7 @@
 import type { ServerAPI } from '@signalk/server-api';
 import type { IRouter, Request, Response } from 'express';
 import type { MBTilesReader } from './utils/mbtiles-reader.js';
+import type { MergedCatalog } from './catalog/merged-catalog-schema.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -201,22 +202,23 @@ export interface CatalogRegistryInfo extends CatalogRegistryEntry {
   cachedAt: string | null;
 }
 
-// Result of the last attempt to fetch the catalog index from GitHub. Drives
-// UI messaging when the registry is empty or a refresh fails — notably so a
-// GitHub rate-limit (HTTP 403, remaining 0) reads as "rate limited, retry at
-// X" instead of the wrong "you may be offline".
-export type RegistryFetchStatus = 'ok' | 'rate_limited' | 'error' | 'never';
+// Result of the last attempt to download the merged chart catalog. Drives the
+// Chart Catalog tab's message when a refresh fails or the catalog is unusable.
+// `incompatible` means the published catalog uses a newer schemaVersion than
+// this plugin reads, which only a plugin update fixes.
+export type CatalogFetchStatus = 'ok' | 'error' | 'incompatible' | 'never';
 
-export interface RegistryStatus {
-  status: RegistryFetchStatus;
-  isRateLimited: boolean;
-  remaining: number | null; // x-ratelimit-remaining
-  resetAt: number | null; // x-ratelimit-reset, epoch ms
-  retryAfter: number | null; // retry-after header, seconds
+export interface CatalogStatus {
+  status: CatalogFetchStatus;
   lastAttemptAt: number | null;
   lastSuccessAt: number | null;
   httpStatus: number | null; // null for network/timeout errors
+  message: string | null;
 }
+
+// Where each part of the merged catalog comes from, and where to report
+// problems with it (shown as attribution in the Chart Catalog tab).
+export type CatalogSources = MergedCatalog['sources'];
 
 export type UrlFormat =
   | 'mbtiles'

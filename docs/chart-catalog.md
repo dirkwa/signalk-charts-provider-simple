@@ -36,6 +36,16 @@ rather than rejecting the whole file.
   is rate-limited for unauthenticated clients; a single file on Pages is not.
 - **No XML parsing on the boat.** The build converts the XML once, in CI.
 
+## How the plugin reads it
+
+The plugin downloads the catalog when it starts, when the Chart Catalog tab is
+opened and the copy is more than a few hours old, when the user clicks
+**Refresh catalog index**, and before the daily chart-update check. It keeps the
+last good copy, so the tab keeps working when the boat is offline or a download
+fails, and revalidates with the ETag so an unchanged catalog is not downloaded
+again. Development servers can point it at a fork's Pages site with the
+`CHARTS_CATALOG_URL` environment variable.
+
 ## How publishing works
 
 `.github/workflows/publish-catalog.yml` runs every six hours, on changes to the

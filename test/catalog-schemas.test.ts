@@ -4,12 +4,10 @@ import assert from 'node:assert';
 import {
   CatalogDataSchema,
   CatalogInstallsMapSchema,
-  CatalogRegistryCacheSchema,
-  GithubContentsListingSchema,
   safeParse
 } from '../dist/utils/catalog-schemas.js';
 
-describe('catalog schemas (cache JSON validation)', () => {
+describe('catalog schemas', () => {
   describe('CatalogDataSchema', () => {
     const valid = {
       fetchedAt: '2026-05-08T00:00:00Z',
@@ -77,32 +75,6 @@ describe('catalog schemas (cache JSON validation)', () => {
         }
       };
       assert.strictEqual(safeParse(CatalogInstallsMapSchema, m), null);
-    });
-  });
-
-  describe('CatalogRegistryCacheSchema', () => {
-    it('accepts a list of registry entries', () => {
-      const list = [{ file: 'NL_IENC.xml', label: 'NL IENC', category: 'ienc' }];
-      assert.deepStrictEqual(safeParse(CatalogRegistryCacheSchema, list), list);
-    });
-
-    it('rejects an entry with an unknown category', () => {
-      const list = [{ file: 'X.xml', label: 'X', category: 'star-trek' }];
-      assert.strictEqual(safeParse(CatalogRegistryCacheSchema, list), null);
-    });
-  });
-
-  describe('GithubContentsListingSchema', () => {
-    it('accepts a real-shaped GitHub contents response (extra fields ignored)', () => {
-      const list = [
-        { name: 'NL_IENC_Catalog.xml', size: 1234, sha: 'abc' },
-        { name: 'README.md', size: 50 }
-      ];
-      assert.deepStrictEqual(safeParse(GithubContentsListingSchema, list), list);
-    });
-
-    it('rejects when name is missing', () => {
-      assert.strictEqual(safeParse(GithubContentsListingSchema, [{ size: 1 }]), null);
     });
   });
 

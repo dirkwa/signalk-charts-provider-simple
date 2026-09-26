@@ -5,10 +5,6 @@
 import { describe, it, before, after, afterEach, mock } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-// NOTE: the module under test imports from 'https' (not 'node:https'); ESM
-// treats those as separate module instances, so we must mock the SAME
-// specifier for the stub to intercept the dist module's https.get.
-import https from 'https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,10 +19,12 @@ import {
   getInstalledCatalogCharts,
   checkForUpdates,
   getCatalogsWithInstalledCharts,
-  getCachedCatalog,
+  getCatalogData,
+  getCatalogStatus,
+  interpretCatalog,
   pruneStaleInstalls,
-  fetchCatalogRegistry,
-  getRegistryStatus
+  refreshCatalog,
+  refreshCatalogIfStale
 } from '../dist/utils/catalog-manager.js';
 import type { CatalogInstall } from '../dist/types.js';
 
@@ -39,56 +37,101 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // gets cleaned in the test's after hook so no commit-time leakage.
 const TEST_DATA_DIR = path.join(__dirname, 'fixtures', 'catalog-test-data');
 
-// Minimal https.get stub that resolves an empty 200 registry, so any fetch it
-// covers never touches the network. Shared by the outer init and the
-// rate-limit suite's drain so neither makes a live GitHub call.
-function stubHttpsEmpty200(): void {
-  mock.method(https, 'get', (...args: unknown[]) => {
-    const cb = args[args.length - 1] as (r: unknown) => void;
-    const req = {
-      on() {
-        return req;
-      },
-      setTimeout() {
-        return req;
-      },
-      destroy() {
-        /* no-op */
-      }
-    };
-    process.nextTick(() => {
-      const response = {
-        statusCode: 200,
-        headers: { 'x-ratelimit-remaining': '60' },
-        resume() {
-          /* drained */
-        },
-        on(event: string, handler: (chunk?: Buffer) => void) {
-          if (event === 'data') {
-            handler(Buffer.from('[]'));
-          }
-          if (event === 'end') {
-            handler();
-          }
-          return response;
-        }
-      };
-      cb(response);
-    });
-    return req;
-  });
+interface TestChart {
+  number: string;
+  title: string;
+  format: string;
+  zipfile_location: string;
+  zipfile_datetime_iso8601: string;
 }
 
-// Every initCatalogManager() fire-and-forgets fetchCatalogRegistry(), so any
-// call (suite setup AND each restart simulation) must run under a stub or it
-// makes a live GitHub call and leaks an in-flight request into later
-// assertions. This wraps init: stub https.get, init (its synchronous
-// loadInstalls/recovery runs here, before the await), drain the pending
-// fetch, restore.
+/** A published merged catalog holding the given chartcatalogs catalogs. */
+function mergedCatalog(
+  catalogs: Record<string, TestChart[]>,
+  schemaVersion: unknown = 1,
+  overrides: Record<string, Record<string, unknown>> = {}
+): unknown {
+  return {
+    schemaVersion,
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    contentHash: '0'.repeat(64),
+    sources: {
+      chartcatalogs: {
+        homepage: 'https://chartcatalogs.github.io/',
+        issues: 'https://github.com/chartcatalogs/catalogs/issues',
+        license: 'CC0-1.0'
+      },
+      online: {
+        homepage: 'https://github.com/owner/repo',
+        issues: 'https://github.com/owner/repo/issues'
+      }
+    },
+    chartcatalogs: Object.entries(catalogs).map(([file, charts]) => ({
+      id: file.replace('.xml', ''),
+      file,
+      label: `Label for ${file}`,
+      use: 'download',
+      category: 'navigation',
+      indexed: true,
+      format: 'mbtiles',
+      regions: ['us'],
+      bbox: [-180, -85, 180, 85],
+      header: { title: 'Test' },
+      charts,
+      ...overrides[file]
+    })),
+    online: []
+  };
+}
+
+type FetchScript = { status: number; body?: unknown; etag?: string } | { networkError: true };
+
+/**
+ * Stub global fetch with scripted responses, one per call (the last one
+ * repeats); returns the call log.
+ */
+function stubFetch(...scripts: FetchScript[]): {
+  urls: string[];
+  headers: Record<string, string>[];
+} {
+  const calls = { urls: [] as string[], headers: [] as Record<string, string>[] };
+  mock.method(globalThis, 'fetch', (url: string, init?: { headers?: Record<string, string> }) => {
+    const script = scripts[Math.min(calls.urls.length, scripts.length - 1)]!;
+    calls.urls.push(url);
+    calls.headers.push(init?.headers ?? {});
+    if ('networkError' in script) {
+      return Promise.reject(new TypeError('fetch failed'));
+    }
+    const headers: Record<string, string> = {};
+    if (script.etag) {
+      headers.etag = script.etag;
+    }
+    const body =
+      script.body === undefined
+        ? null
+        : typeof script.body === 'string'
+          ? script.body
+          : JSON.stringify(script.body);
+    return Promise.resolve(new Response(body, { status: script.status, headers }));
+  });
+  return calls;
+}
+
+/** Make the plugin's in-memory (and cached) catalog hold these charts. */
+async function seedCatalog(catalogFile: string, charts: TestChart[]): Promise<void> {
+  stubFetch({ status: 200, body: mergedCatalog({ [catalogFile]: charts }) });
+  await refreshCatalog();
+  mock.restoreAll();
+}
+
+// Every initCatalogManager() fire-and-forgets refreshCatalog(), so any call
+// (suite setup AND each restart simulation) must run under a stub or it
+// makes a live network call. The stub fails like an offline boat, so the
+// cached catalog on disk is what the restarted manager serves.
 async function initCatalogManagerOffline(): Promise<void> {
-  stubHttpsEmpty200();
+  stubFetch({ networkError: true });
   initCatalogManager(TEST_DATA_DIR, () => {});
-  await fetchCatalogRegistry().catch(() => undefined);
+  await refreshCatalog();
   mock.restoreAll();
 }
 
@@ -109,7 +152,7 @@ describe('CatalogManager', () => {
   });
 
   describe('getCatalogRegistry()', () => {
-    it('should return an array (may be empty before GitHub fetch)', () => {
+    it('should return an array (may be empty before the catalog downloads)', () => {
       const registry = getCatalogRegistry();
       assert.ok(Array.isArray(registry));
     });
@@ -282,9 +325,8 @@ describe('CatalogManager', () => {
       assert.deepStrictEqual(updates, []);
     });
 
-    it('should detect when catalog has newer version', () => {
+    it('should detect when catalog has newer version', async () => {
       // Write a fake cache with a newer date
-      const cacheDir = path.join(TEST_DATA_DIR, 'catalog-cache');
       const cacheData = {
         fetchedAt: new Date().toISOString(),
         catalogFile: 'NOAA_MBTiles_Catalog.xml',
@@ -299,11 +341,7 @@ describe('CatalogManager', () => {
           }
         ]
       };
-      fs.writeFileSync(
-        path.join(cacheDir, 'NOAA_MBTiles_Catalog.json'),
-        JSON.stringify(cacheData),
-        'utf-8'
-      );
+      await seedCatalog(cacheData.catalogFile, cacheData.charts);
 
       // Track an install with older date
       trackInstall(
@@ -323,8 +361,7 @@ describe('CatalogManager', () => {
       removeInstall('test_chart');
     });
 
-    it('should not flag charts with same date as updated', () => {
-      const cacheDir = path.join(TEST_DATA_DIR, 'catalog-cache');
+    it('should not flag charts with same date as updated', async () => {
       const cacheData = {
         fetchedAt: new Date().toISOString(),
         catalogFile: 'NOAA_MBTiles_Catalog.xml',
@@ -339,11 +376,7 @@ describe('CatalogManager', () => {
           }
         ]
       };
-      fs.writeFileSync(
-        path.join(cacheDir, 'NOAA_MBTiles_Catalog.json'),
-        JSON.stringify(cacheData),
-        'utf-8'
-      );
+      await seedCatalog(cacheData.catalogFile, cacheData.charts);
 
       trackInstall(
         'same_date_chart',
@@ -358,8 +391,7 @@ describe('CatalogManager', () => {
       removeInstall('same_date_chart');
     });
 
-    it('reports installedFolder as POSIX, defaulting to root', () => {
-      const cacheDir = path.join(TEST_DATA_DIR, 'catalog-cache');
+    it('reports installedFolder as POSIX, defaulting to root', async () => {
       const cacheData = {
         fetchedAt: new Date().toISOString(),
         catalogFile: 'NOAA_MBTiles_Catalog.xml',
@@ -374,11 +406,7 @@ describe('CatalogManager', () => {
           }
         ]
       };
-      fs.writeFileSync(
-        path.join(cacheDir, 'NOAA_MBTiles_Catalog.json'),
-        JSON.stringify(cacheData),
-        'utf-8'
-      );
+      await seedCatalog(cacheData.catalogFile, cacheData.charts);
 
       // No installedFilename → folder defaults to root.
       trackInstall(
@@ -417,31 +445,20 @@ describe('CatalogManager', () => {
   });
 
   describe('rollbackInstall() / issue #120', () => {
-    const CACHE_FILE = 'NOAA_MBTiles_Catalog.json';
     const CATALOG = 'NOAA_MBTiles_Catalog.xml';
 
-    // Write a cache that advertises `availableDate` for `chartNumber` so
+    // Publish a catalog that advertises `availableDate` for `chartNumber` so
     // checkForUpdates() can compare against the tracked install date.
-    function seedCache(chartNumber: string, availableDate: string): void {
-      const cacheDir = path.join(TEST_DATA_DIR, 'catalog-cache');
-      fs.writeFileSync(
-        path.join(cacheDir, CACHE_FILE),
-        JSON.stringify({
-          fetchedAt: new Date().toISOString(),
-          catalogFile: CATALOG,
-          header: { title: 'Test' },
-          charts: [
-            {
-              number: chartNumber,
-              title: 'Test Chart',
-              format: 'MBTiles',
-              zipfile_location: 'https://example.com/test.mbtiles',
-              zipfile_datetime_iso8601: availableDate
-            }
-          ]
-        }),
-        'utf-8'
-      );
+    async function seedCache(chartNumber: string, availableDate: string): Promise<void> {
+      await seedCatalog(CATALOG, [
+        {
+          number: chartNumber,
+          title: 'Test Chart',
+          format: 'MBTiles',
+          zipfile_location: 'https://example.com/test.mbtiles',
+          zipfile_datetime_iso8601: availableDate
+        }
+      ]);
     }
 
     it('deletes the record on a failed FRESH install', () => {
@@ -466,8 +483,8 @@ describe('CatalogManager', () => {
       removeInstall('upd');
     });
 
-    it('keeps flagging the update after a failed update (the #120 symptom)', () => {
-      seedCache('enc1', '2024-06-10T00:00:00Z');
+    it('keeps flagging the update after a failed update (the #120 symptom)', async () => {
+      await seedCache('enc1', '2024-06-10T00:00:00Z');
       trackInstall('enc1', CATALOG, '2024-01-01T00:00:00Z', 'https://example.com/old.mbtiles');
       setInstallFilename('enc1', 'enc1.mbtiles');
       trackInstall('enc1', CATALOG, '2024-06-10T00:00:00Z', 'https://example.com/new.mbtiles');
@@ -553,7 +570,7 @@ describe('CatalogManager', () => {
     });
 
     it('survives a restart mid-update: load auto-rolls-back to prior (no reap needed)', async () => {
-      seedCache('rst', '2024-06-10T00:00:00Z');
+      await seedCache('rst', '2024-06-10T00:00:00Z');
       trackInstall('rst', CATALOG, '2024-01-01T00:00:00Z', 'https://example.com/old.mbtiles');
       setInstallFilename('rst', 'rst.mbtiles'); // committed old
       trackInstall('rst', CATALOG, '2024-06-10T00:00:00Z', 'https://example.com/new.mbtiles'); // begin update, NOT committed
@@ -583,7 +600,7 @@ describe('CatalogManager', () => {
       // its chartId is absent from the scanned set). With load-time recovery the
       // record is already rolled back to the prior version by the time prune
       // runs; prune must leave that prior record intact.
-      seedCache('prn', '2024-06-10T00:00:00Z');
+      await seedCache('prn', '2024-06-10T00:00:00Z');
       trackInstall('prn', CATALOG, '2024-01-01T00:00:00Z', 'https://example.com/old.mbtiles');
       setInstallFilename('prn', 'old-prn.mbtiles'); // committed old → chartId 'old-prn'
       trackInstall('prn', CATALOG, '2024-06-10T00:00:00Z', 'https://example.com/new.mbtiles'); // begin update
@@ -615,206 +632,365 @@ describe('CatalogManager', () => {
     });
   });
 
-  describe('getCachedCatalog()', () => {
-    it('should return null for non-existent cache', () => {
-      const result = getCachedCatalog('NONEXISTENT_Catalog.xml');
-      assert.strictEqual(result, null);
+  describe('getCatalogData()', () => {
+    it('returns null for a catalog the merged catalog does not list', () => {
+      assert.strictEqual(getCatalogData('NONEXISTENT_Catalog.xml'), null);
     });
 
-    it('should return cached data regardless of age', () => {
-      const cacheDir = path.join(TEST_DATA_DIR, 'catalog-cache');
-      const cacheData = {
-        fetchedAt: '2020-01-01T00:00:00Z', // very old
-        catalogFile: 'OLD_TEST_Catalog.xml',
-        header: { title: 'Old Test' },
-        charts: [
-          {
-            number: 'old1',
-            title: 'Old Chart',
-            format: '',
-            zipfile_location: '',
-            zipfile_datetime_iso8601: ''
-          }
-        ]
+    it('returns a listed catalog in the shape the tab and downloads use', async () => {
+      const chart = {
+        number: 'c1',
+        title: 'Chart One',
+        format: 'MBTiles',
+        zipfile_location: 'https://example.com/c1.mbtiles',
+        zipfile_datetime_iso8601: '2024-01-01T00:00:00Z'
       };
-      fs.writeFileSync(
-        path.join(cacheDir, 'OLD_TEST_Catalog.json'),
-        JSON.stringify(cacheData),
-        'utf-8'
-      );
-
-      const result = getCachedCatalog('OLD_TEST_Catalog.xml');
-      assert.ok(result);
-      assert.strictEqual(result.charts.length, 1);
-      assert.strictEqual(result.charts[0]!.number, 'old1');
+      await seedCatalog('DATA_TEST_Catalog.xml', [chart]);
+      const data = getCatalogData('DATA_TEST_Catalog.xml');
+      assert.ok(data);
+      assert.strictEqual(data.catalogFile, 'DATA_TEST_Catalog.xml');
+      assert.deepStrictEqual(data.charts, [chart]);
+      const entry = getCatalogRegistry().find((r) => r.file === 'DATA_TEST_Catalog.xml');
+      assert.strictEqual(entry?.label, 'Label for DATA_TEST_Catalog.xml');
+      assert.strictEqual(entry.category, 'mbtiles');
+      assert.strictEqual(entry.chartCount, 1);
     });
   });
 
-  describe('fetchCatalogRegistry() rate-limit status', () => {
-    // Build a fake https.IncomingMessage and a fake ClientRequest, and stub
-    // https.get so fetchCatalogRegistry sees our scripted response.
-    interface FakeRes {
-      statusCode: number;
-      headers: Record<string, string>;
-      body?: string;
-    }
-    function stubHttps(res: FakeRes | { networkError: true }): void {
-      mock.method(https, 'get', (...args: unknown[]) => {
-        const cb = args[args.length - 1] as (r: unknown) => void;
-        const req = {
-          on(event: string, handler: (err: Error) => void) {
-            if ('networkError' in res && event === 'error') {
-              process.nextTick(() => handler(new Error('ENOTFOUND')));
-            }
-            return req;
-          },
-          setTimeout() {
-            return req;
-          },
-          destroy() {
-            /* no-op */
-          }
-        };
-        if (!('networkError' in res)) {
-          process.nextTick(() => {
-            const response = {
-              statusCode: res.statusCode,
-              headers: res.headers,
-              resume() {
-                /* drained */
-              },
-              on(event: string, handler: (chunk?: Buffer) => void) {
-                if (res.statusCode === 200) {
-                  if (event === 'data') {
-                    handler(Buffer.from(res.body ?? '[]'));
-                  }
-                  if (event === 'end') {
-                    handler();
-                  }
-                }
-                return response;
-              }
-            };
-            cb(response);
-          });
-        }
-        return req;
-      });
-    }
-
-    before(async () => {
-      // The outer before already drained the init fetch under a stub; this is
-      // belt-and-suspenders in case any prior fetch is still in flight. Stubbed
-      // so it can never make a live GitHub call.
-      stubHttpsEmpty200();
-      await fetchCatalogRegistry().catch(() => undefined);
-      mock.restoreAll();
+  describe('interpretCatalog()', () => {
+    const chart = (n: string, url = `https://example.com/${n}.zip`) => ({
+      number: n,
+      title: n,
+      format: '',
+      zipfile_location: url,
+      zipfile_datetime_iso8601: '2024-01-01T00:00:00Z'
     });
+
+    it('rejects a catalog from a newer, breaking schema version', () => {
+      const result = interpretCatalog(mergedCatalog({}, 2));
+      assert.ok(!result.ok);
+      assert.strictEqual(result.reason, 'incompatible');
+      assert.match(result.message, /Update the plugin/);
+    });
+
+    it('calls a missing, non-numeric or older schemaVersion damaged, not newer', () => {
+      for (const version of [null, '1', 0]) {
+        const raw = mergedCatalog({}) as Record<string, unknown>;
+        if (version === null) {
+          delete raw.schemaVersion;
+        } else {
+          raw.schemaVersion = version;
+        }
+        const result = interpretCatalog(raw);
+        assert.ok(!result.ok);
+        assert.strictEqual(result.reason, 'invalid', String(version));
+      }
+    });
+
+    it('rejects garbage as damaged', () => {
+      for (const raw of ['nope', [], null, { schemaVersion: 1 }]) {
+        const result = interpretCatalog(raw);
+        assert.ok(!result.ok);
+        assert.strictEqual(result.reason, 'invalid');
+      }
+    });
+
+    it('keeps an entry whose facets use values this version does not know', () => {
+      const raw = mergedCatalog({ 'NEW_Catalog.xml': [chart('a')] }, 1, {
+        'NEW_Catalog.xml': { format: 'pmtiles', category: 'inland', regions: 'not-a-list' }
+      });
+      const result = interpretCatalog(raw);
+      assert.ok(result.ok);
+      assert.strictEqual(result.catalog.chartcatalogs.get('NEW_Catalog.xml')?.charts.length, 1);
+      assert.strictEqual(result.skippedEntries, 0);
+    });
+
+    it('drops only the charts it cannot read, not their catalog', () => {
+      const raw = mergedCatalog({
+        'MIXED_Catalog.xml': [chart('ok1'), chart('ftp', 'ftp://example.com/x.zip'), chart('ok2')]
+      });
+      const result = interpretCatalog(raw);
+      assert.ok(result.ok);
+      assert.deepStrictEqual(
+        result.catalog.chartcatalogs.get('MIXED_Catalog.xml')?.charts.map((c) => c.number),
+        ['ok1', 'ok2']
+      );
+      assert.strictEqual(result.skippedCharts, 1);
+    });
+
+    it('skips an entry missing what the plugin needs', () => {
+      const raw = mergedCatalog({ 'GOOD_Catalog.xml': [], 'BAD_Catalog.xml': [] }, 1, {
+        'BAD_Catalog.xml': { label: undefined }
+      }) as { online: unknown[] };
+      raw.online.push({ id: 'future-chart', chart: { type: 'Hologram' } });
+      const result = interpretCatalog(raw);
+      assert.ok(result.ok);
+      assert.deepStrictEqual([...result.catalog.chartcatalogs.keys()], ['GOOD_Catalog.xml']);
+      assert.strictEqual(result.skippedEntries, 2);
+    });
+
+    it('ignores unknown fields', () => {
+      const raw = mergedCatalog({ 'X_Catalog.xml': [] }, 1, {
+        'X_Catalog.xml': { futureField: { anything: 1 } }
+      }) as Record<string, unknown>;
+      raw.futureTopLevel = true;
+      const result = interpretCatalog(raw);
+      assert.ok(result.ok);
+      assert.strictEqual(result.skippedEntries, 0);
+    });
+
+    it('drops malformed or non-https source links but keeps the catalog', () => {
+      for (const bad of [
+        { chartcatalogs: { homepage: 42 }, online: {} },
+        {
+          chartcatalogs: {
+            homepage: 'https://chartcatalogs.github.io/',
+            issues: 'https://github.com/chartcatalogs/catalogs/issues',
+            license: 'CC0-1.0'
+          },
+          online: { homepage: 'https://x.test', issues: 'javascript:alert(1)' }
+        }
+      ]) {
+        const raw = mergedCatalog({ 'X_Catalog.xml': [] }) as Record<string, unknown>;
+        raw.sources = bad;
+        const result = interpretCatalog(raw);
+        assert.ok(result.ok);
+        assert.strictEqual(result.catalog.sources, null);
+      }
+    });
+  });
+
+  describe('getCatalogRegistry() download categories', () => {
+    it('maps format facets, and file names when a catalog is unindexed', async () => {
+      stubFetch({
+        status: 200,
+        body: mergedCatalog(
+          {
+            'A_Catalog.xml': [],
+            'B_Catalog.xml': [],
+            'C_Catalog.xml': [],
+            'D_Catalog.xml': [],
+            'XX_IENC_Catalog.xml': [],
+            'YY_RNC_Catalog.xml': [],
+            'ZZ_Other_Catalog.xml': []
+          },
+          1,
+          {
+            'A_Catalog.xml': { format: 'enc' },
+            'B_Catalog.xml': { format: 'rnc' },
+            'C_Catalog.xml': { format: 'shapefile' },
+            'D_Catalog.xml': { format: 'pmtiles' },
+            'XX_IENC_Catalog.xml': { format: undefined, indexed: false },
+            'YY_RNC_Catalog.xml': { format: undefined, indexed: false },
+            'ZZ_Other_Catalog.xml': { format: undefined, indexed: false }
+          }
+        )
+      });
+      await refreshCatalog();
+      mock.restoreAll();
+      const categories = Object.fromEntries(getCatalogRegistry().map((r) => [r.file, r.category]));
+      assert.deepStrictEqual(categories, {
+        'A_Catalog.xml': 'ienc',
+        'B_Catalog.xml': 'rnc',
+        'C_Catalog.xml': 'general',
+        'D_Catalog.xml': 'general',
+        'XX_IENC_Catalog.xml': 'ienc',
+        'YY_RNC_Catalog.xml': 'rnc',
+        'ZZ_Other_Catalog.xml': 'general'
+      });
+    });
+  });
+
+  describe('refreshCatalog()', () => {
+    const CHART = {
+      number: 'r1',
+      title: 'Refresh Chart',
+      format: 'MBTiles',
+      zipfile_location: 'https://example.com/r1.mbtiles',
+      zipfile_datetime_iso8601: '2024-01-01T00:00:00Z'
+    };
 
     afterEach(() => {
       mock.restoreAll();
     });
 
-    it('flags rate_limited and captures resetAt on a 403 with remaining 0', async () => {
-      stubHttps({
-        statusCode: 403,
-        headers: {
-          'x-ratelimit-remaining': '0',
-          'x-ratelimit-reset': '1749532800',
-          'retry-after': '3600'
-        }
-      });
-      await assert.rejects(fetchCatalogRegistry(), /GitHub API returned 403/);
-      const s = getRegistryStatus();
-      assert.strictEqual(s.status, 'rate_limited');
-      assert.strictEqual(s.isRateLimited, true);
-      assert.strictEqual(s.remaining, 0);
-      assert.strictEqual(s.resetAt, 1749532800 * 1000);
-      assert.strictEqual(s.retryAfter, 3600);
-      assert.strictEqual(s.httpStatus, 403);
+    it('loads and caches a downloaded catalog', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }), etag: '"e1"' });
+      await refreshCatalog();
+      assert.strictEqual(getCatalogStatus().status, 'ok');
+      assert.ok(getCatalogData('R_Catalog.xml'));
+      const cache = JSON.parse(
+        fs.readFileSync(path.join(TEST_DATA_DIR, 'catalog-cache', 'merged-catalog.json'), 'utf-8')
+      ) as { etag: string };
+      assert.strictEqual(cache.etag, '"e1"');
     });
 
-    it('a 403 WITHOUT remaining 0 is a generic error, not rate-limited', async () => {
-      stubHttps({ statusCode: 403, headers: { 'x-ratelimit-remaining': '12' } });
-      await assert.rejects(fetchCatalogRegistry());
-      const s = getRegistryStatus();
-      assert.strictEqual(s.isRateLimited, false);
-      assert.strictEqual(s.status, 'error');
-    });
-
-    it('a 200 clears the rate-limit flag, metadata, and records remaining', async () => {
-      // First a 403 that sets isRateLimited + resetAt + retryAfter...
-      stubHttps({
-        statusCode: 403,
-        headers: {
-          'x-ratelimit-remaining': '0',
-          'x-ratelimit-reset': '1749532800',
-          'retry-after': '3600'
-        }
-      });
-      await assert.rejects(fetchCatalogRegistry());
-      assert.strictEqual(getRegistryStatus().isRateLimited, true);
-      assert.strictEqual(getRegistryStatus().resetAt, 1749532800 * 1000);
+    it('revalidates with the stored ETag and keeps the catalog on 304', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }), etag: '"e2"' });
+      await refreshCatalog();
       mock.restoreAll();
-
-      // ...then a 200 must clear all of it, not just the flag, so a stale
-      // rate-limit banner can't slip through while status === 'ok'.
-      stubHttps({ statusCode: 200, headers: { 'x-ratelimit-remaining': '57' }, body: '[]' });
-      await fetchCatalogRegistry();
-      const s = getRegistryStatus();
-      assert.strictEqual(s.status, 'ok');
-      assert.strictEqual(s.isRateLimited, false);
-      assert.strictEqual(s.remaining, 57);
-      assert.strictEqual(s.resetAt, null, 'a success must clear the stale reset time');
-      assert.strictEqual(s.retryAfter, null, 'a success must clear the stale retry-after');
+      const calls = stubFetch({ status: 304 });
+      await refreshCatalog();
+      assert.strictEqual(calls.headers[0]?.['If-None-Match'], '"e2"');
+      assert.strictEqual(getCatalogStatus().status, 'ok');
+      assert.ok(getCatalogData('R_Catalog.xml'));
     });
 
-    it('a network error is status error with null httpStatus (not rate-limited)', async () => {
-      stubHttps({ networkError: true });
-      await assert.rejects(fetchCatalogRegistry());
-      const s = getRegistryStatus();
-      assert.strictEqual(s.status, 'error');
-      assert.strictEqual(s.isRateLimited, false);
-      assert.strictEqual(s.httpStatus, null);
+    it('keeps the last good catalog when offline', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }) });
+      await refreshCatalog();
+      mock.restoreAll();
+      stubFetch({ networkError: true });
+      await refreshCatalog();
+      const status = getCatalogStatus();
+      assert.strictEqual(status.status, 'error');
+      assert.strictEqual(status.httpStatus, null);
+      assert.ok(getCatalogData('R_Catalog.xml'), 'last good catalog must survive');
     });
 
-    it('single-flight: two concurrent calls issue one https.get', async () => {
-      const getMock = mock.method(https, 'get', (...args: unknown[]) => {
-        const cb = args[args.length - 1] as (r: unknown) => void;
-        const req = {
-          on() {
-            return req;
-          },
-          setTimeout() {
-            return req;
-          },
-          destroy() {
-            /* no-op */
-          }
-        };
-        setTimeout(() => {
-          const response = {
-            statusCode: 200,
-            headers: {},
-            resume() {
-              /* drained */
-            },
-            on(event: string, handler: (chunk?: Buffer) => void) {
-              if (event === 'data') {
-                handler(Buffer.from('[]'));
-              }
-              if (event === 'end') {
-                handler();
-              }
-              return response;
-            }
-          };
-          cb(response);
-        }, 20);
-        return req;
-      });
-      await Promise.all([fetchCatalogRegistry(), fetchCatalogRegistry()]);
-      assert.strictEqual(getMock.mock.callCount(), 1);
+    it('keeps the last good catalog when the published one is incompatible', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }) });
+      await refreshCatalog();
+      mock.restoreAll();
+      stubFetch({ status: 200, body: mergedCatalog({}, 2) });
+      await refreshCatalog();
+      assert.strictEqual(getCatalogStatus().status, 'incompatible');
+      assert.ok(getCatalogData('R_Catalog.xml'));
+    });
+
+    it('reports an HTTP error without discarding the catalog', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }) });
+      await refreshCatalog();
+      mock.restoreAll();
+      stubFetch({ status: 503 });
+      await refreshCatalog();
+      assert.strictEqual(getCatalogStatus().status, 'error');
+      assert.strictEqual(getCatalogStatus().httpStatus, 503);
+      assert.ok(getCatalogData('R_Catalog.xml'));
+    });
+
+    it('serves the cached catalog after a restart with no network', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }) });
+      await refreshCatalog();
+      mock.restoreAll();
+      await initCatalogManagerOffline();
+      assert.ok(getCatalogData('R_Catalog.xml'));
+    });
+
+    it('single-flight: concurrent refreshes issue one download', async () => {
+      const calls = stubFetch({ status: 200, body: mergedCatalog({}) });
+      await Promise.all([refreshCatalog(), refreshCatalog()]);
+      assert.strictEqual(calls.urls.length, 1);
+    });
+
+    it('downloads from CHARTS_CATALOG_URL when set', async () => {
+      process.env.CHARTS_CATALOG_URL = 'https://example.org/fork/catalog.json';
+      try {
+        await initCatalogManagerOffline();
+        const calls = stubFetch({ status: 304 });
+        await refreshCatalog();
+        assert.strictEqual(calls.urls[0], 'https://example.org/fork/catalog.json');
+      } finally {
+        delete process.env.CHARTS_CATALOG_URL;
+        mock.restoreAll();
+        await initCatalogManagerOffline();
+      }
+    });
+
+    it('fetches the whole file when a 304 answers an ETag this start no longer holds', async () => {
+      const calls = stubFetch(
+        { status: 304 },
+        { status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }) }
+      );
+      initCatalogManager(path.join(TEST_DATA_DIR, 'no-cache'), () => {});
+      await refreshCatalog();
+      mock.restoreAll();
+      assert.ok(getCatalogData('R_Catalog.xml'));
+      assert.strictEqual(getCatalogStatus().status, 'ok');
+      assert.ok(calls.urls.length >= 1);
+      await initCatalogManagerOffline();
+    });
+
+    it('records a 304 in the cache so the catalog age survives a restart', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }), etag: '"e3"' });
+      await refreshCatalog();
+      mock.restoreAll();
+      const cachePath = path.join(TEST_DATA_DIR, 'catalog-cache', 'merged-catalog.json');
+      const before = (JSON.parse(fs.readFileSync(cachePath, 'utf-8')) as { fetchedAt: string })
+        .fetchedAt;
+      await new Promise((r) => setTimeout(r, 5));
+      stubFetch({ status: 304 });
+      await refreshCatalog();
+      const after = JSON.parse(fs.readFileSync(cachePath, 'utf-8')) as {
+        fetchedAt: string;
+        catalog: unknown;
+      };
+      assert.ok(after.fetchedAt > before);
+      assert.ok(after.catalog, 'the catalog itself must still be cached');
+    });
+
+    it('reports a damaged download without losing the last good catalog', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }) });
+      await refreshCatalog();
+      mock.restoreAll();
+      stubFetch({ status: 200, body: '{"truncated": ' });
+      await refreshCatalog();
+      const status = getCatalogStatus();
+      assert.strictEqual(status.status, 'error');
+      assert.match(status.message ?? '', /damaged/);
+      assert.ok(getCatalogData('R_Catalog.xml'));
+    });
+
+    it('does not re-download a fresh catalog when the tab opens', async () => {
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }) });
+      await refreshCatalog();
+      mock.restoreAll();
+      const calls = stubFetch({ status: 304 });
+      refreshCatalogIfStale();
+      await refreshCatalog(); // settle anything it started
+      assert.strictEqual(calls.urls.length, 1, 'only the explicit refresh may fetch');
+    });
+
+    it('starts empty, without crashing, from a corrupt cache', async () => {
+      const dir = path.join(TEST_DATA_DIR, 'corrupt');
+      fs.mkdirSync(path.join(dir, 'catalog-cache'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'catalog-cache', 'merged-catalog.json'),
+        '{"fetchedAt": "x", '
+      );
+      stubFetch({ networkError: true });
+      initCatalogManager(dir, () => {});
+      await refreshCatalog();
+      mock.restoreAll();
+      assert.deepStrictEqual(getCatalogRegistry(), []);
+      assert.strictEqual(getCatalogStatus().status, 'error');
+      await initCatalogManagerOffline();
+    });
+
+    it('keeps the old per-file caches until a merged catalog has loaded', async () => {
+      const dir = path.join(TEST_DATA_DIR, 'first-run');
+      const cacheDir = path.join(dir, 'catalog-cache');
+      fs.mkdirSync(cacheDir, { recursive: true });
+      fs.writeFileSync(path.join(cacheDir, '_registry.json'), '[]');
+      stubFetch({ networkError: true });
+      initCatalogManager(dir, () => {});
+      await refreshCatalog();
+      mock.restoreAll();
+      assert.ok(fs.existsSync(path.join(cacheDir, '_registry.json')));
+      stubFetch({ status: 200, body: mergedCatalog({ 'R_Catalog.xml': [CHART] }) });
+      await refreshCatalog();
+      mock.restoreAll();
+      assert.ok(!fs.existsSync(path.join(cacheDir, '_registry.json')));
+      await initCatalogManagerOffline();
+    });
+
+    it('removes the per-file caches the GitHub-based catalog left behind', async () => {
+      const cacheDir = path.join(TEST_DATA_DIR, 'catalog-cache');
+      fs.writeFileSync(path.join(cacheDir, '_registry.json'), '[]');
+      fs.writeFileSync(path.join(cacheDir, 'NOAA_MBTiles_Catalog.json'), '{}');
+      await initCatalogManagerOffline();
+      assert.ok(!fs.existsSync(path.join(cacheDir, '_registry.json')));
+      assert.ok(!fs.existsSync(path.join(cacheDir, 'NOAA_MBTiles_Catalog.json')));
     });
   });
 });

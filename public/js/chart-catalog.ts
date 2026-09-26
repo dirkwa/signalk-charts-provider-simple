@@ -1,4 +1,5 @@
-// Chart Catalog tab — browse and download charts from chartcatalogs.github.io
+// Chart Catalog tab — browse the merged chart catalog (chartcatalogs.github.io
+// downloads plus curated online charts) and install charts from it
 
 const CATALOG_API_BASE = '/plugins/signalk-charts-provider-simple';
 
@@ -34,24 +35,27 @@ interface CatalogInstall {
   catalogFile: string;
 }
 
-type RegistryFetchStatus = 'ok' | 'rate_limited' | 'error' | 'never';
+type CatalogFetchStatus = 'ok' | 'error' | 'incompatible' | 'never';
 
-interface RegistryStatus {
-  status: RegistryFetchStatus;
-  isRateLimited: boolean;
-  remaining: number | null;
-  resetAt: number | null; // epoch ms
-  retryAfter: number | null; // seconds
+interface CatalogStatus {
+  status: CatalogFetchStatus;
   lastAttemptAt: number | null;
   lastSuccessAt: number | null;
   httpStatus: number | null;
+  message: string | null;
+}
+
+interface CatalogSources {
+  chartcatalogs: { homepage: string; issues: string };
+  online: { homepage: string; issues: string };
 }
 
 interface CatalogRegistryResponse {
   registry?: CatalogRegistryEntry[];
   installed?: Record<string, CatalogInstall>;
   converting?: Record<string, boolean>;
-  registryStatus?: RegistryStatus;
+  catalogStatus?: CatalogStatus;
+  sources?: CatalogSources | null;
 }
 
 interface LocalChartsResponse {
@@ -200,17 +204,11 @@ async function initCatalogTab(): Promise<void> {
 
   output.innerHTML = `
     <div class="catalog-container">
-      <div class="catalog-source-note">
-        Chart data sourced from
-        <a href="https://chartcatalogs.github.io/" target="_blank" rel="noopener">chartcatalogs.github.io</a>
-        &mdash; a community-maintained catalog. Download links may be outdated or unavailable.
-        If a download fails, please report it to the
-        <a href="https://github.com/chartcatalogs/catalogs/issues" target="_blank" rel="noopener">catalog issue tracker</a>.
-      </div>
+      <div id="catalogSourceNote" class="catalog-source-note">${sourceNoteHtml(null)}</div>
       <div id="catalogPodmanWarning"></div>
       <div id="catalogUpdatesSection"></div>
       <div id="catalogToolbar" class="catalog-toolbar">
-        <button type="button" class="btn-catalog-refresh" data-catalog-refresh title="Re-fetch the catalog index from GitHub">
+        <button type="button" class="btn-catalog-refresh" data-catalog-refresh title="Download the latest chart catalog">
           <span class="btn-catalog-refresh-label">Refresh catalog index</span>
         </button>
       </div>
@@ -449,61 +447,69 @@ function wireCatalogClickHandlers(): void {
 let registryLoadSeq = 0;
 let catalogRefreshInFlight = false;
 // Last status from the registry endpoint, so renderCatalogList() can show an
-// accurate empty-state message (rate-limited / offline) instead of a generic
-// "No catalogs" that would clobber it on the next poll-driven re-render.
-let lastRegistryStatus: RegistryStatus | undefined;
+// accurate empty-state message instead of a generic "No catalogs" that would
+// clobber it on the next poll-driven re-render.
+let lastCatalogStatus: CatalogStatus | undefined;
 
-// Human-friendly "try again …" from the rate-limit reset time. Uses LOCAL
-// time (never UTC) plus a relative hint; falls back to retry-after / "shortly".
-function formatRateLimitReset(status: RegistryStatus): string {
-  const { resetAt, retryAfter } = status;
-  if (!resetAt) {
-    if (retryAfter) {
-      const mins = Math.max(1, Math.ceil(retryAfter / 60));
-      return `in about ${mins} minute${mins === 1 ? '' : 's'}`;
-    }
-    return 'shortly';
+const DEFAULT_CATALOG_SOURCES: CatalogSources = {
+  chartcatalogs: {
+    homepage: 'https://chartcatalogs.github.io/',
+    issues: 'https://github.com/chartcatalogs/catalogs/issues'
+  },
+  online: {
+    homepage: 'https://github.com/dirkwa/signalk-charts-provider-simple',
+    issues:
+      'https://github.com/dirkwa/signalk-charts-provider-simple/issues/new?template=catalog-problem.yml'
   }
-  const local = new Date(resetAt).toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-  const mins = Math.max(0, Math.ceil((resetAt - Date.now()) / 60000));
-  return mins > 0
-    ? `at ${local} (in about ${mins} minute${mins === 1 ? '' : 's'})`
-    : `at ${local}`;
+};
+
+// Attribution for both halves of the merged catalog, each with the tracker
+// its problems belong in. The links come from the catalog itself once loaded.
+function sourceNoteHtml(sources: CatalogSources | null | undefined): string {
+  const { chartcatalogs, online } = sources ?? DEFAULT_CATALOG_SOURCES;
+  // The links come from a downloaded file; only ever render https hrefs.
+  const link = (href: string, fallback: string, text: string) =>
+    `<a href="${catalogEscapeAttr(/^https:\/\//.test(href) ? href : fallback)}" target="_blank" rel="noopener">${text}</a>`;
+  const d = DEFAULT_CATALOG_SOURCES;
+  return `
+    Downloadable charts come from ${link(chartcatalogs.homepage, d.chartcatalogs.homepage, 'chartcatalogs.github.io')}
+    &mdash; a community-maintained catalog. Download links may be outdated or unavailable;
+    if a download fails, please report it to the ${link(chartcatalogs.issues, d.chartcatalogs.issues, 'chartcatalogs issue tracker')}.
+    Problems with online charts can be reported ${link(online.issues, d.online.issues, 'here')}.`;
 }
 
-// HTML for the empty-list placeholder, classed so CSS tints rate-limit
-// (warning) vs offline/error differently. Crucially never says "offline" for
-// a rate-limit.
-function registryEmptyMessageHtml(status: RegistryStatus | undefined): string {
-  if (status?.isRateLimited) {
-    return `<div class="catalog-error catalog-error-rate-limit"><strong>GitHub rate limit reached.</strong> The chart catalog index is fetched from GitHub, which limits anonymous requests. Please try again ${formatRateLimitReset(status)}, then click Refresh.</div>`;
+function renderSourceNote(sources: CatalogSources | null | undefined): void {
+  const el = document.getElementById('catalogSourceNote');
+  if (el) {
+    el.innerHTML = sourceNoteHtml(sources);
   }
-  if (status?.status === 'error') {
-    return `<div class="catalog-error">Could not fetch the chart catalog index from GitHub. Check this device's internet connection, then click Refresh. Previously cached catalogs reappear once it succeeds.</div>`;
+}
+
+// HTML for the empty-list placeholder when there is no catalog to show. The
+// server's message names the actual cause (offline, unavailable, damaged,
+// or needs a plugin update).
+function registryEmptyMessageHtml(status: CatalogStatus | undefined): string {
+  if ((status?.status === 'error' || status?.status === 'incompatible') && status.message) {
+    return `<div class="catalog-error">${catalogEscapeHtml(status.message)}</div>`;
   }
-  return `<div class="catalog-error">No catalogs available yet. Click Refresh to fetch the catalog index from GitHub.</div>`;
+  return `<div class="catalog-error">No catalogs available yet. Click Refresh to download the chart catalog.</div>`;
 }
 
 // Non-destructive banner shown ABOVE a populated list when a refresh failed —
 // so we never blank the cached cards just to report the failure.
 function showRegistryBanner(
-  status: RegistryStatus | undefined,
-  source: 'github' | 'server' = 'github'
+  status: CatalogStatus | undefined,
+  source: 'catalog' | 'server' = 'catalog'
 ): void {
   const el = document.getElementById('catalogRegistryBanner');
   if (!el) {
     return;
   }
   let msg: string;
-  if (status?.isRateLimited) {
-    msg = `Showing cached catalogs. GitHub rate limit reached — try refresh again ${formatRateLimitReset(status)}.`;
-  } else if (source === 'server') {
-    msg = 'Showing cached catalogs. Could not reach the Signal K server to refresh the index.';
+  if (source === 'server') {
+    msg = 'Showing the last downloaded catalog. Could not reach the Signal K server to refresh it.';
   } else {
-    msg = 'Showing cached catalogs. Could not reach GitHub to refresh the index.';
+    msg = `Showing the last downloaded catalog. ${catalogEscapeHtml(status?.message ?? 'Could not download a newer one.')}`;
   }
   el.innerHTML = `<div class="catalog-banner catalog-banner-warning">${msg}</div>`;
 }
@@ -520,8 +526,9 @@ function clearRegistryBanner(): void {
 // placeholder only when there's nothing cached to show.
 function applyRegistryResponse(data: CatalogRegistryResponse): void {
   const incoming = data.registry ?? [];
-  const status = data.registryStatus;
-  lastRegistryStatus = status;
+  const status = data.catalogStatus;
+  lastCatalogStatus = status;
+  renderSourceNote(data.sources);
 
   if (incoming.length === 0 && catalogRegistry.length > 0) {
     showRegistryBanner(status);
@@ -533,7 +540,7 @@ function applyRegistryResponse(data: CatalogRegistryResponse): void {
   catalogConverting = data.converting ?? {};
   renderFilterBar();
   // renderCatalogList handles both the populated and empty-registry cases
-  // (the latter via registryEmptyMessageHtml + lastRegistryStatus), so a
+  // (the latter via registryEmptyMessageHtml + lastCatalogStatus), so a
   // later poll-driven re-render keeps showing the right message.
   renderCatalogList();
 }
@@ -561,7 +568,7 @@ async function loadCatalogRegistry(): Promise<boolean> {
     if (seq !== registryLoadSeq) {
       return false;
     }
-    // Failure reaching OUR server (not GitHub). Keep a populated list.
+    // Failure reaching OUR server (not the catalog). Keep a populated list.
     if (catalogRegistry.length === 0) {
       const listEl = document.getElementById('catalogList');
       if (listEl) {
@@ -574,7 +581,7 @@ async function loadCatalogRegistry(): Promise<boolean> {
   }
 }
 
-// Refresh-button handler: force a GitHub re-fetch on demand, with a disabled/
+// Refresh-button handler: re-download the catalog on demand, with a disabled/
 // spinner state and the same never-blank + stale-guard rules as the load path.
 async function doCatalogRefresh(btn: HTMLButtonElement): Promise<void> {
   if (catalogRefreshInFlight) {
@@ -995,17 +1002,21 @@ function renderCatalogList(): void {
   if (!listEl) {
     return;
   }
-  // Whole registry empty → show the status-aware reason (rate-limited /
+  // Whole registry empty → show the status-aware reason (incompatible /
   // offline / "click Refresh"), not a generic line that would clobber the
   // message a poll-driven re-render would otherwise wipe.
   if (catalogRegistry.length === 0) {
-    listEl.innerHTML = registryEmptyMessageHtml(lastRegistryStatus);
+    listEl.innerHTML = registryEmptyMessageHtml(lastCatalogStatus);
     return;
   }
 
-  // A successful populated render means the registry is fine — drop any
-  // stale "showing cached catalogs" banner from a prior failed refresh.
-  clearRegistryBanner();
+  // A populated list may still be the last good catalog after a failed
+  // refresh; say so rather than implying it is current.
+  if (lastCatalogStatus?.status === 'error' || lastCatalogStatus?.status === 'incompatible') {
+    showRegistryBanner(lastCatalogStatus);
+  } else {
+    clearRegistryBanner();
+  }
 
   const filtered =
     activeCategoryFilter === 'all'
