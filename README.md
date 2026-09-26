@@ -189,6 +189,12 @@ Inspired by [Signal K Charts Plugin](https://github.com/SignalK/charts-plugin) b
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+**Online charts in the Chart Catalog** are curated in this repository. To add or fix one, see
+[Maintaining the catalog](docs/chart-catalog.md#maintaining-the-catalog). If you know a good
+free service but don't want to write the entry yourself, open a
+[Suggest an online chart](https://github.com/dirkwa/signalk-charts-provider-simple/issues/new?template=suggest-online-chart.yml)
+issue.
+
 ## Support
 
 For issues and feature requests:

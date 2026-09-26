@@ -97,10 +97,20 @@ catalog, and deploys to Pages only when the **content hash** changed.
 
 ## Maintaining the catalog
 
-**Adding an online chart.** Add an entry to `catalog/online-charts.json`. The unit
-tests validate every entry against the schema and against rules the schema can't
-express (WMS/WMTS entries must name their layer; only WMS/WMTS entries can be
-temporal). Before adding a source, confirm that:
+**Adding an online chart.** Add an entry to `catalog/online-charts.json`. Each
+field is described in `OnlineChartEntrySchema` in
+`src/catalog/merged-catalog-schema.ts`; the published `catalog.schema.json` carries
+the same descriptions. The unit tests validate every entry against the schema and
+against rules the schema can't express (WMS/WMTS entries must name their layer;
+only WMS/WMTS entries can be temporal).
+
+To see an entry in the Chart Catalog tab before opening a pull request, run
+`npm run catalog:preview`. It builds the catalog from your working copy the same
+way the workflow does, serves it locally, and prints how to point a development
+Signal K server at it. Each "Refresh catalog index" rebuilds it, so edits show up
+without a restart, and an invalid entry is reported in the terminal.
+
+Before adding a source, confirm that:
 
 - its license allows use by third-party apps without a key or registration;
 - it serves EPSG:3857 and sends CORS headers on map/tile requests (plotters
@@ -125,3 +135,8 @@ to `catalog/chartcatalogs-index.json`.
 source: chartcatalogs entries to the chartcatalogs issue tracker, online entries
 to this repository's "Online chart problem" issue form, which applies the
 `catalog` label.
+
+**Suggestions.** Boaters who know a good service but don't write code can use the
+"Suggest an online chart" issue form, which also applies the `catalog` label. A
+maintainer or contributor then checks the source against the list above and adds
+the entry.

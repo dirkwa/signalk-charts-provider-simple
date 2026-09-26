@@ -215,9 +215,9 @@ reviews:
         `schemaVersion`); see `docs/chart-catalog.md`. The install
         state is persisted per chart; `pruneStaleInstalls` reaps
         entries whose files have disappeared. Flag any direct catalog
-        HTTP fetch in the plugin outside this module. The
-        publish-catalog CLI under `src/catalog/` runs only in CI and
-        is the one exception.
+        HTTP fetch in the plugin outside this module. The publish and
+        preview CLIs under `src/catalog/` are CI and contributor tools,
+        not plugin code, and are the exception.
 
         ## Echo comments
 

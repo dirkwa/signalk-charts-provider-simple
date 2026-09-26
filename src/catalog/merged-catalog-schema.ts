@@ -30,13 +30,19 @@ export const ChartUseSchema = Type.Union([Type.Literal('download'), Type.Literal
     '"download": fetched (and, if needed, converted) once, then works offline. "stream": loaded from the provider while online.'
 });
 
-export const ChartCategorySchema = Type.Union([
-  Type.Literal('navigation'),
-  Type.Literal('weather'),
-  Type.Literal('depth'),
-  Type.Literal('basemap'),
-  Type.Literal('overlay')
-]);
+export const ChartCategorySchema = Type.Union(
+  [
+    Type.Literal('navigation'),
+    Type.Literal('weather'),
+    Type.Literal('depth'),
+    Type.Literal('basemap'),
+    Type.Literal('overlay')
+  ],
+  {
+    description:
+      'What the chart shows, which picks its section and category filter in the Chart Catalog: nautical charts, weather, depths and the seabed, base maps and imagery, or marine overlays such as seamarks.'
+  }
+);
 
 export const ChartFormatSchema = Type.Union([
   Type.Literal('mbtiles'),
@@ -49,18 +55,22 @@ export const ChartFormatSchema = Type.Union([
   Type.Literal('tiles')
 ]);
 
-export const BboxSchema = Type.Tuple(
-  [
-    Type.Number({ minimum: -180, maximum: 180 }),
-    Type.Number({ minimum: -90, maximum: 90 }),
-    Type.Number({ minimum: -180, maximum: 180 }),
-    Type.Number({ minimum: -90, maximum: 90 })
-  ],
-  {
-    description:
-      '[west, south, east, north] in degrees. west > east means the box crosses the antimeridian, so a point is inside when lon >= west OR lon <= east.'
-  }
-);
+const BBOX_FORMAT =
+  '[west, south, east, north] in degrees. west > east means the box crosses the antimeridian, so a point is inside when lon >= west OR lon <= east.';
+
+function bboxSchema(meaning?: string) {
+  return Type.Tuple(
+    [
+      Type.Number({ minimum: -180, maximum: 180 }),
+      Type.Number({ minimum: -90, maximum: 90 }),
+      Type.Number({ minimum: -180, maximum: 180 }),
+      Type.Number({ minimum: -90, maximum: 90 })
+    ],
+    { description: meaning ? `${meaning} ${BBOX_FORMAT}` : BBOX_FORMAT }
+  );
+}
+
+export const BboxSchema = bboxSchema();
 
 export const RegionTagsSchema = Type.Array(Type.String({ pattern: '^[a-z0-9]+(-[a-z0-9]+)*$' }), {
   minItems: 1,
@@ -84,14 +94,38 @@ export const OnlineChartTypeSchema = Type.Union([
 
 const onlineChartSourceProps = {
   type: OnlineChartTypeSchema,
-  url: HttpsUrl,
-  // Required for WMS/WMTS (enforced by checkOnlineChartEntry). Chosen for
-  // the user, so they never have to pick layers from GetCapabilities.
-  layers: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
-  minzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
-  maxzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
-  tileSize: Type.Optional(Type.Union([Type.Literal(256), Type.Literal(512)])),
-  defaultOpacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 }))
+  url: Type.String({
+    pattern: '^https://',
+    description:
+      'The service endpoint: the WMS/WMTS base URL, a tile URL template with {z}/{x}/{y}, or the URL of a map style or TileJSON document.'
+  }),
+  // Required for WMS/WMTS (enforced by checkOnlineChartEntry).
+  layers: Type.Optional(
+    Type.Array(Type.String({ minLength: 1 }), {
+      minItems: 1,
+      description:
+        'WMS/WMTS layer names to draw. Chosen for the user, who never picks layers: name the single best layer for a boater.'
+    })
+  ),
+  minzoom: Type.Optional(
+    Type.Integer({ minimum: 0, maximum: 24, description: 'Lowest zoom level the service draws.' })
+  ),
+  maxzoom: Type.Optional(
+    Type.Integer({ minimum: 0, maximum: 24, description: 'Highest zoom level the service draws.' })
+  ),
+  tileSize: Type.Optional(
+    Type.Union([Type.Literal(256), Type.Literal(512)], {
+      description: 'Tile size in pixels, when the service does not use 256.'
+    })
+  ),
+  defaultOpacity: Type.Optional(
+    Type.Number({
+      minimum: 0,
+      maximum: 1,
+      description:
+        'Suggested opacity for a layer meant to be seen over other charts (radar, overlays); the user can change it.'
+    })
+  )
 };
 
 const onlineChartTemporalProps = {
@@ -124,22 +158,52 @@ const onlineChartTemporalProps = {
 
 function onlineChartEntryProps<C extends TSchema, T extends TSchema>(chart: C, temporal: T) {
   return {
-    id: Type.String({ pattern: '^[a-z0-9]+(-[a-z0-9]+)*$' }),
-    name: Type.String({ minLength: 1 }),
-    description: Type.String({ minLength: 1 }),
+    id: Type.String({
+      pattern: '^[a-z0-9]+(-[a-z0-9]+)*$',
+      description:
+        'Permanent identifier. Boats that added the chart refer to it by this id, so never change or reuse one.'
+    }),
+    name: Type.String({
+      minLength: 1,
+      description: 'Short display name for a boater: what the chart shows and where.'
+    }),
+    description: Type.String({
+      minLength: 1,
+      description:
+        'One or two plain sentences for a boater: what the chart shows, where, and how current it is. Not how it is served.'
+    }),
     category: ChartCategorySchema,
     regions: RegionTagsSchema,
-    bbox: BboxSchema,
-    // Where the chart is actually useful, when narrower than the data
-    // extent: a satellite's full disk is `bbox` (what a plotter draws), but
-    // imagery near the disk's edge is too oblique to be worth offering as
-    // "near". Only location filters use it.
-    coverage: Type.Optional(BboxSchema),
-    provider: Type.String({ minLength: 1 }),
-    attribution: Type.String({ minLength: 1 }),
-    license: Type.String({ minLength: 1 }),
-    licenseUrl: HttpsUrl,
-    notForNavigation: Type.Optional(Type.Boolean()),
+    bbox: bboxSchema(
+      'The extent the service draws. Chart plotters clip the layer to it, so it must cover all of the data.'
+    ),
+    coverage: Type.Optional(
+      bboxSchema(
+        'Where the chart is actually useful, when narrower than `bbox` (a geostationary satellite\'s full disk is too oblique near its edge). Only the "Near me" filter reads it.'
+      )
+    ),
+    provider: Type.String({
+      minLength: 1,
+      description: 'Who publishes the data, as shown in the Chart Catalog.'
+    }),
+    attribution: Type.String({
+      minLength: 1,
+      description: 'Credit line the license requires chart plotters to show with the layer.'
+    }),
+    license: Type.String({
+      minLength: 1,
+      description: 'License name, as shown in the Chart Catalog.'
+    }),
+    licenseUrl: Type.String({
+      pattern: '^https://',
+      description: 'Page with the license or terms of use.'
+    }),
+    notForNavigation: Type.Optional(
+      Type.Boolean({
+        description:
+          'True when the chart looks nautical but its publisher says it must not be used for navigation.'
+      })
+    ),
     chart,
     temporal: Type.Optional(temporal)
   };

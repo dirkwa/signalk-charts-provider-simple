@@ -8,6 +8,7 @@
   "files": [
     "dist",
     "!dist/catalog/publish-catalog-cli.*",
+    "!dist/catalog/preview-catalog-cli.*",
     "assets",
     "public",
     "docs/screenshots"
@@ -22,6 +23,7 @@
     "test": "node --test --test-force-exit dist-test/**/*.test.js",
     "test:fixtures": "node test/fixtures/create-test-mbtiles.cjs && node test/fixtures/create-test-vector-mbtiles.mjs",
     "test:e2e": "npm run build && npm run build:e2e && playwright test",
+    "catalog:preview": "npm run build && node dist/catalog/preview-catalog-cli.js",
     "lint": "eslint src test e2e public/js playwright.config.ts",
     "lint:fix": "eslint src test e2e public/js playwright.config.ts --fix",
     "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' && eslint src test e2e public/js playwright.config.ts --fix",

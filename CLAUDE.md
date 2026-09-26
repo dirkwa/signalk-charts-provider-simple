@@ -45,7 +45,7 @@ This is a Signal K server plugin. The single entry is `src/index.ts`, which expo
 The Chart Catalog is backed by one merged catalog file that this repo publishes to GitHub Pages (see `docs/chart-catalog.md` for the why). It combines chartcatalogs.github.io (downloadable charts) with the curated online charts in `catalog/online-charts.json`, plus the per-file facets (label, category, format, regions, bbox) in `catalog/chartcatalogs-index.json`.
 
 - `src/catalog/merged-catalog-schema.ts` holds **all** catalog schemas: strict ones for the hand-edited sources, tolerant ones for the published file. Published-file compatibility policy: additive changes keep `schemaVersion`; consumers ignore unknown fields and skip entries they can't interpret, never the whole file.
-- `src/catalog/build-merged-catalog.ts` is pure (no I/O): merge, content hash, carry-forward of broken upstream files, the drop guard and the publish decision. `src/catalog/publish-catalog-cli.ts` is the I/O shell that `.github/workflows/publish-catalog.yml` runs; it is excluded from the npm package.
+- `src/catalog/build-merged-catalog.ts` is pure (no I/O): merge, content hash, carry-forward of broken upstream files, the drop guard and the publish decision. `src/catalog/publish-catalog-cli.ts` is the I/O shell that `.github/workflows/publish-catalog.yml` runs; `src/catalog/preview-catalog-cli.ts` (`npm run catalog:preview`) runs it on each request to serve a contributor's working copy locally. Both are excluded from the npm package.
 - `src/catalog/chartcatalogs-xml.ts` is the only chartcatalogs XML parser; the catalog manager and the build both use it.
 - The content hash deliberately ignores timestamps and the upstream commit, so hourly chartcatalogs header-only commits don't republish.
 
