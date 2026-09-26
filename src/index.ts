@@ -184,6 +184,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // computed once and cleared whenever the chart folder may have changed
   // (every change goes through refreshChartProviders).
   let onlineAddedCache: Record<string, string[]> | null = null;
+  // Bumped on every invalidation, so a scan that started before one can't
+  // store its now-stale result.
+  let onlineAddedGeneration = 0;
 
   // Keeps time-varying online charts' timelines current. An update is
   // applied to the served chart in place and announced as a delta; with
@@ -1822,6 +1825,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       app.debug(`Rename chart request: chartPath=${chartPathBody}, newName=${newName}`);
 
+      // Only an MBTiles file can take an .mbtiles name. Online charts are
+      // renamed through /chart-metadata; renaming their file here would
+      // hide them from discovery.
+      if (!/\.mbtiles$/i.test(chartPathBody)) {
+        res.status(400).send('Only MBTiles charts can be renamed this way');
+        return;
+      }
+
       // Schema enforced the .mbtiles suffix; this guard rejects path
       // injection inside the stem (`../foo.mbtiles`, `a/b.mbtiles`, …).
       const nameWithoutExt = newName.replace(/\.mbtiles$/, '');
@@ -2862,14 +2873,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     const catalogRegistryResponse = async () => {
-      if (!onlineAddedCache) {
-        const added: Record<string, string[]> = {};
+      let added = onlineAddedCache;
+      if (!added) {
+        const generation = onlineAddedGeneration;
+        const scanned: Record<string, string[]> = {};
         for (const ref of await findOnlineChartFiles(props.chartPath || defaultChartsPath)) {
-          (added[ref.catalogId] ??= []).push(ref.relativePath);
+          (scanned[ref.catalogId] ??= []).push(ref.relativePath);
         }
-        onlineAddedCache = added;
+        if (generation === onlineAddedGeneration) {
+          onlineAddedCache = scanned;
+        }
+        added = scanned;
       }
-      const added = onlineAddedCache;
       return {
         registry: getCatalogRegistry(),
         installed: getInstalledCatalogCharts(),
@@ -4560,6 +4575,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // fire-and-forget callers (download completion) rely on that.
   const refreshChartProviders = async (): Promise<boolean> => {
     onlineAddedCache = null;
+    onlineAddedGeneration++;
     try {
       // getDefaultChartsPath() (not the raw field) so a refresh requested
       // before start() has run still resolves the computed default path.

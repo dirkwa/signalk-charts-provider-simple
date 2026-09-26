@@ -121,22 +121,32 @@ async function main(): Promise<void> {
   }
 
   const published = await fetchPublishedState(publishedUrl);
-  const { catalog, unindexed, staleIndexEntries, carriedForward, skipped, droppedCharts } =
-    buildMergedCatalog({
-      chartcatalogs: await readChartcatalogs(ccDir),
-      chartcatalogsCommit: values.commit,
-      index: readJson(indexFile, ChartcatalogsIndexSchema),
-      online: readJson(onlineFile, OnlineChartsSourceFileSchema),
-      repo,
-      previous: published?.chartcatalogs,
-      now: new Date()
-    });
+  const {
+    catalog,
+    unindexed,
+    staleIndexEntries,
+    carriedForward,
+    skipped,
+    droppedCharts,
+    removedUpstream
+  } = buildMergedCatalog({
+    chartcatalogs: await readChartcatalogs(ccDir),
+    chartcatalogsCommit: values.commit,
+    index: readJson(indexFile, ChartcatalogsIndexSchema),
+    online: readJson(onlineFile, OnlineChartsSourceFileSchema),
+    repo,
+    previous: published?.chartcatalogs,
+    now: new Date()
+  });
 
   for (const file of carriedForward) {
     console.log(`::warning::${file} is broken or empty upstream; kept the published entry`);
   }
   for (const file of skipped) {
     console.log(`::warning::${file} is broken upstream and was never published; left out`);
+  }
+  for (const file of removedUpstream) {
+    console.log(`::warning::${file} is no longer in chartcatalogs; removed from the catalog`);
   }
   for (const chart of droppedCharts) {
     console.log(`::warning::Dropped ${chart}: download location is not an http(s) URL`);

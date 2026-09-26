@@ -323,6 +323,35 @@ describe('TimeDimensionPoller', () => {
     }
   });
 
+  it('retries an entry with no timeline at most once a minute', async () => {
+    let fetches = 0;
+    let clock = NOW;
+    const p = poller(
+      () => {
+        fetches++;
+        return Promise.reject(new Error('offline'));
+      },
+      [],
+      () => clock
+    );
+    try {
+      p.sync([target]);
+      p.touch('nws-radar-conus');
+      await new Promise((r) => setImmediate(r));
+      assert.strictEqual(fetches, 1);
+      clock += 10000;
+      p.touch('nws-radar-conus');
+      await new Promise((r) => setImmediate(r));
+      assert.strictEqual(fetches, 1, 'a failed download is not retried on every read');
+      clock += 60000;
+      p.touch('nws-radar-conus');
+      await new Promise((r) => setImmediate(r));
+      assert.strictEqual(fetches, 2);
+    } finally {
+      p.stop();
+    }
+  });
+
   it('shares one download between entries on the same capabilities URL', async () => {
     let fetches = 0;
     const p = poller(() => {

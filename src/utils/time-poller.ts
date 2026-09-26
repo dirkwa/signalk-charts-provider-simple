@@ -37,6 +37,10 @@ const MAX_INTERVAL_MS = 24 * 60 * 60 * 1000;
 // Entries sharing a capabilities URL poll at about the same moment; reuse
 // a download this recent instead of fetching the same document again.
 const SHARED_FETCH_MS = 60000;
+// How soon a read may retry an entry that has no timeline yet (its
+// download failed, or the document has none for the layer), so client
+// reads can't turn into a fetch or a multi-megabyte scan each.
+const RETRY_GAP_MS = 60000;
 
 async function defaultFetchText(url: string): Promise<string> {
   const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -83,8 +87,9 @@ export class TimeDimensionPoller {
   }
 
   /**
-   * Record that a client read this entry's chart. Polls at once when the
-   * entry has no timeline yet or its last read is a full interval old.
+   * Record that a client read this entry's chart. Polls when its last poll
+   * is a full interval old, or, while it has no timeline, a retry gap old
+   * (so the first read polls at once).
    */
   touch(catalogId: string): void {
     const poll = this.polls.get(catalogId);
@@ -93,7 +98,8 @@ export class TimeDimensionPoller {
     }
     const now = this.now();
     poll.lastDemand = now;
-    if (!this.latest.has(catalogId) || now - poll.lastPoll >= poll.interval) {
+    const gap = this.latest.has(catalogId) ? poll.interval : RETRY_GAP_MS;
+    if (poll.lastPoll === 0 || now - poll.lastPoll >= gap) {
       void this.poll(poll.target);
     }
   }

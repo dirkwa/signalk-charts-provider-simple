@@ -1552,11 +1552,12 @@ async function addOnlineChart(catalogId: string): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ catalogId, folder })
     });
-    const result = (await response.json()) as {
-      success?: boolean;
-      relativePath?: string;
-      error?: string;
-    };
+    let result: { success?: boolean; relativePath?: string; error?: string } = {};
+    try {
+      result = (await response.json()) as typeof result;
+    } catch {
+      // A proxy error page isn't JSON; report the HTTP status instead.
+    }
     if (!response.ok || !result.success || !result.relativePath) {
       throw new Error(result.error ?? `HTTP ${response.status}`);
     }

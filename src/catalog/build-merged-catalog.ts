@@ -56,6 +56,12 @@ export interface BuildResult {
   skipped: string[];
   /** Charts dropped because their download location is not an http(s) URL. */
   droppedCharts: string[];
+  /**
+   * Published catalogs whose file chartcatalogs no longer has. They leave
+   * the catalog (the file may really have been withdrawn), but the drop
+   * guard tolerates a few, so each one is reported.
+   */
+  removedUpstream: string[];
 }
 
 function compareStrings(a: string, b: string): number {
@@ -205,7 +211,10 @@ export function buildMergedCatalog(inputs: BuildInputs): BuildResult {
     staleIndexEntries: Object.keys(inputs.index).filter((f) => !fileNames.has(f)),
     carriedForward,
     skipped,
-    droppedCharts
+    droppedCharts,
+    removedUpstream: [...(inputs.previous?.keys() ?? [])]
+      .filter((f) => !fileNames.has(f))
+      .sort(compareStrings)
   };
 }
 

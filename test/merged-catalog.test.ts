@@ -320,6 +320,16 @@ describe('buildMergedCatalog', () => {
       assert.strictEqual(result.catalog.contentHash, prev.catalog.contentHash);
     });
 
+    it('reports a published file that chartcatalogs no longer has', async () => {
+      const prev = await previous();
+      const files = (await sampleFiles()).filter((f) => f.file !== 'XX_RNC_Catalog.xml');
+      const result = buildMergedCatalog(
+        await inputs({ chartcatalogs: files, previous: prev.entries })
+      );
+      assert.deepStrictEqual(result.removedUpstream, ['XX_RNC_Catalog.xml']);
+      assert.ok(!result.catalog.chartcatalogs.some((c) => c.file === 'XX_RNC_Catalog.xml'));
+    });
+
     it('applies current index facets to a carried-forward entry', async () => {
       const prev = await previous();
       const files = await withBrokenRnc((f) => ({ ...f, parsed: null }));

@@ -469,6 +469,35 @@ test.describe('Chart Catalog tab', () => {
     await expect(seamap.locator('.installed-badge')).toHaveText('Added');
     await expect(seamap).toContainText('Not for navigation');
   });
+  test('reports the HTTP status when adding an online chart gets an error page', async ({
+    page
+  }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [],
+      online: [
+        {
+          id: 'nws-radar-conus',
+          name: 'NWS Radar',
+          description: 'Rain radar.',
+          category: 'weather',
+          provider: 'NOAA',
+          license: 'Public domain',
+          licenseUrl: 'https://www.weather.gov/disclaimer',
+          chart: { type: 'WMS' }
+        }
+      ],
+      onlineAddFailStatus: 502
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await page.locator('[data-catalog-toggle="online:weather"]').click();
+    const dialog = page.waitForEvent('dialog');
+    await page.locator('[data-online-add]').click();
+    const alert = await dialog;
+    expect(alert.message()).toContain('HTTP 502');
+    await alert.dismiss();
+  });
+
   test('two catalogs listing the same chart number keep their own folders', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     const catalog = (file: string) => ({

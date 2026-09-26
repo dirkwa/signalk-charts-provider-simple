@@ -116,6 +116,9 @@ interface MockState {
   // When set, POST /catalog/download responds with this HTTP status and an
   // error body so tests can exercise the update-failure path.
   downloadFailStatus: number | null;
+  // When set, POST /online-charts answers with this status and an HTML
+  // body, like a proxy error page.
+  onlineAddFailStatus: number | null;
   s57PodmanAvailable: boolean;
   podmanVersion: string | null;
   containerRuntimeEngine: string | null;
@@ -152,6 +155,7 @@ const initialState: MockState = {
   downloadJobs: [],
   catalogUpdates: [],
   downloadFailStatus: null,
+  onlineAddFailStatus: null,
   s57PodmanAvailable: true,
   podmanVersion: 'podman version 5.4.2',
   containerRuntimeEngine: 'podman'
@@ -294,6 +298,10 @@ export function startMockServer(
   router.post(`${PLUGIN_BASE}/online-charts`, (req, res) => {
     const body = req.body as { catalogId: string; folder: string };
     state.onlineAddRequests.push(body);
+    if (state.onlineAddFailStatus !== null) {
+      res.status(state.onlineAddFailStatus).type('html').send('<html>Bad Gateway</html>');
+      return;
+    }
     const relativePath = `${body.folder}/${body.catalogId}.onlinechart.json`;
     (state.onlineAdded[body.catalogId] ??= []).push(relativePath);
     res.json({ success: true, relativePath });

@@ -264,6 +264,15 @@ describe('online chart routes', () => {
     ]);
   });
 
+  it('refuses to rename an online chart file to .mbtiles', async () => {
+    const chartPathParam = path.join('Online Charts', 'nws-radar-conus-2.onlinechart.json');
+    const res = await call(handlers.get('post /rename-chart'), {
+      body: { chartPath: chartPathParam, newName: 'radar.mbtiles' }
+    });
+    assert.strictEqual(res.statusCode, 400);
+    assert.ok(fs.existsSync(path.join(chartPath, chartPathParam)));
+  });
+
   it('shows catalog details and renames through the metadata routes', async () => {
     const chartPathParam = path.join('Online Charts', 'nws-radar-conus-2.onlinechart.json');
     const meta = await call(handlers.get('get /chart-metadata/:chartPath'), {
