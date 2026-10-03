@@ -1,5 +1,5 @@
 import type { Path, Plugin } from '@signalk/server-api';
-import { SKVersion } from '@signalk/server-api';
+import { ALARM_METHOD, ALARM_STATE, SKVersion } from '@signalk/server-api';
 import { Type } from '@sinclair/typebox';
 import Busboy from 'busboy';
 import fs from 'fs';
@@ -4643,8 +4643,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               {
                 path: `notifications.plugins.${PLUGIN_ID}.chartCatalogUpdate` as Path,
                 value: {
-                  state: 'warn',
-                  method: ['visual'],
+                  state: ALARM_STATE.warn,
+                  method: [ALARM_METHOD.visual],
                   message: `${updates.length} chart update${updates.length !== 1 ? 's' : ''} available from Chart Catalog: ${chartNames}`
                 }
               }
