@@ -338,7 +338,8 @@ export class MBTilesReader {
   /**
    * `[west, east]` edges of the tiles at maxzoom when they straddle the
    * antimeridian (west > east), or null when they do not or there are no
-   * tiles. See `antimeridianSpan`.
+   * tiles. See `antimeridianSpan`. Also null when a lower zoom has tiles in
+   * the gap, since the file then covers more than its maxzoom tiles show.
    */
   deriveAntimeridianSpan(): [number, number] | null {
     if (!this.db) {
@@ -369,7 +370,39 @@ export class MBTilesReader {
     const east = this.db
       .prepare('SELECT MIN(tile_column) AS c FROM tiles WHERE zoom_level = ? AND tile_column >= ?')
       .get(z, half) as { c: number | null } | undefined;
-    return antimeridianSpan(z, west?.c ?? null, east?.c ?? null);
+    const maxWestCol = west?.c ?? null;
+    const minEastCol = east?.c ?? null;
+    const span = antimeridianSpan(z, maxWestCol, minEastCol);
+    if (!span || maxWestCol === null || minEastCol === null) {
+      return null;
+    }
+    return this.hasTilesInGapBelow(z, maxWestCol, minEastCol) ? null : span;
+  }
+
+  /**
+   * True when a zoom below `z` has a tile wholly inside the empty run of
+   * columns between `maxWestCol` and `minEastCol` at `z`. A lower-zoom tile
+   * that is the parent of a tile at `z` doesn't count, even though it reaches
+   * into the run; z0 and z1 tiles always do.
+   */
+  private hasTilesInGapBelow(z: number, maxWestCol: number, minEastCol: number): boolean {
+    if (!this.db) {
+      throw new Error('Database is closed');
+    }
+    const row = this.db.prepare('SELECT MIN(zoom_level) AS z FROM tiles').get() as
+      { z: number | null } | undefined;
+    const inGap = this.db.prepare(
+      'SELECT 1 AS one FROM tiles WHERE zoom_level = ? AND tile_column > ? AND tile_column < ? LIMIT 1'
+    );
+    for (let lower = row?.z ?? z; lower < z; lower++) {
+      const scale = 2 ** (z - lower);
+      const westParent = Math.floor(maxWestCol / scale);
+      const eastParent = Math.floor(minEastCol / scale);
+      if (inGap.get(lower, westParent, eastParent) !== undefined) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

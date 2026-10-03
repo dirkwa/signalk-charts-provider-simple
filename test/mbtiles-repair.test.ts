@@ -476,9 +476,16 @@ describe('antimeridian bounds from tiles', () => {
     cols.map((col) => ({ z, col, row: tmsRow }));
 
   // z5 columns are 11.25° wide: 30..31 are 157.5°E..180°, 0..1 are 180°..157.5°W.
-  // The z3 tiles check that the extent comes from maxzoom.
-  const CROSSING_TILES = [...row(3, [0, 7], 3), ...row(5, [0, 1, 30, 31], 12)];
+  // The lower zooms hold only their parents, so the extent comes from maxzoom.
+  const CROSSING_TILES = [
+    ...row(0, [0], 0),
+    ...row(1, [0, 1], 0),
+    ...row(3, [0, 7], 3),
+    ...row(5, [0, 1, 30, 31], 12)
+  ];
   const WORLD_TILES = row(2, [0, 1, 2, 3], 1);
+  // The crossing z5 tiles over a full z2 grid: the file covers the world at z2.
+  const OVERVIEW_TILES = [...WORLD_TILES, ...row(5, [0, 1, 30, 31], 12)];
   const ORDINARY_TILES = row(5, [20, 21, 22], 12);
   // Both hemispheres, but only 14 of 32 columns empty across 0°.
   const WIDE_TILES = row(5, [0, 1, 2, 3, 4, 5, 20, 25, 31], 12);
@@ -524,6 +531,12 @@ describe('antimeridian bounds from tiles', () => {
       assert.deepStrictEqual([b[0], b[2]], [-180, 180]);
     });
 
+    it('keeps the full width when a lower zoom has tiles in the gap', async () => {
+      const b = await derived('overview', OVERVIEW_TILES);
+      assert.ok(b);
+      assert.deepStrictEqual([b[0], b[2]], [-180, 180]);
+    });
+
     it('keeps the full width when the crossing box would exceed 180°', async () => {
       const b = await derived('wide', WIDE_TILES);
       assert.ok(b);
@@ -545,6 +558,11 @@ describe('antimeridian bounds from tiles', () => {
 
     it('keeps full-width metadata bounds when the tiles fill the width', async () => {
       const b = await publishedBounds('globe', '-180,-85,180,85', WORLD_TILES);
+      assert.deepStrictEqual(b, [-180, -85, 180, 85]);
+    });
+
+    it('keeps full-width metadata bounds when a lower zoom has tiles in the gap', async () => {
+      const b = await publishedBounds('overview', '-180,-85,180,85', OVERVIEW_TILES);
       assert.deepStrictEqual(b, [-180, -85, 180, 85]);
     });
 
