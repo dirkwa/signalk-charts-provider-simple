@@ -187,7 +187,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
       identifier,
       name: metadata.name ?? metadata.id ?? identifier,
       description: metadata.description ?? '',
-      bounds: metadata.bounds,
+      bounds: mbtilesBounds(metadata.bounds, reader),
       minzoom: metadata.minzoom,
       maxzoom: metadata.maxzoom,
       format: metadata.format ?? 'png',
@@ -216,6 +216,21 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
     }
     return null;
   }
+}
+
+/**
+ * Tools that cannot express a box crossing the antimeridian write
+ * `[-180, s, 180, n]` for one. When the file's bounds span every longitude
+ * but its tiles straddle the antimeridian, publish the tiles' crossing extent
+ * (west > east) with the file's latitudes.
+ */
+function mbtilesBounds(bounds: number[], reader: MBTilesReader): number[] {
+  const [west, south, east, north] = bounds;
+  if (bounds.length !== 4 || west > -180 || east < 180) {
+    return bounds;
+  }
+  const span = reader.deriveAntimeridianSpan();
+  return span ? [span[0], south, span[1], north] : bounds;
 }
 
 function parseVectorLayers(layers: VectorLayer[]): string[] {

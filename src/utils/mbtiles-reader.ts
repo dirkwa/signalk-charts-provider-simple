@@ -13,6 +13,11 @@ interface TileRow {
   tile_data: Uint8Array;
 }
 
+/** Longitude of the west edge of tile column `col` at zoom `z`. */
+function columnLon(z: number, col: number): number {
+  return (col / 2 ** z) * 360 - 180;
+}
+
 /**
  * Convert a tile column/row range at a single zoom into Web-Mercator
  * geographic bounds `[minLon, minLat, maxLon, maxLat]` (the MBTiles
@@ -32,7 +37,6 @@ export function tileRangeToBounds(
   maxTmsRow: number
 ): [number, number, number, number] {
   const n = 2 ** z;
-  const lon = (col: number): number => (col / n) * 360 - 180;
   const lat = (xyzRow: number): number =>
     (Math.atan(Math.sinh(Math.PI * (1 - (2 * xyzRow) / n))) * 180) / Math.PI;
 
@@ -40,12 +44,39 @@ export function tileRangeToBounds(
   const xyzTop = n - 1 - maxTmsRow;
   const xyzBottom = n - 1 - minTmsRow;
 
-  const west = lon(minCol);
-  const east = lon(maxCol + 1);
+  const west = columnLon(z, minCol);
+  const east = columnLon(z, maxCol + 1);
   const north = lat(xyzTop);
   const south = lat(xyzBottom + 1);
 
   return [west, south, east, north];
+}
+
+/**
+ * Longitude edges `[west, east]` of a tile set at zoom `z` that straddles
+ * the antimeridian, or null when it does not. `maxWestCol` is the eastmost
+ * populated column west of 0° and `minEastCol` the westmost one east of 0°
+ * (null when that hemisphere has no tiles).
+ *
+ * The tiles straddle the antimeridian when both hemispheres have tiles and
+ * the empty run of columns between them, across 0°, is at least half the
+ * world. They then fit a box no wider than 180° running east from
+ * `minEastCol` across 180° to `maxWestCol`, so west > east (RFC 7946 §5.2).
+ * A wider tile set, such as a world chart missing a few columns, keeps its
+ * ordinary box.
+ */
+export function antimeridianSpan(
+  z: number,
+  maxWestCol: number | null,
+  minEastCol: number | null
+): [number, number] | null {
+  if (maxWestCol === null || minEastCol === null) {
+    return null;
+  }
+  if (minEastCol - maxWestCol - 1 < 2 ** z / 2) {
+    return null;
+  }
+  return [columnLon(z, minEastCol), columnLon(z, maxWestCol + 1)];
 }
 
 export class MBTilesReader {
@@ -305,10 +336,48 @@ export class MBTilesReader {
   }
 
   /**
+   * `[west, east]` edges of the tiles at maxzoom when they straddle the
+   * antimeridian (west > east), or null when they do not or there are no
+   * tiles. See `antimeridianSpan`.
+   */
+  deriveAntimeridianSpan(): [number, number] | null {
+    if (!this.db) {
+      throw new Error('Database is closed');
+    }
+    try {
+      const row = this.db.prepare('SELECT MAX(zoom_level) AS z FROM tiles').get() as
+        { z: number | null } | undefined;
+      if (!row || row.z === null) {
+        return null;
+      }
+      return this.antimeridianSpanAt(row.z);
+    } catch {
+      return null;
+    }
+  }
+
+  private antimeridianSpanAt(z: number): [number, number] | null {
+    if (!this.db) {
+      throw new Error('Database is closed');
+    }
+    // One aggregate per query, so SQLite answers each from the tiles index
+    // instead of scanning the zoom level.
+    const half = 2 ** z / 2;
+    const west = this.db
+      .prepare('SELECT MAX(tile_column) AS c FROM tiles WHERE zoom_level = ? AND tile_column < ?')
+      .get(z, half) as { c: number | null } | undefined;
+    const east = this.db
+      .prepare('SELECT MIN(tile_column) AS c FROM tiles WHERE zoom_level = ? AND tile_column >= ?')
+      .get(z, half) as { c: number | null } | undefined;
+    return antimeridianSpan(z, west?.c ?? null, east?.c ?? null);
+  }
+
+  /**
    * Derive Web-Mercator bounds from the tile column/row extent at maxzoom.
    * Returns null if there are no tiles. The bounds are the bounding box of
    * the populated tiles — for a sparse pyramid this can be larger than the
    * actual data extent, which is the standard (advisory) interpretation.
+   * Tiles that straddle the antimeridian get west > east.
    */
   deriveBoundsFromTiles(): number[] | null {
     if (!this.db) {
@@ -337,7 +406,9 @@ export class MBTilesReader {
       ) {
         return null;
       }
-      return tileRangeToBounds(z, row.minc, row.maxc, row.minr, row.maxr);
+      const bounds = tileRangeToBounds(z, row.minc, row.maxc, row.minr, row.maxr);
+      const span = this.antimeridianSpanAt(z);
+      return span ? [span[0], bounds[1], span[1], bounds[3]] : bounds;
     } catch {
       return null;
     }
