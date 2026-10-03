@@ -164,13 +164,13 @@ describe('online charts', () => {
       assert.deepStrictEqual(provider.bounds, [-130, 20, -60, 55]);
     });
 
-    it('widens an antimeridian-crossing box to all longitudes', () => {
+    it('publishes an antimeridian-crossing box as west > east', () => {
       const provider = onlineChartProvider(
         path.join(dir, 'w.onlinechart.json'),
         { catalogId: 'nws-warnings', name: 'Warnings' },
         resolve
       );
-      assert.deepStrictEqual(provider?.bounds, [-180, 9, 180, 72]);
+      assert.deepStrictEqual(provider?.bounds, [140, 9, -60, 72]);
     });
 
     it('serves nothing when the catalog lacks the entry', () => {

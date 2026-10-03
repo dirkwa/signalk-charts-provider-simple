@@ -118,15 +118,6 @@ export function writeOnlineChartFile(
 }
 
 /**
- * Chart plotters draw `bounds` as an extent, and a box that crosses the
- * antimeridian (west > east) has no single-extent form, so widen it to all
- * longitudes rather than send an inverted box.
- */
-function boundsForBbox([west, south, east, north]: number[]): number[] {
-  return west <= east ? [west, south, east, north] : [-180, south, 180, north];
-}
-
-/**
  * The served chart for an online chart file, or null when its catalog entry
  * is unknown (the catalog hasn't loaded yet, or the entry was removed).
  */
@@ -151,7 +142,7 @@ export function onlineChartProvider(
     identifier,
     name: file.name,
     description: entry.description,
-    bounds: boundsForBbox(entry.bbox),
+    bounds: [...entry.bbox],
     minzoom: chart.minzoom,
     maxzoom: chart.maxzoom,
     format: chart.type === 'mapstyleJSON' ? 'pbf' : 'png',
