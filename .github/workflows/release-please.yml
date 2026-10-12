@@ -1,0 +1,54 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  # Run by hand to refresh the release PR, e.g. after relabelling merged PRs.
+  workflow_dispatch:
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  # release-please's own "nothing user-facing" skip never fires with
+  # changelog-type: github, so only let releasable pushes through.
+  # Reads commit subjects, which assumes PRs are squash-merged.
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      releasable: ${{ steps.check.outputs.releasable }}
+    steps:
+      - id: check
+        env:
+          MESSAGES: ${{ toJSON(github.event.commits.*.message) }}
+          RELEASABLE: '^((feat|fix|perf|revert)(\([^)]*\))?!?: |[a-z]+(\([^)]*\))?!: |build\(deps\): |Revert |chore\(release\): v?[0-9])'
+        run: |
+          if jq -e --arg re "$RELEASABLE" '(length == 0) or (length >= 2048) or ([.[] | (split("\n")[0] | test($re)) or test("\nBREAKING[- ]CHANGE: ") or test("\nRelease-As: "; "i")] | any)' <<< "$MESSAGES" > /dev/null; then
+            echo "releasable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "releasable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  release-please:
+    needs: gate
+    if: ${{ needs.gate.outputs.releasable == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      # No inputs: setting release-type here would ignore release-please-config.json.
+      - uses: googleapis/release-please-action@v5
+        id: release
+
+      # Tags pushed with GITHUB_TOKEN don't trigger tag workflows, so
+      # dispatch the publish explicitly at the new tag.
+      - name: Publish the release
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"

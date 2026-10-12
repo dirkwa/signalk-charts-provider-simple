@@ -1,12 +1,17 @@
 name: Publish Package
 
 on:
+  # release-please dispatches this at the tag it created; a hand-pushed tag
+  # (e.g. a -beta.N pre-release) triggers it directly.
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
+  # release-please creates its own Release; only a hand-pushed tag needs one.
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -27,6 +32,8 @@ jobs:
 
   publish:
     needs: release
+    # Runs after the release job, or without it when dispatched.
+    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-24.04
     permissions:
       id-token: write
@@ -37,6 +44,14 @@ jobs:
 
       - name: Clean workspace
         run: git clean -xfd
+
+      - name: Check the tag matches package.json
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $VERSION"
+            exit 1
+          fi
 
       - uses: actions/setup-node@v7
         with:
