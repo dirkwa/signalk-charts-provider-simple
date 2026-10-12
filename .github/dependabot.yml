@@ -4,6 +4,10 @@ updates:
     directory: '/'
     schedule:
       interval: weekly
+    # release-please.yml reads the scope: a `deps` bump ships, `deps-dev` does not.
+    commit-message:
+      prefix: build
+      include: scope
     groups:
       minor-and-patch:
         update-types:
@@ -20,6 +24,10 @@ updates:
     directory: '/'
     schedule:
       interval: weekly
+    # An action bump changes nothing users get, so it is not a build(deps) one.
+    commit-message:
+      prefix: ci
+      include: scope
     groups:
       actions:
         update-types:

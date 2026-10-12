@@ -1,0 +1,23 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+      # release-please's own release PR, merged right before each tag —
+      # it would otherwise list itself.
+      - 'autorelease: pending'
+      - 'autorelease: tagged'
+  categories:
+    - title: 🚀 Features
+      labels:
+        - feature
+        - enhancement
+    - title: 🐛 Fixes
+      labels:
+        - bug
+        - fix
+    - title: 📦 Dependencies
+      labels:
+        - dependencies
+    - title: Other
+      labels:
+        - '*'
