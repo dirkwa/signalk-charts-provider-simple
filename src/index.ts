@@ -66,6 +66,7 @@ import { repairMbtilesMetadata, setMbtilesDisplayName } from './utils/mbtiles-me
 import { open as openMbtilesReader } from './utils/mbtiles-reader.js';
 import { writeChartPathMarker } from './utils/path-marker.js';
 import { getBlankTileReplacement, getOverzoomedTile } from './utils/tile-overzoom.js';
+import { getRasterOverzoomedTile } from './utils/raster-overzoom.js';
 import { extractMbtilesFromZip, ZipLimitError } from './utils/zip-extract.js';
 import {
   arePairWithinBase,
@@ -4830,6 +4831,21 @@ export const serveTileFromMbtiles = (
           res.end(synthesized);
           return;
         }
+      } else if (provider._mbtilesHandle) {
+        // Raster exports skip whole zoom levels or leave ragged edges per
+        // level; fill the hole from the stored tiles above and below it.
+        void getRasterOverzoomedTile(provider._mbtilesHandle, z, x, y).then((synthesized) => {
+          if (!synthesized) {
+            res.sendStatus(404);
+            return;
+          }
+          res.writeHead(200, {
+            'Content-Type': synthesized.contentType,
+            'Cache-Control': responseHttpOptions.headers['Cache-Control']
+          });
+          res.end(synthesized.data);
+        });
+        return;
       }
       res.sendStatus(404);
     } else {

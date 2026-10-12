@@ -61,7 +61,7 @@ const TILE_CACHE_SIZE = 256;
 // (one decode + bbox scan, ~1–2 ms, cached per tile) off large stored tiles.
 const BLANK_CHECK_MAX_BYTES = 32 * 1024;
 
-class LruMap<K, V> {
+export class LruMap<K, V> {
   private readonly map = new Map<K, V>();
 
   constructor(private readonly capacity: number) {}
