@@ -538,6 +538,11 @@ describe('antimeridian bounds from tiles', () => {
       assert.deepStrictEqual(b, [157.5, -21.94, -157.5, -11.18]);
     });
 
+    it('treats metadata bounds a hair short of the full width as full width', async () => {
+      const b = await publishedBounds('near', '-179.99,-21.94,179.99,-11.18', CROSSING_TILES);
+      assert.deepStrictEqual(b, [157.5, -21.94, -157.5, -11.18]);
+    });
+
     it('keeps full-width metadata bounds when the crossing box would exceed 180°', async () => {
       const b = await publishedBounds('wide', '-180,-85,180,85', WIDE_TILES);
       assert.deepStrictEqual(b, [-180, -85, 180, 85]);

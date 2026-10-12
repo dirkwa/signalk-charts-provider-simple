@@ -218,6 +218,9 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
   }
 }
 
+/** Some exporters write ±179.99… for the full width rather than ±180. */
+const FULL_WIDTH_MIN_SPAN_DEG = 359.9;
+
 /**
  * Tools that cannot express a box crossing the antimeridian write
  * `[-180, s, 180, n]` for one. When the file's bounds span every longitude
@@ -226,7 +229,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
  */
 function mbtilesBounds(bounds: number[], reader: MBTilesReader): number[] {
   const [west, south, east, north] = bounds;
-  if (bounds.length !== 4 || west > -180 || east < 180) {
+  if (bounds.length !== 4 || east - west < FULL_WIDTH_MIN_SPAN_DEG) {
     return bounds;
   }
   const span = reader.deriveAntimeridianSpan();
