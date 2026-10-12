@@ -518,29 +518,11 @@ describe('antimeridian bounds from tiles', () => {
   }
 
   describe('deriveBoundsFromTiles', () => {
-    it('gives west > east for a tile set on both sides of the antimeridian', async () => {
+    it('keeps the full width for a tile set on both sides of the antimeridian', async () => {
       const b = await derived('crossing', CROSSING_TILES);
       assert.ok(b);
-      assert.deepStrictEqual([b[0], b[2]], [157.5, -157.5]);
+      assert.deepStrictEqual([b[0], b[2]], [-180, 180]);
       assert.ok(b[1] < b[3], 'south < north');
-    });
-
-    it('keeps the full width for a genuinely world-wide tile set', async () => {
-      const b = await derived('world', WORLD_TILES);
-      assert.ok(b);
-      assert.deepStrictEqual([b[0], b[2]], [-180, 180]);
-    });
-
-    it('keeps the full width when a lower zoom has tiles in the gap', async () => {
-      const b = await derived('overview', OVERVIEW_TILES);
-      assert.ok(b);
-      assert.deepStrictEqual([b[0], b[2]], [-180, 180]);
-    });
-
-    it('keeps the full width when the crossing box would exceed 180°', async () => {
-      const b = await derived('wide', WIDE_TILES);
-      assert.ok(b);
-      assert.deepStrictEqual([b[0], b[2]], [-180, 180]);
     });
 
     it('is unchanged for an ordinary tile set', async () => {
@@ -554,6 +536,11 @@ describe('antimeridian bounds from tiles', () => {
     it('replaces full-width metadata bounds with the crossing extent of the tiles', async () => {
       const b = await publishedBounds('fiji', '-180,-21.94,180,-11.18', CROSSING_TILES);
       assert.deepStrictEqual(b, [157.5, -21.94, -157.5, -11.18]);
+    });
+
+    it('keeps full-width metadata bounds when the crossing box would exceed 180°', async () => {
+      const b = await publishedBounds('wide', '-180,-85,180,85', WIDE_TILES);
+      assert.deepStrictEqual(b, [-180, -85, 180, 85]);
     });
 
     it('keeps full-width metadata bounds when the tiles fill the width', async () => {
@@ -576,7 +563,7 @@ describe('antimeridian bounds from tiles', () => {
       assert.deepStrictEqual(b, [45.1, -30, 78.7, -20]);
     });
 
-    it('repairs a crossing chart with west > east bounds that load unchanged', async () => {
+    it('repairs a crossing chart with full-width bounds that load as crossing', async () => {
       const sub = fs.mkdtempSync(path.join(dir, 'repair-'));
       const file = buildMbtiles(sub, 'lau.mbtiles', {
         metadata: { name: 'Lau' },
@@ -585,12 +572,12 @@ describe('antimeridian bounds from tiles', () => {
       const repairable = await findRepairableCharts(sub);
       const fix = repairable[0]?.derived;
       assert.ok(fix);
-      assert.deepStrictEqual([fix.bounds[0], fix.bounds[2]], [157.5, -157.5]);
+      assert.deepStrictEqual([fix.bounds[0], fix.bounds[2]], [-180, 180]);
       assert.strictEqual((await repairMbtilesMetadata(file, fix)).ok, true);
 
       const charts = await findCharts(sub);
       try {
-        assert.deepStrictEqual(charts.lau?.bounds, fix.bounds);
+        assert.deepStrictEqual(charts.lau?.bounds, [157.5, fix.bounds[1], -157.5, fix.bounds[3]]);
       } finally {
         for (const chart of Object.values(charts)) {
           chart._mbtilesHandle?.close();

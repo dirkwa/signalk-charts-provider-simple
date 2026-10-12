@@ -410,7 +410,8 @@ export class MBTilesReader {
    * Returns null if there are no tiles. The bounds are the bounding box of
    * the populated tiles — for a sparse pyramid this can be larger than the
    * actual data extent, which is the standard (advisory) interpretation.
-   * Tiles that straddle the antimeridian get west > east.
+   * Tiles that straddle the antimeridian get the full width: the MBTiles spec
+   * has no crossing box, and the loader turns it into one when publishing.
    */
   deriveBoundsFromTiles(): number[] | null {
     if (!this.db) {
@@ -439,9 +440,7 @@ export class MBTilesReader {
       ) {
         return null;
       }
-      const bounds = tileRangeToBounds(z, row.minc, row.maxc, row.minr, row.maxr);
-      const span = this.antimeridianSpanAt(z);
-      return span ? [span[0], bounds[1], span[1], bounds[3]] : bounds;
+      return tileRangeToBounds(z, row.minc, row.maxc, row.minr, row.maxr);
     } catch {
       return null;
     }
