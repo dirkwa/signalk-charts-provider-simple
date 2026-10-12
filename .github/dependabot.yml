@@ -4,6 +4,12 @@ updates:
     directory: '/'
     schedule:
       interval: weekly
+    # build(deps) is releasable and build(deps-dev) is not; release-please's
+    # gate and label-by-title both read the prefix.
+    commit-message:
+      prefix: build
+      prefix-development: build
+      include: scope
     groups:
       minor-and-patch:
         update-types:
@@ -20,6 +26,9 @@ updates:
     directory: '/'
     schedule:
       interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
     groups:
       actions:
         update-types:

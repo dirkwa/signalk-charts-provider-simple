@@ -41,7 +41,7 @@ jobs:
       actions: write
     steps:
       # No inputs: setting release-type here would ignore release-please-config.json.
-      - uses: googleapis/release-please-action@v5
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
 
       # Tags pushed with GITHUB_TOKEN don't trigger tag workflows, so
