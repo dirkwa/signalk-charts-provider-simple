@@ -52,6 +52,14 @@ let index = new Map<string, ChartEntry>();
 let totalBytes = 0;
 let touched = new Set<string>();
 let pending = new Set<Promise<void>>();
+// Bumped by each init, so a scan or prune from an earlier one leaves the
+// current state alone.
+let generation = 0;
+// Chart directories being removed; a write for that chart waits for it.
+let removing = new Map<string, Promise<void>>();
+// Tiles being written, so two requests that synthesized the same tile
+// store and count it once.
+let writing = new Set<string>();
 let warned = false;
 
 function warnOnce(what: string, err: unknown): void {
@@ -81,7 +89,10 @@ export function initRasterTileCache(
   totalBytes = 0;
   touched = new Set();
   pending = new Set();
+  removing = new Map();
+  writing = new Set();
   warned = false;
+  const gen = ++generation;
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch (err) {
@@ -90,8 +101,10 @@ export function initRasterTileCache(
     return scanDone;
   }
   root = dir;
-  scanDone = scan(dir).then(() => {
-    if (root === dir) {
+  scanDone = scan(dir).then((found) => {
+    if (gen === generation) {
+      index = found.index;
+      totalBytes = found.bytes;
       scanned = true;
       evictFor(null, 0);
     }
@@ -99,13 +112,15 @@ export function initRasterTileCache(
   return scanDone;
 }
 
-async function scan(dir: string): Promise<void> {
+/** What `dir` holds, per chart. Kept local until the caller commits it. */
+async function scan(dir: string): Promise<{ index: Map<string, ChartEntry>; bytes: number }> {
+  const found = { index: new Map<string, ChartEntry>(), bytes: 0 };
   let names: string[];
   try {
     names = await fs.promises.readdir(dir);
   } catch (err) {
     warnOnce('scan', err);
-    return;
+    return found;
   }
   for (const name of names) {
     if (!KEY_PATTERN.test(name)) {
@@ -133,9 +148,10 @@ async function scan(dir: string): Promise<void> {
     } catch {
       // A directory removed or half-written while scanning: count what was seen.
     }
-    index.set(name, entry);
-    totalBytes += entry.bytes;
+    found.index.set(name, entry);
+    found.bytes += entry.bytes;
   }
+  return found;
 }
 
 /**
@@ -224,11 +240,19 @@ function evictFor(keep: string | null, incoming: number): boolean {
 function removeChart(key: string, entry: ChartEntry): void {
   index.delete(key);
   totalBytes -= entry.bytes;
-  track(
-    fs.promises.rm(path.join(root, key), { recursive: true, force: true }).catch((err: unknown) => {
+  const removals = removing;
+  const op: Promise<void> = fs.promises
+    .rm(path.join(root, key), { recursive: true, force: true })
+    .catch((err: unknown) => {
       warnOnce('cleanup', err);
     })
-  );
+    .then(() => {
+      if (removals.get(key) === op) {
+        removals.delete(key);
+      }
+    });
+  removals.set(key, op);
+  track(op);
 }
 
 function track(op: Promise<void>): void {
@@ -250,6 +274,10 @@ export function writeCachedTile(
   if (!root || !scanned) {
     return;
   }
+  const target = tilePath(key, z, x, y);
+  if (writing.has(target)) {
+    return;
+  }
   const size = tile.data.byteLength;
   if (!evictFor(key, size)) {
     return;
@@ -259,22 +287,39 @@ export function writeCachedTile(
   entry.lastUsed = Date.now();
   index.set(key, entry);
   totalBytes += size;
+  // Undo the reservation unless the chart was evicted meanwhile.
+  const release = () => {
+    if (index.get(key) === entry) {
+      entry.bytes -= size;
+      totalBytes -= size;
+    }
+  };
 
-  const target = tilePath(key, z, x, y);
   const tmp = `${target}.${String(process.pid)}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  const inFlight = writing;
+  inFlight.add(target);
   const write = (async () => {
     try {
+      // Otherwise the removal could delete the new tile.
+      await removing.get(key);
+      if (await fs.promises.stat(target).catch(() => null)) {
+        // Stored by a request that synthesized it too and finished first.
+        release();
+        return;
+      }
       await fs.promises.mkdir(path.dirname(target), { recursive: true });
       await fs.promises.writeFile(tmp, tile.data);
       await fs.promises.rename(tmp, target);
+      if (index.get(key) !== entry) {
+        // Evicted while writing: the tile is no longer counted, so drop it.
+        await fs.promises.rm(target, { force: true });
+      }
     } catch (err) {
       warnOnce('write', err);
-      // Undo the reservation unless the chart was evicted meanwhile.
-      if (index.get(key) === entry) {
-        entry.bytes -= size;
-        totalBytes -= size;
-      }
+      release();
       await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
+    } finally {
+      inFlight.delete(target);
     }
   })();
   track(write);
@@ -301,14 +346,18 @@ export async function pruneRasterTileCache(chartFiles: Iterable<string>): Promis
       live.add(key);
     }
   }
+  const gen = generation;
   await scanDone;
-  if (!root) {
+  if (!root || gen !== generation) {
     return;
   }
   let names: string[];
   try {
     names = await fs.promises.readdir(root);
   } catch {
+    return;
+  }
+  if (gen !== generation) {
     return;
   }
   for (const name of names) {

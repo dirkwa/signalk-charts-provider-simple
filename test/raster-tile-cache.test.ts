@@ -23,7 +23,8 @@ import {
   chartCacheKey,
   flushRasterTileCache,
   initRasterTileCache,
-  pruneRasterTileCache
+  pruneRasterTileCache,
+  writeCachedTile
 } from '../dist/utils/raster-tile-cache.js';
 
 const SIZE = 16;
@@ -222,5 +223,71 @@ describe('raster tile disk cache', () => {
     const again = await getRasterOverzoomedTile(freshReader(), 1, 0, 0);
     assert.ok(again);
     assertColor(centre(again.data), BLUE, 'synthesized with the cache off');
+  });
+});
+
+describe('raster tile disk cache accounting', () => {
+  const A = 'a'.repeat(16);
+  const B = 'b'.repeat(16);
+  const C = 'c'.repeat(16);
+  const tile = { data: solidJpeg(BLUE), contentType: 'image/jpeg' as const };
+  const S = tile.data.byteLength;
+  let tempDir!: string;
+  let cacheDir!: string;
+
+  const stored = (key: string, x = 0) =>
+    fs.existsSync(path.join(cacheDir, key, '1', String(x), '0.tile'));
+
+  before(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raster-tile-cache-acct-'));
+    cacheDir = path.join(tempDir, 'raster-tile-cache');
+  });
+
+  after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  // Room for two tiles but not three: a chart counted twice gets evicted.
+  const cap = { maxBytes: S * 2.5 };
+
+  it('counts a tile written by two requests at once only once', async () => {
+    await initRasterTileCache(cacheDir, cap);
+    writeCachedTile(A, 1, 0, 0, tile);
+    writeCachedTile(A, 1, 0, 0, tile);
+    await flushRasterTileCache();
+    writeCachedTile(A, 1, 0, 0, tile);
+    await flushRasterTileCache();
+
+    writeCachedTile(B, 1, 0, 0, tile);
+    await flushRasterTileCache();
+    assert.ok(stored(A), 'first chart kept');
+    assert.ok(stored(B), 'second chart stored');
+  });
+
+  it('keeps the count from one scan when the cache is set up twice at once', async () => {
+    fs.rmSync(path.join(cacheDir, B), { recursive: true, force: true });
+    const first = initRasterTileCache(cacheDir, cap);
+    await initRasterTileCache(cacheDir, cap);
+    await first;
+
+    writeCachedTile(B, 1, 0, 0, tile);
+    await flushRasterTileCache();
+    assert.ok(stored(A), 'first chart kept');
+    assert.ok(stored(B), 'second chart stored');
+  });
+
+  it('stores a tile written while its chart directory is being removed', async () => {
+    await initRasterTileCache(cacheDir, cap);
+    assert.ok(stored(A));
+    // Prune starts removing A and B; a new tile for A arrives meanwhile.
+    await pruneRasterTileCache([]);
+    writeCachedTile(A, 1, 1, 0, tile);
+    await flushRasterTileCache();
+    assert.ok(stored(A, 1), 'new tile survives the removal');
+    assert.ok(!stored(A), 'old tile removed');
+
+    writeCachedTile(C, 1, 0, 0, tile);
+    await flushRasterTileCache();
+    assert.ok(stored(A, 1) && stored(C), 'counted as one tile, not evicted');
   });
 });
