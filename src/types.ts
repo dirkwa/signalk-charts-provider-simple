@@ -218,6 +218,20 @@ export interface CatalogRegistryInfo extends CatalogRegistryEntry {
    * facets, each absent when the catalog doesn't carry it.
    */
   facets: { category?: string; format?: string; bbox?: Bbox };
+  /** What the tab tells a boater about a tileset, which a chartcatalogs catalog doesn't carry. */
+  details?: CatalogEntryDetails;
+}
+
+export interface CatalogEntryDetails {
+  description: string;
+  provider: string;
+  license: string;
+  licenseUrl?: string;
+  notForNavigation: boolean;
+  /** Chart folder the download suggests. */
+  folder?: string;
+  /** File size in bytes. */
+  size?: number;
 }
 
 // Result of the last attempt to download the merged chart catalog. Drives the

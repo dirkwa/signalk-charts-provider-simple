@@ -19,14 +19,18 @@ import {
   decidePublish,
   readPublishedState,
   type ChartcatalogsFile,
-  type PublishedState
+  type PublishedState,
+  type TilesetFeedInput
 } from './build-merged-catalog.js';
 import {
   ChartcatalogsIndexSchema,
   OnlineChartsSourceFileSchema,
+  TilesetFeedFileSchema,
+  TilesetFeedsSourceFileSchema,
   publishedJsonSchema,
   schemaErrors,
-  type MergedCatalog
+  type MergedCatalog,
+  type TilesetFeed
 } from './merged-catalog-schema.js';
 
 function readJson<T extends TSchema>(file: string, schema: T): Static<T> {
@@ -75,6 +79,48 @@ async function fetchPublishedState(catalogUrl: string): Promise<PublishedState |
   return readPublishedState(JSON.parse(catalogText), schemaText);
 }
 
+/** A file's size from a HEAD request, or undefined when the server doesn't say. */
+async function fetchSize(url: string): Promise<number | undefined> {
+  try {
+    const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(20000) });
+    const length = Number(response.headers.get('content-length'));
+    return response.ok && Number.isInteger(length) && length > 0 ? length : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Fetch each feed document and the size of each file it lists. A feed that
+ * fails is passed on as `null`, and the build keeps its published regions.
+ */
+async function readTilesetFeeds(feeds: TilesetFeed[]): Promise<TilesetFeedInput[]> {
+  const result: TilesetFeedInput[] = [];
+  for (const feed of feeds) {
+    let document: unknown = null;
+    try {
+      const text = await fetchText(feed.url);
+      document = text === null ? null : JSON.parse(text);
+    } catch (err) {
+      console.log(
+        `::warning::Could not read tileset feed ${feed.id}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    const sizes = new Map<string, number>();
+    const files = (document as { files?: unknown } | null)?.files;
+    for (const file of Array.isArray(files) ? (files as unknown[]) : []) {
+      if (Value.Check(TilesetFeedFileSchema, file)) {
+        const size = await fetchSize(file.url);
+        if (size !== undefined) {
+          sizes.set(file.url, size);
+        }
+      }
+    }
+    result.push({ feed, document, sizes });
+  }
+  return result;
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${String(c.charCodeAt(0))};`);
 }
@@ -105,6 +151,7 @@ async function main(): Promise<void> {
       chartcatalogs: { type: 'string' },
       index: { type: 'string' },
       online: { type: 'string' },
+      tilesets: { type: 'string' },
       out: { type: 'string' },
       repo: { type: 'string' },
       'published-url': { type: 'string' },
@@ -128,7 +175,9 @@ async function main(): Promise<void> {
     carriedForward,
     skipped,
     droppedCharts,
-    removedUpstream
+    removedUpstream,
+    carriedForwardFeeds,
+    skippedTilesets
   } = buildMergedCatalog({
     chartcatalogs: await readChartcatalogs(ccDir),
     chartcatalogsCommit: values.commit,
@@ -136,6 +185,10 @@ async function main(): Promise<void> {
     online: readJson(onlineFile, OnlineChartsSourceFileSchema),
     repo,
     previous: published?.chartcatalogs,
+    tilesetFeeds: values.tilesets
+      ? await readTilesetFeeds(readJson(values.tilesets, TilesetFeedsSourceFileSchema).feeds)
+      : [],
+    previousTilesets: published?.tilesets,
     now: new Date()
   });
 
@@ -155,6 +208,12 @@ async function main(): Promise<void> {
     console.log(
       `::warning::${file} is not in the chartcatalogs index; published without location or type facets`
     );
+  }
+  for (const feed of carriedForwardFeeds) {
+    console.log(`::warning::Tileset feed ${feed} has no usable regions; kept the published ones`);
+  }
+  for (const region of skippedTilesets) {
+    console.log(`::warning::Skipped tileset ${region}`);
   }
   for (const file of staleIndexEntries) {
     console.log(`::notice::${file} is in the index but no longer in chartcatalogs`);
@@ -181,7 +240,7 @@ async function main(): Promise<void> {
 
   const charts = catalog.chartcatalogs.reduce((n, c) => n + c.charts.length, 0);
   console.log(
-    `Catalog ${catalog.contentHash.slice(0, 12)}: ${String(catalog.chartcatalogs.length)} chartcatalogs catalogs (${String(charts)} charts), ${String(catalog.online.length)} online charts; ${publish ? 'publishing' : 'unchanged, not publishing'}`
+    `Catalog ${catalog.contentHash.slice(0, 12)}: ${String(catalog.chartcatalogs.length)} chartcatalogs catalogs (${String(charts)} charts), ${String(catalog.online.length)} online charts, ${String(catalog.tilesets?.length ?? 0)} tilesets; ${publish ? 'publishing' : 'unchanged, not publishing'}`
   );
   if (process.env.GITHUB_OUTPUT) {
     fs.appendFileSync(process.env.GITHUB_OUTPUT, `changed=${String(publish)}\n`);

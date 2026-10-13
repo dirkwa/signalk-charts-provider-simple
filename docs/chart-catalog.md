@@ -1,7 +1,7 @@
 # The merged chart catalog
 
 The Chart Catalog tab reads a single catalog file that this repository builds and
-publishes to its GitHub Pages site. It merges two sources:
+publishes to its GitHub Pages site. It merges three sources:
 
 - **Downloadable charts** from [chartcatalogs.github.io](https://chartcatalogs.github.io/)
   (CC0). These are ENC, RNC, MBTiles and shapefile chart sets that the plugin
@@ -11,6 +11,10 @@ publishes to its GitHub Pages site. It merges two sources:
   are weather layers, online nautical charts, depth layers and base maps that
   stream from their provider while the boat has internet. They are listed as
   `online` entries.
+- **Regional MBTiles feeds** listed in `catalog/tileset-feeds.json`, such as the
+  crowdsourced depth tiles built weekly from the IHO DCDB. Each region is one
+  ready-made MBTiles file that installs with a single download and then works
+  offline. They are listed as `tilesets` entries.
 
 The published file is public and has no plugin-specific assumptions, so other
 chart plotters and plugins can use it as-is. Its JSON Schema is published next
@@ -70,6 +74,48 @@ capabilities document share one download. Services describe their timelines in
 several forms (explicit lists, regular intervals, lists of intervals with gaps,
 and "now"/"current" markers); all are reduced to the entry's `window` and kept
 on the service's own time grid.
+
+## Regional MBTiles feeds
+
+A feed is a JSON document its publisher keeps up to date, listing one MBTiles
+file per region:
+
+```json
+{
+  "generated": "2026-10-12T22:47:42Z",
+  "files": [
+    {
+      "id": "fiji",
+      "name": "Fiji crowdsourced depth",
+      "bounds": [176, -20, -178, -15],
+      "minzoom": 6,
+      "maxzoom": 14,
+      "url": "https://example.com/csb-fiji.mbtiles",
+      "newestArrival": "2026-10-11T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+Each build reads every feed and publishes its regions as `<feed>-<region>`
+entries. That id is also the installed file name, so neither part may change.
+What a boater is told about the data (description, provider, license, the
+not-for-navigation flag) comes from the feed's entry in
+`catalog/tileset-feeds.json`, not from the feed, so a feed can't reword its own
+warnings. A region is dated by `newestArrival`, falling back to the feed's
+`generated`; a later date than the one installed is what raises the update
+notice. The build also records each file's size from a HEAD request, so the
+tab can show it before a boat on a metered connection downloads it.
+
+A feed that cannot be fetched, or suddenly lists no usable region, keeps its
+published regions with a warning, for the same reason a broken chartcatalogs
+file is carried forward. A region the build cannot use (not an `.mbtiles` URL,
+an inverted box, no date) is left out with a warning.
+
+In the plugin a tileset is downloaded like a chartcatalogs MBTiles chart: into
+quarantine, then into the feed's suggested folder (the user can pick another),
+and from there it is served from disk with no network at all. It is tracked as
+an install, so the daily update check and the Updates section cover it.
 
 ## How publishing works
 

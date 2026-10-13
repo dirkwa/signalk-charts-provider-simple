@@ -1,6 +1,7 @@
 name: Publish chart catalog
 
-# Builds the merged chart catalog (chartcatalogs.github.io + catalog/online-charts.json)
+# Builds the merged chart catalog (chartcatalogs.github.io + catalog/online-charts.json
+# + the regional MBTiles feeds in catalog/tileset-feeds.json)
 # and publishes it to this repo's GitHub Pages site, where the Chart Catalog tab
 # downloads it. Deploys only when the content hash differs from what is already
 # published, so most scheduled runs end after the build job.
@@ -66,6 +67,7 @@ jobs:
             --commit "$(git -C "$RUNNER_TEMP/chartcatalogs" rev-parse HEAD)" \
             --index catalog/chartcatalogs-index.json \
             --online catalog/online-charts.json \
+            --tilesets catalog/tileset-feeds.json \
             --out "$RUNNER_TEMP/site" \
             --repo "$GITHUB_REPOSITORY" \
             --published-url "https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/catalog.json" \

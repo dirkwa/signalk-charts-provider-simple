@@ -54,6 +54,8 @@ function build(chartcatalogs: string, out: string): string | null {
       path.join(REPO_ROOT, 'catalog', 'chartcatalogs-index.json'),
       '--online',
       path.join(REPO_ROOT, 'catalog', 'online-charts.json'),
+      '--tilesets',
+      path.join(REPO_ROOT, 'catalog', 'tileset-feeds.json'),
       '--out',
       out,
       '--repo',
