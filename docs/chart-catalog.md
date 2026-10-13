@@ -78,24 +78,8 @@ on the service's own time grid.
 ## Regional MBTiles feeds
 
 A feed is a JSON document its publisher keeps up to date, listing one MBTiles
-file per region:
-
-```json
-{
-  "generated": "2026-10-12T22:47:42Z",
-  "files": [
-    {
-      "id": "fiji",
-      "name": "Fiji crowdsourced depth",
-      "bounds": [176, -20, -178, -15],
-      "minzoom": 6,
-      "maxzoom": 14,
-      "url": "https://example.com/csb-fiji.mbtiles",
-      "newestArrival": "2026-10-11T00:00:00.000Z"
-    }
-  ]
-}
-```
+file per region. `TilesetFeedDocumentSchema` and `TilesetFeedFileSchema` in
+`src/catalog/merged-catalog-schema.ts` define what the build reads from it.
 
 Each build reads every feed and publishes its regions as `<feed>-<region>`
 entries. That id is also the installed file name, so neither part may change.
