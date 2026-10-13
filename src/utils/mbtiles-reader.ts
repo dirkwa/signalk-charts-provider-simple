@@ -95,6 +95,10 @@ export class MBTilesReader {
     this._metadata = null;
   }
 
+  getFilePath(): string {
+    return this.filePath;
+  }
+
   getInfo(): MBTilesMetadata {
     if (this._metadata) {
       return this._metadata;

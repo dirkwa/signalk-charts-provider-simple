@@ -13,8 +13,10 @@
  * stored ancestor, upscaled, as the background, overlaid with any stored
  * children one level down, downsampled. Decoding and encoding take tens of
  * milliseconds per tile, so they run in worker threads; only the SQLite reads
- * happen here. Nothing is written back; results are kept in a small LRU per
- * reader.
+ * happen here. Nothing is written back to the chart; results are kept in a
+ * small LRU per reader and, when the plugin has set it up, in the on-disk
+ * cache of raster-tile-cache.ts, so each tile is synthesized once across
+ * restarts.
  */
 
 import os from 'node:os';
@@ -22,6 +24,7 @@ import { Worker } from 'node:worker_threads';
 import type { MBTilesReader } from './mbtiles-reader.js';
 import type { RasterJob, RasterTile } from './raster-compose.js';
 import type { RasterReply, RasterRequest } from './raster-overzoom-worker.js';
+import { chartCacheKey, readCachedTile, writeCachedTile } from './raster-tile-cache.js';
 import { LruMap } from './tile-overzoom.js';
 
 export type { RasterTile } from './raster-compose.js';
@@ -31,7 +34,9 @@ export type { RasterTile } from './raster-compose.js';
 export const MAX_RASTER_OVERZOOM_DELTA = 5;
 
 // A synthesized 256 px tile is 10–150 KB, so this bounds the cache to a few
-// MB per chart while covering a screenful of tiles at two zoom levels.
+// MB per chart while covering a screenful of tiles at two zoom levels. Tiles
+// that fall out of it come back from the disk cache at stored-tile speed, so
+// it is not raised: the target boxes are short of memory, not of disk.
 const TILE_CACHE_SIZE = 128;
 
 // Leave a core for the server itself; two workers already fill a screen of
@@ -108,6 +113,19 @@ function runJob(job: RasterJob): Promise<RasterTile | null> {
 // Promises are cached so concurrent requests for one tile share one job.
 const caches = new WeakMap<MBTilesReader, LruMap<string, Promise<RasterTile | null>>>();
 
+// The disk cache key of each reader's chart file, computed once per reader:
+// a reload builds a fresh reader and so re-reads the file's size and mtime.
+const diskKeys = new WeakMap<MBTilesReader, string | null>();
+
+function getDiskKey(reader: MBTilesReader): string | null {
+  let key = diskKeys.get(reader);
+  if (key === undefined) {
+    key = chartCacheKey(reader.getFilePath());
+    diskKeys.set(reader, key);
+  }
+  return key;
+}
+
 function getCache(reader: MBTilesReader): LruMap<string, Promise<RasterTile | null>> {
   let cache = caches.get(reader);
   if (!cache) {
@@ -175,8 +193,21 @@ export function getRasterOverzoomedTile(
 
   let result: Promise<RasterTile | null>;
   try {
-    const job = collectJob(reader, z, x, y);
-    result = job ? runJob(job) : Promise.resolve(null);
+    const diskKey = getDiskKey(reader);
+    const stored = diskKey ? readCachedTile(diskKey, z, x, y) : null;
+    if (stored) {
+      result = Promise.resolve(stored);
+    } else {
+      const job = collectJob(reader, z, x, y);
+      result = job
+        ? runJob(job).then((tile) => {
+            if (tile && diskKey) {
+              writeCachedTile(diskKey, z, x, y, tile);
+            }
+            return tile;
+          })
+        : Promise.resolve(null);
+    }
   } catch (err) {
     result = Promise.reject(err instanceof Error ? err : new Error(String(err)));
   }

@@ -67,6 +67,7 @@ import { open as openMbtilesReader } from './utils/mbtiles-reader.js';
 import { writeChartPathMarker } from './utils/path-marker.js';
 import { getBlankTileReplacement, getOverzoomedTile } from './utils/tile-overzoom.js';
 import { getRasterOverzoomedTile } from './utils/raster-overzoom.js';
+import { initRasterTileCache, pruneRasterTileCache } from './utils/raster-tile-cache.js';
 import { extractMbtilesFromZip, ZipLimitError } from './utils/zip-extract.js';
 import {
   arePairWithinBase,
@@ -569,6 +570,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     initCatalogManager(dataDir, app.debug.bind(app));
     initNoaaEncFootprints(dataDir, app.debug.bind(app));
     initCustomCatalogManager(dataDir, app.debug.bind(app));
+    // Synthesized raster tiles; kept in the data dir, never the chart folder.
+    void initRasterTileCache(path.join(dataDir, 'raster-tile-cache'));
 
     const tempDirPattern =
       /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-|custom-catalog-)\d+$/;
@@ -824,6 +827,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
   };
 
+  // Drop cached synthesized tiles of charts that were deleted or replaced.
+  // Takes the full scan, so a disabled chart keeps its tiles.
+  const pruneRasterTileCacheFor = (charts: Record<string, ChartProvider>): void => {
+    const files = Object.values(charts)
+      .filter((c) => c._fileFormat === 'mbtiles' && c._filePath)
+      .map((c) => c._filePath);
+    void pruneRasterTileCache(files);
+  };
+
   const partitionVisibleCharts = (
     chartPath: string,
     charts: Record<string, ChartProvider>
@@ -848,6 +860,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const loadChartProviders = async (chartPath: string): Promise<boolean> => {
     try {
       const charts = await findCharts(chartPath, resolveOnlineChart);
+      pruneRasterTileCacheFor(charts);
       const enabledCharts = partitionVisibleCharts(chartPath, charts);
 
       app.debug(
@@ -4584,6 +4597,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // before start() has run still resolves the computed default path.
       const chartPath = props.chartPath || getDefaultChartsPath();
       const charts = await findCharts(chartPath, resolveOnlineChart);
+      pruneRasterTileCacheFor(charts);
 
       // Close the handles of the map being replaced — findCharts reopened
       // every chart, so the old provider objects would otherwise leak.
