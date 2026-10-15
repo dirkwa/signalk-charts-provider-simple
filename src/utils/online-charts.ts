@@ -77,6 +77,15 @@ export function customOnlineChartProblem(custom: CustomOnlineChart): string | nu
   if (custom.type === 'tilelayer' && !tiled && !/\{bbox(_3857)?\}/.test(url)) {
     return 'A tile URL needs {z}, {x} and {y}, or {bbox} or {bbox_3857}';
   }
+  // Through the plugin, a placeholder it does not know would reach the
+  // provider as literal text; a plotter fills in its own ({s} and the like).
+  const proxied = custom.keepOffline === true || needsTileProxy(url);
+  const unknown = [...url.matchAll(/\{[^}]*\}/g)]
+    .map((m) => m[0])
+    .find((p) => !/^\{(z|x|y|-y|z-\d+|bbox|bbox_3857)\}$/.test(p));
+  if (custom.type === 'tilelayer' && proxied && unknown) {
+    return `${unknown} cannot be used in a chart served through the server`;
+  }
   if (
     custom.minzoom !== undefined &&
     custom.maxzoom !== undefined &&
@@ -118,7 +127,12 @@ export function onlineChartEntry(
   file: { catalogId: string; custom?: CustomOnlineChart | undefined },
   resolve: OnlineChartResolver
 ): OnlineCatalogChart | undefined {
-  return file.custom ? customCatalogEntry(file.custom) : resolve(file.catalogId);
+  if (!file.custom) {
+    return resolve(file.catalogId);
+  }
+  // A hand-edited file that cannot be served is skipped like a chart the
+  // catalog no longer lists, rather than failing every chart's listing.
+  return customOnlineChartProblem(file.custom) ? undefined : customCatalogEntry(file.custom);
 }
 
 export function isOnlineChartFile(filename: string): boolean {

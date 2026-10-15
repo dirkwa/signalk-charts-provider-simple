@@ -276,6 +276,20 @@ test.describe('Manage Charts tab', () => {
             }
           },
           {
+            relativePath: 'Online Charts/gebco-ocean-depths.onlinechart.json',
+            name: 'gebco-ocean-depths.onlinechart.json',
+            chartName: 'GEBCO Ocean Depths',
+            folder: 'Online Charts',
+            enabled: true,
+            online: {
+              catalogId: 'gebco-ocean-depths',
+              available: true,
+              catalogLoaded: true,
+              type: 'WMS',
+              keptOffline: true
+            }
+          },
+          {
             relativePath: 'Online Charts/gone.onlinechart.json',
             name: 'gone.onlinechart.json',
             chartName: 'Retired Layer',
@@ -303,6 +317,10 @@ test.describe('Manage Charts tab', () => {
     await expect(radar).toContainText('Needs internet', { timeout: 5000 });
     await expect(radar).toContainText('ONLINE');
     await expect(radar).not.toContainText('No longer available');
+    await expect(radar).not.toContainText('Kept offline');
+    const gebco = page.locator('.chart-card', { hasText: 'GEBCO Ocean Depths' });
+    await expect(gebco).toContainText('Kept offline');
+    await expect(gebco).not.toContainText('Needs internet');
     const gone = page.locator('.chart-card', { hasText: 'Retired Layer' });
     await expect(gone).toContainText('No longer available');
 
@@ -397,5 +415,65 @@ test.describe('Manage Charts tab', () => {
     await expect(dialog.locator('#areaProgress')).toContainText('Downloading: 100 of 400 tiles');
     await expect(dialog.getByRole('button', { name: 'Stop' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Download area' })).toBeDisabled();
+
+    // Stop asks the server to cancel, and the dialog shows the outcome.
+    const stopped = page.waitForRequest(
+      (r) => r.method() === 'DELETE' && r.url().endsWith('/online-area-downloads/job-1')
+    );
+    await dialog.getByRole('button', { name: 'Stop' }).click();
+    await stopped;
+    await expect(dialog.locator('#areaProgress')).toContainText('Stopped');
+    await expect(dialog.getByRole('button', { name: 'Stop' })).toBeHidden();
+    await expect(dialog.getByRole('button', { name: 'Download area' })).toBeEnabled();
+
+    // Deleting the kept tiles asks first, then empties the stats line.
+    page.once('dialog', (d) => void d.accept());
+    await dialog.getByRole('button', { name: 'Delete kept tiles' }).click();
+    await expect(dialog.locator('#areaKept')).toContainText('No tiles kept on the server yet');
+    await expect(dialog.getByRole('button', { name: 'Delete kept tiles' })).toBeDisabled();
+  });
+
+  test('refuses an offline area with too many tiles', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      position: null,
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/'],
+        charts: [
+          {
+            relativePath: 'gebco-ocean-depths.onlinechart.json',
+            name: 'gebco-ocean-depths.onlinechart.json',
+            chartName: 'GEBCO Ocean Depths',
+            folder: '/',
+            enabled: true,
+            online: {
+              catalogId: 'gebco-ocean-depths',
+              available: true,
+              catalogLoaded: true,
+              type: 'WMS',
+              keptOffline: true,
+              chartId: 'gebco-ocean-depths',
+              minzoom: null,
+              maxzoom: null
+            }
+          }
+        ]
+      }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+    await page
+      .locator('.chart-card', { hasText: 'GEBCO Ocean Depths' })
+      .getByRole('button', { name: 'Offline area' })
+      .click();
+    const dialog = page.locator('.area-modal');
+    // Without a vessel position the map shows the whole world.
+    await dialog.locator('#areaZoomTo').selectOption('12');
+    await expect(dialog.locator('#areaEstimate')).toContainText('too many');
+    await expect(dialog.getByRole('button', { name: 'Download area' })).toBeDisabled();
+    await dialog.locator('#areaZoomFrom').selectOption('13');
+    await expect(dialog.locator('#areaEstimate')).toContainText('must not be above');
   });
 });

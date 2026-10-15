@@ -3166,11 +3166,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/online-charts/area-downloads', (_req: Request, res: Response) => {
+    // Not under /online-charts/, where a job id could be taken for a chart id.
+    router.get('/online-area-downloads', (_req: Request, res: Response) => {
       res.json({ jobs: areaDownloader?.list() ?? [] });
     });
 
-    router.delete('/online-charts/area-downloads/:jobId', (req: Request, res: Response) => {
+    router.delete('/online-area-downloads/:jobId', (req: Request, res: Response) => {
       if (!areaDownloader?.cancel(String(req.params.jobId))) {
         res.status(404).json({ success: false, error: 'No such download running' });
         return;
@@ -5036,8 +5037,6 @@ const serveTileFromFilesystem = (
   });
 };
 
-// Exported for tests (the Express route registration is not separately
-// constructible without a full server).
 const serveOnlineTile = async (
   res: Response,
   proxy: OnlineTileProxy,
@@ -5069,6 +5068,8 @@ const serveOnlineTile = async (
   }
 };
 
+// Exported for tests (the Express route registration is not separately
+// constructible without a full server).
 export const serveTileFromMbtiles = (
   res: Response,
   provider: ChartProvider,

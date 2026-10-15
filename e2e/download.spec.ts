@@ -11,6 +11,7 @@ test.describe('download from URL', () => {
     await expect(page.locator('#onlineChartLayersGroup')).toBeHidden();
     await page.locator('#onlineChartType').selectOption('WMS');
     await expect(page.locator('#onlineChartLayersGroup')).toBeVisible();
+    await expect(page.locator('#onlineChartUrlHint')).toBeHidden();
 
     await page.locator('#onlineChartName').fill('Harbour charts');
     await page.locator('#onlineChartUrl').fill('https://charts.example.org/wms');
@@ -32,6 +33,21 @@ test.describe('download from URL', () => {
       }
     });
     await expect(page.locator('#onlineChartStatus')).toContainText('Added Harbour charts');
+  });
+
+  test("shows the server's reason when it refuses a chart", async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {});
+    await page.getByRole('button', { name: /Download from URL/i }).click();
+    await expect(page.locator('#onlineChartUrlHint')).toBeVisible();
+    await page.locator('#onlineChartName').fill('Tiles');
+    await page.locator('#onlineChartUrl').fill('https://tiles.example.org/map.png');
+    await page.getByRole('button', { name: 'Add Online Chart' }).click();
+    await expect(page.locator('#onlineChartStatus .error-message')).toContainText(
+      'needs {z}, {x} and {y}'
+    );
+    // A refused chart keeps what was typed, so it can be corrected.
+    await expect(page.locator('#onlineChartUrl')).toHaveValue('https://tiles.example.org/map.png');
   });
 
   test('asks for the layers of a WMS chart before adding it', async ({ page }) => {

@@ -11,6 +11,7 @@ import {
   customCatalogEntry,
   customChartId,
   customOnlineChartProblem,
+  onlineChartEntry,
   findOnlineChartFiles,
   onlineChartProvider,
   readOnlineChartFile,
@@ -266,6 +267,23 @@ describe('online charts added by URL', () => {
   it('is kept offline only when the user allows it', () => {
     assert.strictEqual(customCatalogEntry(custom).offline, undefined);
     assert.deepStrictEqual(customCatalogEntry({ ...custom, keepOffline: true }).offline, {});
+  });
+
+  it('refuses placeholders the server cannot fill in, where it fills them in', () => {
+    const url = 'https://{s}.tiles.example/{z}/{x}/{y}.png';
+    assert.strictEqual(customOnlineChartProblem({ type: 'tilelayer', url }), null);
+    assert.match(
+      customOnlineChartProblem({ type: 'tilelayer', url, keepOffline: true }) ?? '',
+      /\{s\}/
+    );
+  });
+
+  it('skips a hand-edited chart that cannot be served', () => {
+    const file = { catalogId: 'custom-x', custom: { type: 'tilelayer' as const, url: 'http://[' } };
+    assert.strictEqual(
+      onlineChartEntry(file, () => undefined),
+      undefined
+    );
   });
 
   it('accepts TMS and shifted tile templates', () => {

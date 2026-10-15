@@ -199,6 +199,10 @@ export class OnlineTileStore {
   }
 
   get(catalogId: string, z: number, x: number, y: number): CachedTile | null {
+    // A request still in flight when the plugin stopped must not reopen a file.
+    if (this.closed) {
+      return null;
+    }
     const row = this.db(catalogId)
       .prepare(
         'SELECT tile_data, fetched_at FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
@@ -259,6 +263,8 @@ export class OnlineTileStore {
 /** A kept tile older than this is fetched again when the provider answers. */
 export const TILE_REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 20_000;
+/** Far above any real map tile; a larger answer is not one. */
+const MAX_TILE_BYTES = 10 * 1024 * 1024;
 
 export type TileFetcher = (url: string) => Promise<Uint8Array | null>;
 
@@ -270,10 +276,13 @@ export function httpTileFetcher(userAgent: string): TileFetcher {
         headers: { 'User-Agent': userAgent },
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
       });
-      if (!res.ok) {
+      if (!res.ok || Number(res.headers.get('content-length') ?? 0) > MAX_TILE_BYTES) {
         return null;
       }
       const data = new Uint8Array(await res.arrayBuffer());
+      if (data.byteLength > MAX_TILE_BYTES) {
+        return null;
+      }
       // WMS servers report errors as XML with a 200 status.
       return tileImageType(data) ? data : null;
     } catch {

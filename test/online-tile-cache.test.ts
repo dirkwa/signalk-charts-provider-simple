@@ -10,6 +10,7 @@ import {
   OnlineTileProxy,
   OnlineTileStore,
   TILE_REFRESH_MS,
+  httpTileFetcher,
   needsTileProxy,
   offlineTileSource,
   tileBbox3857,
@@ -138,6 +139,21 @@ describe('upstreamTileUrl', () => {
   });
 });
 
+describe('httpTileFetcher', () => {
+  it('refuses an answer far too large to be a tile', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(PNG, { headers: { 'content-length': String(50 * 1024 * 1024) } })
+      );
+    try {
+      assert.strictEqual(await httpTileFetcher('test')('https://t/0/0/0'), null);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
 describe('tileImageType', () => {
   it('recognises PNG, JPEG and WebP and nothing else', () => {
     assert.strictEqual(tileImageType(PNG), 'image/png');
@@ -233,6 +249,13 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
   it('passes a tile through without keeping it', async () => {
     const data = await proxy().streamTile(source, 2, 1, 0);
     assert.deepStrictEqual(data && [...data], [...PNG]);
+    assert.strictEqual(fs.existsSync(path.join(dir, 'depths.mbtiles')), false);
+  });
+
+  it('opens no file for a request that arrives after the plugin stopped', async () => {
+    const p = proxy();
+    store.close();
+    await p.getTile('depths', source, 2, 1, 0);
     assert.strictEqual(fs.existsSync(path.join(dir, 'depths.mbtiles')), false);
   });
 
