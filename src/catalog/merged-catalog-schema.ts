@@ -205,7 +205,25 @@ function onlineChartEntryProps<C extends TSchema, T extends TSchema>(chart: C, t
       })
     ),
     chart,
-    temporal: Type.Optional(temporal)
+    temporal: Type.Optional(temporal),
+    offline: Type.Optional(
+      Type.Object(
+        {
+          tileUrl: Type.Optional(
+            Type.String({
+              pattern: '^https://',
+              description:
+                'A {z}/{x}/{y} tile URL for the same chart, when `chart.url` is not one (a WMTS service with a plain tile cache beside it). Also takes {-y} and {z-N}.'
+            })
+          )
+        },
+        {
+          ...STRICT,
+          description:
+            'Present only when the license allows keeping copies of the tiles. The plugin then serves the chart through the server and keeps every tile it fetches, so areas already viewed work with no internet. Only for tile layers, WMS, or charts with a `tileUrl`, and never for time-varying charts.'
+        }
+      )
+    )
   };
 }
 
@@ -363,7 +381,10 @@ export const OnlineChartReadSchema = Type.Object({
       window: Type.Optional(Type.String()),
       capabilitiesUrl: Type.Optional(HttpsUrl)
     })
-  )
+  ),
+  // Checked where it is used, so a malformed value only turns offline
+  // copies off instead of dropping the chart.
+  offline: Type.Optional(Type.Unknown())
 });
 
 export type ChartUse = Static<typeof ChartUseSchema>;
@@ -427,6 +448,13 @@ export function checkOnlineChartEntry(entry: OnlineChartEntry): string[] {
     // A time-varying tile layer needs a `{time}` URL template, which the
     // catalog does not model yet.
     problems.push(`${entry.id}: only WMS/WMTS charts can be temporal`);
+  }
+  if (entry.offline) {
+    if (temporal) {
+      problems.push(`${entry.id}: time-varying charts cannot be kept offline`);
+    } else if (!entry.offline.tileUrl && chart.type !== 'tilelayer' && chart.type !== 'WMS') {
+      problems.push(`${entry.id}: offline needs a tileUrl for ${chart.type} charts`);
+    }
   }
   if (chart.minzoom !== undefined && chart.maxzoom !== undefined && chart.minzoom > chart.maxzoom) {
     problems.push(`${entry.id}: minzoom is greater than maxzoom`);

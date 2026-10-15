@@ -116,9 +116,28 @@ const CATALOG = {
       temporal: { kind: 'observation', refreshInterval: 300000, window: 'PT3H' },
       use: 'stream',
       format: 'wms'
+    },
+    {
+      id: 'test-depths',
+      name: 'Test Depths',
+      description: 'Depth shading.',
+      category: 'navigation',
+      regions: ['global'],
+      bbox: [-180, -85, 180, 85],
+      provider: 'Test',
+      attribution: 'Test',
+      license: 'Public domain',
+      licenseUrl: 'https://example.com/license',
+      chart: { type: 'WMS', url: 'https://depths.example.com/ows', layers: ['depth'] },
+      offline: {},
+      use: 'stream',
+      format: 'wms'
     }
   ]
 };
+
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7]);
+let depthsOnline = true;
 
 /** Radar capabilities with three frames ending a few minutes ago. */
 function radarCapabilities(): string {
@@ -157,11 +176,15 @@ describe('online chart routes', () => {
     );
     // The catalog can't be downloaded (the plugin serves its cached copy);
     // the radar's capabilities document can.
-    mock.method(globalThis, 'fetch', (url: string) =>
-      url.includes('GetCapabilities')
-        ? Promise.resolve(new Response(radarCapabilities(), { status: 200 }))
-        : Promise.reject(new TypeError('offline'))
-    );
+    mock.method(globalThis, 'fetch', (url: string) => {
+      if (url.includes('GetCapabilities')) {
+        return Promise.resolve(new Response(radarCapabilities(), { status: 200 }));
+      }
+      if (url.startsWith('https://depths.example.com/') && depthsOnline) {
+        return Promise.resolve(new Response(PNG, { status: 200 }));
+      }
+      return Promise.reject(new TypeError('offline'));
+    });
 
     const app = {
       config: { configPath: tempDir, ssl: false, version: '2.0.0', getExternalPort: () => 3000 },
@@ -250,6 +273,53 @@ describe('online chart routes', () => {
     assert.strictEqual(served?.refreshInterval, 300000);
     assert.strictEqual(served.time?.current, true);
     assert.strictEqual(served.time.values?.length, 3);
+  });
+
+  it('serves a chart kept offline through the plugin, and keeps its tiles', async () => {
+    const res = await add({ catalogId: 'test-depths', folder: 'Online Charts' });
+    assert.strictEqual(res.statusCode, 200);
+    const v2 = (await provider!.methods.listResources({})) as Record<
+      string,
+      { type: string; url: string }
+    >;
+    assert.strictEqual(v2['test-depths']?.type, 'tilelayer');
+    assert.strictEqual(
+      v2['test-depths']?.url,
+      '/signalk/v1/api/resources/charts/test-depths/{z}/{x}/{y}'
+    );
+
+    const tile = v1Handlers.get(
+      'get /resources/charts/:identifier/:z([0-9]+)/:x([0-9]+)/:y([0-9]+)'
+    );
+    const getTile = async (): Promise<{ status: number; body?: Buffer; type?: string }> => {
+      const out: { status: number; body?: Buffer; type?: string } = { status: 0 };
+      await new Promise<void>((resolve) => {
+        const resStub = {
+          writeHead(status: number, headers: Record<string, string>) {
+            out.status = status;
+            out.type = headers['Content-Type'];
+          },
+          end(body: Buffer) {
+            out.body = body;
+            resolve();
+          },
+          sendStatus(status: number) {
+            out.status = status;
+            resolve();
+          }
+        };
+        void tile?.({ params: { identifier: 'test-depths', z: '3', x: '4', y: '2' } }, resStub);
+      });
+      return out;
+    };
+
+    const online = await getTile();
+    assert.strictEqual(online.status, 200);
+    assert.strictEqual(online.type, 'image/png');
+    depthsOnline = false;
+    const offline = await getTile();
+    assert.strictEqual(offline.status, 200);
+    assert.deepStrictEqual(offline.body && [...offline.body], [...PNG]);
   });
 
   it('reports the chart as added in the catalog registry', async () => {

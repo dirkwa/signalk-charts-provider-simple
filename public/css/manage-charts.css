@@ -370,6 +370,11 @@
     color: #38bdf8;
 }
 
+.online-badge.offline {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+}
+
 /* List View */
 .chart-list {
     display: flex;

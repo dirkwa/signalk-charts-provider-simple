@@ -934,6 +934,11 @@ option.catalog-folder-option-new {
     color: #38bdf8;
 }
 
+.online-badge.offline {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+}
+
 .online-badge.live {
     background: rgba(16, 185, 129, 0.15);
     color: #10b981;

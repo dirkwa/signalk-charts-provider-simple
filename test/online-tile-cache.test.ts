@@ -1,0 +1,211 @@
+import { describe, it, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+
+import type { OnlineCatalogChart } from '../dist/catalog/merged-catalog-schema.js';
+import {
+  OnlineTileProxy,
+  OnlineTileStore,
+  TILE_REFRESH_MS,
+  offlineTileSource,
+  tileBbox3857,
+  tileImageType,
+  upstreamTileUrl,
+  type OnlineTileSource
+} from '../dist/utils/online-tile-cache.js';
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const PNG2 = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9]);
+
+function entry(overrides: Partial<OnlineCatalogChart> = {}): OnlineCatalogChart {
+  return {
+    id: 'depths',
+    name: 'Depths',
+    description: 'Depths',
+    category: 'navigation',
+    bbox: [-180, -85, 180, 85],
+    provider: 'Test',
+    license: 'Public domain',
+    licenseUrl: 'https://example.com/license',
+    chart: { type: 'WMS', url: 'https://example.com/ows', layers: ['a', 'b'] },
+    ...overrides
+  };
+}
+
+describe('offlineTileSource', () => {
+  it('keeps nothing unless the entry allows offline copies', () => {
+    assert.strictEqual(offlineTileSource(entry()), null);
+  });
+
+  it('proxies WMS layers and tile layers', () => {
+    assert.deepStrictEqual(offlineTileSource(entry({ offline: {} })), {
+      kind: 'wms',
+      url: 'https://example.com/ows',
+      layers: ['a', 'b']
+    });
+    const tiles = entry({
+      chart: { type: 'tilelayer', url: 'https://example.com/{z}/{x}/{y}.png' },
+      offline: {}
+    });
+    assert.deepStrictEqual(offlineTileSource(tiles), {
+      kind: 'xyz',
+      url: 'https://example.com/{z}/{x}/{y}.png'
+    });
+  });
+
+  it('uses the tileUrl for a WMTS chart and keeps nothing without one', () => {
+    const wmts = entry({ chart: { type: 'WMTS', url: 'https://example.com/wmts', layers: ['x'] } });
+    assert.strictEqual(offlineTileSource({ ...wmts, offline: {} }), null);
+    assert.deepStrictEqual(
+      offlineTileSource({ ...wmts, offline: { tileUrl: 'https://example.com/t/{z-2}/{y}/{x}' } }),
+      { kind: 'xyz', url: 'https://example.com/t/{z-2}/{y}/{x}' }
+    );
+  });
+
+  it('never keeps time-varying charts or a malformed offline block', () => {
+    const radar = entry({
+      offline: {},
+      temporal: { kind: 'observation', refreshInterval: 300000 }
+    });
+    assert.strictEqual(offlineTileSource(radar), null);
+    assert.strictEqual(offlineTileSource(entry({ offline: { tileUrl: 'http://x/{z}' } })), null);
+    assert.strictEqual(offlineTileSource(entry({ offline: true })), null);
+  });
+});
+
+describe('upstreamTileUrl', () => {
+  it('fills an XYZ template, including TMS rows and shifted levels', () => {
+    const xyz: OnlineTileSource = { kind: 'xyz', url: 'https://t/{z}/{x}/{y}/{-y}/{z-2}' };
+    assert.strictEqual(upstreamTileUrl(xyz, 3, 5, 1), 'https://t/3/5/1/6/1');
+  });
+
+  it('has no tile below a shifted first level', () => {
+    const noaa: OnlineTileSource = { kind: 'xyz', url: 'https://t/{z-2}/{y}/{x}' };
+    assert.strictEqual(upstreamTileUrl(noaa, 1, 0, 0), null);
+    assert.strictEqual(upstreamTileUrl(noaa, 2, 1, 3), 'https://t/0/3/1');
+  });
+
+  it('asks a WMS for one 256 px EPSG:3857 tile', () => {
+    const wms: OnlineTileSource = { kind: 'wms', url: 'https://w/ows?map=x', layers: ['a', 'b'] };
+    const url = new URL(upstreamTileUrl(wms, 0, 0, 0) ?? '');
+    assert.strictEqual(url.searchParams.get('map'), 'x');
+    assert.strictEqual(url.searchParams.get('REQUEST'), 'GetMap');
+    assert.strictEqual(url.searchParams.get('LAYERS'), 'a,b');
+    assert.strictEqual(url.searchParams.get('SRS'), 'EPSG:3857');
+    assert.strictEqual(url.searchParams.get('WIDTH'), '256');
+    assert.deepStrictEqual(
+      url.searchParams
+        .get('BBOX')
+        ?.split(',')
+        .map((n) => Math.round(Number(n))),
+      [-20037508, -20037508, 20037508, 20037508]
+    );
+  });
+
+  it('places tiles north-west first', () => {
+    const [minX, minY, maxX, maxY] = tileBbox3857(1, 0, 0);
+    assert.ok(minX < 0 && maxX === 0 && minY === 0 && maxY > 0);
+  });
+});
+
+describe('tileImageType', () => {
+  it('recognises PNG, JPEG and WebP and nothing else', () => {
+    assert.strictEqual(tileImageType(PNG), 'image/png');
+    assert.strictEqual(tileImageType(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), 'image/jpeg');
+    const webp = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP')]);
+    assert.strictEqual(tileImageType(webp), 'image/webp');
+    assert.strictEqual(tileImageType(Buffer.from('<?xml version="1.0"?><ServiceException')), null);
+  });
+});
+
+describe('OnlineTileStore and OnlineTileProxy', () => {
+  const source: OnlineTileSource = { kind: 'xyz', url: 'https://t/{z}/{x}/{y}' };
+  let dir: string;
+  let store: OnlineTileStore;
+  let now: number;
+  let fetched: string[];
+  let answer: Uint8Array | null;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'online-tiles-'));
+    store = new OnlineTileStore(dir);
+    now = 1_000_000;
+    fetched = [];
+    answer = PNG;
+  });
+
+  afterEach(() => {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function proxy(): OnlineTileProxy {
+    return new OnlineTileProxy(
+      store,
+      (url) => {
+        fetched.push(url);
+        return Promise.resolve(answer);
+      },
+      () => now
+    );
+  }
+
+  it('keeps a fetched tile as a valid MBTiles row in TMS order', async () => {
+    const data = await proxy().getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(data && [...data], [...PNG]);
+    store.close();
+    const db = new DatabaseSync(path.join(dir, 'depths.mbtiles'), { readOnly: true });
+    const row = db.prepare('SELECT zoom_level, tile_column, tile_row FROM tiles').get() as Record<
+      string,
+      number
+    >;
+    db.close();
+    assert.deepStrictEqual({ ...row }, { zoom_level: 2, tile_column: 1, tile_row: 3 });
+  });
+
+  it('serves a kept tile without asking the provider again', async () => {
+    const p = proxy();
+    await p.getTile('depths', source, 2, 1, 0);
+    answer = PNG2;
+    const data = await p.getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(data && [...data], [...PNG]);
+    assert.strictEqual(fetched.length, 1);
+  });
+
+  it('refreshes an old tile, and serves it anyway when the provider is unreachable', async () => {
+    const p = proxy();
+    await p.getTile('depths', source, 2, 1, 0);
+    now += TILE_REFRESH_MS + 1;
+    answer = null;
+    const stale = await p.getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(stale && [...stale], [...PNG]);
+    answer = PNG2;
+    const fresh = await p.getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(fresh && [...fresh], [...PNG2]);
+    assert.strictEqual(fetched.length, 3);
+  });
+
+  it('has nothing for a tile it never kept while offline', async () => {
+    answer = null;
+    assert.strictEqual(await proxy().getTile('depths', source, 2, 1, 0), null);
+  });
+
+  it('never names a file after a catalog id that is not a plain slug', () => {
+    assert.throws(() => store.get('../escape', 0, 0, 0), /Invalid catalog id/);
+  });
+
+  it('asks for no tile outside the zoom pyramid', async () => {
+    assert.strictEqual(await proxy().getTile('depths', source, 2, 4, 0), null);
+    assert.strictEqual(await proxy().getTile('depths', source, 30, 0, 0), null);
+    assert.strictEqual(fetched.length, 0);
+  });
+
+  it('asks the provider once for concurrent requests of the same tile', async () => {
+    const p = proxy();
+    await Promise.all([p.getTile('depths', source, 3, 2, 1), p.getTile('depths', source, 3, 2, 1)]);
+    assert.strictEqual(fetched.length, 1);
+  });
+});

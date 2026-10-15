@@ -361,6 +361,28 @@ describe('checkOnlineChartEntry', () => {
     assert.match(checkOnlineChartEntry(style).join(), /layers only apply to WMS\/WMTS/);
   });
 
+  it('rejects offline copies of time-varying charts', () => {
+    const radar = onlineEntry({ offline: {} });
+    assert.match(checkOnlineChartEntry(radar).join(), /time-varying charts cannot be kept offline/);
+  });
+
+  it('accepts offline copies of WMS and tile layers, and of WMTS only with a tileUrl', () => {
+    assert.deepStrictEqual(
+      checkOnlineChartEntry(onlineEntry({ temporal: undefined, offline: {} })),
+      []
+    );
+    const wmts = onlineEntry({
+      chart: { type: 'WMTS', url: 'https://example.com/wmts', layers: ['x'] },
+      temporal: undefined,
+      offline: {}
+    });
+    assert.match(checkOnlineChartEntry(wmts).join(), /offline needs a tileUrl for WMTS charts/);
+    assert.deepStrictEqual(
+      checkOnlineChartEntry({ ...wmts, offline: { tileUrl: 'https://example.com/{z}/{x}/{y}' } }),
+      []
+    );
+  });
+
   it('rejects an inverted zoom range and an inverted bbox', () => {
     const bad = onlineEntry({
       chart: {
