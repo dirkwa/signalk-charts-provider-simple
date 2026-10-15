@@ -312,6 +312,11 @@ export function startMockServer(
     res.json({ success: true, relativePath });
   });
 
+  router.post(`${PLUGIN_BASE}/online-charts/custom`, (req, res) => {
+    const body = req.body as { name: string; folder: string };
+    res.json({ success: true, relativePath: `${body.folder}/${body.name}.onlinechart.json` });
+  });
+
   // Offline-area routes for online charts kept offline: a download starts
   // and stays running, so the dialog shows its progress.
   router.get(`${PLUGIN_BASE}/online-charts/area-downloads`, (_req, res) => {

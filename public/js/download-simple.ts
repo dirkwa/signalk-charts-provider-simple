@@ -2,6 +2,7 @@
 
 // API base path - routes are scoped under the plugin path via registerWithRouter
 const DOWNLOAD_API_BASE = '/plugins/signalk-charts-provider-simple';
+const ONLINE_CHARTS_FOLDER = 'Online Charts';
 
 interface LocalChartsResponse {
   folders?: string[];
@@ -105,6 +106,79 @@ function initDownloadInterface(): void {
       <div id="activeDownloads" class="active-downloads"></div>
 
       <div class="info-section">
+        <h2>Add an Online Chart by URL</h2>
+        <p class="description">
+          Show a tile service or WMS that the Chart Catalog does not list, such as your country's
+          chart service. The chart streams from its provider and appears in Manage Charts like a
+          catalog chart.
+        </p>
+
+        <div class="form-group">
+          <label for="onlineChartName">Chart Name</label>
+          <input type="text" id="onlineChartName" placeholder="e.g. Harbour charts" class="input-field" />
+        </div>
+
+        <div class="form-group">
+          <label for="onlineChartType">Service Type</label>
+          <select id="onlineChartType" class="input-field" onchange="onlineChartTypeChanged()">
+            <option value="tilelayer">Tile URL</option>
+            <option value="WMS">WMS</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="onlineChartUrl">URL</label>
+          <input
+            type="text"
+            id="onlineChartUrl"
+            placeholder="https://example.com/tiles/{z}/{x}/{y}.png"
+            class="input-field"
+          />
+          <p class="form-hint" id="onlineChartUrlHint">
+            Use {z}, {x} and {y}, or {-y} for a TMS row and {z-2} for a service whose levels start
+            at zoom 2. For a single-image request, {bbox} gives the tile extent in degrees and
+            {bbox_3857} in Web Mercator metres.
+          </p>
+        </div>
+
+        <div class="form-group" id="onlineChartLayersGroup" style="display: none;">
+          <label for="onlineChartLayers">Layers</label>
+          <input type="text" id="onlineChartLayers" placeholder="layer1, layer2" class="input-field" />
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="onlineChartMinzoom">Lowest Zoom</label>
+            <input type="number" id="onlineChartMinzoom" min="0" max="24" placeholder="0" class="input-field" />
+          </div>
+          <div class="form-group">
+            <label for="onlineChartMaxzoom">Highest Zoom</label>
+            <input type="number" id="onlineChartMaxzoom" min="0" max="24" placeholder="18" class="input-field" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="onlineChartFolder">Target Folder</label>
+          <select id="onlineChartFolder" class="input-field"></select>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="onlineChartKeep" />
+            Keep tiles for offline use
+          </label>
+          <p class="form-hint">
+            The server then keeps every tile it fetches, and Manage Charts can download an area
+            ahead of a passage. Only tick this if the provider's terms allow storing its tiles.
+          </p>
+        </div>
+
+        <button onclick="addOnlineChartByUrl()" class="btn btn-primary">Add Online Chart</button>
+
+        <div id="onlineChartStatus" class="download-status"></div>
+      </div>
+
+      <div class="info-section">
         <h3>Where to Find Charts</h3>
         <ul>
           <li><a href="https://chartlocker.brucebalan.com/" target="_blank">Bruce's Chart Locker</a> - Community-maintained chart collection</li>
@@ -157,6 +231,8 @@ async function loadFoldersForDownload(): Promise<void> {
       throw new Error(`HTTP ${response.status}`);
     }
     const data = (await response.json()) as LocalChartsResponse;
+
+    fillOnlineChartFolders(data.folders ?? []);
 
     const folderSelect = document.getElementById('downloadFolder') as HTMLSelectElement | null;
     if (!folderSelect) {
@@ -459,6 +535,125 @@ function truncateUrl(url: string, maxLength = 60): string {
 }
 
 // Expose inline-onclick handlers used by the rendered HTML.
+/** Online charts go to the catalog's default folder unless the user picks another. */
+function fillOnlineChartFolders(folders: string[]): void {
+  const select = document.getElementById('onlineChartFolder') as HTMLSelectElement | null;
+  if (!select) {
+    return;
+  }
+  const previous = select.value;
+  const options = ['/', ...folders.filter((f) => f !== '/')];
+  if (!options.includes(ONLINE_CHARTS_FOLDER)) {
+    options.push(ONLINE_CHARTS_FOLDER);
+  }
+  select.replaceChildren(
+    ...options.map((folder) => {
+      const option = document.createElement('option');
+      option.value = folder;
+      option.textContent = folder;
+      return option;
+    })
+  );
+  select.value = previous && options.includes(previous) ? previous : ONLINE_CHARTS_FOLDER;
+}
+
+function onlineChartTypeChanged(): void {
+  const type = (document.getElementById('onlineChartType') as HTMLSelectElement | null)?.value;
+  const layers = document.getElementById('onlineChartLayersGroup');
+  const hint = document.getElementById('onlineChartUrlHint');
+  const url = document.getElementById('onlineChartUrl') as HTMLInputElement | null;
+  const wms = type === 'WMS';
+  if (layers) {
+    layers.style.display = wms ? '' : 'none';
+  }
+  if (hint) {
+    hint.style.display = wms ? 'none' : '';
+  }
+  if (url) {
+    url.placeholder = wms
+      ? 'https://example.com/wms'
+      : 'https://example.com/tiles/{z}/{x}/{y}.png';
+  }
+}
+
+function onlineChartInput(id: string): string {
+  return (document.getElementById(id) as HTMLInputElement | null)?.value.trim() ?? '';
+}
+
+async function addOnlineChartByUrl(): Promise<void> {
+  const statusDiv = document.getElementById('onlineChartStatus');
+  if (!statusDiv) {
+    return;
+  }
+  const showError = (message: string): void => {
+    statusDiv.innerHTML = `<div class="error-message">${downloadEscapeHtml(message)}</div>`;
+  };
+  const name = onlineChartInput('onlineChartName');
+  const type = onlineChartInput('onlineChartType');
+  const url = onlineChartInput('onlineChartUrl');
+  const layers = onlineChartInput('onlineChartLayers')
+    .split(',')
+    .map((l) => l.trim())
+    .filter((l) => l !== '');
+  const zoom = (id: string): number | undefined => {
+    const value = onlineChartInput(id);
+    return value === '' ? undefined : Number(value);
+  };
+  const minzoom = zoom('onlineChartMinzoom');
+  const maxzoom = zoom('onlineChartMaxzoom');
+  const keepOffline =
+    (document.getElementById('onlineChartKeep') as HTMLInputElement | null)?.checked ?? false;
+
+  if (!name) {
+    showError('Please enter a chart name');
+    return;
+  }
+  if (!url) {
+    showError('Please enter a URL');
+    return;
+  }
+  if (type === 'WMS' && layers.length === 0) {
+    showError('Please enter at least one layer');
+    return;
+  }
+
+  const chart = {
+    type,
+    url,
+    ...(type === 'WMS' ? { layers } : {}),
+    ...(minzoom !== undefined ? { minzoom } : {}),
+    ...(maxzoom !== undefined ? { maxzoom } : {}),
+    keepOffline
+  };
+  statusDiv.innerHTML = '<div class="info-message">Adding chart...</div>';
+  try {
+    const response = await fetch(`${DOWNLOAD_API_BASE}/online-charts/custom`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, folder: onlineChartInput('onlineChartFolder') || '/', chart })
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      success?: boolean;
+      error?: string;
+    };
+    if (!response.ok || !result.success) {
+      showError(result.error ?? `Failed to add the chart (HTTP ${String(response.status)})`);
+      return;
+    }
+    statusDiv.innerHTML = `<div class="success-message">Added ${downloadEscapeHtml(name)}. It is listed in Manage Charts.</div>`;
+    for (const id of ['onlineChartName', 'onlineChartUrl', 'onlineChartLayers']) {
+      const input = document.getElementById(id) as HTMLInputElement | null;
+      if (input) {
+        input.value = '';
+      }
+    }
+  } catch (error) {
+    showError(`Failed to add the chart: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+window.addOnlineChartByUrl = addOnlineChartByUrl;
+window.onlineChartTypeChanged = onlineChartTypeChanged;
 window.startDownload = startDownload;
 window.cancelDownload = cancelDownload;
 

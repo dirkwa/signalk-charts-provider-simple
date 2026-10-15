@@ -61,11 +61,30 @@ export function tileBbox3857(z: number, x: number, y: number): [number, number, 
   ];
 }
 
+/** A tile's extent in degrees: [west, south, east, north]. */
+export function tileBbox4326(z: number, x: number, y: number): [number, number, number, number] {
+  const n = 2 ** z;
+  const lon = (col: number): number => (col / n) * 360 - 180;
+  const lat = (row: number): number =>
+    (Math.atan(Math.sinh(Math.PI * (1 - (2 * row) / n))) * 180) / Math.PI;
+  return [lon(x), lat(y + 1), lon(x + 1), lat(y)];
+}
+
+/**
+ * Whether a tile template uses a placeholder only the plugin fills in, so a
+ * chart plotter cannot be handed it directly.
+ */
+export function needsTileProxy(url: string): boolean {
+  return /\{(-y|z-\d+|bbox|bbox_3857)\}/.test(url);
+}
+
 /**
  * The upstream URL for one XYZ tile. Templates take `{z}`, `{x}`, `{y}`,
  * `{-y}` (TMS row) and `{z-N}` for services whose level 0 is not zoom 0
  * (NOAA's ArcGIS tile cache starts at zoom 2); null below that first
- * level. WMS layers are requested as
+ * level. `{bbox}` (west,south,east,north in degrees) and `{bbox_3857}`
+ * (Web Mercator metres) make a single-image request such as a WMS GetMap
+ * work as a tile template. WMS layers are requested as
  * a 256 px EPSG:3857 GetMap, which every WMS 1.1.1 server answers in x,y
  * order, so the axis-order trap of WMS 1.3.0 never arises.
  */
@@ -86,7 +105,9 @@ export function upstreamTileUrl(
       .replace(/\{z\}/g, String(z))
       .replace(/\{x\}/g, String(x))
       .replace(/\{-y\}/g, String(2 ** z - 1 - y))
-      .replace(/\{y\}/g, String(y));
+      .replace(/\{y\}/g, String(y))
+      .replace(/\{bbox\}/g, () => tileBbox4326(z, x, y).join(','))
+      .replace(/\{bbox_3857\}/g, () => tileBbox3857(z, x, y).join(','));
   }
   const params = new URLSearchParams({
     SERVICE: 'WMS',
@@ -293,6 +314,18 @@ export class OnlineTileProxy {
       return cached.data;
     }
     return (await this.fetchAndKeep(catalogId, source, z, x, y)) ?? cached?.data ?? null;
+  }
+
+  /** The provider's tile, passed through without keeping it, for charts whose terms forbid copies. */
+  async streamTile(
+    source: OnlineTileSource,
+    z: number,
+    x: number,
+    y: number
+  ): Promise<Buffer | null> {
+    const url = z > 24 || x >= 2 ** z || y >= 2 ** z ? null : upstreamTileUrl(source, z, x, y);
+    const data = url ? await this.fetchTile(url) : null;
+    return data ? Buffer.from(data.buffer, data.byteOffset, data.byteLength) : null;
   }
 
   /**

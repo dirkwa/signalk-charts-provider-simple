@@ -8,6 +8,9 @@ import { findCharts } from '../dist/charts-loader.js';
 import { scanChartsRecursively } from '../dist/utils/file-scanner.js';
 import {
   chartIdFromFilename,
+  customCatalogEntry,
+  customChartId,
+  customOnlineChartProblem,
   findOnlineChartFiles,
   onlineChartProvider,
   readOnlineChartFile,
@@ -247,5 +250,27 @@ describe('online charts', () => {
         { relativePath: 'retired.onlinechart.json', catalogId: 'retired' }
       ]);
     });
+  });
+});
+
+describe('online charts added by URL', () => {
+  const custom = { type: 'WMS' as const, url: 'https://w.example/ows', layers: ['a'] };
+
+  it('keeps tiles under an id that follows the service', () => {
+    const id = customChartId(custom);
+    assert.match(id, /^custom-[0-9a-f]{12}$/);
+    assert.strictEqual(customChartId({ ...custom, keepOffline: true }), id);
+    assert.notStrictEqual(customChartId({ ...custom, layers: ['b'] }), id);
+  });
+
+  it('is kept offline only when the user allows it', () => {
+    assert.strictEqual(customCatalogEntry(custom).offline, undefined);
+    assert.deepStrictEqual(customCatalogEntry({ ...custom, keepOffline: true }).offline, {});
+  });
+
+  it('accepts TMS and shifted tile templates', () => {
+    for (const url of ['https://t/{z}/{x}/{-y}.png', 'https://t/{z-2}/{y}/{x}']) {
+      assert.strictEqual(customOnlineChartProblem({ type: 'tilelayer', url }), null, url);
+    }
   });
 });

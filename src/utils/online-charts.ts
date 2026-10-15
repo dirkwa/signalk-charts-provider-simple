@@ -8,27 +8,118 @@
  * folders, enable/disable, move, delete — without special cases. The file
  * references its catalog entry by id instead of copying the service URL,
  * so a fix to the catalog reaches every boat on the next catalog refresh.
+ *
+ * A chart added by URL instead carries its service in a `custom` block, the
+ * way charts-plugin's online providers do, for services the catalog does not
+ * list. Whether its tiles may be kept is the user's call, since only they
+ * know the provider's terms.
  */
 
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import type { OnlineCatalogChart } from '../catalog/merged-catalog-schema.js';
 import type { ChartProvider } from '../types.js';
-import { offlineTileSource } from './online-tile-cache.js';
+import { needsTileProxy, offlineTileSource, type OnlineTileSource } from './online-tile-cache.js';
 
 export const ONLINE_CHART_SUFFIX = '.onlinechart.json';
 
+export const CustomOnlineChartSchema = Type.Object({
+  type: Type.Union([Type.Literal('tilelayer'), Type.Literal('WMS')]),
+  url: Type.String({ pattern: '^https?://[^\\s]+$', maxLength: 2048 }),
+  layers: Type.Optional(
+    Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { minItems: 1, maxItems: 50 })
+  ),
+  minzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
+  maxzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
+  keepOffline: Type.Optional(Type.Boolean())
+});
+
+export type CustomOnlineChart = Static<typeof CustomOnlineChartSchema>;
+
 export const OnlineChartFileSchema = Type.Object({
   catalogId: Type.String({ minLength: 1 }),
-  name: Type.String({ minLength: 1 })
+  name: Type.String({ minLength: 1 }),
+  custom: Type.Optional(CustomOnlineChartSchema)
 });
 
 export type OnlineChartFile = Static<typeof OnlineChartFileSchema>;
 
 /** Looks up a catalog entry by id; undefined when the catalog lacks it. */
 export type OnlineChartResolver = (catalogId: string) => OnlineCatalogChart | undefined;
+
+/**
+ * The id a chart added by URL is known by in place of a catalog id. It names
+ * the file its tiles are kept in, so it follows the service: pointing the
+ * chart at another URL starts a fresh copy instead of mixing two services.
+ */
+export function customChartId(custom: CustomOnlineChart): string {
+  const hash = createHash('sha256')
+    .update(`${custom.type}\n${custom.url}\n${(custom.layers ?? []).join(',')}`)
+    .digest('hex');
+  return `custom-${hash.slice(0, 12)}`;
+}
+
+/** Why a chart added by URL cannot be served, or null when it can. */
+export function customOnlineChartProblem(custom: CustomOnlineChart): string | null {
+  try {
+    new URL(custom.url);
+  } catch {
+    return 'The URL is not valid';
+  }
+  if (custom.type === 'WMS' && !custom.layers) {
+    return 'A WMS chart needs at least one layer';
+  }
+  const { url } = custom;
+  const tiled = /\{z(-\d+)?\}/.test(url) && url.includes('{x}') && /\{-?y\}/.test(url);
+  if (custom.type === 'tilelayer' && !tiled && !/\{bbox(_3857)?\}/.test(url)) {
+    return 'A tile URL needs {z}, {x} and {y}, or {bbox} or {bbox_3857}';
+  }
+  if (
+    custom.minzoom !== undefined &&
+    custom.maxzoom !== undefined &&
+    custom.minzoom > custom.maxzoom
+  ) {
+    return 'The lowest zoom level is above the highest';
+  }
+  return null;
+}
+
+/**
+ * The catalog entry for a chart added by URL, built from the file so the
+ * rest of the plugin serves and lists it like any catalog chart.
+ */
+export function customCatalogEntry(custom: CustomOnlineChart): OnlineCatalogChart {
+  const { host, origin } = new URL(custom.url);
+  return {
+    id: customChartId(custom),
+    name: host,
+    description: `Online chart added by URL, from ${host}.`,
+    category: 'navigation',
+    bbox: [-180, -85, 180, 85],
+    provider: host,
+    license: "The provider's terms of use",
+    licenseUrl: origin,
+    chart: {
+      type: custom.type,
+      url: custom.url,
+      ...(custom.layers ? { layers: custom.layers } : {}),
+      ...(custom.minzoom !== undefined ? { minzoom: custom.minzoom } : {}),
+      ...(custom.maxzoom !== undefined ? { maxzoom: custom.maxzoom } : {})
+    },
+    ...(custom.keepOffline ? { offline: {} } : {})
+  };
+}
+
+/** The catalog entry an online chart file is served from, or undefined when there is none. */
+export function onlineChartEntry(
+  file: { catalogId: string; custom?: CustomOnlineChart | undefined },
+  resolve: OnlineChartResolver
+): OnlineCatalogChart | undefined {
+  return file.custom ? customCatalogEntry(file.custom) : resolve(file.catalogId);
+}
 
 export function isOnlineChartFile(filename: string): boolean {
   return filename.toLowerCase().endsWith(ONLINE_CHART_SUFFIX);
@@ -94,11 +185,12 @@ export function writeOnlineChartFile(
   dir: string,
   catalogId: string,
   name: string,
-  takenIds: ReadonlySet<string> = new Set()
+  takenIds: ReadonlySet<string> = new Set(),
+  custom?: CustomOnlineChart
 ): string {
   fs.mkdirSync(dir, { recursive: true });
-  const stem = safeStem(catalogId);
-  const content = `${JSON.stringify({ catalogId, name }, null, 2)}\n`;
+  const stem = safeStem(custom ? name.toLowerCase() : catalogId);
+  const content = `${JSON.stringify({ catalogId, name, ...(custom ? { custom } : {}) }, null, 2)}\n`;
   for (let n = 1; ; n++) {
     const id = n === 1 ? stem : `${stem}-${String(n)}`;
     if (takenIds.has(id)) {
@@ -127,18 +219,25 @@ export function onlineChartProvider(
   file: OnlineChartFile,
   resolve: OnlineChartResolver
 ): ChartProvider | null {
-  const entry = resolve(file.catalogId);
+  const entry = onlineChartEntry(file, resolve);
   if (!entry) {
     return null;
   }
   const { chart } = entry;
   const identifier = chartIdFromFilename(path.basename(filePath));
   const offlineSource = offlineTileSource(entry);
-  if (offlineSource) {
+  // A template only the plugin can fill in goes through it even when its
+  // tiles may not be kept.
+  const streamedSource: OnlineTileSource | null =
+    !offlineSource && chart.type === 'tilelayer' && needsTileProxy(chart.url)
+      ? { kind: 'xyz', url: chart.url }
+      : null;
+  const proxiedSource = offlineSource ?? streamedSource;
+  if (proxiedSource) {
     // Served by the plugin's tile route as a plain tile layer, whatever the
     // service type, so plotters fetch every tile through the server.
     const tileSize =
-      offlineSource.kind === 'xyz' && (chart.tileSize === 256 || chart.tileSize === 512)
+      proxiedSource.kind === 'xyz' && (chart.tileSize === 256 || chart.tileSize === 512)
         ? chart.tileSize
         : undefined;
     const url = `~tilePath~/${identifier}/{z}/{x}/{y}`;
@@ -158,7 +257,8 @@ export function onlineChartProvider(
       ...(tileSize !== undefined ? { tileSize } : {}),
       ...(chart.defaultOpacity !== undefined ? { defaultOpacity: chart.defaultOpacity } : {}),
       _catalogId: entry.id,
-      _offlineSource: offlineSource,
+      _offlineSource: proxiedSource,
+      _keepTiles: offlineSource !== null,
       v1: { tilemapUrl: url, chartLayers: [] },
       v2: { url, layers: [], ...(tileSize !== undefined ? { tileSize } : {}) }
     };

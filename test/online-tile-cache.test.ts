@@ -10,6 +10,7 @@ import {
   OnlineTileProxy,
   OnlineTileStore,
   TILE_REFRESH_MS,
+  needsTileProxy,
   offlineTileSource,
   tileBbox3857,
   tileImageType,
@@ -80,6 +81,32 @@ describe('upstreamTileUrl', () => {
   it('fills an XYZ template, including TMS rows and shifted levels', () => {
     const xyz: OnlineTileSource = { kind: 'xyz', url: 'https://t/{z}/{x}/{y}/{-y}/{z-2}' };
     assert.strictEqual(upstreamTileUrl(xyz, 3, 5, 1), 'https://t/3/5/1/6/1');
+  });
+
+  it('fills a single-image request with the tile extent', () => {
+    const box: OnlineTileSource = { kind: 'xyz', url: 'https://w/map?a={bbox}&b={bbox_3857}' };
+    const url = new URL(upstreamTileUrl(box, 1, 1, 0) ?? '');
+    assert.deepStrictEqual(
+      url.searchParams
+        .get('a')
+        ?.split(',')
+        .map((n) => Math.round(Number(n))),
+      [0, 0, 180, 85]
+    );
+    assert.deepStrictEqual(
+      url.searchParams
+        .get('b')
+        ?.split(',')
+        .map((n) => Math.round(Number(n))),
+      [0, 0, 20037508, 20037508]
+    );
+  });
+
+  it('knows which templates a chart plotter cannot fill in', () => {
+    assert.strictEqual(needsTileProxy('https://t/{z}/{x}/{y}.png'), false);
+    for (const url of ['https://t/{z}/{x}/{-y}', 'https://t/{z-2}/{y}/{x}', 'https://w?b={bbox}']) {
+      assert.strictEqual(needsTileProxy(url), true, url);
+    }
   });
 
   it('has no tile below a shifted first level', () => {
@@ -201,6 +228,12 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     assert.strictEqual(await proxy().getTile('depths', source, 2, 4, 0), null);
     assert.strictEqual(await proxy().getTile('depths', source, 30, 0, 0), null);
     assert.strictEqual(fetched.length, 0);
+  });
+
+  it('passes a tile through without keeping it', async () => {
+    const data = await proxy().streamTile(source, 2, 1, 0);
+    assert.deepStrictEqual(data && [...data], [...PNG]);
+    assert.strictEqual(fs.existsSync(path.join(dir, 'depths.mbtiles')), false);
   });
 
   it('asks the provider once for concurrent requests of the same tile', async () => {
