@@ -17,6 +17,7 @@ import { zxyToTileId } from 'pmtiles';
 import { findCharts } from '../dist/charts-loader.js';
 import { PMTilesReader, pmtilesBounds } from '../dist/utils/pmtiles-reader.js';
 import { chartIdFromFilename, collectChartIds } from '../dist/utils/online-charts.js';
+import { scanChartsRecursively } from '../dist/utils/file-scanner.js';
 import { pmtilesMetadataView, serveTileFromPmtiles } from '../dist/index.js';
 
 const COMPRESSION_NONE = 1;
@@ -277,6 +278,16 @@ describe('PMTiles charts', () => {
     });
   });
 
+  it('treats an empty stored tile as missing rather than sending an empty gzip body', async () => {
+    const dir = fixture('empty', {
+      tiles: [...VECTOR_TILES, { z: 3, x: 0, y: 0, data: Buffer.alloc(0) }]
+    });
+    await withReader(path.join(dir, 'empty.pmtiles'), async (reader) => {
+      assert.strictEqual(await reader.getTile(3, 0, 0), null);
+      assert.ok(await reader.getTile(3, 2, 3));
+    });
+  });
+
   it('follows a leaf directory and reads gzip-compressed directories', async () => {
     const dir = fixture('leaf', {
       tiles: VECTOR_TILES,
@@ -386,6 +397,15 @@ describe('PMTiles charts', () => {
       assert.strictEqual(view.generator_options, undefined);
       assert.strictEqual(view.vector_layers, undefined);
     });
+  });
+
+  it('lists an archive for management under the name its metadata gives', async () => {
+    const dir = fixture('listed', { tiles: VECTOR_TILES, metadata: S57_METADATA });
+    const scanned = await scanChartsRecursively(dir);
+    assert.deepStrictEqual(
+      scanned.map((c) => [c.name, c.chartName]),
+      [['listed.pmtiles', 'Fiji crowdsourced depth']]
+    );
   });
 
   it('gives .pmtiles files a chart id like any other chart file', async () => {

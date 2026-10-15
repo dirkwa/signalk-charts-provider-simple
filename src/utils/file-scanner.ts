@@ -106,7 +106,10 @@ export async function scanChartsRecursively(
 
       const subCharts = await scanChartsRecursively(basePath, fullPath);
       charts.push(...subCharts);
-    } else if (entry.isFile() && /\.(mbtiles|pmtiles)$/i.test(entry.name)) {
+    } else if (
+      entry.isFile() &&
+      (entry.name.endsWith('.mbtiles') || /\.pmtiles$/i.test(entry.name))
+    ) {
       const stats = await fs.promises.stat(fullPath);
       const relativePath = path.relative(basePath, fullPath);
       const folder = path.dirname(relativePath) || '/';

@@ -162,6 +162,10 @@ export class PMTilesReader {
         return null;
       }
       if (entry.runLength > 0) {
+        // An empty body sent as gzip fails to decode in the browser.
+        if (entry.length === 0) {
+          return null;
+        }
         const { data } = await this.source.getBytes(
           header.tileDataOffset + entry.offset,
           entry.length

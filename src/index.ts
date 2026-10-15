@@ -4922,7 +4922,8 @@ export const pmtilesMetadataView = (reader: PMTilesReader): Record<string, unkno
     center: `${header.centerLon},${header.centerLat},${header.centerZoom}`,
     minzoom: header.minZoom,
     maxzoom: header.maxZoom,
-    tileCount: header.numAddressedTiles,
+    // The header records 0 when the writer did not count its tiles.
+    ...(header.numAddressedTiles > 0 ? { tileCount: header.numAddressedTiles } : {}),
     readOnly: true
   };
 };
