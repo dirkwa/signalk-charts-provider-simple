@@ -1,6 +1,7 @@
 import type { ServerAPI } from '@signalk/server-api';
 import type { IRouter, Request, Response } from 'express';
 import type { MBTilesReader } from './utils/mbtiles-reader.js';
+import type { PMTilesReader } from './utils/pmtiles-reader.js';
 import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
 import type { ChartTimeBlock } from './utils/time-dimension.js';
 
@@ -46,13 +47,14 @@ export interface ChartV2Data {
   tileSize?: number;
 }
 
-export type ChartFileFormat = 'mbtiles' | 'directory' | 'online';
+export type ChartFileFormat = 'mbtiles' | 'pmtiles' | 'directory' | 'online';
 export type ChartType = 'tilelayer' | string;
 
 export interface ChartProvider {
   _fileFormat: ChartFileFormat;
   _filePath: string;
   _mbtilesHandle?: MBTilesReader;
+  _pmtilesHandle?: PMTilesReader;
   _flipY: boolean;
 
   identifier: string;

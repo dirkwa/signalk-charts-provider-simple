@@ -3,6 +3,7 @@ import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ScannedChart } from '../types.js';
 import { isOnlineChartFile, readOnlineChartFile } from './online-charts.js';
+import { PMTilesReader } from './pmtiles-reader.js';
 
 interface ChartMetadata {
   name?: string;
@@ -20,6 +21,19 @@ function getChartName(filePath: string): string | null {
       return row ? row.value : null;
     } finally {
       db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function getPmtilesChartName(filePath: string): Promise<string | null> {
+  try {
+    const reader = await PMTilesReader.open(filePath);
+    try {
+      return typeof reader.metadata.name === 'string' ? reader.metadata.name : null;
+    } finally {
+      await reader.close();
     }
   } catch {
     return null;
@@ -92,12 +106,14 @@ export async function scanChartsRecursively(
 
       const subCharts = await scanChartsRecursively(basePath, fullPath);
       charts.push(...subCharts);
-    } else if (entry.isFile() && entry.name.endsWith('.mbtiles')) {
+    } else if (entry.isFile() && /\.(mbtiles|pmtiles)$/i.test(entry.name)) {
       const stats = await fs.promises.stat(fullPath);
       const relativePath = path.relative(basePath, fullPath);
       const folder = path.dirname(relativePath) || '/';
 
-      const chartName = getChartName(fullPath);
+      const chartName = /\.pmtiles$/i.test(entry.name)
+        ? await getPmtilesChartName(fullPath)
+        : getChartName(fullPath);
 
       charts.push({
         name: entry.name,

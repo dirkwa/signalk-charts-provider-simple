@@ -2,6 +2,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import { parseStringPromise } from 'xml2js';
 import { open as openMbtiles } from './utils/mbtiles-reader.js';
+import { PMTilesReader, pmtilesBounds } from './utils/pmtiles-reader.js';
 import {
   isOnlineChartFile,
   onlineChartProvider,
@@ -53,6 +54,16 @@ function resolveChartType(
   return 'tilelayer';
 }
 
+/** Releases a provider's open file, whichever kind of chart it is. */
+export function closeChartHandle(chart: ChartProvider): void {
+  try {
+    chart._mbtilesHandle?.close();
+  } catch {
+    // Already closed — nothing to release.
+  }
+  chart._pmtilesHandle?.close().catch(() => undefined);
+}
+
 /**
  * @param resolveOnline Looks up the catalog entry an `.onlinechart.json`
  *   file refers to. Online charts whose entry is unknown are not served.
@@ -85,22 +96,14 @@ export async function findCharts(
       // reach it, and on Windows it would lock that file for good.
       const displaced = result[chart.identifier];
       if (displaced && displaced !== chart) {
-        try {
-          displaced._mbtilesHandle?.close();
-        } catch {
-          // Already closed — nothing to release.
-        }
+        closeChartHandle(displaced);
       }
       result[chart.identifier] = chart;
       return result;
     }, {});
   } catch (err) {
     for (const chart of opened) {
-      try {
-        chart._mbtilesHandle?.close();
-      } catch {
-        // Already closed — nothing to release.
-      }
+      closeChartHandle(chart);
     }
     throw err;
   }
@@ -120,8 +123,10 @@ async function findChartsRecursive(
     const isMbtilesFile = file.name.match(/\.mbtiles$/i);
     const isDirectory = file.isDirectory();
 
-    if (isMbtilesFile) {
-      const chart = await openMbtilesFile(filePath, file.name);
+    if (isMbtilesFile || (file.isFile() && /\.pmtiles$/i.test(file.name))) {
+      const chart = isMbtilesFile
+        ? await openMbtilesFile(filePath, file.name)
+        : await openPmtilesFile(filePath, file.name);
       if (chart) {
         opened.push(chart);
       }
@@ -214,6 +219,53 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
     } catch {
       // Already closed, or never opened — nothing to release.
     }
+    return null;
+  }
+}
+
+async function openPmtilesFile(file: string, filename: string): Promise<ChartProvider | null> {
+  let reader: PMTilesReader | undefined;
+  try {
+    reader = await PMTilesReader.open(file);
+    const { header, metadata, format } = reader;
+    const identifier = filename.replace(/\.pmtiles$/i, '');
+    const vectorLayers = Array.isArray(metadata.vector_layers)
+      ? parseVectorLayers(metadata.vector_layers)
+      : [];
+
+    return {
+      _fileFormat: 'pmtiles',
+      _filePath: file,
+      _pmtilesHandle: reader,
+      _flipY: false,
+
+      identifier,
+      name: typeof metadata.name === 'string' && metadata.name ? metadata.name : identifier,
+      description: typeof metadata.description === 'string' ? metadata.description : '',
+      bounds: pmtilesBounds(header, metadata),
+      minzoom: header.minZoom,
+      maxzoom: header.maxZoom,
+      format,
+      type: resolveChartType(
+        typeof metadata.type === 'string' ? metadata.type : undefined,
+        format,
+        vectorLayers
+      ),
+      scale: parseInt(typeof metadata.scale === 'string' ? metadata.scale : '', 10) || 250000,
+
+      v1: {
+        tilemapUrl: `~tilePath~/${identifier}/{z}/{x}/{y}`,
+        chartLayers: vectorLayers
+      },
+
+      v2: {
+        url: `~tilePath~/${identifier}/{z}/{x}/{y}`,
+        layers: vectorLayers
+      }
+    };
+  } catch (e) {
+    console.error(`Error loading chart ${file}`, e instanceof Error ? e.message : String(e));
+    await reader?.close().catch(() => undefined);
     return null;
   }
 }

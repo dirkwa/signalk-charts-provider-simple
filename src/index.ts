@@ -6,7 +6,7 @@ import fs from 'fs';
 import https from 'https';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
-import { findCharts, findRepairableCharts } from './charts-loader.js';
+import { closeChartHandle, findCharts, findRepairableCharts } from './charts-loader.js';
 import {
   checkForUpdates,
   classifyUrl,
@@ -64,6 +64,7 @@ import { downloadManager } from './utils/download-manager.js';
 import { scanAllFolders, scanChartsRecursively } from './utils/file-scanner.js';
 import { repairMbtilesMetadata, setMbtilesDisplayName } from './utils/mbtiles-metadata.js';
 import { open as openMbtilesReader } from './utils/mbtiles-reader.js';
+import { PMTilesReader, pmtilesBounds } from './utils/pmtiles-reader.js';
 import { writeChartPathMarker } from './utils/path-marker.js';
 import { getBlankTileReplacement, getOverzoomedTile } from './utils/tile-overzoom.js';
 import { getRasterOverzoomedTile } from './utils/raster-overzoom.js';
@@ -403,6 +404,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               return;
             case 'mbtiles':
               serveTileFromMbtiles(res, provider, iz, ix, iy);
+              return;
+            case 'pmtiles':
+              void serveTileFromPmtiles(res, provider, iz, ix, iy);
               return;
             case 'online':
               // Online charts are fetched from their provider by the chart
@@ -811,19 +815,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     return isChartEnabled(relativePath) && isFolderPathEnabled(path.dirname(relativePath));
   };
 
-  // findCharts opens a sqlite handle for every chart it finds; any provider
+  // findCharts opens a file handle for every chart it finds; any provider
   // that doesn't make it into (or drops out of) `chartProviders` must be
   // closed explicitly or the handle leaks — and on Windows keeps the
-  // .mbtiles file locked. Safe to call on live objects being replaced:
-  // tile serving is synchronous from map lookup to handle use, so no
-  // in-flight request can hold a closed handle across an await.
+  // chart file locked. Safe to call on live objects being replaced:
+  // MBTiles serving is synchronous from map lookup to handle use, so no
+  // in-flight request can hold a closed handle across an await. A PMTiles
+  // read in flight on a closed archive fails and answers 500 once.
   const closeProviderHandles = (providers: Iterable<ChartProvider>): void => {
     for (const provider of providers) {
-      try {
-        provider._mbtilesHandle?.close();
-      } catch {
-        // Already closed — nothing to release.
-      }
+      closeChartHandle(provider);
     }
   };
 
@@ -2129,7 +2130,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/chart-metadata/:chartPath', (req: Request, res: Response) => {
+    router.get('/chart-metadata/:chartPath', async (req: Request, res: Response) => {
       const chartPathParam = decodeURIComponent((req.params as Record<string, string>).chartPath);
 
       try {
@@ -2169,8 +2170,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
 
+        if (/\.pmtiles$/i.test(fullPath)) {
+          const reader = await PMTilesReader.open(fullPath);
+          try {
+            res.json(pmtilesMetadataView(reader));
+          } finally {
+            await reader.close();
+          }
+          return;
+        }
+
         if (!fullPath.endsWith('.mbtiles')) {
-          res.status(400).send('Metadata only available for MBTiles charts');
+          res.status(400).send('Metadata only available for MBTiles and PMTiles charts');
           return;
         }
 
@@ -4729,6 +4740,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _filePath,
     _fileFormat,
     _mbtilesHandle,
+    _pmtilesHandle,
     _flipY,
     _catalogId,
     v1: _v1,
@@ -4888,6 +4900,57 @@ export const serveTileFromMbtiles = (
   } catch (err) {
     console.error(`Error fetching tile ${provider.identifier}/${z}/${x}/${y}:`, err);
     res.sendStatus(500);
+  }
+};
+
+/**
+ * The chart-metadata view of a PMTiles archive. `readOnly` tells the
+ * management UI not to offer editing, since only MBTiles metadata can be
+ * rewritten in place.
+ */
+export const pmtilesMetadataView = (reader: PMTilesReader): Record<string, unknown> => {
+  const { header, metadata, format } = reader;
+  const view: Record<string, unknown> = { ...metadata };
+  delete view.vector_layers;
+  delete view.tilestats;
+  delete view.strategies;
+  delete view.generator_options;
+  return {
+    ...view,
+    format,
+    bounds: pmtilesBounds(header, metadata),
+    center: `${header.centerLon},${header.centerLat},${header.centerZoom}`,
+    minzoom: header.minZoom,
+    maxzoom: header.maxZoom,
+    tileCount: header.numAddressedTiles,
+    readOnly: true
+  };
+};
+
+// Exported for tests, like serveTileFromMbtiles.
+export const serveTileFromPmtiles = async (
+  res: Response,
+  provider: ChartProvider,
+  z: number,
+  x: number,
+  y: number
+): Promise<void> => {
+  try {
+    const result = (await provider._pmtilesHandle?.getTile(z, x, y)) ?? null;
+    if (!result) {
+      res.sendStatus(404);
+      return;
+    }
+    res.writeHead(200, {
+      ...result.headers,
+      'Cache-Control': responseHttpOptions.headers['Cache-Control']
+    });
+    res.end(result.data);
+  } catch (err) {
+    console.error(`Error fetching tile ${provider.identifier}/${z}/${x}/${y}:`, err);
+    if (!res.headersSent) {
+      res.sendStatus(500);
+    }
   }
 };
 

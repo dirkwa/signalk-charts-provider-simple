@@ -96,6 +96,8 @@ interface ChartMetadata {
   credits?: string;
   tags?: string;
   legend?: string;
+  /** Set for PMTiles charts, whose metadata can't be edited in place. */
+  readOnly?: boolean;
   [key: string]: unknown;
 }
 
@@ -497,11 +499,15 @@ function renderChartCard(chart: ManageChart): string {
       ? `<span class="downloading-badge"><span class="spinner-small"></span> Converting</span>`
       : '';
 
+  // A PMTiles archive can't be renamed in place the way an MBTiles chart is.
+  const isPmtiles = /\.pmtiles$/i.test(chart.name);
   const typeBadge = chart.online
     ? `<span class="chart-type-badge online"${chart.online.type ? ` title="${manageEscapeAttr(chart.online.type)}"` : ''}>ONLINE</span>`
     : isDir
       ? `<span class="chart-type-badge enc">${manageEscapeHtml((chart.type ?? 'S-57').toUpperCase())}</span>`
-      : '';
+      : isPmtiles
+        ? `<span class="chart-type-badge enc">PMTILES</span>`
+        : '';
 
   const online = chart.online;
   const escName = manageEscapeHtml(online ? (chart.chartName ?? chart.name) : chart.name);
@@ -581,9 +587,13 @@ function renderChartCard(chart: ManageChart): string {
               ? `<button class="btn btn-sm btn-info" onclick="showChartInfo('${attrPath}')" title="View chart metadata">
             Meta
           </button>
-          <button class="btn btn-sm btn-secondary" onclick="${renameAction}" title="Rename chart">
+          ${
+            isPmtiles
+              ? ''
+              : `<button class="btn btn-sm btn-secondary" onclick="${renameAction}" title="Rename chart">
             Rename
           </button>`
+          }`
               : ''
           }
           <button class="btn btn-sm btn-danger" onclick="deleteChart('${attrPath}', '${attrName}')">
@@ -616,9 +626,13 @@ function renderChartCard(chart: ManageChart): string {
               ? `<button class="btn btn-sm btn-info" onclick="showChartInfo('${attrPath}')" title="View chart metadata">
             Meta
           </button>
-          <button class="btn btn-sm btn-secondary" onclick="${renameAction}" title="Rename chart">
+          ${
+            isPmtiles
+              ? ''
+              : `<button class="btn btn-sm btn-secondary" onclick="${renameAction}" title="Rename chart">
             Rename
           </button>`
+          }`
               : ''
           }
           <button class="btn btn-sm btn-danger" onclick="deleteChart('${attrPath}', '${attrName}')">
@@ -2384,7 +2398,7 @@ function renderMetadataModal(metadata: ChartMetadata): void {
           ${
             isEditMode
               ? '<button class="btn btn-secondary" onclick="cancelEditMetadata()">Cancel</button><button class="btn btn-primary" onclick="saveChartMetadata()">Save</button>'
-              : '<button class="btn btn-secondary" onclick="editChartMetadata()">Edit</button><button class="btn btn-primary" onclick="closeChartInfoModal()">Close</button>'
+              : `${metadata.readOnly ? '' : '<button class="btn btn-secondary" onclick="editChartMetadata()">Edit</button>'}<button class="btn btn-primary" onclick="closeChartInfoModal()">Close</button>`
           }
         </div>
       </div>

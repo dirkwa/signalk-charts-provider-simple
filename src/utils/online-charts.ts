@@ -42,7 +42,7 @@ export function chartIdFromFilename(filename: string): string {
   if (isOnlineChartFile(filename)) {
     return filename.slice(0, -ONLINE_CHART_SUFFIX.length);
   }
-  return filename.replace(/\.mbtiles$/i, '');
+  return filename.replace(/\.(mbtiles|pmtiles)$/i, '');
 }
 
 export function readOnlineChartFile(filePath: string): OnlineChartFile | null {
@@ -208,7 +208,7 @@ function isTileDirectory(dirPath: string): boolean {
 }
 
 /**
- * Every chart id in the library — `.mbtiles` and online chart file stems,
+ * Every chart id in the library — `.mbtiles`, `.pmtiles` and online chart file stems,
  * and tile-directory names — whether or not the chart currently loads.
  * A new online chart must avoid all of them (see writeOnlineChartFile).
  */
@@ -238,7 +238,7 @@ export async function collectChartIds(
       }
     } else if (
       entry.isFile() &&
-      (isOnlineChartFile(entry.name) || /\.mbtiles$/i.test(entry.name))
+      (isOnlineChartFile(entry.name) || /\.(mbtiles|pmtiles)$/i.test(entry.name))
     ) {
       ids.add(chartIdFromFilename(entry.name));
     }
