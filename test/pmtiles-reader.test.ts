@@ -331,6 +331,31 @@ describe('PMTiles charts', () => {
     assert.deepStrictEqual(Object.keys(charts), []);
   });
 
+  it('skips an archive whose directories use an unsupported compression', async () => {
+    const dir = fixture('zstd-dirs', {
+      tiles: VECTOR_TILES,
+      internalCompression: COMPRESSION_ZSTD
+    });
+    assert.deepStrictEqual(Object.keys(await findCharts(dir)), []);
+  });
+
+  it('refuses a tile the archive claims but does not hold', async () => {
+    const dir = fixture('truncated', { tiles: VECTOR_TILES });
+    const file = path.join(dir, 'truncated.pmtiles');
+    fs.truncateSync(file, fs.statSync(file).size - 4);
+    // Tile data is laid out in tile-id order, so the cut lands in the last one.
+    const byId = [...VECTOR_TILES].sort(
+      (a, b) => zxyToTileId(a.z, a.x, a.y) - zxyToTileId(b.z, b.x, b.y)
+    );
+    const last = byId[byId.length - 1];
+    const first = byId[0];
+    assert.ok(last && first);
+    await withReader(file, async (reader) => {
+      await assert.rejects(reader.getRawTile(last.z, last.x, last.y), /past the end/);
+      assert.deepStrictEqual(await reader.getRawTile(first.z, first.x, first.y), first.data);
+    });
+  });
+
   it('publishes a crossing box for an archive that straddles the antimeridian', () => {
     const header = { minLon: -180, minLat: -20, maxLon: 180, maxLat: -16 };
     const adjusted = pmtilesBounds(header as never, {

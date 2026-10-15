@@ -49,7 +49,8 @@ export interface PMTilesMetadata {
 class LocalFileSource implements Source {
   constructor(
     private readonly filePath: string,
-    private readonly handle: fs.FileHandle
+    private readonly handle: fs.FileHandle,
+    private readonly size: number
   ) {}
 
   getKey(): string {
@@ -57,8 +58,20 @@ class LocalFileSource implements Source {
   }
 
   async getBytes(offset: number, length: number): Promise<{ data: ArrayBuffer }> {
-    const buffer = new Uint8Array(length);
-    const { bytesRead } = await this.handle.read(buffer, 0, length, offset);
+    if (
+      !Number.isSafeInteger(offset) ||
+      !Number.isSafeInteger(length) ||
+      offset < 0 ||
+      length < 0
+    ) {
+      throw new Error(`Invalid PMTiles range ${offset}+${length}`);
+    }
+    // Offsets and lengths come from the archive itself, so a damaged header
+    // or directory must not make us allocate more than the file holds. A
+    // read past the end comes back short, as the header probe expects.
+    const available = Math.max(0, Math.min(length, this.size - offset));
+    const buffer = new Uint8Array(available);
+    const { bytesRead } = await this.handle.read(buffer, 0, available, offset);
     return { data: buffer.buffer.slice(0, bytesRead) };
   }
 }
@@ -107,7 +120,8 @@ export class PMTilesReader {
   static async open(filePath: string): Promise<PMTilesReader> {
     const handle = await fs.open(filePath, 'r');
     try {
-      const source = new LocalFileSource(filePath, handle);
+      const { size } = await handle.stat();
+      const source = new LocalFileSource(filePath, handle, size);
       const cache = new ResolvedValueCache(64, true, decompressDirectory);
       const header = await cache.getHeader(source);
       const format = TILE_FORMATS[header.tileType];
@@ -152,6 +166,9 @@ export class PMTilesReader {
           header.tileDataOffset + entry.offset,
           entry.length
         );
+        if (data.byteLength !== entry.length) {
+          throw new Error('PMTiles tile lies past the end of the archive');
+        }
         return Buffer.from(data);
       }
       offset = header.leafDirectoryOffset + entry.offset;
