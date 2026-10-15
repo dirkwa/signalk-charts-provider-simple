@@ -57,6 +57,44 @@
       "offline": {}
     },
     {
+      "id": "kartverket-nautical-charts",
+      "name": "Norwegian Nautical Charts",
+      "description": "Kartverket's raster sea charts for Norway, from overview charts down to harbour charts, including Svalbard and Jan Mayen. Updated about every two weeks with Notices to Mariners.",
+      "category": "navigation",
+      "regions": ["no", "europe", "north-sea", "arctic"],
+      "bbox": [-10, 57, 35, 82],
+      "provider": "Kartverket (Norwegian Mapping Authority)",
+      "attribution": "© Kartverket",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://kartkatalog.geonorge.no/metadata/topografisk-norgeskart-wmts--cache/8f381180-1a47-4453-bee7-9a3d64843efa",
+      "notForNavigation": true,
+      "chart": {
+        "type": "tilelayer",
+        "url": "https://cache.kartverket.no/v1/wmts/1.0.0/sjokartraster/default/webmercator/{z}/{y}/{x}.png",
+        "maxzoom": 18
+      },
+      "offline": {}
+    },
+    {
+      "id": "traficom-nautical-charts",
+      "name": "Finnish Nautical Charts",
+      "description": "Traficom's raster nautical charts for the Finnish coast, archipelago and lakes, including the chart series and boating charts.",
+      "category": "navigation",
+      "regions": ["fi", "europe", "baltic"],
+      "bbox": [19, 59.3, 31.6, 70.1],
+      "provider": "Traficom (Finnish Transport and Communications Agency)",
+      "attribution": "Source: Traficom. Not for navigational purposes. Does not meet the requirements set for official nautical charts.",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://traficom.fi/en/transport-system/geoinformationsmaterial/use-and-licences-data",
+      "notForNavigation": true,
+      "chart": {
+        "type": "WMS",
+        "url": "https://julkinen.traficom.fi/rasteripalvelu/wms",
+        "layers": ["Traficom:Merikarttasarjat public"]
+      },
+      "offline": {}
+    },
+    {
       "id": "gebco-ocean-depths",
       "name": "GEBCO Ocean Depths",
       "description": "Shaded relief of the world's ocean floor and land. Useful for seeing where deep water, banks and seamounts are; not detailed enough for navigation.",
