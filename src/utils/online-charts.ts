@@ -45,6 +45,29 @@ export function chartIdFromFilename(filename: string): string {
   return filename.replace(/\.(mbtiles|pmtiles)$/i, '');
 }
 
+/**
+ * The name to save a downloaded chart file under in a folder whose entries
+ * are `existing`. A file of the same name is replaced as before, but a file
+ * that would share its chart id with a different entry (`foo.pmtiles` beside
+ * `foo.mbtiles`) gets a numbered name, or one chart would hide the other.
+ */
+export function chartFileNameBeside(fileName: string, existing: readonly string[]): string {
+  if (existing.includes(fileName)) {
+    return fileName;
+  }
+  const ids = new Set(existing.map(chartIdFromFilename));
+  const id = chartIdFromFilename(fileName);
+  if (!ids.has(id)) {
+    return fileName;
+  }
+  const ext = fileName.slice(id.length);
+  let n = 2;
+  while (ids.has(`${id}-${String(n)}`)) {
+    n += 1;
+  }
+  return `${id}-${String(n)}${ext}`;
+}
+
 export function readOnlineChartFile(filePath: string): OnlineChartFile | null {
   try {
     const raw: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));

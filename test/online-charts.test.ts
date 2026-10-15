@@ -7,6 +7,7 @@ import path from 'node:path';
 import { findCharts } from '../dist/charts-loader.js';
 import { scanChartsRecursively } from '../dist/utils/file-scanner.js';
 import {
+  chartFileNameBeside,
   chartIdFromFilename,
   findOnlineChartFiles,
   onlineChartProvider,
@@ -247,5 +248,24 @@ describe('online charts', () => {
         { relativePath: 'retired.onlinechart.json', catalogId: 'retired' }
       ]);
     });
+  });
+});
+
+describe('chartFileNameBeside', () => {
+  it('keeps a name whose chart id is free, or that replaces the same file', () => {
+    assert.strictEqual(chartFileNameBeside('fiji.pmtiles', ['tonga.mbtiles']), 'fiji.pmtiles');
+    assert.strictEqual(
+      chartFileNameBeside('fiji.pmtiles', ['fiji.pmtiles', 'fiji.mbtiles']),
+      'fiji.pmtiles'
+    );
+  });
+
+  it('numbers a file that would share its chart id with another entry', () => {
+    assert.strictEqual(chartFileNameBeside('fiji.pmtiles', ['fiji.mbtiles']), 'fiji-2.pmtiles');
+    assert.strictEqual(
+      chartFileNameBeside('fiji.mbtiles', ['fiji.pmtiles', 'fiji-2.onlinechart.json']),
+      'fiji-3.mbtiles'
+    );
+    assert.strictEqual(chartFileNameBeside('Fiji.PMTILES', ['Fiji']), 'Fiji-2.PMTILES');
   });
 });

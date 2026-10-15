@@ -79,7 +79,7 @@ The interface provides five tabs:
 
 2. **Download from URL**:
    - Download charts directly from any URL
-   - Supports `.mbtiles` and `.zip` archives
+   - Supports `.mbtiles` and `.pmtiles` files, and `.zip` archives of `.mbtiles`
    - Download queue with progress tracking
 
 3. **Convert**:

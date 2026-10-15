@@ -39,6 +39,7 @@ import { capabilitiesUrlFor } from './utils/time-dimension.js';
 import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import {
+  chartFileNameBeside,
   chartIdFromFilename,
   collectChartIds,
   findOnlineChartFiles,
@@ -1162,7 +1163,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   });
 
   const UploadChunkHeaders = Type.Object({
-    'x-upload-filename': Type.String({ minLength: 1, pattern: '\\.(mbtiles|pmtiles)$' }),
+    'x-upload-filename': Type.String({
+      minLength: 1,
+      pattern: '\\.([mM][bB]|[pP][mM])[tT][iI][lL][eE][sS]$'
+    }),
     'x-chunk-index': Type.Integer({ minimum: 0 }),
     'x-total-chunks': Type.Integer({ minimum: 1 }),
     'x-target-folder': Type.Optional(Type.String())
@@ -1248,6 +1252,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   job.extractedFiles.length > 0
                 ) {
                   try {
+                    const existing = fs.readdirSync(targetDir);
+                    job.extractedFiles = job.extractedFiles.map((fileName) => {
+                      const free = chartFileNameBeside(fileName, existing);
+                      if (free !== fileName) {
+                        fs.renameSync(
+                          path.join(quarantineDir, fileName),
+                          path.join(quarantineDir, free)
+                        );
+                        app.debug(`Saving ${fileName} as ${free}: its chart id is taken there`);
+                      }
+                      existing.push(free);
+                      return free;
+                    });
                     await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
                   } catch (promoteErr) {
                     app.error(
@@ -2249,7 +2266,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           (_fieldname: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
             const { filename } = info;
 
-            if (!/\.(mbtiles|pmtiles)$/.test(filename)) {
+            if (!/\.(mbtiles|pmtiles)$/i.test(filename)) {
               (file as NodeJS.ReadableStream & { resume(): void }).resume();
               return;
             }

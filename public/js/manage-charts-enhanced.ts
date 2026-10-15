@@ -2,7 +2,7 @@
 
 const MANAGE_API_BASE = '/plugins/signalk-charts-provider-simple';
 /** Chart files the upload accepts; the server serves both kinds. */
-const MANAGE_CHART_FILE_PATTERN = /\.(mbtiles|pmtiles)$/;
+const MANAGE_CHART_FILE_PATTERN = /\.(mbtiles|pmtiles)$/i;
 
 interface ManageChart {
   relativePath: string;
