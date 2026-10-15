@@ -276,6 +276,20 @@ test.describe('Manage Charts tab', () => {
             }
           },
           {
+            relativePath: 'Online Charts/gebco-ocean-depths.onlinechart.json',
+            name: 'gebco-ocean-depths.onlinechart.json',
+            chartName: 'GEBCO Ocean Depths',
+            folder: 'Online Charts',
+            enabled: true,
+            online: {
+              catalogId: 'gebco-ocean-depths',
+              available: true,
+              catalogLoaded: true,
+              type: 'WMS',
+              keptOffline: true
+            }
+          },
+          {
             relativePath: 'Online Charts/gone.onlinechart.json',
             name: 'gone.onlinechart.json',
             chartName: 'Retired Layer',
@@ -303,6 +317,10 @@ test.describe('Manage Charts tab', () => {
     await expect(radar).toContainText('Needs internet', { timeout: 5000 });
     await expect(radar).toContainText('ONLINE');
     await expect(radar).not.toContainText('No longer available');
+    await expect(radar).not.toContainText('Kept offline');
+    const gebco = page.locator('.chart-card', { hasText: 'GEBCO Ocean Depths' });
+    await expect(gebco).toContainText('Kept offline');
+    await expect(gebco).not.toContainText('Needs internet');
     const gone = page.locator('.chart-card', { hasText: 'Retired Layer' });
     await expect(gone).toContainText('No longer available');
 
