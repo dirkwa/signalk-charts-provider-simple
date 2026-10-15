@@ -8,7 +8,6 @@ import {
   BboxSchema,
   MergedCatalogSchema,
   OnlineChartReadSchema,
-  TilesetReadSchema,
   type Bbox,
   type MergedCatalogChart,
   type OnlineCatalogChart
@@ -16,7 +15,6 @@ import {
 import type {
   CatalogCategory,
   CatalogData,
-  CatalogEntryDetails,
   CatalogHeader,
   CatalogInstall,
   CatalogInstallsMap,
@@ -69,13 +67,7 @@ interface ChartcatalogsEntry {
   bbox: Bbox | undefined;
   header: CatalogHeader;
   charts: MergedCatalogChart[];
-  details?: CatalogEntryDetails;
 }
-
-// Tilesets share the chartcatalogs map, so the download, install tracking
-// and update check need no second path. The prefix can't collide with a
-// chartcatalogs file name, which always ends in `_Catalog.xml`.
-const TILESET_KEY_PREFIX = 'tileset:';
 
 /** The downloaded catalog, reduced to the entries this plugin can read. */
 interface LoadedCatalog {
@@ -195,41 +187,6 @@ export function interpretCatalog(raw: unknown): InterpretedCatalog {
       bbox: Value.Check(BboxSchema, entry.bbox) ? entry.bbox : undefined,
       header: readHeader(entry.header),
       charts
-    });
-  }
-
-  // Optional: catalogs published before tilesets existed have none.
-  for (const entry of Array.isArray(obj.tilesets) ? (obj.tilesets as unknown[]) : []) {
-    if (!Value.Check(TilesetReadSchema, entry)) {
-      skippedEntries++;
-      continue;
-    }
-    const file = TILESET_KEY_PREFIX + entry.id;
-    chartcatalogs.set(file, {
-      file,
-      label: entry.name,
-      format: 'mbtiles',
-      category: entry.category,
-      bbox: entry.bbox,
-      header: { title: entry.name },
-      charts: [
-        {
-          number: entry.id,
-          title: entry.name,
-          format: 'MBTiles',
-          zipfile_location: entry.file.url,
-          zipfile_datetime_iso8601: entry.file.updated
-        }
-      ],
-      details: {
-        description: entry.description,
-        provider: entry.provider,
-        license: entry.license,
-        ...(/^https:\/\//.test(entry.licenseUrl) ? { licenseUrl: entry.licenseUrl } : {}),
-        notForNavigation: entry.notForNavigation === true,
-        ...(entry.folder !== undefined ? { folder: entry.folder } : {}),
-        ...(entry.file.size !== undefined ? { size: entry.file.size } : {})
-      }
     });
   }
 
@@ -563,8 +520,7 @@ export function getCatalogRegistry(): CatalogRegistryInfo[] {
       ...(entry.category !== undefined ? { category: entry.category } : {}),
       ...(entry.format !== undefined ? { format: entry.format } : {}),
       ...(entry.bbox !== undefined ? { bbox: entry.bbox } : {})
-    },
-    ...(entry.details ? { details: entry.details } : {})
+    }
   }));
 }
 

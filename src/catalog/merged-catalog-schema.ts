@@ -245,77 +245,6 @@ export const ChartcatalogsIndexSchema = Type.Record(
   ChartcatalogsIndexEntrySchema
 );
 
-/**
- * One feed of ready-made regional MBTiles, as maintained in
- * `catalog/tileset-feeds.json`. The feed itself (its `url`) lists the
- * regions and their files; this entry carries what a boater is told about
- * all of them, so a feed cannot reword its own warnings.
- */
-export const TilesetFeedSchema = Type.Object(
-  {
-    id: Type.String({
-      pattern: '^[a-z0-9]+(-[a-z0-9]+)*$',
-      description:
-        'Permanent feed identifier, prefixed to each region id. Installed charts are tracked by those ids, so never change it.'
-    }),
-    url: Type.String({
-      pattern: '^https://',
-      description: 'The feed document listing the regions and their MBTiles files.'
-    }),
-    category: ChartCategorySchema,
-    description: Type.String({
-      minLength: 1,
-      description:
-        'One or two plain sentences for a boater, shown with every region of the feed: what the data is and how far to trust it.'
-    }),
-    provider: Type.String({ minLength: 1 }),
-    attribution: Type.String({ minLength: 1 }),
-    license: Type.String({ minLength: 1 }),
-    licenseUrl: Type.String({ pattern: '^https://' }),
-    homepage: Type.String({ pattern: '^https://' }),
-    issues: Type.Optional(
-      Type.String({
-        pattern: '^https://',
-        description:
-          "Where boaters report a problem with the data. Defaults to this repository's catalog problem form."
-      })
-    ),
-    notForNavigation: Type.Optional(Type.Boolean()),
-    folder: Type.String({
-      minLength: 1,
-      pattern: '^[^/\\\\.][^/\\\\]*$',
-      description:
-        'Chart folder the Chart Catalog suggests for every region, so the whole feed can be switched off together.'
-    })
-  },
-  STRICT
-);
-
-export const TilesetFeedsSourceFileSchema = Type.Object(
-  { feeds: Type.Array(TilesetFeedSchema) },
-  STRICT
-);
-
-/**
- * One region in a feed document, as the feed's publisher writes it. Read
- * tolerantly: a region this build cannot use is skipped and reported, never
- * the whole feed.
- */
-export const TilesetFeedFileSchema = Type.Object({
-  id: Type.String({ pattern: '^[a-z0-9]+(-[a-z0-9]+)*$' }),
-  name: Type.String({ minLength: 1 }),
-  bounds: BboxSchema,
-  url: Type.String({ pattern: '^https://[^?#]+\\.mbtiles$' }),
-  minzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
-  maxzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
-  newestArrival: Type.Optional(Type.String())
-});
-
-export const TilesetFeedDocumentSchema = Type.Object({
-  generated: Type.Optional(Type.String()),
-  files: Type.Array(Type.Unknown())
-});
-
 // ---- Published schemas (tolerant) ----
 
 export const MergedCatalogChartSchema = Type.Object({
@@ -358,40 +287,6 @@ export const MergedOnlineChartSchema = Type.Object({
   format: ChartFormatSchema
 });
 
-/** One region of a tileset feed: a single MBTiles file that installs as-is. */
-export const MergedTilesetSchema = Type.Object({
-  id: Type.String({
-    pattern: '^[a-z0-9]+(-[a-z0-9]+)*$',
-    description:
-      'Permanent identifier, `<feed>-<region>`. It is also the installed file name, so never change or reuse one.'
-  }),
-  feed: Type.String({ minLength: 1 }),
-  name: Type.String({ minLength: 1 }),
-  description: Type.String({ minLength: 1 }),
-  use: Type.Literal('download'),
-  category: ChartCategorySchema,
-  format: Type.Literal('mbtiles'),
-  bbox: bboxSchema('The area the file covers.'),
-  provider: Type.String({ minLength: 1 }),
-  attribution: Type.String({ minLength: 1 }),
-  license: Type.String({ minLength: 1 }),
-  licenseUrl: HttpsUrl,
-  homepage: HttpsUrl,
-  issues: HttpsUrl,
-  notForNavigation: Type.Optional(Type.Boolean()),
-  folder: Type.String({ minLength: 1 }),
-  file: Type.Object({
-    url: HttpsUrl,
-    updated: Type.String({
-      description:
-        'ISO 8601 time of the newest data in the file. A later value than the one installed means an update is available.'
-    }),
-    size: Type.Optional(Type.Integer({ minimum: 0, description: 'File size in bytes.' })),
-    minzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 })),
-    maxzoom: Type.Optional(Type.Integer({ minimum: 0, maximum: 24 }))
-  })
-});
-
 export const MergedCatalogSchema = Type.Object(
   {
     schemaVersion: Type.Literal(MERGED_CATALOG_SCHEMA_VERSION, {
@@ -419,14 +314,7 @@ export const MergedCatalogSchema = Type.Object(
       })
     }),
     chartcatalogs: Type.Array(MergedChartcatalogsCatalogSchema),
-    online: Type.Array(MergedOnlineChartSchema),
-    // Optional so catalogs published before it existed still validate.
-    tilesets: Type.Optional(
-      Type.Array(MergedTilesetSchema, {
-        description:
-          'Ready-made regional MBTiles from the feeds this repository lists, each installed with a single download and used offline.'
-      })
-    )
+    online: Type.Array(MergedOnlineChartSchema)
   },
   {
     title: 'Signal K merged chart catalog',
@@ -478,29 +366,6 @@ export const OnlineChartReadSchema = Type.Object({
   )
 });
 
-/**
- * What a consumer needs from a tileset entry to list, download and update
- * it. The file URL must name an MBTiles file, because a consumer installs it
- * as-is under the entry's id.
- */
-export const TilesetReadSchema = Type.Object({
-  id: Type.String({ pattern: '^[a-z0-9]+(-[a-z0-9]+)*$' }),
-  name: Type.String({ minLength: 1 }),
-  description: Type.String(),
-  category: Type.String(),
-  bbox: BboxSchema,
-  provider: Type.String(),
-  license: Type.String(),
-  licenseUrl: Type.String(),
-  notForNavigation: Type.Optional(Type.Boolean()),
-  folder: Type.Optional(Type.String()),
-  file: Type.Object({
-    url: Type.String({ pattern: '^https://[^?#]+\\.mbtiles$' }),
-    updated: Type.String({ minLength: 1 }),
-    size: Type.Optional(Type.Integer({ minimum: 0 }))
-  })
-});
-
 export type ChartUse = Static<typeof ChartUseSchema>;
 export type ChartCategory = Static<typeof ChartCategorySchema>;
 export type ChartFormat = Static<typeof ChartFormatSchema>;
@@ -515,11 +380,6 @@ export type MergedChartcatalogsCatalog = Static<typeof MergedChartcatalogsCatalo
 export type MergedOnlineChart = Static<typeof MergedOnlineChartSchema>;
 export type MergedCatalog = Static<typeof MergedCatalogSchema>;
 export type OnlineCatalogChart = Static<typeof OnlineChartReadSchema>;
-export type TilesetFeed = Static<typeof TilesetFeedSchema>;
-export type TilesetFeedsSourceFile = Static<typeof TilesetFeedsSourceFileSchema>;
-export type TilesetFeedFile = Static<typeof TilesetFeedFileSchema>;
-export type MergedTileset = Static<typeof MergedTilesetSchema>;
-export type TilesetCatalogEntry = Static<typeof TilesetReadSchema>;
 
 /** The published JSON Schema document, with the root identifiers it needs. */
 export function publishedJsonSchema(id: string): Record<string, unknown> {

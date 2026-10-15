@@ -13,16 +13,6 @@ interface CatalogRegistryEntry {
   chartCount: number | null;
   /** What the filters use; each absent when the catalog doesn't carry it. */
   facets?: { category?: string; format?: string; bbox?: number[] };
-  /** Present on a tileset: one ready-made MBTiles file for a region. */
-  details?: {
-    description: string;
-    provider: string;
-    license: string;
-    licenseUrl?: string;
-    notForNavigation: boolean;
-    folder?: string;
-    size?: number;
-  };
 }
 
 interface UrlClassification {
@@ -1612,7 +1602,7 @@ function renderCatalogCard(catalog: CatalogRegistryEntry): string {
         </div>
       </div>
       <div class="catalog-card-body" id="catalog-body-${catalogEscapeId(catalog.file)}">
-        ${isExpanded && catalogChartData[catalog.file] ? renderTilesetDetails(catalog) + renderChartList(catalog.file, catalog.label, catalog.details?.folder) : ''}
+        ${isExpanded && catalogChartData[catalog.file] ? renderChartList(catalog.file, catalog.label) : ''}
       </div>
     </div>
   `;
@@ -1676,43 +1666,12 @@ async function toggleCatalog(catalogFile: string): Promise<void> {
   renderCatalogList();
 }
 
-function tilesetSizeText(bytes: number): string {
-  return bytes >= 1e9
-    ? `${(bytes / 1e9).toFixed(1)} GB`
-    : `${Math.max(1, Math.round(bytes / 1e6)).toString()} MB`;
-}
-
-// A tileset is a single file a boater installs as-is, so the card says what
-// it is, how far to trust it and how big it is before they download it.
-function renderTilesetDetails(catalog: CatalogRegistryEntry): string {
-  const d = catalog.details;
-  if (!d) {
-    return '';
-  }
-  const license =
-    d.licenseUrl && /^https:\/\//.test(d.licenseUrl)
-      ? `<a href="${catalogEscapeAttr(d.licenseUrl)}" target="_blank" rel="noopener">${catalogEscapeHtml(d.license)}</a>`
-      : catalogEscapeHtml(d.license);
-  const badges = [
-    '<span class="online-badge" title="Downloaded once, then shown without an internet connection">Works offline</span>',
-    d.notForNavigation ? '<span class="online-badge caution">Not for navigation</span>' : ''
-  ].join('');
-  return `
-    <div class="catalog-chart-row online-chart-row tileset-details">
-      <div class="chart-row-info">
-        <div class="chart-row-number">${badges}</div>
-        <div class="chart-row-title">${catalogEscapeHtml(d.description)}</div>
-        <div class="online-row-source">${catalogEscapeHtml(d.provider)} · ${license}${d.size !== undefined ? ` · ${tilesetSizeText(d.size)}` : ''}</div>
-      </div>
-    </div>`;
-}
-
-function renderChartList(catalogFile: string, catalogLabel: string, folder?: string): string {
+function renderChartList(catalogFile: string, catalogLabel: string): string {
   const data = catalogChartData[catalogFile];
   if (!data?.charts || data.charts.length === 0) {
     return `<div class="catalog-empty">No charts in this catalog.</div>`;
   }
-  const defaultFolder = folder ? catalogLabelToFolder(folder) : catalogLabelToFolder(catalogLabel);
+  const defaultFolder = catalogLabelToFolder(catalogLabel);
 
   return data.charts
     .map((chart) => {

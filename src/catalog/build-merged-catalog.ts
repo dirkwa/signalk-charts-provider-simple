@@ -11,9 +11,6 @@ import {
   MERGED_CATALOG_SCHEMA_VERSION,
   MergedCatalogSchema,
   MergedChartcatalogsCatalogSchema,
-  MergedTilesetSchema,
-  TilesetFeedDocumentSchema,
-  TilesetFeedFileSchema,
   checkChartcatalogsIndex,
   checkOnlineChartEntry,
   formatForChartType,
@@ -23,10 +20,7 @@ import {
   type MergedCatalogChart,
   type MergedChartcatalogsCatalog,
   type MergedOnlineChart,
-  type MergedTileset,
-  type OnlineChartsSourceFile,
-  type TilesetFeed,
-  type TilesetFeedFile
+  type OnlineChartsSourceFile
 } from './merged-catalog-schema.js';
 
 export const CHARTCATALOGS_HOMEPAGE = 'https://chartcatalogs.github.io/';
@@ -38,15 +32,6 @@ export interface ChartcatalogsFile {
   parsed: ParsedChartcatalogsXml | null;
 }
 
-/** A tileset feed as listed in the repo, with the document fetched for it. */
-export interface TilesetFeedInput {
-  feed: TilesetFeed;
-  /** The parsed feed document, or `null` when it could not be fetched or parsed. */
-  document: unknown;
-  /** File sizes in bytes by URL, where the publisher's server reported them. */
-  sizes?: Map<string, number>;
-}
-
 export interface BuildInputs {
   chartcatalogs: ChartcatalogsFile[];
   chartcatalogsCommit?: string;
@@ -56,9 +41,6 @@ export interface BuildInputs {
   repo: string;
   /** chartcatalogs entries from the catalog currently published, by file. */
   previous?: Map<string, MergedChartcatalogsCatalog>;
-  tilesetFeeds?: TilesetFeedInput[];
-  /** Tilesets in the catalog currently published, for carrying a failed feed forward. */
-  previousTilesets?: MergedTileset[];
   now: Date;
 }
 
@@ -80,10 +62,6 @@ export interface BuildResult {
    * guard tolerates a few, so each one is reported.
    */
   removedUpstream: string[];
-  /** Feeds that could not be read, whose published regions were kept. */
-  carriedForwardFeeds: string[];
-  /** Feed regions left out, each with the reason. */
-  skippedTilesets: string[];
 }
 
 function compareStrings(a: string, b: string): number {
@@ -134,116 +112,6 @@ function mergeOnlineCharts(online: OnlineChartsSourceFile): MergedOnlineChart[] 
     use: 'stream' as const,
     format: formatForChartType(entry.chart.type)
   }));
-}
-
-function isIsoTime(value: string | undefined): value is string {
-  return value !== undefined && /^\d{4}-\d{2}-\d{2}T/.test(value) && !isNaN(Date.parse(value));
-}
-
-/** Why a feed region can't be published, or null when it can. */
-function regionProblem(
-  raw: TilesetFeedFile,
-  updated: string | undefined,
-  seen: Set<string>
-): string | null {
-  if (seen.has(raw.id)) {
-    return 'duplicate id';
-  }
-  if (raw.bounds[1] >= raw.bounds[3]) {
-    return 'bounds south must be below north';
-  }
-  if (raw.minzoom !== undefined && raw.maxzoom !== undefined && raw.minzoom > raw.maxzoom) {
-    return 'minzoom is greater than maxzoom';
-  }
-  if (!isIsoTime(updated)) {
-    return 'no date to tell an update by';
-  }
-  return null;
-}
-
-/**
- * The regions of every tileset feed. A feed that cannot be read, or that
- * suddenly lists nothing usable, keeps its published regions: one failed
- * fetch must not remove a chart from every boat's catalog, or turn off the
- * update notice for boats that installed it.
- */
-function mergeTilesets(
-  inputs: TilesetFeedInput[],
-  previous: MergedTileset[],
-  repo: string,
-  carriedForwardFeeds: string[],
-  skippedTilesets: string[]
-): MergedTileset[] {
-  const ids = new Set<string>();
-  for (const { feed } of inputs) {
-    if (ids.has(feed.id)) {
-      throw new Error(`Invalid tileset feeds:\n  ${feed.id}: duplicate id`);
-    }
-    ids.add(feed.id);
-  }
-
-  const tilesets: MergedTileset[] = [];
-  for (const { feed, document, sizes } of inputs) {
-    const regions: MergedTileset[] = [];
-    if (Value.Check(TilesetFeedDocumentSchema, document)) {
-      const seen = new Set<string>();
-      for (const raw of document.files) {
-        const rawId = (raw as { id?: unknown } | null)?.id;
-        const label = `${feed.id} ${typeof rawId === 'string' ? rawId : '<no id>'}`;
-        if (!Value.Check(TilesetFeedFileSchema, raw)) {
-          skippedTilesets.push(
-            `${label}: ${schemaErrors(TilesetFeedFileSchema, raw)[0] ?? 'invalid'}`
-          );
-          continue;
-        }
-        const updated = isIsoTime(raw.newestArrival) ? raw.newestArrival : document.generated;
-        const problem = regionProblem(raw, updated, seen);
-        if (problem !== null || !isIsoTime(updated)) {
-          skippedTilesets.push(`${label}: ${problem ?? 'invalid'}`);
-          continue;
-        }
-        seen.add(raw.id);
-        const size = sizes?.get(raw.url);
-        regions.push({
-          id: `${feed.id}-${raw.id}`,
-          feed: feed.id,
-          name: raw.name,
-          description: feed.description,
-          use: 'download',
-          category: feed.category,
-          format: 'mbtiles',
-          bbox: raw.bounds,
-          provider: feed.provider,
-          attribution: feed.attribution,
-          license: feed.license,
-          licenseUrl: feed.licenseUrl,
-          homepage: feed.homepage,
-          issues:
-            feed.issues ?? `https://github.com/${repo}/issues/new?template=catalog-problem.yml`,
-          ...(feed.notForNavigation !== undefined
-            ? { notForNavigation: feed.notForNavigation }
-            : {}),
-          folder: feed.folder,
-          file: {
-            url: raw.url,
-            updated,
-            ...(size !== undefined ? { size } : {}),
-            ...(raw.minzoom !== undefined ? { minzoom: raw.minzoom } : {}),
-            ...(raw.maxzoom !== undefined ? { maxzoom: raw.maxzoom } : {})
-          }
-        });
-      }
-    }
-    if (regions.length === 0) {
-      const kept = previous.filter((t) => t.feed === feed.id);
-      if (kept.length > 0) {
-        carriedForwardFeeds.push(feed.id);
-      }
-      regions.push(...kept);
-    }
-    tilesets.push(...regions);
-  }
-  return tilesets.sort((a, b) => compareStrings(a.id, b.id));
 }
 
 /** JSON with object keys sorted, so key order never changes the hash. */
@@ -310,16 +178,6 @@ export function buildMergedCatalog(inputs: BuildInputs): BuildResult {
     chartcatalogs.push(mergeChartcatalogsFile(file, parsed, inputs.index, droppedCharts));
   }
 
-  const carriedForwardFeeds: string[] = [];
-  const skippedTilesets: string[] = [];
-  const tilesets = mergeTilesets(
-    inputs.tilesetFeeds ?? [],
-    inputs.previousTilesets ?? [],
-    inputs.repo,
-    carriedForwardFeeds,
-    skippedTilesets
-  );
-
   const fileNames = new Set(files.map((f) => f.file));
   const withoutHash: Omit<MergedCatalog, 'contentHash'> = {
     schemaVersion: MERGED_CATALOG_SCHEMA_VERSION,
@@ -337,8 +195,7 @@ export function buildMergedCatalog(inputs: BuildInputs): BuildResult {
       }
     },
     chartcatalogs,
-    online: mergeOnlineCharts(inputs.online),
-    tilesets
+    online: mergeOnlineCharts(inputs.online)
   };
 
   const catalog: MergedCatalog = { ...withoutHash, contentHash: computeContentHash(withoutHash) };
@@ -357,9 +214,7 @@ export function buildMergedCatalog(inputs: BuildInputs): BuildResult {
     droppedCharts,
     removedUpstream: [...(inputs.previous?.keys() ?? [])]
       .filter((f) => !fileNames.has(f))
-      .sort(compareStrings),
-    carriedForwardFeeds,
-    skippedTilesets
+      .sort(compareStrings)
   };
 }
 
@@ -370,8 +225,6 @@ export interface PublishedState {
   chartCount: number;
   /** chartcatalogs entries that still validate, for carrying forward. */
   chartcatalogs: Map<string, MergedChartcatalogsCatalog>;
-  /** Tilesets that still validate, for carrying a failed feed forward. */
-  tilesets: MergedTileset[];
   /** The published `catalog.schema.json` text, or null if absent. */
   schemaText: string | null;
 }
@@ -393,15 +246,11 @@ export function readPublishedState(raw: unknown, schemaText: string | null): Pub
       chartcatalogs.set(entry.file, entry);
     }
   }
-  const tilesets = (Array.isArray(obj.tilesets) ? (obj.tilesets as unknown[]) : []).filter(
-    (t): t is MergedTileset => Value.Check(MergedTilesetSchema, t)
-  );
   return {
     contentHash: typeof obj.contentHash === 'string' ? obj.contentHash : null,
     catalogCount: rawCatalogs.length,
     chartCount,
     chartcatalogs,
-    tilesets,
     schemaText
   };
 }

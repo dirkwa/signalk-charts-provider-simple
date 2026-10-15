@@ -13,23 +13,20 @@ import {
   publishBlockers,
   readPublishedState,
   type BuildInputs,
-  type ChartcatalogsFile,
-  type TilesetFeedInput
+  type ChartcatalogsFile
 } from '../dist/catalog/build-merged-catalog.js';
 import {
   ChartcatalogsIndexSchema,
   MergedCatalogSchema,
   OnlineChartTemporalSchema,
   OnlineChartsSourceFileSchema,
-  TilesetFeedsSourceFileSchema,
   checkChartcatalogsIndex,
   checkOnlineChartEntry,
   type ChartcatalogsIndex,
   type ChartcatalogsIndexEntry,
   type MergedCatalog,
   type OnlineChartEntry,
-  type OnlineChartsSourceFile,
-  type TilesetFeed
+  type OnlineChartsSourceFile
 } from '../dist/catalog/merged-catalog-schema.js';
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -170,13 +167,6 @@ describe('catalog source files shipped in the repo', () => {
     const file = readJson('catalog/chartcatalogs-index.json');
     assert.deepStrictEqual(errors(ChartcatalogsIndexSchema, file), []);
     assert.deepStrictEqual(checkChartcatalogsIndex(file as ChartcatalogsIndex), []);
-  });
-
-  it('tileset-feeds.json is valid', () => {
-    assert.deepStrictEqual(
-      errors(TilesetFeedsSourceFileSchema, readJson('catalog/tileset-feeds.json')),
-      []
-    );
   });
 
   it('source schemas reject unknown fields, catching typos', () => {
@@ -548,148 +538,5 @@ describe('decidePublish', () => {
     const state = readPublishedState(big, '{}');
     assert.strictEqual(decidePublish(small, state, '{}', false).publish, false);
     assert.strictEqual(decidePublish(small, state, '{}', true).publish, true);
-  });
-});
-
-describe('tileset feeds', () => {
-  const FEED: TilesetFeed = {
-    id: 'csb',
-    url: 'https://example.com/catalog.json',
-    category: 'depth',
-    description: 'Depths measured by boats. Blank water is unknown.',
-    provider: 'IHO DCDB',
-    attribution: 'IHO DCDB (CC0). Not for navigation.',
-    license: 'CC0 1.0',
-    licenseUrl: 'https://creativecommons.org/publicdomain/zero/1.0/',
-    homepage: 'https://example.com/',
-    notForNavigation: true,
-    folder: 'Crowdsourced Depth'
-  };
-  const region = (overrides: Record<string, unknown> = {}) => ({
-    id: 'fiji',
-    name: 'Fiji crowdsourced depth',
-    format: 'vector-mbtiles',
-    bounds: [176, -20, -178, -15],
-    minzoom: 6,
-    maxzoom: 14,
-    url: 'https://example.com/csb-fiji.mbtiles',
-    soundings: 28329952,
-    newestArrival: '2026-10-11T00:00:00.000Z',
-    ...overrides
-  });
-  const feedInput = (files: unknown[] | null, generated?: string): TilesetFeedInput => ({
-    feed: FEED,
-    document: files === null ? null : { ...(generated ? { generated } : {}), files },
-    sizes: new Map([['https://example.com/csb-fiji.mbtiles', 23000000]])
-  });
-
-  it('publishes each region with the wording the repo gives its feed', async () => {
-    const { catalog, skippedTilesets } = buildMergedCatalog(
-      await inputs({ tilesetFeeds: [feedInput([region()])] })
-    );
-    assert.deepStrictEqual(errors(MergedCatalogSchema, catalog), []);
-    assert.deepStrictEqual(skippedTilesets, []);
-    assert.deepStrictEqual(catalog.tilesets, [
-      {
-        id: 'csb-fiji',
-        feed: 'csb',
-        name: 'Fiji crowdsourced depth',
-        description: FEED.description,
-        use: 'download',
-        category: 'depth',
-        format: 'mbtiles',
-        bbox: [176, -20, -178, -15],
-        provider: FEED.provider,
-        attribution: FEED.attribution,
-        license: FEED.license,
-        licenseUrl: FEED.licenseUrl,
-        homepage: FEED.homepage,
-        issues: 'https://github.com/owner/repo/issues/new?template=catalog-problem.yml',
-        notForNavigation: true,
-        folder: 'Crowdsourced Depth',
-        file: {
-          url: 'https://example.com/csb-fiji.mbtiles',
-          updated: '2026-10-11T00:00:00.000Z',
-          size: 23000000,
-          minzoom: 6,
-          maxzoom: 14
-        }
-      }
-    ]);
-  });
-
-  it("dates a region by the feed's build time when it has no newest arrival", async () => {
-    const { catalog } = buildMergedCatalog(
-      await inputs({
-        tilesetFeeds: [feedInput([region({ newestArrival: undefined })], '2026-10-12T22:47:42Z')]
-      })
-    );
-    assert.strictEqual(catalog.tilesets?.[0]?.file.updated, '2026-10-12T22:47:42Z');
-  });
-
-  it('skips regions it cannot install and reports why', async () => {
-    const { catalog, skippedTilesets } = buildMergedCatalog(
-      await inputs({
-        tilesetFeeds: [
-          feedInput([
-            region(),
-            region({ id: 'zip', url: 'https://example.com/a.zip' }),
-            region({ id: 'flat', bounds: [0, 5, 1, 5] }),
-            region({ id: 'undated', newestArrival: 'last week' }),
-            region()
-          ])
-        ]
-      })
-    );
-    assert.deepStrictEqual(
-      catalog.tilesets?.map((t) => t.id),
-      ['csb-fiji']
-    );
-    assert.strictEqual(skippedTilesets.length, 4);
-    assert.match(skippedTilesets.join('\n'), /csb flat: bounds south/);
-    assert.match(skippedTilesets.join('\n'), /csb undated: no date/);
-    assert.match(skippedTilesets.join('\n'), /csb fiji: duplicate id/);
-  });
-
-  it('keeps the published regions of a feed that cannot be read', async () => {
-    const published = buildMergedCatalog(await inputs({ tilesetFeeds: [feedInput([region()])] }))
-      .catalog.tilesets;
-    for (const broken of [null, [], [region({ url: 'nope' })]]) {
-      const { catalog, carriedForwardFeeds } = buildMergedCatalog(
-        await inputs({
-          tilesetFeeds: [feedInput(broken)],
-          previousTilesets: readPublishedState({ tilesets: published }, null).tilesets
-        })
-      );
-      assert.deepStrictEqual(catalog.tilesets, published);
-      assert.deepStrictEqual(carriedForwardFeeds, ['csb']);
-    }
-  });
-
-  it('drops a feed that is removed from the repo', async () => {
-    const published = buildMergedCatalog(await inputs({ tilesetFeeds: [feedInput([region()])] }))
-      .catalog.tilesets;
-    const { catalog } = buildMergedCatalog(
-      await inputs({ tilesetFeeds: [], previousTilesets: published })
-    );
-    assert.deepStrictEqual(catalog.tilesets, []);
-  });
-
-  it('changes the content hash when a region gets newer data', async () => {
-    const hash = async (newestArrival: string) =>
-      buildMergedCatalog(await inputs({ tilesetFeeds: [feedInput([region({ newestArrival })])] }))
-        .catalog.contentHash;
-    assert.notStrictEqual(
-      await hash('2026-10-11T00:00:00.000Z'),
-      await hash('2026-10-18T00:00:00.000Z')
-    );
-  });
-
-  it('rejects duplicate feed ids', async () => {
-    await assert.rejects(
-      async () =>
-        buildMergedCatalog(await inputs({ tilesetFeeds: [feedInput([]), feedInput([])] })),
-      /duplicate id/
-    );
   });
 });
