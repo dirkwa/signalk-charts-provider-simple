@@ -231,6 +231,18 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     assert.strictEqual(fetched.length, 3);
   });
 
+  it('serves an old tile when the fetcher itself throws', async () => {
+    await proxy().getTile('depths', source, 2, 1, 0);
+    now += TILE_REFRESH_MS + 1;
+    const throwing = new OnlineTileProxy(
+      store,
+      () => Promise.reject(new Error('socket hang up')),
+      () => now
+    );
+    const stale = await throwing.getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(stale && [...stale], [...PNG]);
+  });
+
   it('has nothing for a tile it never kept while offline', async () => {
     answer = null;
     assert.strictEqual(await proxy().getTile('depths', source, 2, 1, 0), null);

@@ -375,6 +375,7 @@ export class OnlineTileProxy {
     let pending = this.inFlight.get(key);
     if (!pending) {
       pending = this.fetchTile(url)
+        .catch(() => null)
         .then((data) => {
           if (!data) {
             return null;

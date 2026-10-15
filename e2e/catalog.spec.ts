@@ -449,7 +449,7 @@ test.describe('Chart Catalog tab', () => {
           license: 'Public domain',
           licenseUrl: 'https://www.gebco.net/',
           chart: { type: 'WMS' },
-          offline: {}
+          keptOffline: true
         }
       ],
       onlineAdded: { 'openwaters-seamap': ['Online Charts/openwaters-seamap.onlinechart.json'] }
