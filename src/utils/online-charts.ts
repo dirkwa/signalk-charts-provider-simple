@@ -68,6 +68,24 @@ export function chartFileNameBeside(fileName: string, existing: readonly string[
   return `${id}-${String(n)}${ext}`;
 }
 
+/**
+ * chartFileNameBeside for several files staged together. A new name avoids
+ * every staged name as well as the folder's, so renaming one staged file
+ * never lands on another that is still waiting to be promoted.
+ */
+export function chartFileNamesBeside(
+  staged: readonly string[],
+  existing: readonly string[]
+): string[] {
+  const taken = [...existing];
+  return staged.map((fileName) => {
+    const others = staged.filter((other) => other !== fileName);
+    const free = chartFileNameBeside(fileName, [...taken, ...others]);
+    taken.push(free);
+    return free;
+  });
+}
+
 export function readOnlineChartFile(filePath: string): OnlineChartFile | null {
   try {
     const raw: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));

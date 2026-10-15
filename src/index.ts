@@ -39,7 +39,7 @@ import { capabilitiesUrlFor } from './utils/time-dimension.js';
 import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import {
-  chartFileNameBeside,
+  chartFileNamesBeside,
   chartIdFromFilename,
   collectChartIds,
   findOnlineChartFiles,
@@ -1252,9 +1252,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   job.extractedFiles.length > 0
                 ) {
                   try {
-                    const existing = fs.readdirSync(targetDir);
-                    job.extractedFiles = job.extractedFiles.map((fileName) => {
-                      const free = chartFileNameBeside(fileName, existing);
+                    const staged = job.extractedFiles;
+                    const names = chartFileNamesBeside(staged, fs.readdirSync(targetDir));
+                    staged.forEach((fileName, i) => {
+                      const free = names[i] ?? fileName;
                       if (free !== fileName) {
                         fs.renameSync(
                           path.join(quarantineDir, fileName),
@@ -1262,9 +1263,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                         );
                         app.debug(`Saving ${fileName} as ${free}: its chart id is taken there`);
                       }
-                      existing.push(free);
-                      return free;
                     });
+                    job.extractedFiles = names;
                     await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
                   } catch (promoteErr) {
                     app.error(

@@ -8,6 +8,7 @@ import { findCharts } from '../dist/charts-loader.js';
 import { scanChartsRecursively } from '../dist/utils/file-scanner.js';
 import {
   chartFileNameBeside,
+  chartFileNamesBeside,
   chartIdFromFilename,
   findOnlineChartFiles,
   onlineChartProvider,
@@ -267,5 +268,21 @@ describe('chartFileNameBeside', () => {
       'fiji-3.mbtiles'
     );
     assert.strictEqual(chartFileNameBeside('Fiji.PMTILES', ['Fiji']), 'Fiji-2.PMTILES');
+  });
+});
+
+describe('chartFileNamesBeside', () => {
+  it('never renames a staged file onto another staged file', () => {
+    assert.deepStrictEqual(
+      chartFileNamesBeside(['foo.mbtiles', 'foo-2.mbtiles'], ['foo.pmtiles']),
+      ['foo-3.mbtiles', 'foo-2.mbtiles']
+    );
+  });
+
+  it('keeps names that collide with nothing, and replaces the same file', () => {
+    assert.deepStrictEqual(
+      chartFileNamesBeside(['fiji.mbtiles', 'tonga.mbtiles'], ['fiji.mbtiles']),
+      ['fiji.mbtiles', 'tonga.mbtiles']
+    );
   });
 });
