@@ -317,9 +317,13 @@ describe('online chart routes', () => {
     assert.strictEqual(online.status, 200);
     assert.strictEqual(online.type, 'image/png');
     depthsOnline = false;
-    const offline = await getTile();
-    assert.strictEqual(offline.status, 200);
-    assert.deepStrictEqual(offline.body && [...offline.body], [...PNG]);
+    try {
+      const offline = await getTile();
+      assert.strictEqual(offline.status, 200);
+      assert.deepStrictEqual(offline.body && [...offline.body], [...PNG]);
+    } finally {
+      depthsOnline = true;
+    }
   });
 
   it('downloads an area of a chart kept offline, and deletes the kept tiles', async () => {
@@ -365,10 +369,14 @@ describe('online chart routes', () => {
   it('reports the chart as added in the catalog registry', async () => {
     const res = await call(handlers.get('get /catalog-registry'), {});
     const body = res.body as {
+      online: { id: string; keptOffline: boolean }[];
       onlineAdded: Record<string, string[]>;
       position: { latitude: number; longitude: number } | null;
     };
     assert.deepStrictEqual(body.position, { latitude: 24.55, longitude: -81.8 });
+    const kept = Object.fromEntries(body.online.map((c) => [c.id, c.keptOffline]));
+    assert.strictEqual(kept['test-depths'], true);
+    assert.strictEqual(kept['nws-radar-conus'], false);
     assert.deepStrictEqual(body.onlineAdded['nws-radar-conus'], [
       path.join('Online Charts', 'nws-radar-conus-2.onlinechart.json')
     ]);
