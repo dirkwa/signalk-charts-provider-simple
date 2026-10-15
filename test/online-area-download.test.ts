@@ -1,0 +1,178 @@
+import { describe, it, afterEach } from 'node:test';
+import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  AreaDownloadError,
+  AreaDownloader,
+  MAX_AREA_TILES,
+  areaTiles,
+  countAreaTiles,
+  type AreaBbox,
+  type AreaDownloadJob
+} from '../dist/utils/online-area-download.js';
+import {
+  OnlineTileProxy,
+  OnlineTileStore,
+  type OnlineTileSource
+} from '../dist/utils/online-tile-cache.js';
+
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+const SOURCE: OnlineTileSource = { kind: 'xyz', url: 'https://t/{z}/{x}/{y}' };
+const FIJI: AreaBbox = [177.2, -18.2, 178.6, -17.2];
+
+describe('area tiles', () => {
+  it('counts exactly the tiles it lists', () => {
+    const listed = [...areaTiles(FIJI, 5, 11)];
+    assert.strictEqual(listed.length, countAreaTiles(FIJI, 5, 11));
+    assert.strictEqual(new Set(listed.map((t) => t.join('/'))).size, listed.length);
+  });
+
+  it('lists lower zoom levels first', () => {
+    const zooms = [...areaTiles(FIJI, 3, 6)].map(([z]) => z);
+    assert.deepStrictEqual(
+      zooms,
+      [...zooms].sort((a, b) => a - b)
+    );
+  });
+
+  it('is the whole world at zoom 0', () => {
+    assert.deepStrictEqual([...areaTiles([-180, -85, 180, 85], 0, 0)], [[0, 0, 0]]);
+  });
+
+  it('splits an area that crosses the antimeridian at 180°', () => {
+    const tiles = [...areaTiles([179, -18, -179, -17], 4, 4)];
+    assert.deepStrictEqual(
+      tiles.map(([, x]) => x),
+      [15, 0]
+    );
+  });
+});
+
+describe('AreaDownloader', () => {
+  let dir: string | null = null;
+  let store: OnlineTileStore | null = null;
+
+  afterEach(() => {
+    store?.close();
+    if (dir) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function setup(fetchTile: (url: string) => Promise<Uint8Array | null>): AreaDownloader {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'area-'));
+    store = new OnlineTileStore(dir);
+    return new AreaDownloader(new OnlineTileProxy(store, fetchTile), 2);
+  }
+
+  async function finished(downloader: AreaDownloader, id: string): Promise<AreaDownloadJob> {
+    for (let i = 0; i < 500; i++) {
+      const job = downloader.get(id);
+      if (job && job.status !== 'running') {
+        return job;
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    throw new Error('download did not finish');
+  }
+
+  const request = { chartId: 'depths', catalogId: 'depths', source: SOURCE, bbox: FIJI };
+
+  it('fetches every tile once and skips the ones already kept', async () => {
+    const fetched: string[] = [];
+    const downloader = setup((url) => {
+      fetched.push(url);
+      return Promise.resolve(PNG);
+    });
+    const first = await finished(
+      downloader,
+      downloader.start({ ...request, minzoom: 6, maxzoom: 9 }).id
+    );
+    assert.strictEqual(first.status, 'completed');
+    assert.strictEqual(first.done, first.total);
+    assert.strictEqual(first.fetched, first.total);
+    assert.strictEqual(fetched.length, first.total);
+    assert.strictEqual(store?.stats('depths').tiles, first.total);
+
+    const again = await finished(
+      downloader,
+      downloader.start({ ...request, minzoom: 6, maxzoom: 9 }).id
+    );
+    assert.strictEqual(again.fetched, 0);
+    assert.strictEqual(fetched.length, first.total);
+  });
+
+  it('gives up when the provider stops answering', async () => {
+    const downloader = setup(() => Promise.resolve(null));
+    const job = await finished(
+      downloader,
+      downloader.start({ ...request, minzoom: 8, maxzoom: 12 }).id
+    );
+    assert.strictEqual(job.status, 'failed');
+    assert.match(job.error ?? '', /stopped answering/);
+    assert.ok(job.done < job.total);
+  });
+
+  it('stops when cancelled', async () => {
+    const downloader = setup(() => new Promise((resolve) => setTimeout(() => resolve(PNG), 5)));
+    const { id } = downloader.start({ ...request, minzoom: 8, maxzoom: 12 });
+    assert.ok(downloader.cancel(id));
+    const job = await finished(downloader, id);
+    assert.strictEqual(job.status, 'cancelled');
+    assert.ok(job.done < job.total);
+  });
+
+  it('refuses areas too large, inverted zoom ranges and a second download of one chart', () => {
+    const downloader = setup(() => new Promise(() => {}));
+    assert.throws(
+      () => downloader.start({ ...request, bbox: [-180, -85, 180, 85], minzoom: 0, maxzoom: 10 }),
+      (err: unknown) => err instanceof AreaDownloadError && /tiles/.test(err.message)
+    );
+    assert.ok(countAreaTiles([-180, -85, 180, 85], 0, 10) > MAX_AREA_TILES);
+    assert.throws(
+      () => downloader.start({ ...request, minzoom: 9, maxzoom: 8 }),
+      AreaDownloadError
+    );
+    downloader.start({ ...request, minzoom: 6, maxzoom: 6 });
+    assert.throws(
+      () => downloader.start({ ...request, minzoom: 6, maxzoom: 6 }),
+      /already downloading/
+    );
+    downloader.cancelAll();
+  });
+
+  it('counts levels a service does not offer as done, not failed', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'area-'));
+    store = new OnlineTileStore(dir);
+    const downloader = new AreaDownloader(
+      new OnlineTileProxy(store, () => Promise.resolve(PNG)),
+      2
+    );
+    const { id } = downloader.start({
+      ...request,
+      source: { kind: 'xyz', url: 'https://t/{z-2}/{y}/{x}' },
+      minzoom: 0,
+      maxzoom: 3
+    });
+    const job = await finished(downloader, id);
+    assert.strictEqual(job.status, 'completed');
+    assert.strictEqual(job.failed, 0);
+    assert.strictEqual(job.fetched, countAreaTiles(FIJI, 2, 3));
+  });
+});
+
+describe('OnlineTileStore.clear', () => {
+  it('drops every kept tile of a chart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clear-'));
+    const store = new OnlineTileStore(dir);
+    store.put('depths', 1, 0, 0, PNG, 1);
+    assert.strictEqual(store.stats('depths').tiles, 1);
+    store.clear('depths');
+    assert.deepStrictEqual(store.stats('depths'), { tiles: 0, bytes: 0 });
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

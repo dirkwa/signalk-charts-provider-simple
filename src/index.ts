@@ -77,6 +77,7 @@ import {
   tileImageType,
   type OnlineTileSource
 } from './utils/online-tile-cache.js';
+import { AreaDownloader, AreaDownloadError } from './utils/online-area-download.js';
 import { extractMbtilesFromZip, ZipLimitError } from './utils/zip-extract.js';
 import {
   arePairWithinBase,
@@ -279,6 +280,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let pluginDataDir = '';
   let onlineTileStore: OnlineTileStore | null = null;
   let onlineTileProxy: OnlineTileProxy | null = null;
+  let areaDownloader: AreaDownloader | null = null;
   let defaultChartsPath = '';
   let serverMajorVersion = 1;
 
@@ -384,6 +386,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // config save, which would otherwise leak the whole map each time.
       closeProviderHandles(Object.values(chartProviders));
       chartProviders = {};
+      areaDownloader?.cancelAll();
+      areaDownloader = null;
       onlineTileProxy = null;
       onlineTileStore?.close();
       onlineTileStore = null;
@@ -607,6 +611,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       onlineTileStore,
       httpTileFetcher(`signalk-charts-provider-simple/${pluginVersion}`)
     );
+    areaDownloader?.cancelAll();
+    areaDownloader = new AreaDownloader(onlineTileProxy);
 
     const tempDirPattern =
       /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-|custom-catalog-)\d+$/;
@@ -1139,6 +1145,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     folder: Type.String({ minLength: 1 })
   });
 
+  const AreaDownloadBody = Type.Object({
+    bbox: Type.Tuple([
+      Type.Number({ minimum: -180, maximum: 180 }),
+      Type.Number({ minimum: -90, maximum: 90 }),
+      Type.Number({ minimum: -180, maximum: 180 }),
+      Type.Number({ minimum: -90, maximum: 90 })
+    ]),
+    minzoom: Type.Integer({ minimum: 0, maximum: 24 }),
+    maxzoom: Type.Integer({ minimum: 0, maximum: 24 })
+  });
+
   const ChartMetadataBody = Type.Object({
     name: Type.String({ minLength: 1 })
   });
@@ -1493,7 +1510,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     type: onlineEntry?.chart.type ?? null,
                     category: onlineEntry?.category ?? null,
                     temporal: onlineEntry?.temporal !== undefined,
-                    keptOffline: onlineEntry ? offlineTileSource(onlineEntry) !== null : false
+                    keptOffline: onlineEntry ? offlineTileSource(onlineEntry) !== null : false,
+                    chartId: chartIdFromFilename(path.basename(chart.relativePath)),
+                    minzoom: onlineEntry?.chart.minzoom ?? null,
+                    maxzoom: onlineEntry?.chart.maxzoom ?? null
                   }
                 }
               : {})
@@ -3027,6 +3047,91 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           res.status(500).json({ success: false, error: 'Failed to add online chart' });
         }
       })();
+    });
+
+    // Area downloads for charts kept offline. A chart is addressed by its
+    // served id; its tiles are kept per catalog entry.
+    const offlineChart = (
+      chartId: string,
+      res: Response
+    ): { catalogId: string; source: OnlineTileSource } | null => {
+      const provider = Object.hasOwn(chartProviders, chartId) ? chartProviders[chartId] : undefined;
+      if (!provider?._offlineSource || !provider._catalogId) {
+        res.status(404).json({ success: false, error: 'Not a chart kept offline' });
+        return null;
+      }
+      return { catalogId: provider._catalogId, source: provider._offlineSource };
+    };
+
+    router.post('/online-charts/:chartId/area-download', (req: Request, res: Response) => {
+      const body = parseBody(AreaDownloadBody, req, res);
+      if (!body) {
+        return;
+      }
+      const chart = offlineChart(String(req.params.chartId), res);
+      if (!chart) {
+        return;
+      }
+      if (!areaDownloader) {
+        res.status(503).json({ success: false, error: 'The plugin is not running' });
+        return;
+      }
+      if (body.bbox[1] >= body.bbox[3]) {
+        res.status(400).json({ success: false, error: 'The area must be south of its north edge' });
+        return;
+      }
+      try {
+        const job = areaDownloader.start({
+          chartId: String(req.params.chartId),
+          ...chart,
+          bbox: body.bbox,
+          minzoom: body.minzoom,
+          maxzoom: body.maxzoom
+        });
+        res.status(202).json({ success: true, job });
+      } catch (err) {
+        if (err instanceof AreaDownloadError) {
+          res.status(400).json({ success: false, error: err.message });
+          return;
+        }
+        throw err;
+      }
+    });
+
+    router.get('/online-charts/area-downloads', (_req: Request, res: Response) => {
+      res.json({ jobs: areaDownloader?.list() ?? [] });
+    });
+
+    router.delete('/online-charts/area-downloads/:jobId', (req: Request, res: Response) => {
+      if (!areaDownloader?.cancel(String(req.params.jobId))) {
+        res.status(404).json({ success: false, error: 'No such download running' });
+        return;
+      }
+      res.json({ success: true });
+    });
+
+    router.get('/online-charts/:chartId/offline', (req: Request, res: Response) => {
+      const chart = offlineChart(String(req.params.chartId), res);
+      if (!chart) {
+        return;
+      }
+      res.json(onlineTileStore?.stats(chart.catalogId) ?? { tiles: 0, bytes: 0 });
+    });
+
+    router.delete('/online-charts/:chartId/offline', (req: Request, res: Response) => {
+      const chart = offlineChart(String(req.params.chartId), res);
+      if (!chart) {
+        return;
+      }
+      const running = areaDownloader
+        ?.list()
+        .some((j) => j.catalogId === chart.catalogId && j.status === 'running');
+      if (running) {
+        res.status(409).json({ success: false, error: 'Stop the area download first' });
+        return;
+      }
+      onlineTileStore?.clear(chart.catalogId);
+      res.json({ success: true });
     });
 
     router.get('/catalog-s57-status', (_req: Request, res: Response) => {

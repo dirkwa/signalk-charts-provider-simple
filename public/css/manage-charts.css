@@ -1651,3 +1651,55 @@
         font-size: 0.9rem;
     }
 }
+
+/* Offline area dialog */
+.delete-modal.area-modal {
+    max-width: 760px;
+    max-height: 92vh;
+    overflow-y: auto;
+}
+
+.area-help {
+    margin: 0 0 12px;
+    color: var(--text-secondary);
+}
+
+.area-map {
+    height: min(360px, 45vh);
+    border-radius: 8px;
+    margin-bottom: 12px;
+}
+
+.area-zooms {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.area-estimate.area-too-many,
+.area-failed {
+    color: var(--md-sys-color-error);
+}
+
+.area-progress-bar {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--md-sys-color-surface-container-highest);
+    overflow: hidden;
+    margin: 8px 0 4px;
+}
+
+.area-progress-bar > div {
+    height: 100%;
+    background: var(--md-sys-color-primary);
+}
+
+.area-kept {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+    color: var(--text-secondary);
+}

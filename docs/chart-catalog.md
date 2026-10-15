@@ -84,6 +84,11 @@ however old it is when it does not. WMS layers are requested tile by tile as
 plain `{z}/{x}/{y}` tile cache for the same chart (`{-y}` and `{z-N}` are
 substituted too). Time-varying charts are never kept.
 
+Manage Charts can also download an area of such a chart ahead of time: the
+user frames the area on a map and picks a zoom range, and the plugin fetches
+every tile in it into the same file, lowest zoom first, at most 100,000 tiles
+per download.
+
 Add `offline` only when the terms allow storing the data, not merely viewing it.
 Public-domain and open-licence data (CC BY, Open Government Licence) qualify;
 commercial chart viewers whose terms forbid caching never do.
