@@ -190,6 +190,47 @@ describe('DownloadManager zip extraction', () => {
     }
   });
 
+  it('names a PMTiles archive .pmtiles, whatever the URL or chart name says', async () => {
+    const archive = Buffer.concat([Buffer.from('PMTiles'), Buffer.from([3]), Buffer.alloc(119)]);
+    const origin = await startOrigin((_hit, res) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/octet-stream');
+      res.end(archive);
+    });
+
+    const dir = fs.mkdtempSync(path.join(TMP, 'pmtiles-'));
+    try {
+      const named = await waitForTerminal(downloadManager.createJob(origin.url, dir, 'Fiji depth'));
+      assert.strictEqual(named.status, 'completed', named.error ?? '');
+      assert.deepStrictEqual(named.extractedFiles, ['Fiji depth.pmtiles']);
+
+      const renamed = await waitForTerminal(
+        downloadManager.createJob(origin.url, dir, 'lautoka.mbtiles')
+      );
+      assert.deepStrictEqual(renamed.extractedFiles, ['lautoka.pmtiles']);
+      assert.ok(fs.readFileSync(path.join(dir, 'lautoka.pmtiles')).equals(archive));
+    } finally {
+      await origin.close();
+    }
+  });
+
+  it('keeps naming any other direct download .mbtiles', async () => {
+    const origin = await startOrigin((_hit, res) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/octet-stream');
+      res.end('SQLite format 3\u0000');
+    });
+
+    const dir = fs.mkdtempSync(path.join(TMP, 'mbtiles-'));
+    try {
+      const job = await waitForTerminal(downloadManager.createJob(origin.url, dir, 'harbour'));
+      assert.strictEqual(job.status, 'completed', job.error ?? '');
+      assert.deepStrictEqual(job.extractedFiles, ['harbour.mbtiles']);
+    } finally {
+      await origin.close();
+    }
+  });
+
   it('follows a 303 See Other redirect', async () => {
     const origin = await startOrigin((hit, res) => {
       if (hit === 1) {

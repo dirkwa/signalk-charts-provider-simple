@@ -83,6 +83,24 @@ function isZipMagic(filePath: string): boolean {
   }
 }
 
+// A PMTiles v3 archive opens with the ASCII "PMTiles" and version 3. Like
+// the ZIP check, the bytes decide the extension, since a URL may carry none.
+function isPmtilesMagic(filePath: string): boolean {
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, 'r');
+  } catch {
+    return false;
+  }
+  try {
+    const buf = Buffer.alloc(8);
+    const n = fs.readSync(fd, buf, 0, 8, 0);
+    return n === 8 && buf.toString('latin1', 0, 7) === 'PMTiles' && buf[7] === 3;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // Per-download state shared across resume attempts: the Content-Type of
 // the response the .part file was written from (finalizeDownload's
 // zip-claim check) and the source's ETag/Last-Modified for If-Range.
@@ -656,16 +674,13 @@ class DownloadManager extends EventEmitter {
         const ext = path.extname(fileName) || '.zip';
         fileName = job.chartName.trim() + ext;
       }
-    } else if (job.chartName && job.chartName.trim()) {
-      fileName = job.chartName.trim();
-      if (!fileName.endsWith('.mbtiles')) {
-        fileName += '.mbtiles';
-      }
     } else {
-      fileName = path.basename(job.originalUrl ?? job.url).split('?')[0];
-      if (!fileName.endsWith('.mbtiles')) {
-        fileName += '.mbtiles';
-      }
+      const ext = isPmtilesMagic(partPath) ? '.pmtiles' : '.mbtiles';
+      const named =
+        job.chartName && job.chartName.trim()
+          ? job.chartName.trim()
+          : path.basename(job.originalUrl ?? job.url).split('?')[0];
+      fileName = named.replace(/\.(mbtiles|pmtiles)$/i, '') + ext;
     }
 
     // Strip any directory component before joining. The route handlers

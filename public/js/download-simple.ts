@@ -65,7 +65,7 @@ function initDownloadInterface(): void {
       <div class="info-section">
         <h2>Download Charts from URL</h2>
         <p class="description">
-          Download chart files directly from URLs. Supports .mbtiles files and .zip archives containing .mbtiles files.
+          Download chart files directly from URLs. Supports .mbtiles and .pmtiles files, and .zip archives containing .mbtiles files.
         </p>
 
         <div class="form-group">

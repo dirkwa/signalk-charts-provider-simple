@@ -1,6 +1,8 @@
 // Enhanced Manage Charts functionality with folders, dates, enable/disable, drag-drop, upload
 
 const MANAGE_API_BASE = '/plugins/signalk-charts-provider-simple';
+/** Chart files the upload accepts; the server serves both kinds. */
+const MANAGE_CHART_FILE_PATTERN = /\.(mbtiles|pmtiles)$/;
 
 interface ManageChart {
   relativePath: string;
@@ -372,7 +374,7 @@ function renderChartsUI(): void {
             <li>Download charts and they'll appear here</li>
           </ol>
           <p style="margin-top: 16px; font-size: 0.9em; opacity: 0.8;">
-            You can also manually upload .mbtiles files from your computer or add them to:<br>
+            You can also manually upload .mbtiles or .pmtiles files from your computer or add them to:<br>
             <code style="background: rgba(0,0,0,0.2); padding: 4px 8px; border-radius: 4px; font-size: 0.85em;">${manageEscapeHtml(basePath)}</code>
           </p>
         </div>
@@ -388,7 +390,7 @@ function renderChartsUI(): void {
           </button>
         </div>
       </div>
-      <input type="file" id="chartUploadInputEmpty" accept=".mbtiles" multiple style="display: none;" onchange="handleFileUpload(event)">
+      <input type="file" id="chartUploadInputEmpty" accept=".mbtiles,.pmtiles" multiple style="display: none;" onchange="handleFileUpload(event)">
       <input type="file" id="chartZipUploadInputEmpty" accept=".zip" style="display: none;" onchange="handleZipUpload(event)">
     `;
     return;
@@ -469,7 +471,7 @@ function renderChartsUI(): void {
     html += `</div>`;
   }
 
-  html += `<input type="file" id="chartUploadInput" accept=".mbtiles" multiple style="display: none;" onchange="handleFileUpload(event)">`;
+  html += `<input type="file" id="chartUploadInput" accept=".mbtiles,.pmtiles" multiple style="display: none;" onchange="handleFileUpload(event)">`;
   html += `<input type="file" id="chartZipUploadInput" accept=".zip" style="display: none;" onchange="handleZipUpload(event)">`;
 
   manageOutput.innerHTML = html;
@@ -1104,13 +1106,16 @@ function handleFileUpload(event: Event): void {
     if (!file) {
       continue;
     }
-    if (!file.name.endsWith('.mbtiles')) {
-      alert(`File "${file.name}" is not an .mbtiles file and will be skipped.`);
+    if (!MANAGE_CHART_FILE_PATTERN.test(file.name)) {
+      alert(`File "${file.name}" is not an .mbtiles or .pmtiles file and will be skipped.`);
       continue;
     }
 
+    // foo.pmtiles and foo.mbtiles share the chart id foo, so one would hide
+    // the other.
+    const stem = file.name.replace(MANAGE_CHART_FILE_PATTERN, '');
     const existingChart = targetFolderCharts.find(
-      (c) => c.name === file.name || c.name === file.name.replace('.mbtiles', '')
+      (c) => c.name === file.name || c.name.replace(MANAGE_CHART_FILE_PATTERN, '') === stem
     );
     if (existingChart) {
       duplicates.push(file.name);
@@ -1159,7 +1164,7 @@ function performUpload(formData: FormData, validFileCount: number, files: FileLi
     return;
   }
 
-  const validFiles = Array.from(files).filter((f) => f.name.endsWith('.mbtiles'));
+  const validFiles = Array.from(files).filter((f) => MANAGE_CHART_FILE_PATTERN.test(f.name));
   const fileList = validFiles
     .map((f) => `<li>${manageEscapeHtml(f.name)} (${(f.size / (1024 * 1024)).toFixed(2)} MB)</li>`)
     .join('');

@@ -786,7 +786,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       void refreshChartProviders().then(() => {
         for (const fileName of job.extractedFiles) {
-          const chartId = fileName.replace(/\.mbtiles$/, '');
+          const chartId = chartIdFromFilename(fileName);
 
           if (chartProviders[chartId]) {
             const chartData = sanitizeProvider(chartProviders[chartId], 2);
@@ -971,7 +971,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     await refreshChartProviders();
 
     for (const filename of uploadedFiles) {
-      const chartId = filename.replace(/\.mbtiles$/, '');
+      const chartId = chartIdFromFilename(filename);
 
       if (chartProviders[chartId]) {
         const chartData = sanitizeProvider(chartProviders[chartId], 2);
@@ -1162,7 +1162,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   });
 
   const UploadChunkHeaders = Type.Object({
-    'x-upload-filename': Type.String({ minLength: 1, pattern: '\\.mbtiles$' }),
+    'x-upload-filename': Type.String({ minLength: 1, pattern: '\\.(mbtiles|pmtiles)$' }),
     'x-chunk-index': Type.Integer({ minimum: 0 }),
     'x-total-chunks': Type.Integer({ minimum: 1 }),
     'x-target-folder': Type.Optional(Type.String())
@@ -1272,7 +1272,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   }
                   await refreshChartProviders();
                   for (const fileName of job.extractedFiles) {
-                    const chartId = fileName.replace(/\.mbtiles$/, '');
+                    const chartId = chartIdFromFilename(fileName);
                     if (chartProviders[chartId]) {
                       const chartData = sanitizeProvider(chartProviders[chartId], 2);
                       emitChartDelta(chartId, chartData);
@@ -2249,7 +2249,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           (_fieldname: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
             const { filename } = info;
 
-            if (!filename.endsWith('.mbtiles')) {
+            if (!/\.(mbtiles|pmtiles)$/.test(filename)) {
               (file as NodeJS.ReadableStream & { resume(): void }).resume();
               return;
             }
@@ -2354,7 +2354,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   files: uploadedFiles
                 });
               } else {
-                res.status(400).send('No valid .mbtiles files uploaded');
+                res.status(400).send('No valid .mbtiles or .pmtiles files uploaded');
               }
             } catch (error) {
               app.error(
