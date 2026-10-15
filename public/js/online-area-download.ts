@@ -196,7 +196,7 @@ async function pollAreaJob(): Promise<void> {
     return;
   }
   try {
-    const res = await fetch(`${AREA_API_BASE}/online-charts/area-downloads`);
+    const res = await fetch(`${AREA_API_BASE}/online-area-downloads`);
     if (!res.ok) {
       return;
     }
@@ -230,14 +230,20 @@ async function startAreaDownload(): Promise<void> {
     return;
   }
   const { from, to } = selectedZooms();
-  const res = await fetch(
-    `${AREA_API_BASE}/online-charts/${encodeURIComponent(areaDialog.chartId)}/area-download`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bbox: areaFromMap(areaDialog.map), minzoom: from, maxzoom: to })
-    }
-  );
+  let res: Response;
+  try {
+    res = await fetch(
+      `${AREA_API_BASE}/online-charts/${encodeURIComponent(areaDialog.chartId)}/area-download`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bbox: areaFromMap(areaDialog.map), minzoom: from, maxzoom: to })
+      }
+    );
+  } catch {
+    alert('Could not reach the server to start the download.');
+    return;
+  }
   const body = (await res.json().catch(() => ({}))) as { job?: AreaJob; error?: string };
   if (!res.ok || !body.job) {
     alert(body.error ?? `Could not start the download (HTTP ${String(res.status)})`);
@@ -254,10 +260,14 @@ async function cancelAreaDownload(): Promise<void> {
   if (!areaDialog?.jobId) {
     return;
   }
-  await fetch(
-    `${AREA_API_BASE}/online-charts/area-downloads/${encodeURIComponent(areaDialog.jobId)}`,
-    { method: 'DELETE' }
-  );
+  try {
+    await fetch(
+      `${AREA_API_BASE}/online-area-downloads/${encodeURIComponent(areaDialog.jobId)}`,
+      { method: 'DELETE' }
+    );
+  } catch {
+    // The next poll shows whether it stopped.
+  }
   void pollAreaJob();
 }
 
@@ -265,10 +275,16 @@ async function clearKeptTiles(): Promise<void> {
   if (!areaDialog || !confirm('Delete every tile of this chart kept on the server?')) {
     return;
   }
-  const res = await fetch(
-    `${AREA_API_BASE}/online-charts/${encodeURIComponent(areaDialog.chartId)}/offline`,
-    { method: 'DELETE' }
-  );
+  let res: Response;
+  try {
+    res = await fetch(
+      `${AREA_API_BASE}/online-charts/${encodeURIComponent(areaDialog.chartId)}/offline`,
+      { method: 'DELETE' }
+    );
+  } catch {
+    alert('Could not reach the server to delete the kept tiles.');
+    return;
+  }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     alert(body.error ?? `Could not delete the kept tiles (HTTP ${String(res.status)})`);

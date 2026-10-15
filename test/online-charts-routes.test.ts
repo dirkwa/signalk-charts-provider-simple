@@ -336,7 +336,7 @@ describe('online chart routes', () => {
     const deadline = Date.now() + 5000;
     while (done?.status !== 'completed' && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 20));
-      const list = await call(handlers.get('get /online-charts/area-downloads'), {});
+      const list = await call(handlers.get('get /online-area-downloads'), {});
       done = (list.body as { jobs: Job[] }).jobs.find((j) => j.id === job.id);
     }
     assert.strictEqual(done?.status, 'completed');

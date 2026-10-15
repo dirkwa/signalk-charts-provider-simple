@@ -1703,3 +1703,8 @@
     margin-top: 12px;
     color: var(--text-secondary);
 }
+
+/* .btn sets a display that would otherwise override the hidden attribute. */
+.area-modal [hidden] {
+    display: none !important;
+}
