@@ -71,7 +71,8 @@ interface OnlineCatalogChart {
   chart: { type: string };
   temporal?: { kind: string };
   /** Present when the license allows the server to keep the tiles it fetches. */
-  offline?: unknown;
+  /** Decided by the server, which is what keeps the tiles. */
+  keptOffline?: boolean;
 }
 
 interface CatalogRegistryResponse {
@@ -1512,7 +1513,7 @@ function renderOnlineChartList(charts: OnlineCatalogChart[]): string {
         ? `<a href="${catalogEscapeAttr(chart.licenseUrl)}" target="_blank" rel="noopener">${catalogEscapeHtml(chart.license)}</a>`
         : catalogEscapeHtml(chart.license);
       const badges = [
-        chart.offline !== undefined && !chart.temporal
+        chart.keptOffline
           ? '<span class="online-badge offline" title="Served through your server, which keeps every tile it fetches: areas already viewed work without internet">Kept offline</span>'
           : '<span class="online-badge" title="Streamed from its provider; shows nothing without an internet connection">Needs internet</span>',
         chart.temporal
