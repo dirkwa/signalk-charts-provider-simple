@@ -203,6 +203,13 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     assert.strictEqual(fetched.length, 0);
   });
 
+  it('opens no file for a request that arrives after the plugin stopped', async () => {
+    const p = proxy();
+    store.close();
+    await p.getTile('depths', source, 2, 1, 0);
+    assert.strictEqual(fs.existsSync(path.join(dir, 'depths.mbtiles')), false);
+  });
+
   it('asks the provider once for concurrent requests of the same tile', async () => {
     const p = proxy();
     await Promise.all([p.getTile('depths', source, 3, 2, 1), p.getTile('depths', source, 3, 2, 1)]);

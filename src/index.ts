@@ -4862,8 +4862,6 @@ const serveTileFromFilesystem = (
   });
 };
 
-// Exported for tests (the Express route registration is not separately
-// constructible without a full server).
 const serveOnlineTile = async (
   res: Response,
   proxy: OnlineTileProxy,
@@ -4889,6 +4887,8 @@ const serveOnlineTile = async (
   }
 };
 
+// Exported for tests (the Express route registration is not separately
+// constructible without a full server).
 export const serveTileFromMbtiles = (
   res: Response,
   provider: ChartProvider,

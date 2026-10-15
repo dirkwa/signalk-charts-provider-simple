@@ -174,6 +174,10 @@ export class OnlineTileStore {
   }
 
   get(catalogId: string, z: number, x: number, y: number): CachedTile | null {
+    // A request still in flight when the plugin stopped must not reopen a file.
+    if (this.closed) {
+      return null;
+    }
     const row = this.db(catalogId)
       .prepare(
         'SELECT tile_data, fetched_at FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
