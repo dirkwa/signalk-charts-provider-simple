@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { setMockState } from './helpers';
+import { setMockState } from './helpers.js';
 
 test.describe('download from URL', () => {
   test('adds an online chart by URL', async ({ page }) => {
