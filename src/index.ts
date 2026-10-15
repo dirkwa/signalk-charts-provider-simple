@@ -2950,7 +2950,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         converting: getConvertingCharts(),
         catalogStatus: getCatalogStatus(),
         sources: getCatalogSources(),
-        online: getOnlineCatalogCharts(),
+        online: getOnlineCatalogCharts().map((chart) => ({
+          ...chart,
+          keptOffline: offlineTileSource(chart) !== null
+        })),
         onlineAdded: added,
         position: vesselPosition()
       };
