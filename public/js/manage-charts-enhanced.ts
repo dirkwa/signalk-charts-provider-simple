@@ -1,5 +1,9 @@
 // Enhanced Manage Charts functionality with folders, dates, enable/disable, drag-drop, upload
 
+const MANAGE_NEEDS_INTERNET_BADGE =
+  '<span class="online-badge" title="Streamed from its provider; shows nothing without an internet connection">Needs internet</span>';
+const MANAGE_KEPT_OFFLINE_BADGE =
+  '<span class="online-badge offline" title="Served through your server, which keeps every tile it fetches: areas already viewed work without internet">Kept offline</span>';
 const MANAGE_API_BASE = '/plugins/signalk-charts-provider-simple';
 
 interface ManageChart {
@@ -27,6 +31,8 @@ interface ManageChart {
     /** The .onlinechart.json file couldn't be read; it can only be deleted. */
     unreadable?: boolean;
     type: string | null;
+    /** Served through the server, which keeps every tile it fetches. */
+    keptOffline?: boolean;
   };
 }
 
@@ -529,7 +535,7 @@ function renderChartCard(chart: ManageChart): string {
     onlineState = `<span class="folder-off-badge" title="The chart catalog no longer lists this chart, so it is not served">No longer available</span>`;
   }
   const onlineBadges = online
-    ? `<span class="online-badge" title="Streamed from its provider; shows nothing without an internet connection">Needs internet</span>${onlineState}`
+    ? `${online.keptOffline ? MANAGE_KEPT_OFFLINE_BADGE : MANAGE_NEEDS_INTERNET_BADGE}${onlineState}`
     : '';
   const renameAction = online
     ? `renameOnlineChart('${attrPath}')`

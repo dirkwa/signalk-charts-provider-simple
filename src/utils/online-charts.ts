@@ -16,6 +16,7 @@ import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import type { OnlineCatalogChart } from '../catalog/merged-catalog-schema.js';
 import type { ChartProvider } from '../types.js';
+import { offlineTileSource } from './online-tile-cache.js';
 
 export const ONLINE_CHART_SUFFIX = '.onlinechart.json';
 
@@ -132,6 +133,36 @@ export function onlineChartProvider(
   }
   const { chart } = entry;
   const identifier = chartIdFromFilename(path.basename(filePath));
+  const offlineSource = offlineTileSource(entry);
+  if (offlineSource) {
+    // Served by the plugin's tile route as a plain tile layer, whatever the
+    // service type, so plotters fetch every tile through the server.
+    const tileSize =
+      offlineSource.kind === 'xyz' && (chart.tileSize === 256 || chart.tileSize === 512)
+        ? chart.tileSize
+        : undefined;
+    const url = `~tilePath~/${identifier}/{z}/{x}/{y}`;
+    return {
+      _fileFormat: 'online',
+      _filePath: filePath,
+      _flipY: false,
+      identifier,
+      name: file.name,
+      description: entry.description,
+      bounds: [...entry.bbox],
+      minzoom: chart.minzoom,
+      maxzoom: chart.maxzoom,
+      format: 'png',
+      type: 'tilelayer',
+      scale: 250000,
+      ...(tileSize !== undefined ? { tileSize } : {}),
+      ...(chart.defaultOpacity !== undefined ? { defaultOpacity: chart.defaultOpacity } : {}),
+      _catalogId: entry.id,
+      _offlineSource: offlineSource,
+      v1: { tilemapUrl: url, chartLayers: [] },
+      v2: { url, layers: [], ...(tileSize !== undefined ? { tileSize } : {}) }
+    };
+  }
   const layers = chart.layers ?? [];
   // Plotters only lay tiles out on 256 or 512 px grids.
   const tileSize = chart.tileSize === 256 || chart.tileSize === 512 ? chart.tileSize : undefined;

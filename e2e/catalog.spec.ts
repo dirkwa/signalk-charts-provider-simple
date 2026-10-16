@@ -439,6 +439,17 @@ test.describe('Chart Catalog tab', () => {
           licenseUrl: 'https://openwaters.io/charts/seamap',
           notForNavigation: true,
           chart: { type: 'mapstyleJSON' }
+        },
+        {
+          id: 'gebco-ocean-depths',
+          name: 'GEBCO Ocean Depths',
+          description: 'Shaded relief of the ocean floor.',
+          category: 'navigation',
+          provider: 'GEBCO',
+          license: 'Public domain',
+          licenseUrl: 'https://www.gebco.net/',
+          chart: { type: 'WMS' },
+          keptOffline: true
         }
       ],
       onlineAdded: { 'openwaters-seamap': ['Online Charts/openwaters-seamap.onlinechart.json'] }
@@ -447,7 +458,7 @@ test.describe('Chart Catalog tab', () => {
 
     await expect(
       page.locator('[data-filter-group="use"][data-filter-value="stream"]')
-    ).toContainText('2');
+    ).toContainText('3');
     await page.locator('[data-catalog-toggle="online:weather"]').click();
     const row = page.locator('.online-chart-row', { hasText: 'NWS Radar' });
     await expect(row).toContainText('Needs internet');
@@ -468,6 +479,12 @@ test.describe('Chart Catalog tab', () => {
     const seamap = page.locator('.online-chart-row', { hasText: 'Open Waters Seamap' });
     await expect(seamap.locator('.installed-badge')).toHaveText('Added');
     await expect(seamap).toContainText('Not for navigation');
+    await expect(seamap).toContainText('Needs internet');
+
+    // A chart whose license allows offline copies says so instead.
+    const gebco = page.locator('.online-chart-row', { hasText: 'GEBCO Ocean Depths' });
+    await expect(gebco).toContainText('Kept offline');
+    await expect(gebco).not.toContainText('Needs internet');
   });
   test('reports the HTTP status when adding an online chart gets an error page', async ({
     page

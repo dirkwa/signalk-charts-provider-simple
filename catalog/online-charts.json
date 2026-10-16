@@ -32,6 +32,9 @@
         "type": "WMTS",
         "url": "https://gis.charttools.noaa.gov/arcgis/rest/services/MarineChart_Services/NOAACharts/MapServer/WMTS",
         "layers": ["MarineChart_Services_NOAACharts"]
+      },
+      "offline": {
+        "tileUrl": "https://gis.charttools.noaa.gov/arcgis/rest/services/MarineChart_Services/NOAACharts/MapServer/tile/{z-2}/{y}/{x}"
       }
     },
     {
@@ -50,7 +53,8 @@
         "type": "WMS",
         "url": "https://egisp.dfo-mpo.gc.ca/arcgis/rest/services/chs/ENC_MaritimeChartService/MapServer/exts/MaritimeChartService/WMSServer",
         "layers": ["0", "1", "2", "3", "4", "5", "6", "7", "9", "10", "11"]
-      }
+      },
+      "offline": {}
     },
     {
       "id": "gebco-ocean-depths",
@@ -68,7 +72,8 @@
         "type": "WMS",
         "url": "https://wms.gebco.net/mapserv",
         "layers": ["GEBCO_LATEST"]
-      }
+      },
+      "offline": {}
     },
     {
       "id": "emodnet-european-depths",
@@ -86,7 +91,8 @@
         "type": "tilelayer",
         "url": "https://tiles.emodnet-bathymetry.eu/latest/mean_atlas_land/web_mercator/{z}/{x}/{y}.png",
         "maxzoom": 15
-      }
+      },
+      "offline": {}
     },
     {
       "id": "nws-radar-conus",
@@ -417,7 +423,8 @@
         "type": "tilelayer",
         "url": "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
         "maxzoom": 16
-      }
+      },
+      "offline": {}
     }
   ]
 }

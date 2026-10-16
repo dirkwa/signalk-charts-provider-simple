@@ -4,6 +4,7 @@ import type { MBTilesReader } from './utils/mbtiles-reader.js';
 import type { PMTilesReader } from './utils/pmtiles-reader.js';
 import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
 import type { ChartTimeBlock } from './utils/time-dimension.js';
+import type { OnlineTileSource } from './utils/online-tile-cache.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -76,6 +77,8 @@ export interface ChartProvider {
   time?: ChartTimeBlock;
   /** Online charts: the catalog entry served, so its timeline can be updated in place. */
   _catalogId?: string;
+  /** Online charts kept for offline use: where the plugin fetches their tiles. */
+  _offlineSource?: OnlineTileSource;
 
   v1: ChartV1Data;
   v2: ChartV2Data;

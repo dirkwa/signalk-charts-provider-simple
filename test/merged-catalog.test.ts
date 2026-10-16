@@ -361,6 +361,51 @@ describe('checkOnlineChartEntry', () => {
     assert.match(checkOnlineChartEntry(style).join(), /layers only apply to WMS\/WMTS/);
   });
 
+  it('rejects offline copies of time-varying charts', () => {
+    const radar = onlineEntry({ offline: {} });
+    assert.match(checkOnlineChartEntry(radar).join(), /time-varying charts cannot be kept offline/);
+  });
+
+  it('accepts offline copies of WMS and tile layers, and of WMTS only with a tileUrl', () => {
+    assert.deepStrictEqual(
+      checkOnlineChartEntry(onlineEntry({ temporal: undefined, offline: {} })),
+      []
+    );
+    const wmts = onlineEntry({
+      chart: { type: 'WMTS', url: 'https://example.com/wmts', layers: ['x'] },
+      temporal: undefined,
+      offline: {}
+    });
+    assert.match(checkOnlineChartEntry(wmts).join(), /offline needs a tileUrl for WMTS charts/);
+    assert.deepStrictEqual(
+      checkOnlineChartEntry({ ...wmts, offline: { tileUrl: 'https://example.com/{z}/{x}/{y}' } }),
+      []
+    );
+  });
+
+  it('refuses offline copies of a tile URL the plugin cannot fill, or a WMS with no layer', () => {
+    const tiles = (url: string): OnlineChartEntry =>
+      onlineEntry({ chart: { type: 'tilelayer', url }, temporal: undefined, offline: {} });
+    assert.match(
+      checkOnlineChartEntry(tiles('https://{s}.example.com/{z}/{x}/{y}.png')).join(),
+      /cannot use \{s\}/
+    );
+    assert.match(
+      checkOnlineChartEntry(tiles('https://example.com/{z}/{x}.png')).join(),
+      /need \{z\}, \{x\} and \{y\}/
+    );
+    assert.deepStrictEqual(
+      checkOnlineChartEntry(tiles('https://example.com/{z-2}/{x}/{-y}.png')),
+      []
+    );
+    const noLayer = onlineEntry({
+      chart: { type: 'WMS', url: 'https://example.com/ows', layers: [] },
+      temporal: undefined,
+      offline: {}
+    });
+    assert.match(checkOnlineChartEntry(noLayer).join(), /offline needs a WMS layer/);
+  });
+
   it('rejects an inverted zoom range and an inverted bbox', () => {
     const bad = onlineEntry({
       chart: {

@@ -71,6 +71,23 @@ several forms (explicit lists, regular intervals, lists of intervals with gaps,
 and "now"/"current" markers); all are reduced to the entry's `window` and kept
 on the service's own time grid.
 
+## Online charts kept for offline use
+
+An entry with an `offline` block is one whose license allows keeping copies of
+its tiles. The plugin serves it as a plain tile layer through its own tile
+route instead of handing the plotter the provider's URL: each tile a plotter
+asks for is fetched once and kept in `<dataDir>/online-tile-cache/<catalogId>.mbtiles`,
+so every area the boat has already looked at keeps working with no internet. A
+kept tile is fetched again after 30 days when the provider answers, and served
+however old it is when it does not. WMS layers are requested tile by tile as
+256 px EPSG:3857 `GetMap` images; a WMTS service needs a `tileUrl` pointing at a
+plain `{z}/{x}/{y}` tile cache for the same chart (`{-y}` and `{z-N}` are
+substituted too). Time-varying charts are never kept.
+
+Add `offline` only when the terms allow storing the data, not merely viewing it.
+Public-domain and open-licence data (CC BY, Open Government Licence) qualify;
+commercial chart viewers whose terms forbid caching never do.
+
 ## How publishing works
 
 `.github/workflows/publish-catalog.yml` runs every six hours, on changes to the
@@ -102,7 +119,8 @@ field is described in `OnlineChartEntrySchema` in
 `src/catalog/merged-catalog-schema.ts`; the published `catalog.schema.json` carries
 the same descriptions. The unit tests validate every entry against the schema and
 against rules the schema can't express (WMS/WMTS entries must name their layer;
-only WMS/WMTS entries can be temporal).
+only WMS/WMTS entries can be temporal; `offline` needs a tile layer, a WMS, or a
+`tileUrl`, and never goes with `temporal`).
 
 To see an entry in the Chart Catalog tab before opening a pull request, run
 `npm run catalog:preview`. It builds the catalog from your working copy the same

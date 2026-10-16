@@ -90,7 +90,7 @@ The interface provides five tabs:
 
 4. **Chart Catalog**:
    - Downloadable charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) and a curated list of online charts, in one list, sectioned by what the charts show, with **Near me** narrowing each section to where you are
-   - **Online charts** (weather radar and satellite, online nautical charts, depths, base maps): press **Add** and the chart appears in Manage Charts and in your chart plotter. They stream from their provider, so they need an internet connection to display. They go into an "Online Charts" folder by default, so you can switch them all off at once when you're offline
+   - **Online charts** (weather radar and satellite, online nautical charts, depths, base maps): press **Add** and the chart appears in Manage Charts and in your chart plotter. Most stream from their provider and need an internet connection to display. Charts whose license allows it (NOAA, CHS, GEBCO, EMODnet and USGS imagery) are marked **Kept offline**: they are served through your server, which keeps every tile it fetches, so the areas you have already viewed keep working without internet. Online charts go into an "Online Charts" folder by default, so you can switch them all off at once when you're offline
    - Live weather layers (radar, satellite, forecasts) keep their recent images or forecast steps up to date, so chart plotters with a time slider (Freeboard-SK) can play them back
    - One-click download for MBTiles charts (NOAA)
    - Download & convert for S-57 ENC, BSB raster, Pilot Charts, and basemaps

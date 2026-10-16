@@ -69,6 +69,14 @@ import { writeChartPathMarker } from './utils/path-marker.js';
 import { getBlankTileReplacement, getOverzoomedTile } from './utils/tile-overzoom.js';
 import { getRasterOverzoomedTile } from './utils/raster-overzoom.js';
 import { initRasterTileCache, pruneRasterTileCache } from './utils/raster-tile-cache.js';
+import {
+  OnlineTileProxy,
+  OnlineTileStore,
+  httpTileFetcher,
+  offlineTileSource,
+  tileImageType,
+  type OnlineTileSource
+} from './utils/online-tile-cache.js';
 import { extractMbtilesFromZip, ZipLimitError } from './utils/zip-extract.js';
 import {
   arePairWithinBase,
@@ -269,6 +277,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
   let catalogUpdateInterval: ReturnType<typeof setInterval> | null = null;
   let pluginDataDir = '';
+  let onlineTileStore: OnlineTileStore | null = null;
+  let onlineTileProxy: OnlineTileProxy | null = null;
   let defaultChartsPath = '';
   let serverMajorVersion = 1;
 
@@ -374,6 +384,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // config save, which would otherwise leak the whole map each time.
       closeProviderHandles(Object.values(chartProviders));
       chartProviders = {};
+      onlineTileProxy = null;
+      onlineTileStore?.close();
+      onlineTileStore = null;
       app.setPluginStatus('stopped');
     },
     registerWithRouter: (router) => {
@@ -409,9 +422,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               void serveTileFromPmtiles(res, provider, iz, ix, iy);
               return;
             case 'online':
-              // Online charts are fetched from their provider by the chart
-              // plotter; there are no local tiles to serve.
-              res.sendStatus(404);
+              // Streamed online charts are fetched from their provider by
+              // the chart plotter; only those kept offline come through here.
+              if (provider._offlineSource && provider._catalogId && onlineTileProxy) {
+                void serveOnlineTile(
+                  res,
+                  onlineTileProxy,
+                  provider._catalogId,
+                  provider._offlineSource,
+                  iz,
+                  ix,
+                  iy
+                );
+              } else {
+                res.sendStatus(404);
+              }
               return;
             default:
               console.log(`Unknown chart provider fileformat ${String(provider._fileFormat)}`);
@@ -576,6 +601,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     initCustomCatalogManager(dataDir, app.debug.bind(app));
     // Synthesized raster tiles; kept in the data dir, never the chart folder.
     void initRasterTileCache(path.join(dataDir, 'raster-tile-cache'));
+    onlineTileStore?.close();
+    onlineTileStore = new OnlineTileStore(path.join(dataDir, 'online-tile-cache'));
+    onlineTileProxy = new OnlineTileProxy(
+      onlineTileStore,
+      httpTileFetcher(`signalk-charts-provider-simple/${pluginVersion}`)
+    );
 
     const tempDirPattern =
       /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-|custom-catalog-)\d+$/;
@@ -1461,7 +1492,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     catalogLoaded: hasCatalog(),
                     type: onlineEntry?.chart.type ?? null,
                     category: onlineEntry?.category ?? null,
-                    temporal: onlineEntry?.temporal !== undefined
+                    temporal: onlineEntry?.temporal !== undefined,
+                    keptOffline: onlineEntry ? offlineTileSource(onlineEntry) !== null : false
                   }
                 }
               : {})
@@ -2918,7 +2950,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         converting: getConvertingCharts(),
         catalogStatus: getCatalogStatus(),
         sources: getCatalogSources(),
-        online: getOnlineCatalogCharts(),
+        online: getOnlineCatalogCharts().map((chart) => ({
+          ...chart,
+          keptOffline: offlineTileSource(chart) !== null
+        })),
         onlineAdded: added,
         position: vesselPosition()
       };
@@ -4743,6 +4778,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _pmtilesHandle,
     _flipY,
     _catalogId,
+    _offlineSource,
     v1: _v1,
     v2: _v2,
     ...rest
@@ -4827,6 +4863,31 @@ const serveTileFromFilesystem = (
       throw err;
     }
   });
+};
+
+const serveOnlineTile = async (
+  res: Response,
+  proxy: OnlineTileProxy,
+  catalogId: string,
+  source: OnlineTileSource,
+  z: number,
+  x: number,
+  y: number
+): Promise<void> => {
+  try {
+    const data = await proxy.getTile(catalogId, source, z, x, y);
+    const contentType = data ? tileImageType(data) : null;
+    if (!data || !contentType) {
+      res.sendStatus(404);
+      return;
+    }
+    // Short, so a plotter picks up a refreshed tile; the plugin keeps the copy.
+    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=86400' });
+    res.end(data);
+  } catch (err) {
+    console.error(`Online tile ${catalogId}/${String(z)}/${String(x)}/${String(y)} failed:`, err);
+    res.sendStatus(500);
+  }
 };
 
 // Exported for tests (the Express route registration is not separately
