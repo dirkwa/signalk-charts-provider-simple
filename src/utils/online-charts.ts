@@ -45,6 +45,53 @@ export function chartIdFromFilename(filename: string): string {
   return filename.replace(/\.(mbtiles|pmtiles)$/i, '');
 }
 
+/**
+ * The name to save a downloaded chart file under in a folder whose entries
+ * are `existing`. A file of the same name is replaced as before, but a file
+ * that would share its chart id with a different entry (`foo.pmtiles` beside
+ * `foo.mbtiles`) gets a numbered name, or one chart would hide the other.
+ */
+export function chartFileNameBeside(fileName: string, existing: readonly string[]): string {
+  if (existing.includes(fileName)) {
+    return fileName;
+  }
+  const ids = new Set(existing.map(chartIdFromFilename));
+  const id = chartIdFromFilename(fileName);
+  if (!ids.has(id)) {
+    return fileName;
+  }
+  const ext = fileName.slice(id.length);
+  let n = 2;
+  while (ids.has(`${id}-${String(n)}`)) {
+    n += 1;
+  }
+  return `${id}-${String(n)}${ext}`;
+}
+
+/**
+ * chartFileNameBeside for several files staged together. A new name avoids
+ * every staged name as well as the folder's, so renaming one staged file
+ * never lands on another that is still waiting to be promoted.
+ */
+export function chartFileNamesBeside(
+  staged: readonly string[],
+  existing: readonly string[]
+): string[] {
+  const taken = [...existing];
+  return staged.map((fileName) => {
+    let free = chartFileNameBeside(fileName, taken);
+    if (free !== fileName) {
+      // A new name also avoids the files still staged, which keep theirs.
+      free = chartFileNameBeside(fileName, [
+        ...taken,
+        ...staged.filter((other) => other !== fileName)
+      ]);
+    }
+    taken.push(free);
+    return free;
+  });
+}
+
 export function readOnlineChartFile(filePath: string): OnlineChartFile | null {
   try {
     const raw: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -211,10 +258,12 @@ function isTileDirectory(dirPath: string): boolean {
  * Every chart id in the library — `.mbtiles`, `.pmtiles` and online chart file stems,
  * and tile-directory names — whether or not the chart currently loads.
  * A new online chart must avoid all of them (see writeOnlineChartFile).
+ * With `skipFilesIn`, the files directly in that folder are left out.
  */
 export async function collectChartIds(
   basePath: string,
-  currentPath: string = basePath
+  currentPath: string = basePath,
+  skipFilesIn?: string
 ): Promise<Set<string>> {
   const ids = new Set<string>();
   let entries: fs.Dirent[];
@@ -232,12 +281,13 @@ export async function collectChartIds(
       if (isTileDirectory(fullPath)) {
         ids.add(entry.name);
       } else {
-        for (const id of await collectChartIds(basePath, fullPath)) {
+        for (const id of await collectChartIds(basePath, fullPath, skipFilesIn)) {
           ids.add(id);
         }
       }
     } else if (
       entry.isFile() &&
+      (skipFilesIn === undefined || path.resolve(currentPath) !== path.resolve(skipFilesIn)) &&
       (isOnlineChartFile(entry.name) || /\.(mbtiles|pmtiles)$/i.test(entry.name))
     ) {
       ids.add(chartIdFromFilename(entry.name));

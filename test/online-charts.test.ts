@@ -7,6 +7,9 @@ import path from 'node:path';
 import { findCharts } from '../dist/charts-loader.js';
 import { scanChartsRecursively } from '../dist/utils/file-scanner.js';
 import {
+  chartFileNameBeside,
+  chartFileNamesBeside,
+  collectChartIds,
   chartIdFromFilename,
   findOnlineChartFiles,
   onlineChartProvider,
@@ -247,5 +250,63 @@ describe('online charts', () => {
         { relativePath: 'retired.onlinechart.json', catalogId: 'retired' }
       ]);
     });
+  });
+});
+
+describe('chartFileNameBeside', () => {
+  it('keeps a name whose chart id is free, or that replaces the same file', () => {
+    assert.strictEqual(chartFileNameBeside('fiji.pmtiles', ['tonga.mbtiles']), 'fiji.pmtiles');
+    assert.strictEqual(
+      chartFileNameBeside('fiji.pmtiles', ['fiji.pmtiles', 'fiji.mbtiles']),
+      'fiji.pmtiles'
+    );
+  });
+
+  it('numbers a file that would share its chart id with another entry', () => {
+    assert.strictEqual(chartFileNameBeside('fiji.pmtiles', ['fiji.mbtiles']), 'fiji-2.pmtiles');
+    assert.strictEqual(
+      chartFileNameBeside('fiji.mbtiles', ['fiji.pmtiles', 'fiji-2.onlinechart.json']),
+      'fiji-3.mbtiles'
+    );
+    assert.strictEqual(chartFileNameBeside('Fiji.PMTILES', ['Fiji']), 'Fiji-2.PMTILES');
+  });
+});
+
+describe('collectChartIds', () => {
+  it('can leave out the charts directly in one folder, but not its subfolders', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chart-ids-'));
+    try {
+      fs.mkdirSync(path.join(root, 'a', 'b'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'top.mbtiles'), '');
+      fs.writeFileSync(path.join(root, 'a', 'here.pmtiles'), '');
+      fs.writeFileSync(path.join(root, 'a', 'b', 'deeper.mbtiles'), '');
+      const ids = await collectChartIds(root, root, path.join(root, 'a'));
+      assert.deepStrictEqual([...ids].sort(), ['deeper', 'top']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('chartFileNamesBeside', () => {
+  it('never renames a staged file onto another staged file', () => {
+    assert.deepStrictEqual(
+      chartFileNamesBeside(['foo.mbtiles', 'foo-2.mbtiles'], ['foo.pmtiles']),
+      ['foo-3.mbtiles', 'foo-2.mbtiles']
+    );
+  });
+
+  it('renames the later of two staged files that share an id, not both', () => {
+    assert.deepStrictEqual(chartFileNamesBeside(['foo.mbtiles', 'foo.pmtiles'], []), [
+      'foo.mbtiles',
+      'foo-2.pmtiles'
+    ]);
+  });
+
+  it('keeps names that collide with nothing, and replaces the same file', () => {
+    assert.deepStrictEqual(
+      chartFileNamesBeside(['fiji.mbtiles', 'tonga.mbtiles'], ['fiji.mbtiles']),
+      ['fiji.mbtiles', 'tonga.mbtiles']
+    );
   });
 });

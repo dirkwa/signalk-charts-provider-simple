@@ -39,6 +39,7 @@ import { capabilitiesUrlFor } from './utils/time-dimension.js';
 import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import {
+  chartFileNamesBeside,
   chartIdFromFilename,
   collectChartIds,
   findOnlineChartFiles,
@@ -87,6 +88,7 @@ import {
   promoteQuarantine,
   sweepStaleQuarantineDirs
 } from './utils/quarantine.js';
+import { serialQueue } from './utils/serial-queue.js';
 import { parseBody, parseShape } from './utils/rest-validation.js';
 import {
   getAllConversionProgress as getAllRncProgress,
@@ -190,6 +192,41 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // Bumped on every invalidation, so a scan that started before one can't
   // store its now-stale result.
   let onlineAddedGeneration = 0;
+  // New charts pick a free chart name and then move into the library; run
+  // those steps one at a time, or two finishing together pick the same name
+  // and the later one replaces the earlier.
+  const promotions = serialQueue();
+
+  /**
+   * Move charts staged in `quarantineDir` into `targetDir`. A file of the
+   * same name there is replaced; one whose chart id another chart in the
+   * library already has is saved under a numbered name, since one id serves
+   * one chart. Returns the names the files were saved under, in order.
+   */
+  const promoteCharts = (
+    quarantineDir: string,
+    staged: readonly string[],
+    targetDir: string
+  ): Promise<string[]> =>
+    promotions(async () => {
+      const basePath = props.chartPath || defaultChartsPath;
+      const elsewhere = [...(await collectChartIds(basePath, basePath, targetDir))];
+      // Files only: a plain subfolder is no chart, and tile directories are
+      // already among the ids collected above.
+      const here = (fs.existsSync(targetDir) ? fs.readdirSync(targetDir) : []).filter(
+        (entry) => isOnlineChartFile(entry) || /\.(mbtiles|pmtiles)$/i.test(entry)
+      );
+      const names = chartFileNamesBeside(staged, [...here, ...elsewhere]);
+      staged.forEach((fileName, i) => {
+        const free = names[i] ?? fileName;
+        if (free !== fileName) {
+          fs.renameSync(path.join(quarantineDir, fileName), path.join(quarantineDir, free));
+          app.debug(`Saving ${fileName} as ${free}: its chart id is taken`);
+        }
+      });
+      await promoteQuarantine(quarantineDir, names, targetDir);
+      return names;
+    });
 
   // Keeps time-varying online charts' timelines current. An update is
   // applied to the served chart in place and announced as a delta; with
@@ -786,7 +823,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
       void refreshChartProviders().then(() => {
         for (const fileName of job.extractedFiles) {
-          const chartId = fileName.replace(/\.mbtiles$/, '');
+          const chartId = chartIdFromFilename(fileName);
 
           if (chartProviders[chartId]) {
             const chartData = sanitizeProvider(chartProviders[chartId], 2);
@@ -971,7 +1008,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     await refreshChartProviders();
 
     for (const filename of uploadedFiles) {
-      const chartId = filename.replace(/\.mbtiles$/, '');
+      const chartId = chartIdFromFilename(filename);
 
       if (chartProviders[chartId]) {
         const chartData = sanitizeProvider(chartProviders[chartId], 2);
@@ -1162,7 +1199,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   });
 
   const UploadChunkHeaders = Type.Object({
-    'x-upload-filename': Type.String({ minLength: 1, pattern: '\\.mbtiles$' }),
+    'x-upload-filename': Type.String({
+      minLength: 1,
+      pattern: '\\.([mM][bB]|[pP][mM])[tT][iI][lL][eE][sS]$'
+    }),
     'x-chunk-index': Type.Integer({ minimum: 0 }),
     'x-total-chunks': Type.Integer({ minimum: 1 }),
     'x-target-folder': Type.Optional(Type.String())
@@ -1248,7 +1288,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   job.extractedFiles.length > 0
                 ) {
                   try {
-                    await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
+                    const staged = job.extractedFiles;
+                    job.extractedFiles = await promoteCharts(quarantineDir, staged, targetDir);
                   } catch (promoteErr) {
                     app.error(
                       `Promotion failed for ${chartName}: ${
@@ -1272,7 +1313,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   }
                   await refreshChartProviders();
                   for (const fileName of job.extractedFiles) {
-                    const chartId = fileName.replace(/\.mbtiles$/, '');
+                    const chartId = chartIdFromFilename(fileName);
                     if (chartProviders[chartId]) {
                       const chartData = sanitizeProvider(chartProviders[chartId], 2);
                       emitChartDelta(chartId, chartData);
@@ -2249,7 +2290,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           (_fieldname: string, file: NodeJS.ReadableStream, info: { filename: string }) => {
             const { filename } = info;
 
-            if (!filename.endsWith('.mbtiles')) {
+            if (!/\.(mbtiles|pmtiles)$/i.test(filename)) {
               (file as NodeJS.ReadableStream & { resume(): void }).resume();
               return;
             }
@@ -2344,17 +2385,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     .json({ success: false, error: 'Access denied: Invalid upload path' });
                   return;
                 }
-                await promoteQuarantine(quarantineDir, uploadedFiles, promoteTarget);
+                const saved = await promoteCharts(quarantineDir, uploadedFiles, promoteTarget);
 
-                await finalizeUploadedFiles(uploadedFiles, targetFolder, basePath);
+                await finalizeUploadedFiles(saved, targetFolder, basePath);
 
                 res.status(200).json({
                   success: true,
-                  message: `${uploadedFiles.length} file(s) uploaded successfully`,
-                  files: uploadedFiles
+                  message: `${saved.length} file(s) uploaded successfully`,
+                  files: saved
                 });
               } else {
-                res.status(400).send('No valid .mbtiles files uploaded');
+                res.status(400).send('No valid .mbtiles or .pmtiles files uploaded');
               }
             } catch (error) {
               app.error(
@@ -2631,12 +2672,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               // Final chunk — promote the staged file out of quarantine.
               app.debug(`Final chunk ${totalChunks}/${totalChunks} for ${filename}, assembling`);
               try {
-                await promoteQuarantine(quarantineDir, [filename], uploadPath);
-                await finalizeUploadedFiles([filename], targetFolder, basePath);
+                const saved = await promoteCharts(quarantineDir, [filename], uploadPath);
+                await finalizeUploadedFiles(saved, targetFolder, basePath);
                 res.json({
                   success: true,
-                  message: `${filename} uploaded successfully`,
-                  files: [filename]
+                  message: `${saved.join(', ')} uploaded successfully`,
+                  files: saved
                 });
               } finally {
                 cleanupQuarantineDir(quarantineDir);

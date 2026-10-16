@@ -4,7 +4,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 
 ## Features
 
-- **Local Chart Management**: MBTiles and PMTiles (raster and vector), with folder organization and enable/disable toggles. PMTiles archives placed in the chart folder are served as they are; their metadata is read-only
+- **Local Chart Management**: MBTiles and PMTiles (raster and vector), with folder organization and enable/disable toggles. PMTiles archives are downloaded, uploaded or placed in the chart folder and served as they are; their metadata is read-only
 - **Folder Groups**: Enable/disable whole chart folders at once (OpenCPN-style groups, including nested folders); clients like Freeboard-SK see the change live via `resources.charts` deltas
 - **Download Manager**: Built-in download queue with progress tracking and ZIP extraction
 - **Chart Catalog**: Browse and download charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) with automatic update notifications
@@ -79,7 +79,7 @@ The interface provides five tabs:
 
 2. **Download from URL**:
    - Download charts directly from any URL
-   - Supports `.mbtiles` and `.zip` archives
+   - Supports `.mbtiles` and `.pmtiles` files, and `.zip` archives of `.mbtiles`
    - Download queue with progress tracking
 
 3. **Convert**:
@@ -111,7 +111,7 @@ The interface provides five tabs:
 | Format | Source | Conversion | Output |
 |--------|--------|-----------|--------|
 | **MBTiles** | Direct download | None needed | Raster or vector tiles |
-| **PMTiles** | Copied into the chart folder | None needed | Raster or vector tiles |
+| **PMTiles** | Direct download, upload or the chart folder | None needed | Raster or vector tiles |
 | **S-57 ENC** (.000) | IENC catalogs, custom upload | GDAL + tippecanoe (containerized) | Vector MBTiles with S-52 styling |
 | **BSB Raster** (.kap) | RNC catalogs, custom upload | GDAL (containerized) | Raster MBTiles (PNG) |
 | **Pilot Charts** (.kap in .tar.xz) | Pilot catalog | GDAL (containerized) | Raster MBTiles (PNG) |

@@ -6,6 +6,7 @@ import unzipper from 'unzipper';
 import { EventEmitter } from 'events';
 import { pipeline } from 'stream/promises';
 import type { DownloadJob, DownloadJobOptions } from '../types.js';
+import { chartIdFromFilename } from './online-charts.js';
 
 // A download failure worth retrying: a network error, a timeout, or a 5xx
 // server response. A 4xx (e.g. 404 for a moved/expired catalog link) is NOT
@@ -78,6 +79,24 @@ function isZipMagic(filePath: string): boolean {
     const buf = Buffer.alloc(4);
     const n = fs.readSync(fd, buf, 0, 4, 0);
     return n === 4 && buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// A PMTiles v3 archive opens with the ASCII "PMTiles" and version 3. Like
+// the ZIP check, the bytes decide the extension, since a URL may carry none.
+function isPmtilesMagic(filePath: string): boolean {
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, 'r');
+  } catch {
+    return false;
+  }
+  try {
+    const buf = Buffer.alloc(8);
+    const n = fs.readSync(fd, buf, 0, 8, 0);
+    return n === 8 && buf.toString('latin1', 0, 7) === 'PMTiles' && buf[7] === 3;
   } finally {
     fs.closeSync(fd);
   }
@@ -656,16 +675,13 @@ class DownloadManager extends EventEmitter {
         const ext = path.extname(fileName) || '.zip';
         fileName = job.chartName.trim() + ext;
       }
-    } else if (job.chartName && job.chartName.trim()) {
-      fileName = job.chartName.trim();
-      if (!fileName.endsWith('.mbtiles')) {
-        fileName += '.mbtiles';
-      }
     } else {
-      fileName = path.basename(job.originalUrl ?? job.url).split('?')[0];
-      if (!fileName.endsWith('.mbtiles')) {
-        fileName += '.mbtiles';
-      }
+      const ext = isPmtilesMagic(partPath) ? '.pmtiles' : '.mbtiles';
+      const named =
+        job.chartName && job.chartName.trim()
+          ? job.chartName.trim()
+          : path.basename(job.originalUrl ?? job.url).split('?')[0];
+      fileName = chartIdFromFilename(named) + ext;
     }
 
     // Strip any directory component before joining. The route handlers
