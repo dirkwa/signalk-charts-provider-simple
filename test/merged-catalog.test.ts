@@ -383,6 +383,29 @@ describe('checkOnlineChartEntry', () => {
     );
   });
 
+  it('refuses offline copies of a tile URL the plugin cannot fill, or a WMS with no layer', () => {
+    const tiles = (url: string): OnlineChartEntry =>
+      onlineEntry({ chart: { type: 'tilelayer', url }, temporal: undefined, offline: {} });
+    assert.match(
+      checkOnlineChartEntry(tiles('https://{s}.example.com/{z}/{x}/{y}.png')).join(),
+      /cannot use \{s\}/
+    );
+    assert.match(
+      checkOnlineChartEntry(tiles('https://example.com/{z}/{x}.png')).join(),
+      /need \{z\}, \{x\} and \{y\}/
+    );
+    assert.deepStrictEqual(
+      checkOnlineChartEntry(tiles('https://example.com/{z-2}/{x}/{-y}.png')),
+      []
+    );
+    const noLayer = onlineEntry({
+      chart: { type: 'WMS', url: 'https://example.com/ows', layers: [] },
+      temporal: undefined,
+      offline: {}
+    });
+    assert.match(checkOnlineChartEntry(noLayer).join(), /offline needs a WMS layer/);
+  });
+
   it('rejects an inverted zoom range and an inverted bbox', () => {
     const bad = onlineEntry({
       chart: {

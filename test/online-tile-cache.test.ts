@@ -175,17 +175,41 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     assert.strictEqual(fetched.length, 1);
   });
 
-  it('refreshes an old tile, and serves it anyway when the provider is unreachable', async () => {
+  it('serves an old tile at once and refreshes it behind, keeping it when the provider is unreachable', async () => {
     const p = proxy();
     await p.getTile('depths', source, 2, 1, 0);
     now += TILE_REFRESH_MS + 1;
     answer = null;
     const stale = await p.getTile('depths', source, 2, 1, 0);
     assert.deepStrictEqual(stale && [...stale], [...PNG]);
+    await new Promise((r) => setImmediate(r));
     answer = PNG2;
+    const stillStale = await p.getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(stillStale && [...stillStale], [...PNG]);
+    await new Promise((r) => setImmediate(r));
     const fresh = await p.getTile('depths', source, 2, 1, 0);
     assert.deepStrictEqual(fresh && [...fresh], [...PNG2]);
     assert.strictEqual(fetched.length, 3);
+  });
+
+  it('serves an old tile without waiting for a provider that hangs', async () => {
+    await proxy().getTile('depths', source, 2, 1, 0);
+    now += TILE_REFRESH_MS + 1;
+    const hanging = new OnlineTileProxy(
+      store,
+      () => new Promise(() => undefined),
+      () => now
+    );
+    const stale = await hanging.getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(stale && [...stale], [...PNG]);
+  });
+
+  it('fetches from the provider when the kept file is damaged', async () => {
+    store.close();
+    store = new OnlineTileStore(dir);
+    fs.writeFileSync(path.join(dir, 'depths.mbtiles'), 'not a database');
+    const data = await proxy().getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(data && [...data], [...PNG]);
   });
 
   it('serves an old tile when the fetcher itself throws', async () => {
