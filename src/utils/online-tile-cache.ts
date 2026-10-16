@@ -151,15 +151,19 @@ export class OnlineTileStore {
 
   constructor(private readonly dir: string) {}
 
+  private file(catalogId: string): string {
+    // The id names a file; the published schema allows nothing else.
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(catalogId)) {
+      throw new Error(`Invalid catalog id for an offline chart: ${catalogId}`);
+    }
+    return path.join(this.dir, `${catalogId}.mbtiles`);
+  }
+
   private db(catalogId: string): DatabaseSync {
     let db = this.dbs.get(catalogId);
     if (!db) {
-      // The id names a file; the published schema allows nothing else.
-      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(catalogId)) {
-        throw new Error(`Invalid catalog id for an offline chart: ${catalogId}`);
-      }
       fs.mkdirSync(this.dir, { recursive: true });
-      db = new DatabaseSync(path.join(this.dir, `${catalogId}.mbtiles`));
+      db = new DatabaseSync(this.file(catalogId));
       try {
         db.exec(`
           PRAGMA journal_mode = WAL;
@@ -229,6 +233,28 @@ export class OnlineTileStore {
     this.tileStatements(catalogId).insert.run(z, x, 2 ** z - 1 - y, data, now);
   }
 
+  /** How many tiles are kept for a chart and how much space they take. */
+  stats(catalogId: string): { tiles: number; bytes: number } {
+    if (this.closed || !fs.existsSync(this.file(catalogId))) {
+      return { tiles: 0, bytes: 0 };
+    }
+    const row = this.db(catalogId)
+      .prepare('SELECT COUNT(*) AS tiles, COALESCE(SUM(LENGTH(tile_data)), 0) AS bytes FROM tiles')
+      .get() as { tiles: number; bytes: number };
+    return { tiles: row.tiles, bytes: row.bytes };
+  }
+
+  /** Drop every tile kept for a chart. */
+  clear(catalogId: string): void {
+    const file = this.file(catalogId);
+    this.statements.delete(catalogId);
+    this.dbs.get(catalogId)?.close();
+    this.dbs.delete(catalogId);
+    for (const f of [file, `${file}-wal`, `${file}-shm`]) {
+      fs.rmSync(f, { force: true });
+    }
+  }
+
   close(): void {
     this.closed = true;
     this.statements.clear();
@@ -265,6 +291,9 @@ export function httpTileFetcher(userAgent: string): TileFetcher {
   };
 }
 
+/** What happened to one tile an area download asked for. */
+export type EnsureOutcome = 'kept' | 'fetched' | 'failed' | 'none';
+
 /**
  * Serves proxied tiles: a kept tile when there is a fresh one, otherwise
  * the provider's, which is then kept. A kept tile is served however old it
@@ -279,7 +308,7 @@ export class OnlineTileProxy {
     private readonly now: () => number = Date.now
   ) {}
 
-  getTile(
+  async getTile(
     catalogId: string,
     source: OnlineTileSource,
     z: number,
@@ -287,7 +316,7 @@ export class OnlineTileProxy {
     y: number
   ): Promise<Buffer | null> {
     if (z > 24 || x >= 2 ** z || y >= 2 ** z) {
-      return Promise.resolve(null);
+      return null;
     }
     let cached: CachedTile | null = null;
     try {
@@ -296,11 +325,47 @@ export class OnlineTileProxy {
       // A damaged tile file must not stop the chart showing while online.
     }
     if (cached && this.now() - cached.fetchedAt < TILE_REFRESH_MS) {
-      return Promise.resolve(cached.data);
+      return cached.data;
     }
+    const fetching = this.fetchAndKeep(catalogId, source, z, x, y);
+    // An old tile is shown at once and refreshed behind it, so a link that
+    // hangs rather than fails never leaves the chart blank while it times out.
+    return cached ? cached.data : fetching;
+  }
+
+  /**
+   * Make sure a fresh copy of a tile is kept, for an area download. A tile
+   * the service has no level for counts as `none`, not as a failure.
+   */
+  async ensureTile(
+    catalogId: string,
+    source: OnlineTileSource,
+    z: number,
+    x: number,
+    y: number
+  ): Promise<EnsureOutcome> {
+    if (z > 24 || x >= 2 ** z || y >= 2 ** z || !upstreamTileUrl(source, z, x, y)) {
+      return 'none';
+    }
+    const cached = this.store.get(catalogId, z, x, y);
+    if (cached && this.now() - cached.fetchedAt < TILE_REFRESH_MS) {
+      return 'kept';
+    }
+    const data = await this.fetchAndKeep(catalogId, source, z, x, y);
+    return data ? 'fetched' : 'failed';
+  }
+
+  /** The provider's tile, kept on the way through; null when it can't be had. */
+  private fetchAndKeep(
+    catalogId: string,
+    source: OnlineTileSource,
+    z: number,
+    x: number,
+    y: number
+  ): Promise<Buffer | null> {
     const url = upstreamTileUrl(source, z, x, y);
     if (!url) {
-      return Promise.resolve(cached?.data ?? null);
+      return Promise.resolve(null);
     }
     const key = `${catalogId}/${String(z)}/${String(x)}/${String(y)}`;
     let pending = this.inFlight.get(key);
@@ -309,7 +374,7 @@ export class OnlineTileProxy {
         .catch(() => null)
         .then((data) => {
           if (!data) {
-            return cached?.data ?? null;
+            return null;
           }
           try {
             this.store.put(catalogId, z, x, y, data, this.now());
@@ -321,8 +386,6 @@ export class OnlineTileProxy {
         .finally(() => this.inFlight.delete(key));
       this.inFlight.set(key, pending);
     }
-    // An old tile is shown at once and refreshed behind it, so a link that
-    // hangs rather than fails never leaves the chart blank while it times out.
-    return cached ? Promise.resolve(cached.data) : pending;
+    return pending;
   }
 }

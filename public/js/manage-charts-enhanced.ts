@@ -33,6 +33,10 @@ interface ManageChart {
     type: string | null;
     /** Served through the server, which keeps every tile it fetches. */
     keptOffline?: boolean;
+    /** The served chart id, for its offline-area routes. */
+    chartId?: string;
+    minzoom?: number | null;
+    maxzoom?: number | null;
   };
 }
 
@@ -540,6 +544,12 @@ function renderChartCard(chart: ManageChart): string {
   const renameAction = online
     ? `renameOnlineChart('${attrPath}')`
     : `showRenameDialog('${attrPath}', '${attrName}', '${attrFolder}')`;
+  const offlineAreaButton =
+    online?.keptOffline && online.available && chart.enabled && chart.folderEnabled !== false
+      ? `<button class="btn btn-sm btn-primary" onclick="openOfflineArea('${attrPath}')" title="Download an area to use without internet">
+            Offline area
+          </button>`
+      : '';
 
   if (viewMode === 'grid') {
     return `
@@ -569,6 +579,16 @@ function renderChartCard(chart: ManageChart): string {
           <div class="chart-meta-row">
             <span class="meta-label">📊 Chart:</span>
             <span class="meta-value" style="font-weight: 500; color: var(--accent-primary);">${manageEscapeHtml(chart.chartName)}</span>
+          </div>
+          `
+              : ''
+          }
+          ${
+            offlineAreaButton
+              ? `
+          <div class="chart-meta-row">
+            <span class="meta-label">${window.getIcon('download')} Offline:</span>
+            ${offlineAreaButton}
           </div>
           `
               : ''
@@ -627,6 +647,7 @@ function renderChartCard(chart: ManageChart): string {
         </div>
         <div class="chart-list-actions">
           ${typeBadge}
+          ${offlineAreaButton}
           ${
             !isDir
               ? `<button class="btn btn-sm btn-info" onclick="showChartInfo('${attrPath}')" title="View chart metadata">
@@ -1733,6 +1754,20 @@ async function createFolder(folderName: string): Promise<void> {
   }
 }
 
+function openOfflineArea(chartPath: string): void {
+  const chart = chartsData.find((c) => c.relativePath === chartPath);
+  const online = chart?.online;
+  if (!chart || !online?.chartId) {
+    return;
+  }
+  void window.showOfflineArea(
+    online.chartId,
+    chart.chartName ?? chart.name,
+    online.minzoom ?? null,
+    online.maxzoom ?? null
+  );
+}
+
 // An online chart's name lives inside its .onlinechart.json, not in its file
 // name, so renaming edits it through the metadata dialog.
 async function renameOnlineChart(chartPath: string): Promise<void> {
@@ -2549,6 +2584,7 @@ window.closeDuplicateModal = closeDuplicateModal;
 window.confirmDuplicate = confirmDuplicate;
 window.showChartInfo = showChartInfo;
 window.renameOnlineChart = renameOnlineChart;
+window.openOfflineArea = openOfflineArea;
 window.editChartMetadata = editChartMetadata;
 window.cancelEditMetadata = cancelEditMetadata;
 window.saveChartMetadata = saveChartMetadata;
