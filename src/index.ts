@@ -88,6 +88,7 @@ import {
   promoteQuarantine,
   sweepStaleQuarantineDirs
 } from './utils/quarantine.js';
+import { serialQueue } from './utils/serial-queue.js';
 import { parseBody, parseShape } from './utils/rest-validation.js';
 import {
   getAllConversionProgress as getAllRncProgress,
@@ -191,6 +192,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // Bumped on every invalidation, so a scan that started before one can't
   // store its now-stale result.
   let onlineAddedGeneration = 0;
+  // Downloads pick a free chart name from the target folder and then move
+  // into it; run those steps one job at a time, or two jobs finishing
+  // together pick the same name and the later one replaces the earlier.
+  const promoteDownload = serialQueue();
 
   // Keeps time-varying online charts' timelines current. An update is
   // applied to the served chart in place and announced as a delta; with
@@ -1253,19 +1258,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 ) {
                   try {
                     const staged = job.extractedFiles;
-                    const names = chartFileNamesBeside(staged, fs.readdirSync(targetDir));
-                    staged.forEach((fileName, i) => {
-                      const free = names[i] ?? fileName;
-                      if (free !== fileName) {
-                        fs.renameSync(
-                          path.join(quarantineDir, fileName),
-                          path.join(quarantineDir, free)
-                        );
-                        app.debug(`Saving ${fileName} as ${free}: its chart id is taken there`);
-                      }
+                    job.extractedFiles = await promoteDownload(async () => {
+                      const names = chartFileNamesBeside(staged, fs.readdirSync(targetDir));
+                      staged.forEach((fileName, i) => {
+                        const free = names[i] ?? fileName;
+                        if (free !== fileName) {
+                          fs.renameSync(
+                            path.join(quarantineDir, fileName),
+                            path.join(quarantineDir, free)
+                          );
+                          app.debug(`Saving ${fileName} as ${free}: its chart id is taken there`);
+                        }
+                      });
+                      await promoteQuarantine(quarantineDir, names, targetDir);
+                      return names;
                     });
-                    job.extractedFiles = names;
-                    await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
                   } catch (promoteErr) {
                     app.error(
                       `Promotion failed for ${chartName}: ${
