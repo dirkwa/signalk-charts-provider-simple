@@ -40,6 +40,7 @@ import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import {
   chartFileNamesBeside,
+  sameIdSiblings,
   chartIdFromFilename,
   collectChartIds,
   findOnlineChartFiles,
@@ -192,10 +193,53 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // Bumped on every invalidation, so a scan that started before one can't
   // store its now-stale result.
   let onlineAddedGeneration = 0;
-  // Downloads pick a free chart name from the target folder and then move
-  // into it; run those steps one job at a time, or two jobs finishing
-  // together pick the same name and the later one replaces the earlier.
-  const promoteDownload = serialQueue();
+  // New charts pick a free chart name and then move into the library; run
+  // those steps one at a time, or two finishing together pick the same name
+  // and the later one replaces the earlier.
+  const promotions = serialQueue();
+
+  /**
+   * Move charts staged in `quarantineDir` into `targetDir`, renaming any
+   * whose chart id another chart in the library already has, since one id
+   * serves one chart. A file of the same name in `targetDir` is replaced.
+   * An upload (`replaceSameId`) also replaces a chart of the same id there
+   * under the other format, as the upload dialog warned. Returns the names
+   * the files were saved under, in order.
+   */
+  const promoteCharts = (
+    quarantineDir: string,
+    staged: readonly string[],
+    targetDir: string,
+    replaceSameId: boolean
+  ): Promise<string[]> =>
+    promotions(async () => {
+      const basePath = props.chartPath || defaultChartsPath;
+      const elsewhere = [...(await collectChartIds(basePath, basePath, targetDir))];
+      const here = fs.existsSync(targetDir) ? fs.readdirSync(targetDir) : [];
+      const names = chartFileNamesBeside(
+        staged,
+        replaceSameId ? elsewhere : [...here, ...elsewhere]
+      );
+      staged.forEach((fileName, i) => {
+        const free = names[i] ?? fileName;
+        if (free !== fileName) {
+          fs.renameSync(path.join(quarantineDir, fileName), path.join(quarantineDir, free));
+          app.debug(`Saving ${fileName} as ${free}: its chart id is taken`);
+        }
+      });
+      await promoteQuarantine(quarantineDir, names, targetDir);
+      if (replaceSameId) {
+        for (const name of names) {
+          for (const sibling of sameIdSiblings(name, here)) {
+            if (!names.includes(sibling)) {
+              fs.rmSync(path.join(targetDir, sibling), { force: true });
+              app.debug(`Replaced ${sibling} with ${name}`);
+            }
+          }
+        }
+      }
+      return names;
+    });
 
   // Keeps time-varying online charts' timelines current. An update is
   // applied to the served chart in place and announced as a delta; with
@@ -1258,21 +1302,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 ) {
                   try {
                     const staged = job.extractedFiles;
-                    job.extractedFiles = await promoteDownload(async () => {
-                      const names = chartFileNamesBeside(staged, fs.readdirSync(targetDir));
-                      staged.forEach((fileName, i) => {
-                        const free = names[i] ?? fileName;
-                        if (free !== fileName) {
-                          fs.renameSync(
-                            path.join(quarantineDir, fileName),
-                            path.join(quarantineDir, free)
-                          );
-                          app.debug(`Saving ${fileName} as ${free}: its chart id is taken there`);
-                        }
-                      });
-                      await promoteQuarantine(quarantineDir, names, targetDir);
-                      return names;
-                    });
+                    job.extractedFiles = await promoteCharts(
+                      quarantineDir,
+                      staged,
+                      targetDir,
+                      false
+                    );
                   } catch (promoteErr) {
                     app.error(
                       `Promotion failed for ${chartName}: ${
@@ -2368,14 +2403,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     .json({ success: false, error: 'Access denied: Invalid upload path' });
                   return;
                 }
-                await promoteQuarantine(quarantineDir, uploadedFiles, promoteTarget);
+                const saved = await promoteCharts(
+                  quarantineDir,
+                  uploadedFiles,
+                  promoteTarget,
+                  true
+                );
 
-                await finalizeUploadedFiles(uploadedFiles, targetFolder, basePath);
+                await finalizeUploadedFiles(saved, targetFolder, basePath);
 
                 res.status(200).json({
                   success: true,
-                  message: `${uploadedFiles.length} file(s) uploaded successfully`,
-                  files: uploadedFiles
+                  message: `${saved.length} file(s) uploaded successfully`,
+                  files: saved
                 });
               } else {
                 res.status(400).send('No valid .mbtiles or .pmtiles files uploaded');
@@ -2655,12 +2695,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               // Final chunk — promote the staged file out of quarantine.
               app.debug(`Final chunk ${totalChunks}/${totalChunks} for ${filename}, assembling`);
               try {
-                await promoteQuarantine(quarantineDir, [filename], uploadPath);
-                await finalizeUploadedFiles([filename], targetFolder, basePath);
+                const saved = await promoteCharts(quarantineDir, [filename], uploadPath, true);
+                await finalizeUploadedFiles(saved, targetFolder, basePath);
                 res.json({
                   success: true,
-                  message: `${filename} uploaded successfully`,
-                  files: [filename]
+                  message: `${saved.join(', ')} uploaded successfully`,
+                  files: saved
                 });
               } finally {
                 cleanupQuarantineDir(quarantineDir);

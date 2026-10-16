@@ -86,6 +86,18 @@ export function chartFileNamesBeside(
   });
 }
 
+/**
+ * The chart files in a folder (`entries`) that share `fileName`'s chart id
+ * under another name, such as `foo.mbtiles` for `foo.pmtiles`.
+ */
+export function sameIdSiblings(fileName: string, entries: readonly string[]): string[] {
+  const id = chartIdFromFilename(fileName);
+  return entries.filter(
+    (entry) =>
+      entry !== fileName && /\.(mbtiles|pmtiles)$/i.test(entry) && chartIdFromFilename(entry) === id
+  );
+}
+
 export function readOnlineChartFile(filePath: string): OnlineChartFile | null {
   try {
     const raw: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
@@ -252,10 +264,12 @@ function isTileDirectory(dirPath: string): boolean {
  * Every chart id in the library — `.mbtiles`, `.pmtiles` and online chart file stems,
  * and tile-directory names — whether or not the chart currently loads.
  * A new online chart must avoid all of them (see writeOnlineChartFile).
+ * With `skipFilesIn`, the files directly in that folder are left out.
  */
 export async function collectChartIds(
   basePath: string,
-  currentPath: string = basePath
+  currentPath: string = basePath,
+  skipFilesIn?: string
 ): Promise<Set<string>> {
   const ids = new Set<string>();
   let entries: fs.Dirent[];
@@ -273,12 +287,13 @@ export async function collectChartIds(
       if (isTileDirectory(fullPath)) {
         ids.add(entry.name);
       } else {
-        for (const id of await collectChartIds(basePath, fullPath)) {
+        for (const id of await collectChartIds(basePath, fullPath, skipFilesIn)) {
           ids.add(id);
         }
       }
     } else if (
       entry.isFile() &&
+      (skipFilesIn === undefined || path.resolve(currentPath) !== path.resolve(skipFilesIn)) &&
       (isOnlineChartFile(entry.name) || /\.(mbtiles|pmtiles)$/i.test(entry.name))
     ) {
       ids.add(chartIdFromFilename(entry.name));

@@ -9,6 +9,8 @@ import { scanChartsRecursively } from '../dist/utils/file-scanner.js';
 import {
   chartFileNameBeside,
   chartFileNamesBeside,
+  collectChartIds,
+  sameIdSiblings,
   chartIdFromFilename,
   findOnlineChartFiles,
   onlineChartProvider,
@@ -268,6 +270,36 @@ describe('chartFileNameBeside', () => {
       'fiji-3.mbtiles'
     );
     assert.strictEqual(chartFileNameBeside('Fiji.PMTILES', ['Fiji']), 'Fiji-2.PMTILES');
+  });
+});
+
+describe('sameIdSiblings', () => {
+  it('finds the chart an upload of the other format replaces, and nothing else', () => {
+    assert.deepStrictEqual(
+      sameIdSiblings('foo.pmtiles', [
+        'foo.mbtiles',
+        'foo.pmtiles',
+        'foo-2.mbtiles',
+        'foo.onlinechart.json'
+      ]),
+      ['foo.mbtiles']
+    );
+  });
+});
+
+describe('collectChartIds', () => {
+  it('can leave out the charts directly in one folder, but not its subfolders', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chart-ids-'));
+    try {
+      fs.mkdirSync(path.join(root, 'a', 'b'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'top.mbtiles'), '');
+      fs.writeFileSync(path.join(root, 'a', 'here.pmtiles'), '');
+      fs.writeFileSync(path.join(root, 'a', 'b', 'deeper.mbtiles'), '');
+      const ids = await collectChartIds(root, root, path.join(root, 'a'));
+      assert.deepStrictEqual([...ids].sort(), ['deeper', 'top']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
