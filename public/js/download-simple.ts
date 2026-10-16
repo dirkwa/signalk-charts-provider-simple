@@ -534,7 +534,6 @@ function truncateUrl(url: string, maxLength = 60): string {
   return url.substring(0, maxLength - 3) + '...';
 }
 
-// Expose inline-onclick handlers used by the rendered HTML.
 /** Online charts go to the catalog's default folder unless the user picks another. */
 function fillOnlineChartFolders(folders: string[]): void {
   const select = document.getElementById('onlineChartFolder') as HTMLSelectElement | null;
@@ -630,7 +629,7 @@ async function addOnlineChartByUrl(): Promise<void> {
     const response = await fetch(`${DOWNLOAD_API_BASE}/online-charts/custom`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, folder: onlineChartInput('onlineChartFolder') || '/', chart })
+      body: JSON.stringify({ name, folder: onlineChartInput('onlineChartFolder') || ONLINE_CHARTS_FOLDER, chart })
     });
     const result = (await response.json().catch(() => ({}))) as {
       success?: boolean;
@@ -652,6 +651,7 @@ async function addOnlineChartByUrl(): Promise<void> {
   }
 }
 
+// Expose inline-onclick handlers used by the rendered HTML.
 window.addOnlineChartByUrl = addOnlineChartByUrl;
 window.onlineChartTypeChanged = onlineChartTypeChanged;
 window.startDownload = startDownload;

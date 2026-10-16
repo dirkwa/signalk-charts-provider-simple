@@ -152,6 +152,51 @@ describe('httpTileFetcher', () => {
       globalThis.fetch = original;
     }
   });
+
+  it('stops reading an answer with no length once it is too large to be a tile', async () => {
+    const original = globalThis.fetch;
+    let sent = 0;
+    const chunk = new Uint8Array(1024 * 1024);
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              sent++;
+              controller.enqueue(sent === 1 ? PNG : chunk);
+            }
+          })
+        )
+      );
+    try {
+      assert.strictEqual(await httpTileFetcher('test')('https://t/0/0/0'), null);
+      assert.ok(sent < 20, `read ${String(sent)} chunks`);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('reads a tile sent without a length', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(PNG.slice(0, 4));
+              controller.enqueue(PNG.slice(4));
+              controller.close();
+            }
+          })
+        )
+      );
+    try {
+      const data = await httpTileFetcher('test')('https://t/0/0/0');
+      assert.deepStrictEqual(data && [...data], [...PNG]);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });
 
 describe('tileImageType', () => {
@@ -286,6 +331,12 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     const data = await proxy().streamTile(source, 2, 1, 0);
     assert.deepStrictEqual(data && [...data], [...PNG]);
     assert.strictEqual(fs.existsSync(path.join(dir, 'depths.mbtiles')), false);
+  });
+
+  it('asks the provider once for a streamed tile requested twice at once', async () => {
+    const p = proxy();
+    await Promise.all([p.streamTile(source, 2, 1, 0), p.streamTile(source, 2, 1, 0)]);
+    assert.strictEqual(fetched.length, 1);
   });
 
   it('opens no file for a request that arrives after the plugin stopped', async () => {

@@ -1520,7 +1520,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     available: onlineEntry !== undefined,
                     // Distinguishes "not in the catalog" from "no catalog yet"
                     // (first run offline, or a catalog this version can't read).
-                    catalogLoaded: hasCatalog(),
+                    // A chart added by URL needs no catalog.
+                    catalogLoaded: chart.online.custom !== undefined || hasCatalog(),
                     type: onlineEntry?.chart.type ?? null,
                     category: onlineEntry?.category ?? null,
                     temporal: onlineEntry?.temporal !== undefined,

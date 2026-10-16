@@ -72,6 +72,9 @@ export function customOnlineChartProblem(custom: CustomOnlineChart): string | nu
   if (custom.type === 'WMS' && !custom.layers) {
     return 'A WMS chart needs at least one layer';
   }
+  if (custom.type === 'WMS' && /\{[^}]*\}/.test(custom.url)) {
+    return 'A WMS URL is the service address, without placeholders: the map requests are made for it';
+  }
   const { url } = custom;
   const tiled = /\{z(-\d+)?\}/.test(url) && url.includes('{x}') && /\{-?y\}/.test(url);
   if (custom.type === 'tilelayer' && !tiled && !/\{bbox(_3857)?\}/.test(url)) {
@@ -177,13 +180,16 @@ export function renameOnlineChartFile(filePath: string, name: string): boolean {
 }
 
 /**
- * The file-name stem for a catalog id. The stem becomes the chart's
- * identifier, which appears in resource URLs and Signal K delta paths, so
- * it comes from the catalog id (lower-case, hyphenated) rather than the
- * display name, which lives inside the file.
+ * The file-name stem for a catalog id, or for a chart added by URL its
+ * lower-cased name. The stem becomes the chart's identifier, which appears
+ * in resource URLs and Signal K delta paths, so it keeps to letters,
+ * digits, '-' and '_', and avoids the names Windows reserves for devices.
  */
 function safeStem(catalogId: string): string {
   const stem = catalogId.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(stem)) {
+    return `${stem}-chart`;
+  }
   return stem || 'online-chart';
 }
 

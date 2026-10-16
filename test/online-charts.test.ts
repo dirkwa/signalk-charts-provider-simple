@@ -91,6 +91,12 @@ describe('online charts', () => {
       });
     });
 
+    it('never names a chart added by URL after a device name Windows reserves', () => {
+      const custom = { type: 'WMS' as const, url: 'https://w.example/ows', layers: ['a'] };
+      const file = writeOnlineChartFile(dir, 'custom-x', 'CON', new Set(), custom);
+      assert.strictEqual(file, 'con-chart.onlinechart.json');
+    });
+
     it('picks a new name instead of overwriting', () => {
       writeOnlineChartFile(dir, 'nws-radar-conus', 'A');
       const second = writeOnlineChartFile(dir, 'nws-radar-conus', 'B');
@@ -283,6 +289,13 @@ describe('online charts added by URL', () => {
     assert.strictEqual(
       onlineChartEntry(file, () => undefined),
       undefined
+    );
+  });
+
+  it('refuses placeholders in a WMS address, where the server makes the requests', () => {
+    assert.match(
+      customOnlineChartProblem({ ...custom, url: 'https://w.example/ows?BBOX={bbox}' }) ?? '',
+      /without placeholders/
     );
   });
 

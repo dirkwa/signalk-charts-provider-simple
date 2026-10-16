@@ -294,6 +294,26 @@ const MAX_TILE_BYTES = 10 * 1024 * 1024;
 
 export type TileFetcher = (url: string) => Promise<Uint8Array | null>;
 
+/**
+ * The body, or null once it passes `limit` bytes. Read in chunks, because a
+ * chunked answer has no Content-Length to refuse it by up front.
+ */
+async function readCapped(res: Response, limit: number): Promise<Uint8Array | null> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (res.body) {
+    // Leaving the loop early cancels the rest of the body.
+    for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+      size += chunk.byteLength;
+      if (size > limit) {
+        return null;
+      }
+      chunks.push(chunk);
+    }
+  }
+  return Buffer.concat(chunks);
+}
+
 /** Fetch one tile; null when the provider fails or answers with something that is not an image. */
 export function httpTileFetcher(userAgent: string): TileFetcher {
   return async (url) => {
@@ -305,8 +325,8 @@ export function httpTileFetcher(userAgent: string): TileFetcher {
       if (!res.ok || Number(res.headers.get('content-length') ?? 0) > MAX_TILE_BYTES) {
         return null;
       }
-      const data = new Uint8Array(await res.arrayBuffer());
-      if (data.byteLength > MAX_TILE_BYTES) {
+      const data = await readCapped(res, MAX_TILE_BYTES);
+      if (!data) {
         return null;
       }
       // WMS servers report errors as XML with a 200 status.
@@ -327,6 +347,7 @@ export type EnsureOutcome = 'kept' | 'fetched' | 'failed' | 'none';
  */
 export class OnlineTileProxy {
   private readonly inFlight = new Map<string, Promise<Buffer | null>>();
+  private readonly streaming = new Map<string, Promise<Uint8Array | null>>();
 
   constructor(
     private readonly store: OnlineTileStore,
@@ -367,7 +388,18 @@ export class OnlineTileProxy {
     y: number
   ): Promise<Buffer | null> {
     const url = z > 24 || x >= 2 ** z || y >= 2 ** z ? null : upstreamTileUrl(source, z, x, y);
-    const data = url ? await this.fetchTile(url) : null;
+    if (!url) {
+      return null;
+    }
+    // Plotters ask for the same tile more than once; the provider is asked once.
+    let pending = this.streaming.get(url);
+    if (!pending) {
+      pending = this.fetchTile(url)
+        .catch(() => null)
+        .finally(() => this.streaming.delete(url));
+      this.streaming.set(url, pending);
+    }
+    const data = await pending;
     return data ? Buffer.from(data.buffer, data.byteOffset, data.byteLength) : null;
   }
 
