@@ -116,6 +116,29 @@ describe('AreaDownloader', () => {
     assert.ok(job.done < job.total);
   });
 
+  it('reports a failure only once every tile in flight has ended', async () => {
+    // One worker fails fast while the other is still waiting on a slow answer.
+    let slow: ((data: Uint8Array | null) => void) | null = null;
+    let calls = 0;
+    const downloader = setup(() => {
+      calls++;
+      if (calls === 1) {
+        return new Promise((resolve) => {
+          slow = resolve;
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const { id } = downloader.start({ ...request, minzoom: 8, maxzoom: 12 });
+    for (let i = 0; i < 200 && calls < 26; i++) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    assert.strictEqual(downloader.get(id)?.status, 'running');
+    (slow as ((data: Uint8Array | null) => void) | null)?.(PNG);
+    const job = await finished(downloader, id);
+    assert.strictEqual(job.status, 'failed');
+  });
+
   it('stops when cancelled', async () => {
     const downloader = setup(() => new Promise((resolve) => setTimeout(() => resolve(PNG), 5)));
     const { id } = downloader.start({ ...request, minzoom: 8, maxzoom: 12 });

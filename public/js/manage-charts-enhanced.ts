@@ -545,7 +545,7 @@ function renderChartCard(chart: ManageChart): string {
     ? `renameOnlineChart('${attrPath}')`
     : `showRenameDialog('${attrPath}', '${attrName}', '${attrFolder}')`;
   const offlineAreaButton =
-    online?.keptOffline && online.available
+    online?.keptOffline && online.available && chart.enabled && chart.folderEnabled !== false
       ? `<button class="btn btn-sm btn-primary" onclick="openOfflineArea('${attrPath}')" title="Download an area to use without internet">
             Offline area
           </button>`
@@ -1754,8 +1754,6 @@ async function createFolder(folderName: string): Promise<void> {
   }
 }
 
-// An online chart's name lives inside its .onlinechart.json, not in its file
-// name, so renaming edits it through the metadata dialog.
 function openOfflineArea(chartPath: string): void {
   const chart = chartsData.find((c) => c.relativePath === chartPath);
   const online = chart?.online;
@@ -1770,6 +1768,8 @@ function openOfflineArea(chartPath: string): void {
   );
 }
 
+// An online chart's name lives inside its .onlinechart.json, not in its file
+// name, so renaming edits it through the metadata dialog.
 async function renameOnlineChart(chartPath: string): Promise<void> {
   await showChartInfo(chartPath);
   if (currentMetadata) {

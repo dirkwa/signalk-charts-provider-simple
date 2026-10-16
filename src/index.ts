@@ -3057,13 +3057,23 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const offlineChart = (
       chartId: string,
       res: Response
-    ): { catalogId: string; source: OnlineTileSource } | null => {
+    ): {
+      catalogId: string;
+      source: OnlineTileSource;
+      minzoom: number | undefined;
+      maxzoom: number | undefined;
+    } | null => {
       const provider = Object.hasOwn(chartProviders, chartId) ? chartProviders[chartId] : undefined;
       if (!provider?._offlineSource || !provider._catalogId) {
         res.status(404).json({ success: false, error: 'Not a chart kept offline' });
         return null;
       }
-      return { catalogId: provider._catalogId, source: provider._offlineSource };
+      return {
+        catalogId: provider._catalogId,
+        source: provider._offlineSource,
+        minzoom: provider.minzoom,
+        maxzoom: provider.maxzoom
+      };
     };
 
     router.post('/online-charts/:chartId/area-download', (req: Request, res: Response) => {
@@ -3084,12 +3094,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         return;
       }
       try {
+        // Levels the chart does not have would only fail, and enough of them
+        // in a row end the job.
         const job = areaDownloader.start({
           chartId: String(req.params.chartId),
-          ...chart,
+          catalogId: chart.catalogId,
+          source: chart.source,
           bbox: body.bbox,
-          minzoom: body.minzoom,
-          maxzoom: body.maxzoom
+          minzoom: Math.max(body.minzoom, chart.minzoom ?? 0),
+          maxzoom: Math.min(body.maxzoom, chart.maxzoom ?? body.maxzoom)
         });
         res.status(202).json({ success: true, job });
       } catch (err) {

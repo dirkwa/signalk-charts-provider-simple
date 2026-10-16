@@ -177,9 +177,13 @@ export class AreaDownloader {
   private async run(job: AreaDownloadJob, source: OnlineTileSource): Promise<void> {
     const tiles = areaTiles(job.bbox, job.minzoom, job.maxzoom);
     let consecutiveFailures = 0;
+    // The job stays 'running' until every worker has returned, so nothing
+    // (deleting the kept tiles, say) treats it as over while tiles are still
+    // being written.
+    let gaveUp = false;
     const worker = async (): Promise<void> => {
       for (;;) {
-        if (this.cancelled.has(job.id) || job.status !== 'running') {
+        if (this.cancelled.has(job.id) || gaveUp) {
           return;
         }
         const next = tiles.next();
@@ -197,9 +201,8 @@ export class AreaDownloader {
         if (outcome === 'failed') {
           job.failed++;
           consecutiveFailures++;
-          if (consecutiveFailures >= GIVE_UP_AFTER && job.status === 'running') {
-            job.status = 'failed';
-            job.error = 'The chart provider stopped answering; check the internet connection';
+          if (consecutiveFailures >= GIVE_UP_AFTER) {
+            gaveUp = true;
           }
         } else {
           consecutiveFailures = 0;
@@ -210,7 +213,11 @@ export class AreaDownloader {
       }
     };
     await Promise.all(Array.from({ length: this.concurrency }, () => worker()));
-    if (job.status === 'running') {
+    if (gaveUp) {
+      job.status = 'failed';
+      job.error =
+        'The chart provider stopped answering: check the internet connection, or pick a lower highest zoom if the chart has no tiles that close';
+    } else {
       job.status = this.cancelled.has(job.id) ? 'cancelled' : 'completed';
     }
     this.cancelled.delete(job.id);

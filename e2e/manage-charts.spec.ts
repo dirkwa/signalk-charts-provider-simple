@@ -376,6 +376,23 @@ test.describe('Manage Charts tab', () => {
               type: 'WMS',
               keptOffline: false
             }
+          },
+          {
+            relativePath: 'Online Charts/kartverket-sjokart.onlinechart.json',
+            name: 'kartverket-sjokart.onlinechart.json',
+            chartName: 'Norwegian Charts',
+            folder: 'Online Charts',
+            enabled: false,
+            online: {
+              catalogId: 'kartverket-sjokart',
+              available: true,
+              catalogLoaded: true,
+              type: 'tilelayer',
+              keptOffline: true,
+              chartId: 'kartverket-sjokart',
+              minzoom: null,
+              maxzoom: null
+            }
           }
         ]
       }
@@ -390,6 +407,10 @@ test.describe('Manage Charts tab', () => {
     const radar = page.locator('.chart-card', { hasText: 'NWS Radar' });
     await expect(radar).toContainText('Needs internet');
     await expect(radar.getByRole('button', { name: 'Offline area' })).toHaveCount(0);
+    // A switched-off chart is not served, so there is nothing to download from.
+    const off = page.locator('.chart-card', { hasText: 'Norwegian Charts' });
+    await expect(off).toContainText('Kept offline');
+    await expect(off.getByRole('button', { name: 'Offline area' })).toHaveCount(0);
 
     await gebco.getByRole('button', { name: 'Offline area' }).click();
     const dialog = page.locator('.area-modal');
