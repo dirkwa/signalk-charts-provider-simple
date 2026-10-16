@@ -392,10 +392,14 @@ describe('checkOnlineChartEntry', () => {
     );
     assert.match(
       checkOnlineChartEntry(tiles('https://example.com/{z}/{x}.png')).join(),
-      /need \{z\}, \{x\} and \{y\}/
+      /need \{z\}, \{x\} and \{y\}, or \{bbox\}/
     );
     assert.deepStrictEqual(
       checkOnlineChartEntry(tiles('https://example.com/{z-2}/{x}/{-y}.png')),
+      []
+    );
+    assert.deepStrictEqual(
+      checkOnlineChartEntry(tiles('https://example.com/map?bbox={bbox_3857}&size=256')),
       []
     );
     const noLayer = onlineEntry({

@@ -375,6 +375,15 @@ describe('online chart routes', () => {
     assert.strictEqual(res.statusCode, 404);
   });
 
+  it('refuses a custom chart whose name is only spaces', async () => {
+    const res = await addCustom({
+      name: '   ',
+      folder: 'Online Charts',
+      chart: { type: 'WMS', url: 'http://charts.lan/wms', layers: ['harbour'] }
+    });
+    assert.strictEqual(res.statusCode, 400);
+  });
+
   it('adds a chart by URL and keeps its tiles when the user allows it', async () => {
     const res = await addCustom({
       name: 'Harbour WMS',

@@ -3106,6 +3106,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             return;
           }
           const name = body.name.trim();
+          if (name === '') {
+            res.status(400).json({ success: false, error: 'Please enter a chart name' });
+            return;
+          }
           const relativePath = await addOnlineChartFile(
             dir,
             customChartId(body.chart),
