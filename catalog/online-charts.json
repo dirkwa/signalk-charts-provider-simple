@@ -62,11 +62,11 @@
       "description": "Kartverket's raster sea charts for Norway, from overview charts down to harbour charts, including Svalbard and Jan Mayen. Updated about every two weeks with Notices to Mariners.",
       "category": "navigation",
       "regions": ["no", "europe", "north-sea", "arctic"],
-      "bbox": [-10, 57, 35, 82],
+      "bbox": [-14, 56, 38.5, 82],
       "provider": "Kartverket (Norwegian Mapping Authority)",
       "attribution": "© Kartverket",
       "license": "CC BY 4.0",
-      "licenseUrl": "https://kartkatalog.geonorge.no/metadata/topografisk-norgeskart-wmts--cache/8f381180-1a47-4453-bee7-9a3d64843efa",
+      "licenseUrl": "https://kartkatalog.geonorge.no/metadata/sjokart-raster-wms/3089e311-e933-47f7-bc62-ba42e58fa739",
       "notForNavigation": true,
       "chart": {
         "type": "tilelayer",
@@ -78,10 +78,10 @@
     {
       "id": "traficom-nautical-charts",
       "name": "Finnish Nautical Charts",
-      "description": "Traficom's raster nautical charts for the Finnish coast, archipelago and lakes, including the chart series and boating charts.",
+      "description": "Traficom's raster chart series for the Finnish coast and archipelago. The boating charts for the lakes are a separate entry.",
       "category": "navigation",
       "regions": ["fi", "europe", "baltic"],
-      "bbox": [19, 59.3, 31.6, 70.1],
+      "bbox": [18.2, 59.5, 31, 66],
       "provider": "Traficom (Finnish Transport and Communications Agency)",
       "attribution": "Source: Traficom. Not for navigational purposes. Does not meet the requirements set for official nautical charts.",
       "license": "CC BY 4.0",
@@ -90,7 +90,28 @@
       "chart": {
         "type": "WMS",
         "url": "https://julkinen.traficom.fi/rasteripalvelu/wms",
-        "layers": ["Traficom:Merikarttasarjat public"]
+        "layers": ["Traficom:Merikarttasarjat public"],
+        "maxzoom": 15
+      },
+      "offline": {}
+    },
+    {
+      "id": "traficom-boating-charts",
+      "name": "Finnish Boating Charts",
+      "description": "Traficom's raster boating charts for the Finnish lakes, from Saimaa to Inari.",
+      "category": "navigation",
+      "regions": ["fi", "europe"],
+      "bbox": [25.3, 60.9, 29.6, 69.7],
+      "provider": "Traficom (Finnish Transport and Communications Agency)",
+      "attribution": "Source: Traficom. Not for navigational purposes. Does not meet the requirements set for official nautical charts.",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://traficom.fi/en/transport-system/geoinformationsmaterial/use-and-licences-data",
+      "notForNavigation": true,
+      "chart": {
+        "type": "WMS",
+        "url": "https://julkinen.traficom.fi/rasteripalvelu/wms",
+        "layers": ["Traficom:Veneilykartat public"],
+        "maxzoom": 15
       },
       "offline": {}
     },
