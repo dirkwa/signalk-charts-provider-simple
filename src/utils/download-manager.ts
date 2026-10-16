@@ -6,6 +6,7 @@ import unzipper from 'unzipper';
 import { EventEmitter } from 'events';
 import { pipeline } from 'stream/promises';
 import type { DownloadJob, DownloadJobOptions } from '../types.js';
+import { chartIdFromFilename } from './online-charts.js';
 
 // A download failure worth retrying: a network error, a timeout, or a 5xx
 // server response. A 4xx (e.g. 404 for a moved/expired catalog link) is NOT
@@ -680,7 +681,7 @@ class DownloadManager extends EventEmitter {
         job.chartName && job.chartName.trim()
           ? job.chartName.trim()
           : path.basename(job.originalUrl ?? job.url).split('?')[0];
-      fileName = named.replace(/\.(mbtiles|pmtiles)$/i, '') + ext;
+      fileName = chartIdFromFilename(named) + ext;
     }
 
     // Strip any directory component before joining. The route handlers

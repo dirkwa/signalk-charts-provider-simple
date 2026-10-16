@@ -40,7 +40,6 @@ import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import {
   chartFileNamesBeside,
-  sameIdSiblings,
   chartIdFromFilename,
   collectChartIds,
   findOnlineChartFiles,
@@ -199,27 +198,25 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const promotions = serialQueue();
 
   /**
-   * Move charts staged in `quarantineDir` into `targetDir`, renaming any
-   * whose chart id another chart in the library already has, since one id
-   * serves one chart. A file of the same name in `targetDir` is replaced.
-   * An upload (`replaceSameId`) also replaces a chart of the same id there
-   * under the other format, as the upload dialog warned. Returns the names
-   * the files were saved under, in order.
+   * Move charts staged in `quarantineDir` into `targetDir`. A file of the
+   * same name there is replaced; one whose chart id another chart in the
+   * library already has is saved under a numbered name, since one id serves
+   * one chart. Returns the names the files were saved under, in order.
    */
   const promoteCharts = (
     quarantineDir: string,
     staged: readonly string[],
-    targetDir: string,
-    replaceSameId: boolean
+    targetDir: string
   ): Promise<string[]> =>
     promotions(async () => {
       const basePath = props.chartPath || defaultChartsPath;
       const elsewhere = [...(await collectChartIds(basePath, basePath, targetDir))];
-      const here = fs.existsSync(targetDir) ? fs.readdirSync(targetDir) : [];
-      const names = chartFileNamesBeside(
-        staged,
-        replaceSameId ? elsewhere : [...here, ...elsewhere]
+      // Files only: a plain subfolder is no chart, and tile directories are
+      // already among the ids collected above.
+      const here = (fs.existsSync(targetDir) ? fs.readdirSync(targetDir) : []).filter(
+        (entry) => isOnlineChartFile(entry) || /\.(mbtiles|pmtiles)$/i.test(entry)
       );
+      const names = chartFileNamesBeside(staged, [...here, ...elsewhere]);
       staged.forEach((fileName, i) => {
         const free = names[i] ?? fileName;
         if (free !== fileName) {
@@ -228,16 +225,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
       });
       await promoteQuarantine(quarantineDir, names, targetDir);
-      if (replaceSameId) {
-        for (const name of names) {
-          for (const sibling of sameIdSiblings(name, here)) {
-            if (!names.includes(sibling)) {
-              fs.rmSync(path.join(targetDir, sibling), { force: true });
-              app.debug(`Replaced ${sibling} with ${name}`);
-            }
-          }
-        }
-      }
       return names;
     });
 
@@ -1302,12 +1289,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 ) {
                   try {
                     const staged = job.extractedFiles;
-                    job.extractedFiles = await promoteCharts(
-                      quarantineDir,
-                      staged,
-                      targetDir,
-                      false
-                    );
+                    job.extractedFiles = await promoteCharts(quarantineDir, staged, targetDir);
                   } catch (promoteErr) {
                     app.error(
                       `Promotion failed for ${chartName}: ${
@@ -2403,12 +2385,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     .json({ success: false, error: 'Access denied: Invalid upload path' });
                   return;
                 }
-                const saved = await promoteCharts(
-                  quarantineDir,
-                  uploadedFiles,
-                  promoteTarget,
-                  true
-                );
+                const saved = await promoteCharts(quarantineDir, uploadedFiles, promoteTarget);
 
                 await finalizeUploadedFiles(saved, targetFolder, basePath);
 
@@ -2695,7 +2672,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               // Final chunk — promote the staged file out of quarantine.
               app.debug(`Final chunk ${totalChunks}/${totalChunks} for ${filename}, assembling`);
               try {
-                const saved = await promoteCharts(quarantineDir, [filename], uploadPath, true);
+                const saved = await promoteCharts(quarantineDir, [filename], uploadPath);
                 await finalizeUploadedFiles(saved, targetFolder, basePath);
                 res.json({
                   success: true,

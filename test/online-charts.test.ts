@@ -10,7 +10,6 @@ import {
   chartFileNameBeside,
   chartFileNamesBeside,
   collectChartIds,
-  sameIdSiblings,
   chartIdFromFilename,
   findOnlineChartFiles,
   onlineChartProvider,
@@ -273,20 +272,6 @@ describe('chartFileNameBeside', () => {
   });
 });
 
-describe('sameIdSiblings', () => {
-  it('finds the chart an upload of the other format replaces, and nothing else', () => {
-    assert.deepStrictEqual(
-      sameIdSiblings('foo.pmtiles', [
-        'foo.mbtiles',
-        'foo.pmtiles',
-        'foo-2.mbtiles',
-        'foo.onlinechart.json'
-      ]),
-      ['foo.mbtiles']
-    );
-  });
-});
-
 describe('collectChartIds', () => {
   it('can leave out the charts directly in one folder, but not its subfolders', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chart-ids-'));
@@ -309,6 +294,13 @@ describe('chartFileNamesBeside', () => {
       chartFileNamesBeside(['foo.mbtiles', 'foo-2.mbtiles'], ['foo.pmtiles']),
       ['foo-3.mbtiles', 'foo-2.mbtiles']
     );
+  });
+
+  it('renames the later of two staged files that share an id, not both', () => {
+    assert.deepStrictEqual(chartFileNamesBeside(['foo.mbtiles', 'foo.pmtiles'], []), [
+      'foo.mbtiles',
+      'foo-2.pmtiles'
+    ]);
   });
 
   it('keeps names that collide with nothing, and replaces the same file', () => {

@@ -1111,12 +1111,10 @@ function handleFileUpload(event: Event): void {
       continue;
     }
 
-    // foo.pmtiles and foo.mbtiles share the chart id foo, so one would hide
-    // the other.
-    const stem = file.name.replace(MANAGE_CHART_FILE_PATTERN, '');
-    const existingChart = targetFolderCharts.find(
-      (c) => c.name === file.name || c.name.replace(MANAGE_CHART_FILE_PATTERN, '') === stem
-    );
+    // Only a file of the same name is overwritten. foo.pmtiles beside
+    // foo.mbtiles is saved under a numbered name instead, since the two
+    // share the chart id foo.
+    const existingChart = targetFolderCharts.find((c) => c.name === file.name);
     if (existingChart) {
       duplicates.push(file.name);
     }

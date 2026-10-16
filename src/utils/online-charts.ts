@@ -79,23 +79,17 @@ export function chartFileNamesBeside(
 ): string[] {
   const taken = [...existing];
   return staged.map((fileName) => {
-    const others = staged.filter((other) => other !== fileName);
-    const free = chartFileNameBeside(fileName, [...taken, ...others]);
+    let free = chartFileNameBeside(fileName, taken);
+    if (free !== fileName) {
+      // A new name also avoids the files still staged, which keep theirs.
+      free = chartFileNameBeside(fileName, [
+        ...taken,
+        ...staged.filter((other) => other !== fileName)
+      ]);
+    }
     taken.push(free);
     return free;
   });
-}
-
-/**
- * The chart files in a folder (`entries`) that share `fileName`'s chart id
- * under another name, such as `foo.mbtiles` for `foo.pmtiles`.
- */
-export function sameIdSiblings(fileName: string, entries: readonly string[]): string[] {
-  const id = chartIdFromFilename(fileName);
-  return entries.filter(
-    (entry) =>
-      entry !== fileName && /\.(mbtiles|pmtiles)$/i.test(entry) && chartIdFromFilename(entry) === id
-  );
 }
 
 export function readOnlineChartFile(filePath: string): OnlineChartFile | null {
