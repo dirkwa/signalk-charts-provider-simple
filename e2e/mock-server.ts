@@ -312,6 +312,18 @@ export function startMockServer(
     res.json({ success: true, relativePath });
   });
 
+  router.post(`${PLUGIN_BASE}/online-charts/custom`, (req, res) => {
+    const body = req.body as { name: string; folder: string; chart: { type: string; url: string } };
+    if (body.chart.type === 'tilelayer' && !body.chart.url.includes('{')) {
+      res.status(400).json({
+        success: false,
+        error: 'A tile URL needs {z}, {x} and {y}, or {bbox} or {bbox_3857}'
+      });
+      return;
+    }
+    res.json({ success: true, relativePath: `${body.folder}/${body.name}.onlinechart.json` });
+  });
+
   // Offline-area routes for online charts kept offline: a download starts
   // and stays running, so the dialog shows its progress.
   router.get(`${PLUGIN_BASE}/online-area-downloads`, (_req, res) => {

@@ -46,6 +46,8 @@ declare global {
 
     // download-simple.ts
     startDownload(): Promise<void>;
+    addOnlineChartByUrl(): Promise<void>;
+    onlineChartTypeChanged(): void;
     cancelDownload(jobId: string): Promise<void>;
 
     // manage-charts-enhanced.ts

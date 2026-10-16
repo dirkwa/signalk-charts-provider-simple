@@ -10,6 +10,8 @@ import {
   OnlineTileProxy,
   OnlineTileStore,
   TILE_REFRESH_MS,
+  httpTileFetcher,
+  needsTileProxy,
   offlineTileSource,
   tileBbox3857,
   tileImageType,
@@ -82,6 +84,32 @@ describe('upstreamTileUrl', () => {
     assert.strictEqual(upstreamTileUrl(xyz, 3, 5, 1), 'https://t/3/5/1/6/1');
   });
 
+  it('fills a single-image request with the tile extent', () => {
+    const box: OnlineTileSource = { kind: 'xyz', url: 'https://w/map?a={bbox}&b={bbox_3857}' };
+    const url = new URL(upstreamTileUrl(box, 1, 1, 0) ?? '');
+    assert.deepStrictEqual(
+      url.searchParams
+        .get('a')
+        ?.split(',')
+        .map((n) => Math.round(Number(n))),
+      [0, 0, 180, 85]
+    );
+    assert.deepStrictEqual(
+      url.searchParams
+        .get('b')
+        ?.split(',')
+        .map((n) => Math.round(Number(n))),
+      [0, 0, 20037508, 20037508]
+    );
+  });
+
+  it('knows which templates a chart plotter cannot fill in', () => {
+    assert.strictEqual(needsTileProxy('https://t/{z}/{x}/{y}.png'), false);
+    for (const url of ['https://t/{z}/{x}/{-y}', 'https://t/{z-2}/{y}/{x}', 'https://w?b={bbox}']) {
+      assert.strictEqual(needsTileProxy(url), true, url);
+    }
+  });
+
   it('has no tile below a shifted first level', () => {
     const noaa: OnlineTileSource = { kind: 'xyz', url: 'https://t/{z-2}/{y}/{x}' };
     assert.strictEqual(upstreamTileUrl(noaa, 1, 0, 0), null);
@@ -108,6 +136,66 @@ describe('upstreamTileUrl', () => {
   it('places tiles north-west first', () => {
     const [minX, minY, maxX, maxY] = tileBbox3857(1, 0, 0);
     assert.ok(minX < 0 && maxX === 0 && minY === 0 && maxY > 0);
+  });
+});
+
+describe('httpTileFetcher', () => {
+  it('refuses an answer far too large to be a tile', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(PNG, { headers: { 'content-length': String(50 * 1024 * 1024) } })
+      );
+    try {
+      assert.strictEqual(await httpTileFetcher('test')('https://t/0/0/0'), null);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('stops reading an answer with no length once it is too large to be a tile', async () => {
+    const original = globalThis.fetch;
+    let sent = 0;
+    const chunk = new Uint8Array(1024 * 1024);
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              sent++;
+              controller.enqueue(sent === 1 ? PNG : chunk);
+            }
+          })
+        )
+      );
+    try {
+      assert.strictEqual(await httpTileFetcher('test')('https://t/0/0/0'), null);
+      assert.ok(sent < 20, `read ${String(sent)} chunks`);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('reads a tile sent without a length', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(PNG.slice(0, 4));
+              controller.enqueue(PNG.slice(4));
+              controller.close();
+            }
+          })
+        )
+      );
+    try {
+      const data = await httpTileFetcher('test')('https://t/0/0/0');
+      assert.deepStrictEqual(data && [...data], [...PNG]);
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });
 
@@ -237,6 +325,18 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     assert.strictEqual(await proxy().getTile('depths', source, 2, 4, 0), null);
     assert.strictEqual(await proxy().getTile('depths', source, 30, 0, 0), null);
     assert.strictEqual(fetched.length, 0);
+  });
+
+  it('passes a tile through without keeping it', async () => {
+    const data = await proxy().streamTile(source, 2, 1, 0);
+    assert.deepStrictEqual(data && [...data], [...PNG]);
+    assert.strictEqual(fs.existsSync(path.join(dir, 'depths.mbtiles')), false);
+  });
+
+  it('asks the provider once for a streamed tile requested twice at once', async () => {
+    const p = proxy();
+    await Promise.all([p.streamTile(source, 2, 1, 0), p.streamTile(source, 2, 1, 0)]);
+    assert.strictEqual(fetched.length, 1);
   });
 
   it('opens no file for a request that arrives after the plugin stopped', async () => {

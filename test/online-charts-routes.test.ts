@@ -138,6 +138,7 @@ const CATALOG = {
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7]);
 let depthsOnline = true;
+const lanRequests: string[] = [];
 
 /** Radar capabilities with three frames ending a few minutes ago. */
 function radarCapabilities(): string {
@@ -181,6 +182,10 @@ describe('online chart routes', () => {
         return Promise.resolve(new Response(radarCapabilities(), { status: 200 }));
       }
       if (url.startsWith('https://depths.example.com/') && depthsOnline) {
+        return Promise.resolve(new Response(PNG, { status: 200 }));
+      }
+      if (url.startsWith('http://charts.lan/')) {
+        lanRequests.push(url);
         return Promise.resolve(new Response(PNG, { status: 200 }));
       }
       return Promise.reject(new TypeError('offline'));
@@ -230,6 +235,33 @@ describe('online chart routes', () => {
   });
 
   const add = (body: unknown) => call(handlers.get('post /online-charts'), { body });
+  const addCustom = (body: unknown) => call(handlers.get('post /online-charts/custom'), { body });
+
+  type ServedTile = { status: number; body?: Buffer; type?: string };
+  const serveTile = async (identifier: string, z: number, x: number, y: number) => {
+    const tile = v1Handlers.get(
+      'get /resources/charts/:identifier/:z([0-9]+)/:x([0-9]+)/:y([0-9]+)'
+    );
+    const out: ServedTile = { status: 0 };
+    await new Promise<void>((resolve) => {
+      const resStub = {
+        writeHead(status: number, headers: Record<string, string>) {
+          out.status = status;
+          out.type = headers['Content-Type'];
+        },
+        end(body: Buffer) {
+          out.body = body;
+          resolve();
+        },
+        sendStatus(status: number) {
+          out.status = status;
+          resolve();
+        }
+      };
+      void tile?.({ params: { identifier, z: String(z), x: String(x), y: String(y) } }, resStub);
+    });
+    return out;
+  };
 
   it('rejects an unknown catalog id', async () => {
     const res = await add({ catalogId: 'nope', folder: '/' });
@@ -288,30 +320,7 @@ describe('online chart routes', () => {
       '/signalk/v1/api/resources/charts/test-depths/{z}/{x}/{y}'
     );
 
-    const tile = v1Handlers.get(
-      'get /resources/charts/:identifier/:z([0-9]+)/:x([0-9]+)/:y([0-9]+)'
-    );
-    const getTile = async (): Promise<{ status: number; body?: Buffer; type?: string }> => {
-      const out: { status: number; body?: Buffer; type?: string } = { status: 0 };
-      await new Promise<void>((resolve) => {
-        const resStub = {
-          writeHead(status: number, headers: Record<string, string>) {
-            out.status = status;
-            out.type = headers['Content-Type'];
-          },
-          end(body: Buffer) {
-            out.body = body;
-            resolve();
-          },
-          sendStatus(status: number) {
-            out.status = status;
-            resolve();
-          }
-        };
-        void tile?.({ params: { identifier: 'test-depths', z: '3', x: '4', y: '2' } }, resStub);
-      });
-      return out;
-    };
+    const getTile = () => serveTile('test-depths', 3, 4, 2);
 
     const online = await getTile();
     assert.strictEqual(online.status, 200);
@@ -364,6 +373,99 @@ describe('online chart routes', () => {
       body: { bbox: [-80, 25, -79, 26], minzoom: 5, maxzoom: 6 }
     });
     assert.strictEqual(res.statusCode, 404);
+  });
+
+  it('refuses a custom chart whose name is only spaces', async () => {
+    const res = await addCustom({
+      name: '   ',
+      folder: 'Online Charts',
+      chart: { type: 'WMS', url: 'http://charts.lan/wms', layers: ['harbour'] }
+    });
+    assert.strictEqual(res.statusCode, 400);
+  });
+
+  it('adds a chart by URL and keeps its tiles when the user allows it', async () => {
+    const res = await addCustom({
+      name: 'Harbour WMS',
+      folder: 'Online Charts',
+      chart: { type: 'WMS', url: 'http://charts.lan/wms', layers: ['harbour'], keepOffline: true }
+    });
+    assert.strictEqual(res.statusCode, 200);
+    const { relativePath } = res.body as { relativePath: string };
+    assert.strictEqual(relativePath, path.join('Online Charts', 'harbour-wms.onlinechart.json'));
+
+    const v2 = (await provider!.methods.listResources({})) as Record<
+      string,
+      { type: string; url: string; name: string }
+    >;
+    assert.strictEqual(v2['harbour-wms']?.name, 'Harbour WMS');
+    assert.strictEqual(
+      v2['harbour-wms']?.url,
+      '/signalk/v1/api/resources/charts/harbour-wms/{z}/{x}/{y}'
+    );
+    const tile = await serveTile('harbour-wms', 2, 1, 1);
+    assert.strictEqual(tile.status, 200);
+    assert.match(lanRequests.at(-1) ?? '', /^http:\/\/charts\.lan\/wms\?.*LAYERS=harbour/);
+    const stats = await call(handlers.get('get /online-charts/:chartId/offline'), {
+      params: { chartId: 'harbour-wms' }
+    });
+    assert.strictEqual((stats.body as { tiles: number }).tiles, 1);
+  });
+
+  it('passes tiles through without keeping them when the user does not allow it', async () => {
+    const res = await addCustom({
+      name: 'Box Chart',
+      folder: 'Online Charts',
+      chart: {
+        type: 'tilelayer',
+        url: 'http://charts.lan/map?bbox={bbox_3857}&srs=EPSG:3857'
+      }
+    });
+    assert.strictEqual(res.statusCode, 200);
+    const v2 = (await provider!.methods.listResources({})) as Record<string, { url: string }>;
+    assert.strictEqual(
+      v2['box-chart']?.url,
+      '/signalk/v1/api/resources/charts/box-chart/{z}/{x}/{y}'
+    );
+    const tile = await serveTile('box-chart', 1, 0, 0);
+    assert.strictEqual(tile.status, 200);
+    assert.strictEqual(
+      lanRequests.at(-1),
+      'http://charts.lan/map?bbox=-20037508.342789244,0,0,20037508.342789244&srs=EPSG:3857'
+    );
+    const stats = await call(handlers.get('get /online-charts/:chartId/offline'), {
+      params: { chartId: 'box-chart' }
+    });
+    assert.strictEqual(stats.statusCode, 404);
+  });
+
+  it('hands a plain tile URL added by URL straight to the plotter', async () => {
+    const url = 'https://tiles.example.org/{z}/{x}/{y}.png';
+    const res = await addCustom({
+      name: 'Plain Tiles',
+      folder: '/',
+      chart: { type: 'tilelayer', url, maxzoom: 16 }
+    });
+    assert.strictEqual(res.statusCode, 200);
+    const v2 = (await provider!.methods.listResources({})) as Record<
+      string,
+      { url: string; maxzoom?: number }
+    >;
+    assert.strictEqual(v2['plain-tiles']?.url, url);
+    assert.strictEqual(v2['plain-tiles']?.maxzoom, 16);
+  });
+
+  it('refuses a chart added by URL that cannot be served', async () => {
+    const bad = [
+      { type: 'WMS', url: 'https://charts.example.org/wms' },
+      { type: 'tilelayer', url: 'https://charts.example.org/tiles.png' },
+      { type: 'tilelayer', url: 'https://x/{z}/{x}/{y}', minzoom: 9, maxzoom: 3 },
+      { type: 'tilelayer', url: 'ftp://x/{z}/{x}/{y}' }
+    ];
+    for (const chart of bad) {
+      const res = await addCustom({ name: 'Bad', folder: '/', chart });
+      assert.strictEqual(res.statusCode, 400, JSON.stringify(chart));
+    }
   });
 
   it('reports the chart as added in the catalog registry', async () => {
