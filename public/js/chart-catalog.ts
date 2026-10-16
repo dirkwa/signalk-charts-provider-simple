@@ -70,8 +70,7 @@ interface OnlineCatalogChart {
   coverage?: unknown;
   chart: { type: string };
   temporal?: { kind: string };
-  /** Present when the license allows the server to keep the tiles it fetches. */
-  /** Decided by the server, which is what keeps the tiles. */
+  /** Whether the server keeps the tiles it fetches; decided by the server, which keeps them. */
   keptOffline?: boolean;
 }
 

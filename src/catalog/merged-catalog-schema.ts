@@ -454,12 +454,38 @@ export function checkOnlineChartEntry(entry: OnlineChartEntry): string[] {
       problems.push(`${entry.id}: time-varying charts cannot be kept offline`);
     } else if (!entry.offline.tileUrl && chart.type !== 'tilelayer' && chart.type !== 'WMS') {
       problems.push(`${entry.id}: offline needs a tileUrl for ${chart.type} charts`);
+    } else if (!entry.offline.tileUrl && chart.type === 'WMS' && chart.layers?.length === 0) {
+      problems.push(`${entry.id}: offline needs a WMS layer to request`);
+    } else {
+      const template = entry.offline.tileUrl ?? (chart.type === 'tilelayer' ? chart.url : null);
+      const problem = template === null ? null : offlineTemplateProblem(template);
+      if (problem) {
+        problems.push(`${entry.id}: ${problem}`);
+      }
     }
   }
   if (chart.minzoom !== undefined && chart.maxzoom !== undefined && chart.minzoom > chart.maxzoom) {
     problems.push(`${entry.id}: minzoom is greater than maxzoom`);
   }
   return [...problems, ...checkBbox(entry.id, entry.bbox)];
+}
+
+/**
+ * Why the plugin could not fill a tile URL template it keeps offline, or
+ * null. It fills `{z}`, `{x}`, `{y}`, `{-y}` and `{z-N}` and nothing else;
+ * a `{s}` subdomain left in the URL fails every fetch.
+ */
+export function offlineTemplateProblem(template: string): string | null {
+  const placeholders = template.match(/\{[^}]*\}/g) ?? [];
+  const unknown = placeholders.filter((p) => !/^\{(z|x|y|-y|z-\d+)\}$/.test(p));
+  if (unknown.length > 0) {
+    return `offline tile URLs cannot use ${unknown.join(', ')}`;
+  }
+  const has = (re: RegExp): boolean => placeholders.some((p) => re.test(p));
+  if (!has(/^\{z(-\d+)?\}$/) || !has(/^\{x\}$/) || !has(/^\{-?y\}$/)) {
+    return 'offline tile URLs need {z}, {x} and {y}';
+  }
+  return null;
 }
 
 /** Rules for `catalog/chartcatalogs-index.json` the schema cannot express. */

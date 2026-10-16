@@ -82,7 +82,10 @@ function areaFromMap(map: L.Map): AreaBbox {
   if (b.getEast() - b.getWest() >= 360) {
     return [-180, south, 180, north];
   }
-  return [wrapLon(b.getWest()), south, wrapLon(b.getEast()), north];
+  const east = wrapLon(b.getEast());
+  // An east edge on the date line is 180, not -180, or the area would read
+  // as crossing it.
+  return [wrapLon(b.getWest()), south, east === -180 ? 180 : east, north];
 }
 
 function areaFormatBytes(bytes: number): string {
@@ -192,7 +195,8 @@ function showAreaJob(job: AreaJob | null): void {
 }
 
 async function pollAreaJob(): Promise<void> {
-  if (!areaDialog) {
+  const dialog = areaDialog;
+  if (!dialog) {
     return;
   }
   try {
@@ -201,16 +205,23 @@ async function pollAreaJob(): Promise<void> {
       return;
     }
     const { jobs } = (await res.json()) as { jobs: AreaJob[] };
-    const mine = jobs.filter((j) => j.chartId === areaDialog?.chartId);
+    if (areaDialog !== dialog) {
+      return;
+    }
+    const mine = jobs.filter((j) => j.chartId === dialog.chartId);
     const job =
       mine.find((j) => j.status === 'running') ??
-      mine.find((j) => j.id === areaDialog?.shownJobId) ??
+      mine.find((j) => j.id === dialog.shownJobId) ??
       null;
     showAreaJob(job);
-    const wasRunning = areaDialog.jobId !== null;
-    areaDialog.shownJobId = job?.id ?? null;
-    areaDialog.jobId = job?.status === 'running' ? job.id : null;
-    if (wasRunning && areaDialog.jobId === null) {
+    const wasRunning = dialog.jobId !== null;
+    dialog.shownJobId = job?.id ?? null;
+    dialog.jobId = job?.status === 'running' ? job.id : null;
+    if (dialog.jobId === null && dialog.poll) {
+      clearInterval(dialog.poll);
+      dialog.poll = null;
+    }
+    if (wasRunning && dialog.jobId === null) {
       void refreshKeptStats();
     }
     updateAreaEstimate();
@@ -226,18 +237,19 @@ function startAreaPolling(): void {
 }
 
 async function startAreaDownload(): Promise<void> {
-  if (!areaDialog) {
+  const dialog = areaDialog;
+  if (!dialog) {
     return;
   }
   const { from, to } = selectedZooms();
   let res: Response;
   try {
     res = await fetch(
-      `${AREA_API_BASE}/online-charts/${encodeURIComponent(areaDialog.chartId)}/area-download`,
+      `${AREA_API_BASE}/online-charts/${encodeURIComponent(dialog.chartId)}/area-download`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bbox: areaFromMap(areaDialog.map), minzoom: from, maxzoom: to })
+        body: JSON.stringify({ bbox: areaFromMap(dialog.map), minzoom: from, maxzoom: to })
       }
     );
   } catch {
@@ -249,8 +261,12 @@ async function startAreaDownload(): Promise<void> {
     alert(body.error ?? `Could not start the download (HTTP ${String(res.status)})`);
     return;
   }
-  areaDialog.jobId = body.job.id;
-  areaDialog.shownJobId = body.job.id;
+  // The job runs on the server whether or not the dialog is still open.
+  if (areaDialog !== dialog) {
+    return;
+  }
+  dialog.jobId = body.job.id;
+  dialog.shownJobId = body.job.id;
   showAreaJob(body.job);
   updateAreaEstimate();
   startAreaPolling();
@@ -385,7 +401,9 @@ async function showOfflineArea(
   updateAreaEstimate();
   void refreshKeptStats();
   await pollAreaJob();
-  startAreaPolling();
+  if (areaDialog?.map === map && areaDialog.jobId !== null) {
+    startAreaPolling();
+  }
 }
 
 window.showOfflineArea = showOfflineArea;
