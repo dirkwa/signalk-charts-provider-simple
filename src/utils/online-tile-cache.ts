@@ -11,7 +11,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { Type } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import type { OnlineCatalogChart } from '../catalog/merged-catalog-schema.js';
@@ -132,13 +132,21 @@ interface TileRow {
   fetched_at: number | null;
 }
 
+interface TileStatements {
+  select: StatementSync;
+  insert: StatementSync;
+}
+
 /**
  * One MBTiles file per catalog entry. Rows are stored in TMS order as the
  * MBTiles spec requires, so the file is a valid chart in its own right; the
  * extra `fetched_at` column only decides when a tile is refreshed.
  */
+
 export class OnlineTileStore {
   private readonly dbs = new Map<string, DatabaseSync>();
+  // Prepared once per file: get and put run for every tile a plotter asks for.
+  private readonly statements = new Map<string, TileStatements>();
   private closed = false;
 
   constructor(private readonly dir: string) {}
@@ -156,25 +164,48 @@ export class OnlineTileStore {
     if (!db) {
       fs.mkdirSync(this.dir, { recursive: true });
       db = new DatabaseSync(this.file(catalogId));
-      db.exec(`
-        PRAGMA journal_mode = WAL;
-        CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value TEXT);
-        CREATE TABLE IF NOT EXISTS tiles (
-          zoom_level INTEGER NOT NULL,
-          tile_column INTEGER NOT NULL,
-          tile_row INTEGER NOT NULL,
-          tile_data BLOB NOT NULL,
-          fetched_at INTEGER,
-          PRIMARY KEY (zoom_level, tile_column, tile_row)
+      try {
+        db.exec(`
+          PRAGMA journal_mode = WAL;
+          CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value TEXT);
+          CREATE TABLE IF NOT EXISTS tiles (
+            zoom_level INTEGER NOT NULL,
+            tile_column INTEGER NOT NULL,
+            tile_row INTEGER NOT NULL,
+            tile_data BLOB NOT NULL,
+            fetched_at INTEGER,
+            PRIMARY KEY (zoom_level, tile_column, tile_row)
+          );
+        `);
+        db.prepare('INSERT OR IGNORE INTO metadata (name, value) VALUES (?, ?)').run(
+          'name',
+          catalogId
         );
-      `);
-      db.prepare('INSERT OR IGNORE INTO metadata (name, value) VALUES (?, ?)').run(
-        'name',
-        catalogId
-      );
+      } catch (err) {
+        // A damaged file is opened afresh on the next request, not leaked.
+        db.close();
+        throw err;
+      }
       this.dbs.set(catalogId, db);
     }
     return db;
+  }
+
+  private tileStatements(catalogId: string): TileStatements {
+    let statements = this.statements.get(catalogId);
+    if (!statements) {
+      const db = this.db(catalogId);
+      statements = {
+        select: db.prepare(
+          'SELECT tile_data, fetched_at FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
+        ),
+        insert: db.prepare(
+          'INSERT OR REPLACE INTO tiles (zoom_level, tile_column, tile_row, tile_data, fetched_at) VALUES (?, ?, ?, ?, ?)'
+        )
+      };
+      this.statements.set(catalogId, statements);
+    }
+    return statements;
   }
 
   get(catalogId: string, z: number, x: number, y: number): CachedTile | null {
@@ -182,11 +213,8 @@ export class OnlineTileStore {
     if (this.closed) {
       return null;
     }
-    const row = this.db(catalogId)
-      .prepare(
-        'SELECT tile_data, fetched_at FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
-      )
-      .get(z, x, 2 ** z - 1 - y) as TileRow | undefined;
+    const row = this.tileStatements(catalogId).select.get(z, x, 2 ** z - 1 - y) as
+      TileRow | undefined;
     if (!row) {
       return null;
     }
@@ -202,11 +230,7 @@ export class OnlineTileStore {
     if (this.closed) {
       return;
     }
-    this.db(catalogId)
-      .prepare(
-        'INSERT OR REPLACE INTO tiles (zoom_level, tile_column, tile_row, tile_data, fetched_at) VALUES (?, ?, ?, ?, ?)'
-      )
-      .run(z, x, 2 ** z - 1 - y, data, now);
+    this.tileStatements(catalogId).insert.run(z, x, 2 ** z - 1 - y, data, now);
   }
 
   /** How many tiles are kept for a chart and how much space they take. */
@@ -223,6 +247,7 @@ export class OnlineTileStore {
   /** Drop every tile kept for a chart. */
   clear(catalogId: string): void {
     const file = this.file(catalogId);
+    this.statements.delete(catalogId);
     this.dbs.get(catalogId)?.close();
     this.dbs.delete(catalogId);
     for (const f of [file, `${file}-wal`, `${file}-shm`]) {
@@ -232,6 +257,7 @@ export class OnlineTileStore {
 
   close(): void {
     this.closed = true;
+    this.statements.clear();
     for (const db of this.dbs.values()) {
       db.close();
     }
@@ -292,11 +318,19 @@ export class OnlineTileProxy {
     if (z > 24 || x >= 2 ** z || y >= 2 ** z) {
       return null;
     }
-    const cached = this.store.get(catalogId, z, x, y);
+    let cached: CachedTile | null = null;
+    try {
+      cached = this.store.get(catalogId, z, x, y);
+    } catch {
+      // A damaged tile file must not stop the chart showing while online.
+    }
     if (cached && this.now() - cached.fetchedAt < TILE_REFRESH_MS) {
       return cached.data;
     }
-    return (await this.fetchAndKeep(catalogId, source, z, x, y)) ?? cached?.data ?? null;
+    const fetching = this.fetchAndKeep(catalogId, source, z, x, y);
+    // An old tile is shown at once and refreshed behind it, so a link that
+    // hangs rather than fails never leaves the chart blank while it times out.
+    return cached ? cached.data : fetching;
   }
 
   /**
