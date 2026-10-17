@@ -288,6 +288,18 @@ describe('collectChartIds', () => {
   });
 });
 
+describe('chart ids taken elsewhere', () => {
+  it('treats them as ids, not file names', () => {
+    // `foo.mbtiles.pmtiles` elsewhere has the id `foo.mbtiles`.
+    assert.strictEqual(
+      chartFileNameBeside('foo.mbtiles.mbtiles', [], ['foo.mbtiles']),
+      'foo.mbtiles-2.mbtiles'
+    );
+    assert.strictEqual(chartFileNameBeside('foo.mbtiles', [], ['foo.mbtiles']), 'foo.mbtiles');
+    assert.deepStrictEqual(chartFileNamesBeside(['foo.pmtiles'], [], ['foo']), ['foo-2.pmtiles']);
+  });
+});
+
 describe('chartFileNamesBeside', () => {
   it('never renames a staged file onto another staged file', () => {
     assert.deepStrictEqual(

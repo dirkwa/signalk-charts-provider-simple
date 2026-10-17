@@ -216,7 +216,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const here = (fs.existsSync(targetDir) ? fs.readdirSync(targetDir) : []).filter(
         (entry) => isOnlineChartFile(entry) || /\.(mbtiles|pmtiles)$/i.test(entry)
       );
-      const names = chartFileNamesBeside(staged, [...here, ...elsewhere]);
+      const names = chartFileNamesBeside(staged, here, elsewhere);
       staged.forEach((fileName, i) => {
         const free = names[i] ?? fileName;
         if (free !== fileName) {
@@ -1073,17 +1073,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       return false;
     }
 
-    await promoteQuarantine(extractDir, extracted.files, promoteTarget);
-    await finalizeUploadedFiles(extracted.files, targetFolder, basePath);
+    const saved = await promoteCharts(extractDir, extracted.files, promoteTarget);
+    await finalizeUploadedFiles(saved, targetFolder, basePath);
 
-    app.debug(
-      `Extracted ${extracted.files.length} chart(s) from ${archiveName} into ${promoteTarget}`
-    );
+    app.debug(`Extracted ${saved.length} chart(s) from ${archiveName} into ${promoteTarget}`);
 
     res.status(200).json({
       success: true,
-      message: `${extracted.files.length} chart${extracted.files.length !== 1 ? 's' : ''} extracted from ${archiveName}`,
-      files: extracted.files,
+      message: `${saved.length} chart${saved.length !== 1 ? 's' : ''} extracted from ${archiveName}`,
+      files: saved,
       skipped: extracted.skipped
     });
     return true;

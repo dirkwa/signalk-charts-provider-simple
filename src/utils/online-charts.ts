@@ -50,12 +50,18 @@ export function chartIdFromFilename(filename: string): string {
  * are `existing`. A file of the same name is replaced as before, but a file
  * that would share its chart id with a different entry (`foo.pmtiles` beside
  * `foo.mbtiles`) gets a numbered name, or one chart would hide the other.
+ * `takenIds` are chart ids used elsewhere in the library: ids, not file
+ * names, so neither stripped of an extension again nor taken for this file.
  */
-export function chartFileNameBeside(fileName: string, existing: readonly string[]): string {
+export function chartFileNameBeside(
+  fileName: string,
+  existing: readonly string[],
+  takenIds: readonly string[] = []
+): string {
   if (existing.includes(fileName)) {
     return fileName;
   }
-  const ids = new Set(existing.map(chartIdFromFilename));
+  const ids = new Set([...existing.map(chartIdFromFilename), ...takenIds]);
   const id = chartIdFromFilename(fileName);
   if (!ids.has(id)) {
     return fileName;
@@ -75,17 +81,19 @@ export function chartFileNameBeside(fileName: string, existing: readonly string[
  */
 export function chartFileNamesBeside(
   staged: readonly string[],
-  existing: readonly string[]
+  existing: readonly string[],
+  takenIds: readonly string[] = []
 ): string[] {
   const taken = [...existing];
   return staged.map((fileName) => {
-    let free = chartFileNameBeside(fileName, taken);
+    let free = chartFileNameBeside(fileName, taken, takenIds);
     if (free !== fileName) {
       // A new name also avoids the files still staged, which keep theirs.
-      free = chartFileNameBeside(fileName, [
-        ...taken,
-        ...staged.filter((other) => other !== fileName)
-      ]);
+      free = chartFileNameBeside(
+        fileName,
+        [...taken, ...staged.filter((other) => other !== fileName)],
+        takenIds
+      );
     }
     taken.push(free);
     return free;
