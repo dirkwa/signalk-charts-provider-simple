@@ -3470,8 +3470,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   rollbackInstall(chartNumber);
                   return;
                 }
+                let saved: string[];
                 try {
-                  await promoteQuarantine(quarantineDir, job.extractedFiles, targetDir);
+                  saved = await promoteCharts(quarantineDir, job.extractedFiles, targetDir);
                 } catch (promoteErr) {
                   app.error(
                     `Promotion failed for ${chartNumber}: ${
@@ -3488,7 +3489,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 // run the same enable + refresh + delta-emit cycle
                 // ourselves now that the files are actually in place.
                 const targetFolderRel = path.relative(chartPath, targetDir);
-                for (const fileName of job.extractedFiles) {
+                for (const fileName of saved) {
                   const relativePath = targetFolderRel
                     ? path.join(targetFolderRel, fileName)
                     : fileName;
@@ -3496,8 +3497,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                   app.debug(`Enabled promoted chart: ${relativePath}`);
                 }
                 await refreshChartProviders();
-                for (const fileName of job.extractedFiles) {
-                  const chartId = fileName.replace(/\.mbtiles$/, '');
+                for (const fileName of saved) {
+                  const chartId = chartIdFromFilename(fileName);
                   if (chartProviders[chartId]) {
                     const chartData = sanitizeProvider(chartProviders[chartId], 2);
                     emitChartDelta(chartId, chartData);
@@ -3507,7 +3508,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 // Record the produced filename so the delete flow can
                 // clear this install record by reverse-lookup. Same
                 // pattern as the S-57 / RNC conversion completion paths.
-                const firstFile = job.extractedFiles[0];
+                const firstFile = saved[0];
                 if (firstFile) {
                   const relativePath = targetFolderRel
                     ? path.join(targetFolderRel, firstFile)
