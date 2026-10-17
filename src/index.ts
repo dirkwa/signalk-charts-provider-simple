@@ -815,6 +815,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         `Download job completed: ${job.id}, extracted files: ${job.extractedFiles.join(', ')}`
       );
 
+      // A job staged in quarantine is enabled by its own listener once its
+      // files are promoted; keying it here would store a quarantine path.
+      if (
+        !isWithinBase(job.targetDir, chartPath) ||
+        isWithinBase(job.targetDir, path.join(app.getDataDirPath(), 'in-progress'))
+      ) {
+        return;
+      }
       for (const fileName of job.extractedFiles) {
         const relativePath = path.relative(chartPath, path.join(job.targetDir, fileName));
         setChartEnabled(relativePath, true);
