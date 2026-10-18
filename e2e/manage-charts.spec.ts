@@ -286,7 +286,8 @@ test.describe('Manage Charts tab', () => {
               available: true,
               catalogLoaded: true,
               type: 'WMS',
-              keptOffline: true
+              keptOffline: true,
+              keptTiles: true
             }
           },
           {
@@ -295,7 +296,13 @@ test.describe('Manage Charts tab', () => {
             chartName: 'Retired Layer',
             folder: 'Online Charts',
             enabled: true,
-            online: { catalogId: 'gone', available: false, catalogLoaded: true, type: null }
+            online: {
+              catalogId: 'gone',
+              available: false,
+              catalogLoaded: true,
+              type: null,
+              keptTiles: true
+            }
           },
           {
             relativePath: 'Online Charts/joels.onlinechart.json',
@@ -340,6 +347,13 @@ test.describe('Manage Charts tab', () => {
 
     // Deleting a chart kept offline says its kept tiles go with it.
     await gebco.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.locator('.delete-modal')).toContainText(
+      'Its tiles kept on the server for offline use are deleted too'
+    );
+    await page.locator('.delete-modal').getByRole('button', { name: 'Cancel' }).click();
+
+    // So does one the catalog dropped: its tiles go all the same.
+    await gone.getByRole('button', { name: 'Delete' }).click();
     await expect(page.locator('.delete-modal')).toContainText(
       'Its tiles kept on the server for offline use are deleted too'
     );

@@ -330,6 +330,14 @@ export class OnlineTileStore {
     this.tileStatements(catalogId).pin.run(z, x, 2 ** z - 1 - y);
   }
 
+  /** Whether any tile is kept for a chart. */
+  hasTiles(catalogId: string): boolean {
+    if (this.closed || !CATALOG_ID.test(catalogId) || !fs.existsSync(this.file(catalogId))) {
+      return false;
+    }
+    return this.db(catalogId).prepare('SELECT 1 FROM tiles LIMIT 1').get() !== undefined;
+  }
+
   /** How many tiles are kept for a chart and how much space they take. */
   stats(catalogId: string): { tiles: number; bytes: number } {
     if (this.closed || !fs.existsSync(this.file(catalogId))) {

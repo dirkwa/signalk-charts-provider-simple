@@ -538,6 +538,15 @@ describe('OnlineTileProxy for area downloads', () => {
     assert.ok(store.get('depths', 5, 1, 1));
   });
 
+  it('tells whether any tile is kept for a chart', () => {
+    assert.strictEqual(store.hasTiles('depths'), false);
+    assert.strictEqual(store.hasTiles('../x'), false);
+    store.put('depths', 1, 0, 0, PNG, 1000);
+    assert.strictEqual(store.hasTiles('depths'), true);
+    store.clear('depths');
+    assert.strictEqual(store.hasTiles('depths'), false);
+  });
+
   it('keeps the limit for the other charts when one tile file is damaged', () => {
     store.put('depths', 10, 0, 0, new Uint8Array(20_000).fill(1), 1000);
     fs.writeFileSync(path.join(dir, 'broken.mbtiles'), 'not a database');

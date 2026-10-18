@@ -1514,6 +1514,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         });
     });
 
+    const hasKeptTiles = (catalogId: string): boolean => {
+      try {
+        return onlineTileStore?.hasTiles(catalogId) ?? false;
+      } catch {
+        // A damaged tile file must not stop the chart list loading.
+        return false;
+      }
+    };
+
     router.get('/local-charts', async (_req: Request, res: Response) => {
       try {
         const chartPath = props.chartPath || defaultChartsPath;
@@ -1590,6 +1599,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     category: onlineEntry?.category ?? null,
                     temporal: onlineEntry?.temporal !== undefined,
                     keptOffline: onlineEntry ? offlineTileSource(onlineEntry) !== null : false,
+                    // Read from the tile file rather than the catalog: deleting
+                    // the chart deletes its tiles even once the catalog drops it.
+                    keptTiles: hasKeptTiles(chart.online.catalogId),
                     chartId: chartIdFromFilename(path.basename(chart.relativePath)),
                     minzoom: onlineEntry?.chart.minzoom ?? null,
                     maxzoom: onlineEntry?.chart.maxzoom ?? null

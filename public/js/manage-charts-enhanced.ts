@@ -35,6 +35,8 @@ interface ManageChart {
     type: string | null;
     /** Served through the server, which keeps every tile it fetches. */
     keptOffline?: boolean;
+    /** Tiles are kept for it, and go when its file is deleted. */
+    keptTiles?: boolean;
     /** The served chart id, for its offline-area routes. */
     chartId?: string;
     minzoom?: number | null;
@@ -778,7 +780,7 @@ function deleteChart(relativePath: string, name: string): void {
   showDeleteConfirmation({
     type: 'chart',
     name: chart?.online ? (chart.chartName ?? name) : name,
-    keptOffline: chart?.online?.keptOffline === true,
+    keptOffline: chart?.online?.keptTiles === true,
     onConfirm: async () => {
       try {
         const response = await fetch(
