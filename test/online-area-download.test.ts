@@ -16,7 +16,8 @@ import {
 import {
   OnlineTileProxy,
   OnlineTileStore,
-  type OnlineTileSource
+  type OnlineTileSource,
+  type TileFetcher
 } from '../dist/utils/online-tile-cache.js';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
@@ -49,6 +50,14 @@ describe('area tiles', () => {
       [15, 0]
     );
   });
+
+  it('lists each tile once when the two halves of a crossing area meet', () => {
+    const bbox: AreaBbox = [179, -18, -179, -17];
+    const tiles = [...areaTiles(bbox, 0, 1)];
+    assert.strictEqual(new Set(tiles.map((t) => t.join('/'))).size, tiles.length);
+    assert.strictEqual(tiles.length, countAreaTiles(bbox, 0, 1));
+    assert.strictEqual(tiles.filter(([z]) => z === 0).length, 1);
+  });
 });
 
 describe('AreaDownloader', () => {
@@ -62,7 +71,7 @@ describe('AreaDownloader', () => {
     }
   });
 
-  function setup(fetchTile: (url: string) => Promise<Uint8Array | null>): AreaDownloader {
+  function setup(fetchTile: TileFetcher): AreaDownloader {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'area-'));
     store = new OnlineTileStore(dir);
     return new AreaDownloader(new OnlineTileProxy(store, fetchTile), 2);
@@ -114,6 +123,17 @@ describe('AreaDownloader', () => {
     assert.strictEqual(job.status, 'failed');
     assert.match(job.error ?? '', /stopped answering/);
     assert.ok(job.done < job.total);
+  });
+
+  it('counts tiles the provider has none of as done, not failed', async () => {
+    const downloader = setup(() => Promise.resolve('absent'));
+    const job = await finished(
+      downloader,
+      downloader.start({ ...request, minzoom: 8, maxzoom: 12 }).id
+    );
+    assert.strictEqual(job.status, 'completed');
+    assert.strictEqual(job.failed, 0);
+    assert.strictEqual(job.done, job.total);
   });
 
   it('reports a failure only once every tile in flight has ended', async () => {

@@ -294,7 +294,11 @@ function isDamagedDatabase(err: unknown): boolean {
 export const TILE_REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 20_000;
 
-export type TileFetcher = (url: string) => Promise<Uint8Array | null>;
+/**
+ * A tile's bytes; `'absent'` when the provider says it has no tile there,
+ * which sparse services do outside their coverage; null when it failed.
+ */
+export type TileFetcher = (url: string) => Promise<Uint8Array | 'absent' | null>;
 
 /** Fetch one tile; null when the provider fails or answers with something that is not an image. */
 export function httpTileFetcher(userAgent: string): TileFetcher {
@@ -304,6 +308,9 @@ export function httpTileFetcher(userAgent: string): TileFetcher {
         headers: { 'User-Agent': userAgent },
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
       });
+      if (res.status === 404 || res.status === 204) {
+        return 'absent';
+      }
       if (!res.ok) {
         return null;
       }
@@ -325,7 +332,7 @@ export type EnsureOutcome = 'kept' | 'fetched' | 'failed' | 'none';
  * is when the provider cannot be reached, which is the whole point offshore.
  */
 export class OnlineTileProxy {
-  private readonly inFlight = new Map<string, Promise<Buffer | null>>();
+  private readonly inFlight = new Map<string, Promise<Buffer | 'absent' | null>>();
 
   constructor(
     private readonly store: OnlineTileStore,
@@ -352,7 +359,9 @@ export class OnlineTileProxy {
     if (cached && this.now() - cached.fetchedAt < TILE_REFRESH_MS) {
       return cached.data;
     }
-    const fetching = this.fetchAndKeep(catalogId, source, z, x, y);
+    const fetching = this.fetchAndKeep(catalogId, source, z, x, y).then((data) =>
+      data === 'absent' ? null : data
+    );
     // An old tile is shown at once and refreshed behind it, so a link that
     // hangs rather than fails never leaves the chart blank while it times out.
     return cached ? cached.data : fetching;
@@ -377,6 +386,9 @@ export class OnlineTileProxy {
       return 'kept';
     }
     const data = await this.fetchAndKeep(catalogId, source, z, x, y);
+    if (data === 'absent') {
+      return 'none';
+    }
     return data ? 'fetched' : 'failed';
   }
 
@@ -387,7 +399,7 @@ export class OnlineTileProxy {
     z: number,
     x: number,
     y: number
-  ): Promise<Buffer | null> {
+  ): Promise<Buffer | 'absent' | null> {
     const url = upstreamTileUrl(source, z, x, y);
     if (!url) {
       return Promise.resolve(null);
@@ -398,8 +410,8 @@ export class OnlineTileProxy {
       pending = this.fetchTile(url)
         .catch(() => null)
         .then((data) => {
-          if (!data) {
-            return null;
+          if (!data || data === 'absent') {
+            return data;
           }
           try {
             this.store.put(catalogId, z, x, y, data, this.now());

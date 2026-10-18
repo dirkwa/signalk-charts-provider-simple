@@ -61,10 +61,10 @@ function areaTileCount(bbox: AreaBbox, minzoom: number, maxzoom: number): number
   let total = 0;
   for (let z = minzoom; z <= maxzoom; z++) {
     const rows = areaLatToY(south, z) - areaLatToY(north, z) + 1;
-    const cols =
-      west <= east
-        ? areaLonToX(east, z) - areaLonToX(west, z) + 1
-        : 2 ** z - areaLonToX(west, z) + areaLonToX(east, z) + 1;
+    const from = areaLonToX(west, z);
+    const to = areaLonToX(east, z);
+    // Matches the server: an antimeridian area whose halves meet spans the row once.
+    const cols = west <= east ? to - from + 1 : to >= from ? 2 ** z : 2 ** z - from + to + 1;
     total += rows * cols;
   }
   return total;

@@ -37,9 +37,15 @@ function columnRanges([west, , east]: AreaBbox, z: number): [number, number][] {
   if (west <= east) {
     return [[lonToX(west, z), lonToX(east, z)]];
   }
+  const from = lonToX(west, z);
+  const to = lonToX(east, z);
+  // At low zoom both halves can land in the same columns.
+  if (to >= from) {
+    return [[0, 2 ** z - 1]];
+  }
   return [
-    [lonToX(west, z), 2 ** z - 1],
-    [0, lonToX(east, z)]
+    [from, 2 ** z - 1],
+    [0, to]
   ];
 }
 
