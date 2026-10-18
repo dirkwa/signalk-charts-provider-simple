@@ -54,6 +54,9 @@ interface MockState {
   onlineAdded: Record<string, string[]>;
   // Bodies POSTed to /online-charts, so specs can assert what the UI sent.
   onlineAddRequests: unknown[];
+  // Area downloads of online charts kept offline, and what the server keeps.
+  areaJobs: unknown[];
+  keptTiles: { tiles: number; bytes: number };
   // The boat's position for "Near me" (null: none known).
   position: { latitude: number; longitude: number } | null;
   // When set, POST /catalog-registry/refresh swaps the registry to this (and
@@ -139,6 +142,8 @@ const initialState: MockState = {
   online: [],
   onlineAdded: {},
   onlineAddRequests: [],
+  areaJobs: [],
+  keptTiles: { tiles: 0, bytes: 0 },
   position: null,
   refreshRegistry: null,
   refreshStatus: null,
@@ -305,6 +310,50 @@ export function startMockServer(
     const relativePath = `${body.folder}/${body.catalogId}.onlinechart.json`;
     (state.onlineAdded[body.catalogId] ??= []).push(relativePath);
     res.json({ success: true, relativePath });
+  });
+
+  // Offline-area routes for online charts kept offline: a download starts
+  // and stays running, so the dialog shows its progress.
+  router.get(`${PLUGIN_BASE}/online-area-downloads`, (_req, res) => {
+    res.json({ jobs: state.areaJobs });
+  });
+
+  router.post(`${PLUGIN_BASE}/online-charts/:chartId/area-download`, (req, res) => {
+    const body = req.body as { minzoom: number; maxzoom: number };
+    const job = {
+      id: `job-${String(state.areaJobs.length + 1)}`,
+      chartId: req.params.chartId,
+      status: 'running',
+      total: 400,
+      done: 100,
+      fetched: 100,
+      failed: 0,
+      minzoom: body.minzoom,
+      maxzoom: body.maxzoom
+    };
+    state.areaJobs.push(job);
+    res.status(202).json({ success: true, job });
+  });
+
+  router.delete(`${PLUGIN_BASE}/online-area-downloads/:jobId`, (req, res) => {
+    const job = (state.areaJobs as { id: string; status: string }[]).find(
+      (j) => j.id === req.params.jobId
+    );
+    if (!job) {
+      res.status(404).json({ success: false });
+      return;
+    }
+    job.status = 'cancelled';
+    res.json({ success: true });
+  });
+
+  router.get(`${PLUGIN_BASE}/online-charts/:chartId/offline`, (_req, res) => {
+    res.json(state.keptTiles);
+  });
+
+  router.delete(`${PLUGIN_BASE}/online-charts/:chartId/offline`, (_req, res) => {
+    state.keptTiles = { tiles: 0, bytes: 0 };
+    res.json({ success: true });
   });
 
   router.get(`${PLUGIN_BASE}/catalog/:file`, (req, res) => {

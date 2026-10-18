@@ -84,10 +84,23 @@ declare global {
     handleDropOnFolder(event: DragEvent, targetFolder: string): Promise<void>;
     showChartInfo(chartPath: string): Promise<void>;
     renameOnlineChart(chartPath: string): Promise<void>;
+    openOfflineArea(chartPath: string): void;
     closeChartInfoModal(event?: Event): void;
     editChartMetadata(): void;
     cancelEditMetadata(): void;
     saveChartMetadata(): Promise<void>;
+
+    // online-area-download.ts
+    showOfflineArea(
+      chartId: string,
+      name: string,
+      minzoom: number | null,
+      maxzoom: number | null
+    ): Promise<void>;
+    closeAreaDialog(event?: Event): void;
+    startAreaDownload(): Promise<void>;
+    cancelAreaDownload(): Promise<void>;
+    clearKeptTiles(): Promise<void>;
   }
 }
 

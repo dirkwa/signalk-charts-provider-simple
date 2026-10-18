@@ -336,4 +336,165 @@ test.describe('Manage Charts tab', () => {
       undefined
     );
   });
+
+  test('downloads an area of a chart kept offline', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      position: { latitude: -17.7, longitude: 177.9 },
+      keptTiles: { tiles: 1234, bytes: 5 * 1024 * 1024 },
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/', 'Online Charts'],
+        charts: [
+          {
+            relativePath: 'Online Charts/gebco-ocean-depths.onlinechart.json',
+            name: 'gebco-ocean-depths.onlinechart.json',
+            chartName: 'GEBCO Ocean Depths',
+            folder: 'Online Charts',
+            enabled: true,
+            online: {
+              catalogId: 'gebco-ocean-depths',
+              available: true,
+              catalogLoaded: true,
+              type: 'WMS',
+              keptOffline: true,
+              chartId: 'gebco-ocean-depths',
+              minzoom: null,
+              maxzoom: null
+            }
+          },
+          {
+            relativePath: 'Online Charts/nws-radar-conus.onlinechart.json',
+            name: 'nws-radar-conus.onlinechart.json',
+            chartName: 'NWS Radar',
+            folder: 'Online Charts',
+            enabled: true,
+            online: {
+              catalogId: 'nws-radar-conus',
+              available: true,
+              catalogLoaded: true,
+              type: 'WMS',
+              keptOffline: false
+            }
+          },
+          {
+            relativePath: 'Online Charts/kartverket-sjokart.onlinechart.json',
+            name: 'kartverket-sjokart.onlinechart.json',
+            chartName: 'Norwegian Charts',
+            folder: 'Online Charts',
+            enabled: false,
+            online: {
+              catalogId: 'kartverket-sjokart',
+              available: true,
+              catalogLoaded: true,
+              type: 'tilelayer',
+              keptOffline: true,
+              chartId: 'kartverket-sjokart',
+              minzoom: null,
+              maxzoom: null
+            }
+          }
+        ]
+      }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+    await page.locator('.folder-btn', { hasText: 'Online Charts' }).first().click();
+
+    const gebco = page.locator('.chart-card', { hasText: 'GEBCO Ocean Depths' });
+    await expect(gebco).toContainText('Kept offline', { timeout: 5000 });
+    const radar = page.locator('.chart-card', { hasText: 'NWS Radar' });
+    await expect(radar).toContainText('Needs internet');
+    await expect(radar.getByRole('button', { name: 'Offline area' })).toHaveCount(0);
+    // A switched-off chart is not served, so there is nothing to download from.
+    const off = page.locator('.chart-card', { hasText: 'Norwegian Charts' });
+    await expect(off).toContainText('Kept offline');
+    await expect(off.getByRole('button', { name: 'Offline area' })).toHaveCount(0);
+
+    await gebco.getByRole('button', { name: 'Offline area' }).click();
+    const dialog = page.locator('.area-modal');
+    await expect(dialog).toContainText('Offline area: GEBCO Ocean Depths');
+    await expect(dialog.locator('#areaKept')).toContainText('1,234 tiles (5.0 MB)');
+    await expect(dialog.locator('#areaEstimate')).toContainText('tiles in the visible area');
+
+    const posted = page.waitForRequest(
+      (r) =>
+        r.method() === 'POST' && r.url().endsWith('/online-charts/gebco-ocean-depths/area-download')
+    );
+    await dialog.getByRole('button', { name: 'Download area' }).click();
+    const body = (await posted).postDataJSON() as {
+      bbox: number[];
+      minzoom: number;
+      maxzoom: number;
+    };
+    expect(body.bbox).toHaveLength(4);
+    expect(body.bbox[1]).toBeLessThan(-17.7);
+    expect(body.bbox[3]).toBeGreaterThan(-17.7);
+    expect(body.minzoom).toBe(0);
+    expect(body.maxzoom).toBe(14);
+    await expect(dialog.locator('#areaProgress')).toContainText('Downloading: 100 of 400 tiles');
+    await expect(dialog.getByRole('button', { name: 'Stop' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Download area' })).toBeDisabled();
+
+    // Stop asks the server to cancel, and the dialog shows the outcome.
+    const stopped = page.waitForRequest(
+      (r) => r.method() === 'DELETE' && r.url().endsWith('/online-area-downloads/job-1')
+    );
+    await dialog.getByRole('button', { name: 'Stop' }).click();
+    await stopped;
+    await expect(dialog.locator('#areaProgress')).toContainText('Stopped');
+    await expect(dialog.getByRole('button', { name: 'Stop' })).toBeHidden();
+    await expect(dialog.getByRole('button', { name: 'Download area' })).toBeEnabled();
+
+    // Deleting the kept tiles asks first, then empties the stats line.
+    page.once('dialog', (d) => void d.accept());
+    await dialog.getByRole('button', { name: 'Delete kept tiles' }).click();
+    await expect(dialog.locator('#areaKept')).toContainText('No tiles kept on the server yet');
+    await expect(dialog.getByRole('button', { name: 'Delete kept tiles' })).toBeDisabled();
+  });
+
+  test('refuses an offline area with too many tiles', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      position: null,
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/'],
+        charts: [
+          {
+            relativePath: 'gebco-ocean-depths.onlinechart.json',
+            name: 'gebco-ocean-depths.onlinechart.json',
+            chartName: 'GEBCO Ocean Depths',
+            folder: '/',
+            enabled: true,
+            online: {
+              catalogId: 'gebco-ocean-depths',
+              available: true,
+              catalogLoaded: true,
+              type: 'WMS',
+              keptOffline: true,
+              chartId: 'gebco-ocean-depths',
+              minzoom: null,
+              maxzoom: null
+            }
+          }
+        ]
+      }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+    await page
+      .locator('.chart-card', { hasText: 'GEBCO Ocean Depths' })
+      .getByRole('button', { name: 'Offline area' })
+      .click();
+    const dialog = page.locator('.area-modal');
+    // Without a vessel position the map shows the whole world.
+    await dialog.locator('#areaZoomTo').selectOption('12');
+    await expect(dialog.locator('#areaEstimate')).toContainText('too many');
+    await expect(dialog.getByRole('button', { name: 'Download area' })).toBeDisabled();
+    await dialog.locator('#areaZoomFrom').selectOption('13');
+    await expect(dialog.locator('#areaEstimate')).toContainText('must not be above');
+  });
 });

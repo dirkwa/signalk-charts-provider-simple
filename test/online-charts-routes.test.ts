@@ -326,6 +326,46 @@ describe('online chart routes', () => {
     }
   });
 
+  it('downloads an area of a chart kept offline, and deletes the kept tiles', async () => {
+    depthsOnline = true;
+    const start = await call(handlers.get('post /online-charts/:chartId/area-download'), {
+      params: { chartId: 'test-depths' },
+      body: { bbox: [177, -18.5, 178.5, -17], minzoom: 5, maxzoom: 7 }
+    });
+    assert.strictEqual(start.statusCode, 202);
+    const { job } = start.body as { job: { id: string; total: number } };
+
+    type Job = { id: string; status: string; fetched: number; done: number };
+    let done: Job | undefined;
+    const deadline = Date.now() + 5000;
+    while (done?.status !== 'completed' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+      const list = await call(handlers.get('get /online-area-downloads'), {});
+      done = (list.body as { jobs: Job[] }).jobs.find((j) => j.id === job.id);
+    }
+    assert.strictEqual(done?.status, 'completed');
+    assert.strictEqual(done.done, job.total);
+
+    const statsRoute = handlers.get('get /online-charts/:chartId/offline');
+    const stats = await call(statsRoute, { params: { chartId: 'test-depths' } });
+    assert.ok((stats.body as { tiles: number }).tiles >= job.total);
+
+    const cleared = await call(handlers.get('delete /online-charts/:chartId/offline'), {
+      params: { chartId: 'test-depths' }
+    });
+    assert.strictEqual(cleared.statusCode, 200);
+    const after = await call(statsRoute, { params: { chartId: 'test-depths' } });
+    assert.deepStrictEqual(after.body, { tiles: 0, bytes: 0 });
+  });
+
+  it('downloads areas only of charts kept offline', async () => {
+    const res = await call(handlers.get('post /online-charts/:chartId/area-download'), {
+      params: { chartId: 'nws-radar-conus-2' },
+      body: { bbox: [-80, 25, -79, 26], minzoom: 5, maxzoom: 6 }
+    });
+    assert.strictEqual(res.statusCode, 404);
+  });
+
   it('reports the chart as added in the catalog registry', async () => {
     const res = await call(handlers.get('get /catalog-registry'), {});
     const body = res.body as {
