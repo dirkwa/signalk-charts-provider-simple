@@ -276,4 +276,25 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     await Promise.all([p.getTile('depths', source, 3, 2, 1), p.getTile('depths', source, 3, 2, 1)]);
     assert.strictEqual(fetched.length, 1);
   });
+
+  it('keeps a fetch under way when a chart is forgotten from writing its tile back', async () => {
+    const releases: ((data: Uint8Array) => void)[] = [];
+    const proxy = new OnlineTileProxy(
+      store,
+      () =>
+        new Promise((resolve) => {
+          releases.push(resolve);
+        })
+    );
+    const before = proxy.getTile('depths', source, 5, 2, 2);
+    proxy.forget('depths');
+    const after = proxy.getTile('depths', source, 5, 2, 2);
+    assert.strictEqual(releases.length, 2);
+    releases[0]?.(PNG);
+    assert.ok(await before);
+    assert.strictEqual(store.get('depths', 5, 2, 2), null);
+    releases[1]?.(PNG2);
+    assert.ok(await after);
+    assert.deepStrictEqual(new Uint8Array(store.get('depths', 5, 2, 2)?.data ?? []), PNG2);
+  });
 });

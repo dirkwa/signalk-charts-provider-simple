@@ -333,6 +333,7 @@ export type EnsureOutcome = 'kept' | 'fetched' | 'failed' | 'none';
  */
 export class OnlineTileProxy {
   private readonly inFlight = new Map<string, Promise<Buffer | 'absent' | null>>();
+  private readonly generation = new Map<string, number>();
 
   constructor(
     private readonly store: OnlineTileStore,
@@ -392,6 +393,21 @@ export class OnlineTileProxy {
     return data ? 'fetched' : 'failed';
   }
 
+  /**
+   * Drop every tile kept for a chart. Fetches already under way for it land
+   * without writing, so none of them puts a tile back behind the delete.
+   */
+  forget(catalogId: string): void {
+    this.generation.set(catalogId, (this.generation.get(catalogId) ?? 0) + 1);
+    const prefix = `${catalogId}/`;
+    for (const key of [...this.inFlight.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.inFlight.delete(key);
+      }
+    }
+    this.store.clear(catalogId);
+  }
+
   /** The provider's tile, kept on the way through; null when it can't be had. */
   private fetchAndKeep(
     catalogId: string,
@@ -405,24 +421,32 @@ export class OnlineTileProxy {
       return Promise.resolve(null);
     }
     const key = `${catalogId}/${String(z)}/${String(x)}/${String(y)}`;
-    let pending = this.inFlight.get(key);
-    if (!pending) {
-      pending = this.fetchTile(url)
-        .catch(() => null)
-        .then((data) => {
-          if (!data || data === 'absent') {
-            return data;
-          }
+    const existing = this.inFlight.get(key);
+    if (existing) {
+      return existing;
+    }
+    const generation = this.generation.get(catalogId) ?? 0;
+    const pending: Promise<Buffer | 'absent' | null> = this.fetchTile(url)
+      .catch(() => null)
+      .then((data) => {
+        if (!data || data === 'absent') {
+          return data;
+        }
+        if ((this.generation.get(catalogId) ?? 0) === generation) {
           try {
             this.store.put(catalogId, z, x, y, data, this.now());
           } catch {
             // A full disk must not stop the chart showing while online.
           }
-          return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-        })
-        .finally(() => this.inFlight.delete(key));
-      this.inFlight.set(key, pending);
-    }
+        }
+        return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+      })
+      .finally(() => {
+        if (this.inFlight.get(key) === pending) {
+          this.inFlight.delete(key);
+        }
+      });
+    this.inFlight.set(key, pending);
     return pending;
   }
 }

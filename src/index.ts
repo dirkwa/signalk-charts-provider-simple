@@ -3194,7 +3194,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         res.status(409).json({ success: false, error: 'Stop the area download first' });
         return;
       }
-      onlineTileStore?.clear(chart.catalogId);
+      onlineTileProxy?.forget(chart.catalogId);
       res.json({ success: true });
     });
 
