@@ -335,6 +335,14 @@ test.describe('Manage Charts tab', () => {
     expect(await page.evaluate(() => (window as unknown as { pwned?: number }).pwned)).toBe(
       undefined
     );
+    await expect(page.locator('.delete-modal')).not.toContainText('kept on the server');
+    await page.locator('.delete-modal').getByRole('button', { name: 'Cancel' }).click();
+
+    // Deleting a chart kept offline says its kept tiles go with it.
+    await gebco.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.locator('.delete-modal')).toContainText(
+      'Its tiles kept on the server for offline use are deleted too'
+    );
   });
 
   test('downloads an area of a chart kept offline', async ({ page }) => {

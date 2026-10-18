@@ -188,6 +188,8 @@ let globalJobCompletedListener: ((job: DownloadJob) => void) | null = null;
 // id Signal K uses must match exactly so `cleanupOrphanedJobs` reaps
 // the right containers — alias rather than duplicate the literal.
 const PLUGIN_ID = PLUGIN_OWNER_ID;
+// Small enough for the SD card of a Raspberry Pi, large enough for a cruising area at harbour zoom.
+const DEFAULT_ONLINE_CACHE_LIMIT_MB = 2048;
 // Tile URLs live under the Signal K v1 charts namespace so non-admin
 // users (readwrite/readonly) can fetch tiles. Routes under /plugins/* are
 // gated by adminAuthenticationMiddleware in the server, which blocks tile
@@ -376,6 +378,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             '"all" uses every core for fastest single-bundle conversion; Signal K may be sluggish during a conversion.',
           enum: ['single-core', 'half', 'all'],
           default: 'half'
+        },
+        onlineCacheLimitMB: {
+          type: 'integer',
+          title: 'Space for online chart tiles kept offline (MB)',
+          description:
+            'Online charts that may be kept offline keep every tile a plotter shows. ' +
+            'Above this size the tiles kept longest are removed first. ' +
+            'Areas downloaded with "Offline area" count towards it but are never removed this way, ' +
+            'so with more areas than fit, only the tiles viewed last stay. 0 keeps everything.',
+          minimum: 0,
+          default: DEFAULT_ONLINE_CACHE_LIMIT_MB
         },
         // A `null`-typed field renders as a section header in the admin UI,
         // visually separating this toggle from the CPU-budget setting above.
@@ -650,6 +663,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     void initRasterTileCache(path.join(dataDir, 'raster-tile-cache'));
     onlineTileStore?.close();
     onlineTileStore = new OnlineTileStore(path.join(dataDir, 'online-tile-cache'));
+    // Applies a limit lowered since the last start without waiting for a tile.
+    onlineTileStore.setLimit(
+      (props.onlineCacheLimitMB ?? DEFAULT_ONLINE_CACHE_LIMIT_MB) * 1024 * 1024
+    );
     onlineTileProxy = new OnlineTileProxy(
       onlineTileStore,
       httpTileFetcher(`signalk-charts-provider-simple/${pluginVersion}`)
@@ -1604,6 +1621,26 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
+    // The tiles kept for an online chart go with its last chart file. Only
+    // on a delete made here: a chart folder that is briefly missing (an
+    // unmounted card) must never cost the boat its offline tiles.
+    const forgetOfflineTiles = async (basePath: string, catalogId: string): Promise<void> => {
+      const stillUsed = (await findOnlineChartFiles(basePath)).some(
+        (f) => f.catalogId === catalogId
+      );
+      if (stillUsed || !onlineTileProxy) {
+        return;
+      }
+      try {
+        await areaDownloader?.stop(catalogId);
+        onlineTileProxy.forget(catalogId);
+      } catch (err) {
+        app.error(
+          `Could not delete the kept tiles of ${catalogId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    };
+
     router.delete('/local-charts/:chartPath', async (req: Request, res: Response) => {
       const chartPathParam = decodeURIComponent((req.params as Record<string, string>).chartPath);
       try {
@@ -1625,6 +1662,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         if (fs.existsSync(fullPath)) {
           const stat = await fs.promises.stat(fullPath);
+          const deletedCatalogIds = stat.isDirectory()
+            ? (await findOnlineChartFiles(fullPath)).map((f) => f.catalogId)
+            : isOnlineChartFile(fullPath)
+              ? [readOnlineChartFile(fullPath)?.catalogId ?? '']
+              : [];
           if (stat.isDirectory()) {
             await fs.promises.rm(fullPath, { recursive: true, force: true });
             cleanupEmptyParents(fullPath, basePath);
@@ -1635,6 +1677,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           await refreshChartProviders();
           const chartId = chartIdFromFilename(path.basename(chartPathParam));
           emitChartDelta(chartId, null);
+          for (const catalogId of new Set(deletedCatalogIds.filter(Boolean))) {
+            await forgetOfflineTiles(basePath, catalogId);
+          }
 
           // Primary path: reverse-lookup by the on-disk filename. The
           // converter records this in the install record after a

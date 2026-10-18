@@ -118,6 +118,7 @@ export class AreaDownloadError extends Error {}
 export class AreaDownloader {
   private readonly jobs = new Map<string, AreaDownloadJob>();
   private readonly cancelled = new Set<string>();
+  private readonly runs = new Map<string, Promise<void>>();
 
   constructor(
     private readonly proxy: OnlineTileProxy,
@@ -153,7 +154,8 @@ export class AreaDownloader {
     };
     this.jobs.set(job.id, job);
     this.prune();
-    void this.run(job, req.source);
+    const run = this.run(job, req.source).finally(() => this.runs.delete(job.id));
+    this.runs.set(job.id, run);
     return job;
   }
 
@@ -170,6 +172,20 @@ export class AreaDownloader {
     for (const job of this.jobs.values()) {
       this.cancel(job.id);
     }
+  }
+
+  /** Cancel a chart's running downloads and wait until their last tile is written. */
+  async stop(catalogId: string): Promise<void> {
+    const running = this.list().filter((j) => j.catalogId === catalogId && j.status === 'running');
+    for (const job of running) {
+      this.cancel(job.id);
+    }
+    await Promise.all(
+      running.flatMap((j) => {
+        const run = this.runs.get(j.id);
+        return run ? [run] : [];
+      })
+    );
   }
 
   get(id: string): AreaDownloadJob | undefined {

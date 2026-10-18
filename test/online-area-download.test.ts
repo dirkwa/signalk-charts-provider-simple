@@ -168,6 +168,26 @@ describe('AreaDownloader', () => {
     assert.ok(job.done < job.total);
   });
 
+  it("stops a chart's downloads and waits until their last tile is written", async () => {
+    let inFlight = 0;
+    let written = 0;
+    const downloader = setup(async () => {
+      inFlight++;
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      written++;
+      return PNG;
+    });
+    const { id } = downloader.start({ ...request, minzoom: 8, maxzoom: 12 });
+    await new Promise((r) => setTimeout(r, 12));
+    await downloader.stop('depths');
+    assert.strictEqual(inFlight, 0);
+    assert.strictEqual(downloader.get(id)?.status, 'cancelled');
+    const after = written;
+    await new Promise((r) => setTimeout(r, 20));
+    assert.strictEqual(written, after);
+  });
+
   it('refuses areas too large, inverted zoom ranges and a second download of one chart', () => {
     const downloader = setup(() => new Promise(() => {}));
     assert.throws(

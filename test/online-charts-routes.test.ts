@@ -525,4 +525,47 @@ describe('online chart routes', () => {
       'odd-__proto__.onlinechart.json'
     ]);
   });
+
+  it("deletes a chart's kept tiles with the last chart file that uses them", async () => {
+    const cacheFile = path.join(
+      tempDir,
+      'plugin-config-data',
+      'signalk-charts-provider-simple',
+      'online-tile-cache',
+      'test-depths.mbtiles'
+    );
+    depthsOnline = true;
+    const start = await call(handlers.get('post /online-charts/:chartId/area-download'), {
+      params: { chartId: 'test-depths' },
+      body: { bbox: [177, -18.5, 178.5, -17], minzoom: 5, maxzoom: 6 }
+    });
+    assert.strictEqual(start.statusCode, 202);
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const list = await call(handlers.get('get /online-area-downloads'), {});
+      if ((list.body as { jobs: { status: string }[] }).jobs.every((j) => j.status !== 'running')) {
+        break;
+      }
+      assert.ok(Date.now() < deadline, 'area download should finish');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(fs.existsSync(cacheFile));
+
+    const second = await add({ catalogId: 'test-depths', folder: '/' });
+    assert.strictEqual(second.statusCode, 200);
+    const deleteChart = (relativePath: string) =>
+      call(handlers.get('delete /local-charts/:chartPath'), {
+        params: { chartPath: encodeURIComponent(relativePath) }
+      });
+
+    assert.strictEqual(
+      (await deleteChart(path.join('Online Charts', 'test-depths.onlinechart.json'))).statusCode,
+      200
+    );
+    assert.ok(fs.existsSync(cacheFile), 'another chart file still uses the tiles');
+
+    const { relativePath } = second.body as { relativePath: string };
+    assert.strictEqual((await deleteChart(relativePath)).statusCode, 200);
+    assert.strictEqual(fs.existsSync(cacheFile), false);
+  });
 });

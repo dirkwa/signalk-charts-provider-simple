@@ -117,6 +117,8 @@ interface DeleteConfirmOptions {
   type: 'chart' | 'folder';
   name: string;
   hasCharts?: boolean;
+  /** An online chart whose kept tiles go with its last chart file. */
+  keptOffline?: boolean;
   onConfirm: () => void | Promise<void>;
 }
 
@@ -776,6 +778,7 @@ function deleteChart(relativePath: string, name: string): void {
   showDeleteConfirmation({
     type: 'chart',
     name: chart?.online ? (chart.chartName ?? name) : name,
+    keptOffline: chart?.online?.keptOffline === true,
     onConfirm: async () => {
       try {
         const response = await fetch(
@@ -2021,7 +2024,13 @@ function deleteFolder(folder: string): void {
   });
 }
 
-function showDeleteConfirmation({ type, name, hasCharts, onConfirm }: DeleteConfirmOptions): void {
+function showDeleteConfirmation({
+  type,
+  name,
+  hasCharts,
+  keptOffline,
+  onConfirm
+}: DeleteConfirmOptions): void {
   const isChart = type === 'chart';
   const isFolder = type === 'folder';
   const icon = window.getIcon('trash');
@@ -2031,7 +2040,10 @@ function showDeleteConfirmation({ type, name, hasCharts, onConfirm }: DeleteConf
   if (isChart) {
     warningText =
       window.getIcon('warning') +
-      ' This action cannot be undone. The chart file will be permanently deleted.';
+      ' This action cannot be undone. The chart file will be permanently deleted.' +
+      (keptOffline
+        ? ' Its tiles kept on the server for offline use are deleted too, unless another chart file uses them.'
+        : '');
   } else if (isFolder && hasCharts) {
     warningText =
       window.getIcon('warning') +

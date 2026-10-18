@@ -16,6 +16,7 @@ export const CpuBudgetPresetSchema = Type.Union([
 export const PluginConfigSchema = Type.Object({
   chartPath: Type.String(),
   cpuBudget: Type.Optional(CpuBudgetPresetSchema),
+  onlineCacheLimitMB: Type.Optional(Type.Integer({ minimum: 0 })),
   disableUpdateNotifications: Type.Optional(Type.Boolean())
 });
 

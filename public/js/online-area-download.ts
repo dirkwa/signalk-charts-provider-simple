@@ -340,7 +340,7 @@ async function showOfflineArea(
           <h3>Offline area: ${areaEscape(name)}</h3>
         </div>
         <div class="delete-modal-body">
-          <p class="area-help">Move and zoom the map to the area you want to have without internet. Everything you see is downloaded and kept on the server.</p>
+          <p class="area-help">Move and zoom the map to the area you want to have without internet. Everything you see is downloaded and kept on the server, and stays there until you delete it here or delete the chart: only tiles kept while browsing make room when the server's space for online charts is full.</p>
           <div id="areaMap" class="area-map"></div>
           <div class="area-zooms">
             <label>From zoom <select id="areaZoomFrom">${zoomOptions(lowest, highest, lowest)}</select></label>

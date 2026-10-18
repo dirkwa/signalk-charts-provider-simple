@@ -31,6 +31,21 @@ describe('parsePluginConfig', () => {
     }
   });
 
+  it('accepts a cache limit in whole megabytes, 0 for none, and nothing negative', () => {
+    assert.strictEqual(
+      parsePluginConfig({ chartPath: '/x', onlineCacheLimitMB: 0 }).onlineCacheLimitMB,
+      0
+    );
+    assert.throws(
+      () => parsePluginConfig({ chartPath: '/x', onlineCacheLimitMB: -1 }),
+      /onlineCacheLimitMB/
+    );
+    assert.throws(
+      () => parsePluginConfig({ chartPath: '/x', onlineCacheLimitMB: 1.5 }),
+      /onlineCacheLimitMB/
+    );
+  });
+
   it('rejects an unknown cpuBudget value', () => {
     assert.throws(() => parsePluginConfig({ chartPath: '/x', cpuBudget: 'turbo' }), /cpuBudget/);
   });
