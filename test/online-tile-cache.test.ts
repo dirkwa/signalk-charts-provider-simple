@@ -473,6 +473,24 @@ describe('OnlineTileStore limit', () => {
     assert.ok(store.get('depths', 10, 29, 0));
   });
 
+  /** What the chart's tile files take on disk, write-ahead log included. */
+  function diskBytes(catalogId: string): number {
+    return ['', '-wal'].reduce((sum, suffix) => {
+      const file = path.join(dir, `${catalogId}.mbtiles${suffix}`);
+      return sum + (fs.existsSync(file) ? fs.statSync(file).size : 0);
+    }, 0);
+  }
+
+  it('gives the space of removed tiles back to the disk', () => {
+    store = new OnlineTileStore(dir);
+    for (let i = 0; i < 20; i++) {
+      store.put('depths', 10, i, 0, tile(i), 1000 + i);
+    }
+    store.setLimit(Math.floor(store.totalBytes() / 4));
+    store.evict();
+    assert.ok(diskBytes('depths') <= store.totalBytes() * 1.5, String(diskBytes('depths')));
+  });
+
   it('adds the pinned column to a file kept before it existed', () => {
     fs.mkdirSync(dir, { recursive: true });
     const old = new DatabaseSync(path.join(dir, 'depths.mbtiles'));

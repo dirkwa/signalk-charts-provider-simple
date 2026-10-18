@@ -248,6 +248,17 @@ describe('online charts', () => {
       assert.ok(!refs.some((r) => r.relativePath.startsWith('some-chart')));
     });
 
+    it('findOnlineChartFiles fails on a folder it cannot read only when asked to', async () => {
+      const missing = path.join(dir, 'unmounted');
+      assert.deepStrictEqual(await findOnlineChartFiles(missing), []);
+      await assert.rejects(findOnlineChartFiles(missing, missing, { strict: true }));
+      const broken = path.join(dir, 'broken');
+      fs.mkdirSync(broken);
+      fs.writeFileSync(path.join(broken, 'x.onlinechart.json'), 'not json');
+      assert.deepStrictEqual(await findOnlineChartFiles(broken), []);
+      await assert.rejects(findOnlineChartFiles(broken, broken, { strict: true }));
+    });
+
     it('findOnlineChartFiles reports catalog ids and paths', async () => {
       const refs = (await findOnlineChartFiles(dir)).sort((a, b) =>
         a.catalogId < b.catalogId ? -1 : 1

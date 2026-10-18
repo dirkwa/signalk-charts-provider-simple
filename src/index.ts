@@ -1637,13 +1637,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // on a delete made here: a chart folder that is briefly missing (an
     // unmounted card) must never cost the boat its offline tiles.
     const forgetOfflineTiles = async (basePath: string, catalogId: string): Promise<void> => {
-      const stillUsed = (await findOnlineChartFiles(basePath)).some(
-        (f) => f.catalogId === catalogId
-      );
-      if (stillUsed || !onlineTileProxy) {
-        return;
-      }
       try {
+        const stillUsed = (await findOnlineChartFiles(basePath, basePath, { strict: true })).some(
+          (f) => f.catalogId === catalogId
+        );
+        if (stillUsed || !onlineTileProxy) {
+          return;
+        }
         await areaDownloader?.stop(catalogId);
         onlineTileProxy.forget(catalogId);
       } catch (err) {

@@ -211,6 +211,12 @@ export class OnlineTileStore {
       const file = this.file(catalogId);
       db = new DatabaseSync(file);
       try {
+        // A new file gives evicted pages back to the disk. One kept from
+        // before the limit is not rebuilt, since VACUUM would stall the server
+        // and need a second copy's space; it reuses its free pages instead.
+        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table'").get()) {
+          db.exec('PRAGMA auto_vacuum = INCREMENTAL');
+        }
         db.exec(`
           PRAGMA journal_mode = WAL;
           CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value TEXT);
@@ -371,9 +377,10 @@ export class OnlineTileStore {
   }
 
   private usedBytes(db: DatabaseSync): number {
-    const pragma = (name: string): number =>
-      (db.prepare(`PRAGMA ${name}`).get() as Record<string, number>)[name] ?? 0;
-    return (pragma('page_count') - pragma('freelist_count')) * pragma('page_size');
+    return (
+      (pragmaValue(db, 'page_count') - pragmaValue(db, 'freelist_count')) *
+      pragmaValue(db, 'page_size')
+    );
   }
 
   private queueEviction(): void {
@@ -411,6 +418,32 @@ export class OnlineTileStore {
         return [];
       }
     });
+    const more = this.removeOldest(files);
+    return this.reclaim(files) || more;
+  }
+
+  /**
+   * Give the pages of removed tiles back to the disk, a bounded amount per
+   * turn so a large cache never holds up tile requests. Returns true when
+   * pages are left for the next turn.
+   */
+  private reclaim(files: { id: string; db: DatabaseSync }[]): boolean {
+    let left = false;
+    for (const f of files) {
+      if (
+        pragmaValue(f.db, 'auto_vacuum') !== AUTO_VACUUM_INCREMENTAL ||
+        pragmaValue(f.db, 'freelist_count') === 0
+      ) {
+        continue;
+      }
+      f.db.exec(`PRAGMA incremental_vacuum(${String(VACUUM_PAGES_PER_TURN)})`);
+      f.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      left ||= pragmaValue(f.db, 'freelist_count') > 0;
+    }
+    return left;
+  }
+
+  private removeOldest(files: { id: string; db: DatabaseSync }[]): boolean {
     const used = new Map(files.map((f) => [f.id, this.usedBytes(f.db)]));
     let total = [...used.values()].reduce((a, b) => a + b, 0);
     for (let batch = 0; total > this.limitBytes; batch++) {
@@ -491,6 +524,13 @@ export class OnlineTileStore {
   }
 }
 
+const AUTO_VACUUM_INCREMENTAL = 2;
+// 4 MB of 4 KB pages: enough to keep pace with eviction, small enough not to stall a turn.
+const VACUUM_PAGES_PER_TURN = 1024;
+
+function pragmaValue(db: DatabaseSync, name: string): number {
+  return (db.prepare(`PRAGMA ${name}`).get() as Record<string, number>)[name] ?? 0;
+}
 const SQLITE_CORRUPT = 11;
 const SQLITE_NOTADB = 26;
 
