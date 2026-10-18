@@ -472,12 +472,13 @@ export function checkOnlineChartEntry(entry: OnlineChartEntry): string[] {
 
 /**
  * Why the plugin could not fill a tile URL template it keeps offline, or
- * null. It fills `{z}`, `{x}`, `{y}`, `{-y}` and `{z-N}` and nothing else;
- * a `{s}` subdomain left in the URL fails every fetch.
+ * null. It fills `{z}`, `{x}`, `{y}`, `{-y}`, `{z-N}`, `{bbox}` and
+ * `{bbox_3857}` and nothing else; a `{s}` subdomain left in the URL fails
+ * every fetch.
  */
 export function offlineTemplateProblem(template: string): string | null {
   const placeholders = template.match(/\{[^}]*\}/g) ?? [];
-  const unknown = placeholders.filter((p) => !/^\{(z|x|y|-y|z-\d+)\}$/.test(p));
+  const unknown = placeholders.filter((p) => !/^\{(z|x|y|-y|z-\d+|bbox|bbox_3857)\}$/.test(p));
   if (unknown.length > 0) {
     return `offline tile URLs cannot use ${unknown.join(', ')}`;
   }
@@ -486,8 +487,9 @@ export function offlineTemplateProblem(template: string): string | null {
     return 'offline tile URLs cannot offset the zoom by more than 24';
   }
   const has = (re: RegExp): boolean => placeholders.some((p) => re.test(p));
-  if (!has(/^\{z(-\d+)?\}$/) || !has(/^\{x\}$/) || !has(/^\{-?y\}$/)) {
-    return 'offline tile URLs need {z}, {x} and {y}';
+  const tiled = has(/^\{z(-\d+)?\}$/) && has(/^\{x\}$/) && has(/^\{-?y\}$/);
+  if (!tiled && !has(/^\{bbox(_3857)?\}$/)) {
+    return 'offline tile URLs need {z}, {x} and {y}, or {bbox}';
   }
   return null;
 }

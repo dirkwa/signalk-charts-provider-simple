@@ -81,6 +81,7 @@ The interface provides five tabs:
    - Download charts directly from any URL
    - Supports `.mbtiles` and `.pmtiles` files, and `.zip` archives of `.mbtiles`
    - Download queue with progress tracking
+   - Add an online chart by URL: a `{z}/{x}/{y}` tile service (also `{-y}`, `{z-N}`, `{bbox}` and `{bbox_3857}`) or a WMS the Chart Catalog does not list. Tick **Keep tiles for offline use** only when the provider's terms allow it; the chart is then kept offline like a catalog chart
 
 3. **Convert**:
    - Upload ZIP files containing S-57 ENC (.000) or BSB raster (.kap) charts

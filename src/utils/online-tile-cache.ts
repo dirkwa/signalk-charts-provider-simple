@@ -63,11 +63,30 @@ export function tileBbox3857(z: number, x: number, y: number): [number, number, 
   ];
 }
 
+/** A tile's extent in degrees: [west, south, east, north]. */
+export function tileBbox4326(z: number, x: number, y: number): [number, number, number, number] {
+  const n = 2 ** z;
+  const lon = (col: number): number => (col / n) * 360 - 180;
+  const lat = (row: number): number =>
+    (Math.atan(Math.sinh(Math.PI * (1 - (2 * row) / n))) * 180) / Math.PI;
+  return [lon(x), lat(y + 1), lon(x + 1), lat(y)];
+}
+
+/**
+ * Whether a tile template uses a placeholder only the plugin fills in, so a
+ * chart plotter cannot be handed it directly.
+ */
+export function needsTileProxy(url: string): boolean {
+  return /\{(-y|z-\d+|bbox|bbox_3857)\}/.test(url);
+}
+
 /**
  * The upstream URL for one XYZ tile. Templates take `{z}`, `{x}`, `{y}`,
  * `{-y}` (TMS row) and `{z-N}` for services whose level 0 is not zoom 0
  * (NOAA's ArcGIS tile cache starts at zoom 2); null below that first
- * level. WMS layers are requested as
+ * level. `{bbox}` (west,south,east,north in degrees) and `{bbox_3857}`
+ * (Web Mercator metres) make a single-image request such as a WMS GetMap
+ * work as a tile template. WMS layers are requested as
  * a 256 px EPSG:3857 GetMap, which every WMS 1.1.1 server answers in x,y
  * order, so the axis-order trap of WMS 1.3.0 never arises.
  */
@@ -88,7 +107,9 @@ export function upstreamTileUrl(
       .replace(/\{z\}/g, String(z))
       .replace(/\{x\}/g, String(x))
       .replace(/\{-y\}/g, String(2 ** z - 1 - y))
-      .replace(/\{y\}/g, String(y));
+      .replace(/\{y\}/g, String(y))
+      .replace(/\{bbox\}/g, () => tileBbox4326(z, x, y).join(','))
+      .replace(/\{bbox_3857\}/g, () => tileBbox3857(z, x, y).join(','));
   }
   const params = new URLSearchParams({
     SERVICE: 'WMS',
@@ -293,12 +314,34 @@ function isDamagedDatabase(err: unknown): boolean {
 /** A kept tile older than this is fetched again when the provider answers. */
 export const TILE_REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 20_000;
+/** Far above any real map tile; a larger answer is not one. */
+const MAX_TILE_BYTES = 10 * 1024 * 1024;
 
 /**
  * A tile's bytes; `'absent'` when the provider says it has no tile there,
  * which sparse services do outside their coverage; null when it failed.
  */
 export type TileFetcher = (url: string) => Promise<Uint8Array | 'absent' | null>;
+
+/**
+ * The body, or null once it passes `limit` bytes. Read in chunks, because a
+ * chunked answer has no Content-Length to refuse it by up front.
+ */
+async function readCapped(res: Response, limit: number): Promise<Uint8Array | null> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (res.body) {
+    // Leaving the loop early cancels the rest of the body.
+    for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+      size += chunk.byteLength;
+      if (size > limit) {
+        return null;
+      }
+      chunks.push(chunk);
+    }
+  }
+  return Buffer.concat(chunks);
+}
 
 /** Fetch one tile; null when the provider fails or answers with something that is not an image. */
 export function httpTileFetcher(userAgent: string): TileFetcher {
@@ -311,10 +354,13 @@ export function httpTileFetcher(userAgent: string): TileFetcher {
       if (res.status === 404 || res.status === 204) {
         return 'absent';
       }
-      if (!res.ok) {
+      if (!res.ok || Number(res.headers.get('content-length') ?? 0) > MAX_TILE_BYTES) {
         return null;
       }
-      const data = new Uint8Array(await res.arrayBuffer());
+      const data = await readCapped(res, MAX_TILE_BYTES);
+      if (!data) {
+        return null;
+      }
       // WMS servers report errors as XML with a 200 status.
       return tileImageType(data) ? data : null;
     } catch {
@@ -334,6 +380,7 @@ export type EnsureOutcome = 'kept' | 'fetched' | 'failed' | 'none';
 export class OnlineTileProxy {
   private readonly inFlight = new Map<string, Promise<Buffer | 'absent' | null>>();
   private readonly generation = new Map<string, number>();
+  private readonly streaming = new Map<string, Promise<Uint8Array | 'absent' | null>>();
 
   constructor(
     private readonly store: OnlineTileStore,
@@ -366,6 +413,31 @@ export class OnlineTileProxy {
     // An old tile is shown at once and refreshed behind it, so a link that
     // hangs rather than fails never leaves the chart blank while it times out.
     return cached ? cached.data : fetching;
+  }
+
+  /** The provider's tile, passed through without keeping it, for charts whose terms forbid copies. */
+  async streamTile(
+    source: OnlineTileSource,
+    z: number,
+    x: number,
+    y: number
+  ): Promise<Buffer | null> {
+    const url = z > 24 || x >= 2 ** z || y >= 2 ** z ? null : upstreamTileUrl(source, z, x, y);
+    if (!url) {
+      return null;
+    }
+    // Plotters ask for the same tile more than once; the provider is asked once.
+    let pending = this.streaming.get(url);
+    if (!pending) {
+      pending = this.fetchTile(url)
+        .catch(() => null)
+        .finally(() => this.streaming.delete(url));
+      this.streaming.set(url, pending);
+    }
+    const data = await pending;
+    return data && data !== 'absent'
+      ? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+      : null;
   }
 
   /**

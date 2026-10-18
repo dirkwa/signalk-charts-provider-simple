@@ -5,6 +5,7 @@ import type { PMTilesReader } from './utils/pmtiles-reader.js';
 import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
 import type { ChartTimeBlock } from './utils/time-dimension.js';
 import type { OnlineTileSource } from './utils/online-tile-cache.js';
+import type { CustomOnlineChart } from './utils/online-charts.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -77,8 +78,10 @@ export interface ChartProvider {
   time?: ChartTimeBlock;
   /** Online charts: the catalog entry served, so its timeline can be updated in place. */
   _catalogId?: string;
-  /** Online charts kept for offline use: where the plugin fetches their tiles. */
+  /** Online charts served through the plugin: where it fetches their tiles. */
   _offlineSource?: OnlineTileSource;
+  /** Whether the plugin keeps the tiles it fetches for `_offlineSource`. */
+  _keepTiles?: boolean;
 
   v1: ChartV1Data;
   v2: ChartV2Data;
@@ -374,7 +377,7 @@ export interface ScannedChart {
   type?: string;
   isDirectory?: boolean;
   /** Set for `.onlinechart.json` files: the catalog entry they stand for. */
-  online?: { catalogId: string; unreadable?: boolean };
+  online?: { catalogId: string; custom?: CustomOnlineChart; unreadable?: boolean };
 }
 
 // ---- Chart State ----

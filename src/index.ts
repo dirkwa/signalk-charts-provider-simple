@@ -47,6 +47,11 @@ import {
   renameOnlineChartFile,
   readOnlineChartFile,
   writeOnlineChartFile,
+  onlineChartEntry,
+  customChartId,
+  CustomOnlineChartSchema,
+  customOnlineChartProblem,
+  type CustomOnlineChart,
   type OnlineChartResolver
 } from './utils/online-charts.js';
 import { initChartState, isChartEnabled, setChartEnabled } from './utils/chart-state.js';
@@ -464,12 +469,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               return;
             case 'online':
               // Streamed online charts are fetched from their provider by
-              // the chart plotter; only those kept offline come through here.
+              // the chart plotter; only those kept offline, or whose tile
+              // template only the plugin can fill in, come through here.
               if (provider._offlineSource && provider._catalogId && onlineTileProxy) {
                 void serveOnlineTile(
                   res,
                   onlineTileProxy,
-                  provider._catalogId,
+                  provider._keepTiles ? provider._catalogId : null,
                   provider._offlineSource,
                   iz,
                   ix,
@@ -1188,6 +1194,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     folder: Type.String({ minLength: 1 })
   });
 
+  const AddCustomOnlineChartBody = Type.Object({
+    name: Type.String({ minLength: 1, maxLength: 100 }),
+    folder: Type.String({ minLength: 1 }),
+    chart: CustomOnlineChartSchema
+  });
+
   const AreaDownloadBody = Type.Object({
     bbox: Type.Tuple([
       Type.Number({ minimum: -180, maximum: 180 }),
@@ -1536,7 +1548,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               break;
             }
           }
-          const onlineEntry = chart.online ? resolveOnlineChart(chart.online.catalogId) : undefined;
+          const onlineEntry = chart.online
+            ? onlineChartEntry(chart.online, resolveOnlineChart)
+            : undefined;
           return {
             ...chart,
             enabled: isChartEnabled(chart.relativePath),
@@ -1553,7 +1567,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     available: onlineEntry !== undefined,
                     // Distinguishes "not in the catalog" from "no catalog yet"
                     // (first run offline, or a catalog this version can't read).
-                    catalogLoaded: hasCatalog(),
+                    // A chart added by URL needs no catalog.
+                    catalogLoaded: chart.online.custom !== undefined || hasCatalog(),
                     type: onlineEntry?.chart.type ?? null,
                     category: onlineEntry?.category ?? null,
                     temporal: onlineEntry?.temporal !== undefined,
@@ -2248,7 +2263,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         if (isOnlineChartFile(fullPath)) {
           const file = readOnlineChartFile(fullPath);
-          const entry = file ? resolveOnlineChart(file.catalogId) : undefined;
+          const entry = file ? onlineChartEntry(file, resolveOnlineChart) : undefined;
           res.json({
             name: file?.name,
             catalogId: file?.catalogId,
@@ -3074,26 +3089,84 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             res.status(404).json({ success: false, error: 'Unknown online chart' });
             return;
           }
-          const basePath = props.chartPath || defaultChartsPath;
-          const dir = body.folder === '/' ? basePath : path.join(basePath, body.folder);
-          // Hidden folders are skipped by every scan, so a chart written
-          // there would never appear.
-          const hidden = body.folder.split(/[\\/]/).some((seg) => seg.startsWith('.'));
-          if (!isWithinBase(dir, basePath) || hidden) {
-            res.status(403).json({ success: false, error: 'Access denied: Invalid path' });
+          const dir = onlineChartDir(body.folder, res);
+          if (!dir) {
             return;
           }
-          const takenIds = await collectChartIds(basePath);
-          const filename = writeOnlineChartFile(dir, entry.id, entry.name, takenIds);
-          const relativePath = path.relative(basePath, path.join(dir, filename));
-          await refreshChartProviders();
-          const chartId = chartIdFromFilename(filename);
-          if (chartProviders[chartId]) {
-            emitChartDelta(chartId, sanitizeProvider(chartProviders[chartId], 2));
-          }
-          res.json({ success: true, relativePath });
+          res.json({
+            success: true,
+            relativePath: await addOnlineChartFile(dir, entry.id, entry.name)
+          });
         } catch (error) {
           console.error('Error adding online chart:', error);
+          res.status(500).json({ success: false, error: 'Failed to add online chart' });
+        }
+      })();
+    });
+
+    /** The chart-folder directory to add an online chart to; null after refusing. */
+    const onlineChartDir = (folder: string, res: Response): string | null => {
+      const basePath = props.chartPath || defaultChartsPath;
+      const dir = folder === '/' ? basePath : path.join(basePath, folder);
+      // Hidden folders are skipped by every scan, so a chart written
+      // there would never appear.
+      const hidden = folder.split(/[\\/]/).some((seg) => seg.startsWith('.'));
+      if (!isWithinBase(dir, basePath) || hidden) {
+        res.status(403).json({ success: false, error: 'Access denied: Invalid path' });
+        return null;
+      }
+      return dir;
+    };
+
+    /** Write an online chart file, start serving it, and return its chart-folder path. */
+    const addOnlineChartFile = async (
+      dir: string,
+      catalogId: string,
+      name: string,
+      custom?: CustomOnlineChart
+    ): Promise<string> => {
+      const basePath = props.chartPath || defaultChartsPath;
+      const takenIds = await collectChartIds(basePath);
+      const filename = writeOnlineChartFile(dir, catalogId, name, takenIds, custom);
+      await refreshChartProviders();
+      const chartId = chartIdFromFilename(filename);
+      if (chartProviders[chartId]) {
+        emitChartDelta(chartId, sanitizeProvider(chartProviders[chartId], 2));
+      }
+      return path.relative(basePath, path.join(dir, filename));
+    };
+
+    // Add an online chart by URL, for a service the catalog does not list.
+    router.post('/online-charts/custom', (req: Request, res: Response) => {
+      const body = parseBody(AddCustomOnlineChartBody, req, res);
+      if (!body) {
+        return;
+      }
+      const problem = customOnlineChartProblem(body.chart);
+      if (problem) {
+        res.status(400).json({ success: false, error: problem });
+        return;
+      }
+      void (async () => {
+        try {
+          const dir = onlineChartDir(body.folder, res);
+          if (!dir) {
+            return;
+          }
+          const name = body.name.trim();
+          if (name === '') {
+            res.status(400).json({ success: false, error: 'Please enter a chart name' });
+            return;
+          }
+          const relativePath = await addOnlineChartFile(
+            dir,
+            customChartId(body.chart),
+            name,
+            body.chart
+          );
+          res.json({ success: true, relativePath });
+        } catch (error) {
+          console.error('Error adding online chart by URL:', error);
           res.status(500).json({ success: false, error: 'Failed to add online chart' });
         }
       })();
@@ -3111,7 +3184,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       maxzoom: number | undefined;
     } | null => {
       const provider = Object.hasOwn(chartProviders, chartId) ? chartProviders[chartId] : undefined;
-      if (!provider?._offlineSource || !provider._catalogId) {
+      if (!provider?._offlineSource || !provider._catalogId || !provider._keepTiles) {
         res.status(404).json({ success: false, error: 'Not a chart kept offline' });
         return null;
       }
@@ -4946,6 +5019,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _flipY,
     _catalogId,
     _offlineSource,
+    _keepTiles,
     v1: _v1,
     v2: _v2,
     ...rest
@@ -5035,14 +5109,17 @@ const serveTileFromFilesystem = (
 const serveOnlineTile = async (
   res: Response,
   proxy: OnlineTileProxy,
-  catalogId: string,
+  /** Where the tiles are kept; null passes them through without keeping them. */
+  catalogId: string | null,
   source: OnlineTileSource,
   z: number,
   x: number,
   y: number
 ): Promise<void> => {
   try {
-    const data = await proxy.getTile(catalogId, source, z, x, y);
+    const data = catalogId
+      ? await proxy.getTile(catalogId, source, z, x, y)
+      : await proxy.streamTile(source, z, x, y);
     const contentType = data ? tileImageType(data) : null;
     if (!data || !contentType) {
       res.sendStatus(404);
@@ -5052,7 +5129,10 @@ const serveOnlineTile = async (
     res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=86400' });
     res.end(data);
   } catch (err) {
-    console.error(`Online tile ${catalogId}/${String(z)}/${String(x)}/${String(y)} failed:`, err);
+    console.error(
+      `Online tile ${catalogId ?? 'streamed'}/${String(z)}/${String(x)}/${String(y)} failed:`,
+      err
+    );
     res.sendStatus(500);
   }
 };

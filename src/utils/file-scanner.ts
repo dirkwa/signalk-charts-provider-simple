@@ -145,7 +145,9 @@ export async function scanChartsRecursively(
         dateCreated: stats.birthtimeMs,
         dateModified: stats.mtimeMs,
         enabled: true,
-        online: file ? { catalogId: file.catalogId } : { catalogId: '', unreadable: true }
+        online: file
+          ? { catalogId: file.catalogId, ...(file.custom ? { custom: file.custom } : {}) }
+          : { catalogId: '', unreadable: true }
       });
     }
   }
