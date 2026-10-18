@@ -491,6 +491,19 @@ describe('OnlineTileStore limit', () => {
     assert.ok(diskBytes('depths') <= store.totalBytes() * 1.5, String(diskBytes('depths')));
   });
 
+  it('gives space back a bounded amount per turn across all charts', () => {
+    store = new OnlineTileStore(dir);
+    // Each chart frees fewer pages than one turn allows, together more.
+    for (let i = 0; i < 150; i++) {
+      store.put('depths', 10, i, 0, tile(i), 1000 + i);
+      store.put('wrecks', 10, i, 0, tile(i), 1000 + i);
+    }
+    store.setLimit(1);
+    assert.strictEqual(store.evict(), true);
+    assert.strictEqual(store.evict(), false);
+    assert.ok(diskBytes('depths') + diskBytes('wrecks') < 200_000);
+  });
+
   it('adds the pinned column to a file kept before it existed', () => {
     fs.mkdirSync(dir, { recursive: true });
     const old = new DatabaseSync(path.join(dir, 'depths.mbtiles'));
@@ -563,6 +576,29 @@ describe('OnlineTileProxy for area downloads', () => {
     assert.strictEqual(store.hasTiles('depths'), true);
     store.clear('depths');
     assert.strictEqual(store.hasTiles('depths'), false);
+  });
+
+  it('leaves out a tile file that cannot be read, in either order', () => {
+    for (const broken of ['aaa', 'zzz']) {
+      const healthy = broken === 'aaa' ? 'zzz' : 'aaa';
+      store.put('aaa', 10, 0, 0, new Uint8Array(20_000).fill(1), 1000);
+      store.put('zzz', 10, 0, 0, new Uint8Array(20_000).fill(1), 1000);
+      const oneChart = Math.ceil(store.totalBytes() / 2);
+      const other = new DatabaseSync(path.join(dir, `${broken}.mbtiles`));
+      other.exec('DROP TABLE tiles');
+      other.close();
+      // The healthy chart fits on its own, so only the unreadable file's
+      // bytes could push it out.
+      store.setLimit(oneChart);
+      store.evict();
+      assert.ok(store.get(healthy, 10, 0, 0));
+      store.put(healthy, 11, 0, 0, new Uint8Array(20_000).fill(2), 2000);
+      store.setLimit(oneChart);
+      store.evict();
+      assert.strictEqual(store.get(healthy, 10, 0, 0), null);
+      store.clear('aaa');
+      store.clear('zzz');
+    }
   });
 
   it('keeps the limit for the other charts when one tile file is damaged', () => {

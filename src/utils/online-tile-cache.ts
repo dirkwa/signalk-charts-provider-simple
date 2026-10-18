@@ -424,20 +424,27 @@ export class OnlineTileStore {
 
   /**
    * Give the pages of removed tiles back to the disk, a bounded amount per
-   * turn so a large cache never holds up tile requests. Returns true when
-   * pages are left for the next turn.
+   * turn across all charts so a large cache never holds up tile requests.
+   * Returns true when pages are left for a later turn.
    */
   private reclaim(files: { id: string; db: DatabaseSync }[]): boolean {
+    let budget = VACUUM_PAGES_PER_TURN;
     let left = false;
     for (const f of files) {
-      if (
-        pragmaValue(f.db, 'auto_vacuum') !== AUTO_VACUUM_INCREMENTAL ||
-        pragmaValue(f.db, 'freelist_count') === 0
-      ) {
+      if (pragmaValue(f.db, 'auto_vacuum') !== AUTO_VACUUM_INCREMENTAL) {
         continue;
       }
-      f.db.exec(`PRAGMA incremental_vacuum(${String(VACUUM_PAGES_PER_TURN)})`);
+      const free = pragmaValue(f.db, 'freelist_count');
+      if (free === 0) {
+        continue;
+      }
+      if (budget === 0) {
+        return true;
+      }
+      const pages = Math.min(free, budget);
+      f.db.exec(`PRAGMA incremental_vacuum(${String(pages)})`);
       f.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      budget -= pages;
       left ||= pragmaValue(f.db, 'freelist_count') > 0;
     }
     return left;
@@ -446,23 +453,35 @@ export class OnlineTileStore {
   private removeOldest(files: { id: string; db: DatabaseSync }[]): boolean {
     const used = new Map(files.map((f) => [f.id, this.usedBytes(f.db)]));
     let total = [...used.values()].reduce((a, b) => a + b, 0);
+    let live = files;
     for (let batch = 0; total > this.limitBytes; batch++) {
       if (batch === EVICT_BATCHES_PER_TURN) {
         return true;
       }
       // The oldest unpinned tiles of every chart, merged by age, and only as
       // many as the overshoot takes, so the limit is not undercut.
-      const candidates = files
-        .flatMap((f) =>
-          (
-            f.db
-              .prepare(
-                'SELECT rowid AS id, LENGTH(tile_data) AS bytes, fetched_at AS at FROM tiles WHERE pinned = 0 ORDER BY fetched_at LIMIT ?'
-              )
-              .all(EVICT_BATCH) as { id: number; bytes: number; at: number | null }[]
-          ).map((c) => ({ ...c, file: f }))
-        )
+      const candidates = live
+        .flatMap((f) => {
+          try {
+            return (
+              f.db
+                .prepare(
+                  'SELECT rowid AS id, LENGTH(tile_data) AS bytes, fetched_at AS at FROM tiles WHERE pinned = 0 ORDER BY fetched_at LIMIT ?'
+                )
+                .all(EVICT_BATCH) as { id: number; bytes: number; at: number | null }[]
+            ).map((c) => ({ ...c, file: f }));
+          } catch {
+            // A file that opens but cannot be read must not stop eviction in the others.
+            // Its space cannot be freed, so it does not count against the limit either.
+            live = live.filter((l) => l !== f);
+            total -= used.get(f.id) ?? 0;
+            return [];
+          }
+        })
         .sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+      if (total <= this.limitBytes) {
+        return false;
+      }
       if (candidates.length === 0) {
         // Only area downloads are left; they stay whatever the limit.
         return false;
@@ -478,7 +497,7 @@ export class OnlineTileStore {
           break;
         }
       }
-      for (const f of files) {
+      for (const f of live) {
         const ids = doomed.get(f.id);
         if (!ids) {
           continue;
