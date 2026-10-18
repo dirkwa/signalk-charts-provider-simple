@@ -481,6 +481,10 @@ export function offlineTemplateProblem(template: string): string | null {
   if (unknown.length > 0) {
     return `offline tile URLs cannot use ${unknown.join(', ')}`;
   }
+  // The plugin serves zoom 24 at most, so a larger offset leaves no tile to fetch.
+  if (placeholders.some((p) => Number(/^\{z-(\d+)\}$/.exec(p)?.[1] ?? 0) > 24)) {
+    return 'offline tile URLs cannot offset the zoom by more than 24';
+  }
   const has = (re: RegExp): boolean => placeholders.some((p) => re.test(p));
   if (!has(/^\{z(-\d+)?\}$/) || !has(/^\{x\}$/) || !has(/^\{-?y\}$/)) {
     return 'offline tile URLs need {z}, {x} and {y}';

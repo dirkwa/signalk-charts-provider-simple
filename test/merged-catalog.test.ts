@@ -394,6 +394,10 @@ describe('checkOnlineChartEntry', () => {
       checkOnlineChartEntry(tiles('https://example.com/{z}/{x}.png')).join(),
       /need \{z\}, \{x\} and \{y\}/
     );
+    assert.match(
+      checkOnlineChartEntry(tiles('https://example.com/{z-25}/{x}/{y}.png')).join(),
+      /more than 24/
+    );
     assert.deepStrictEqual(
       checkOnlineChartEntry(tiles('https://example.com/{z-2}/{x}/{-y}.png')),
       []

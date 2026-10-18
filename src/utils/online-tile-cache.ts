@@ -14,7 +14,10 @@ import path from 'path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { Type } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
-import type { OnlineCatalogChart } from '../catalog/merged-catalog-schema.js';
+import {
+  offlineTemplateProblem,
+  type OnlineCatalogChart
+} from '../catalog/merged-catalog-schema.js';
 
 /** Where a proxied chart's tiles come from: an XYZ template or a WMS layer set. */
 export type OnlineTileSource =
@@ -34,13 +37,12 @@ export function offlineTileSource(entry: OnlineCatalogChart): OnlineTileSource |
   if (entry.offline === undefined || entry.temporal || !Value.Check(OfflineSchema, entry.offline)) {
     return null;
   }
-  const { tileUrl } = entry.offline;
-  if (tileUrl) {
-    return { kind: 'xyz', url: tileUrl };
-  }
   const { chart } = entry;
-  if (chart.type === 'tilelayer') {
-    return { kind: 'xyz', url: chart.url };
+  const template = entry.offline.tileUrl ?? (chart.type === 'tilelayer' ? chart.url : null);
+  if (template !== null) {
+    // The published file is read leniently, so a template the plugin cannot
+    // fill keeps the chart streamed rather than routed to tiles it never gets.
+    return offlineTemplateProblem(template) ? null : { kind: 'xyz', url: template };
   }
   if (chart.type === 'WMS' && chart.layers && chart.layers.length > 0) {
     return { kind: 'wms', url: chart.url, layers: chart.layers };
@@ -159,7 +161,8 @@ export class OnlineTileStore {
         throw new Error(`Invalid catalog id for an offline chart: ${catalogId}`);
       }
       fs.mkdirSync(this.dir, { recursive: true });
-      db = new DatabaseSync(path.join(this.dir, `${catalogId}.mbtiles`));
+      const file = path.join(this.dir, `${catalogId}.mbtiles`);
+      db = new DatabaseSync(file);
       try {
         db.exec(`
           PRAGMA journal_mode = WAL;
@@ -178,8 +181,22 @@ export class OnlineTileStore {
           catalogId
         );
       } catch (err) {
-        // A damaged file is opened afresh on the next request, not leaked.
         db.close();
+        // A file SQLite cannot read is moved aside, so the next request starts
+        // a new copy instead of refetching every tile forever; anything else,
+        // such as a locked file, is retried as it is.
+        if (isDamagedDatabase(err)) {
+          try {
+            for (const suffix of ['', '-wal', '-shm']) {
+              fs.rmSync(`${file}.damaged${suffix}`, { force: true });
+              if (fs.existsSync(file + suffix)) {
+                fs.renameSync(file + suffix, `${file}.damaged${suffix}`);
+              }
+            }
+          } catch {
+            // The SQLite error says more than a failed move would.
+          }
+        }
         throw err;
       }
       this.dbs.set(catalogId, db);
@@ -237,6 +254,14 @@ export class OnlineTileStore {
     }
     this.dbs.clear();
   }
+}
+
+const SQLITE_CORRUPT = 11;
+const SQLITE_NOTADB = 26;
+
+function isDamagedDatabase(err: unknown): boolean {
+  const code = (err as { errcode?: unknown } | null)?.errcode;
+  return typeof code === 'number' && [SQLITE_CORRUPT, SQLITE_NOTADB].includes(code & 0xff);
 }
 
 /** A kept tile older than this is fetched again when the provider answers. */

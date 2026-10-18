@@ -74,6 +74,18 @@ describe('offlineTileSource', () => {
     assert.strictEqual(offlineTileSource(entry({ offline: { tileUrl: 'http://x/{z}' } })), null);
     assert.strictEqual(offlineTileSource(entry({ offline: true })), null);
   });
+
+  it('streams a chart whose published offline template the plugin cannot fill', () => {
+    const subdomains = entry({
+      chart: { type: 'tilelayer', url: 'https://{s}.example.com/{z}/{x}/{y}.png' },
+      offline: {}
+    });
+    assert.strictEqual(offlineTileSource(subdomains), null);
+    assert.strictEqual(
+      offlineTileSource(entry({ offline: { tileUrl: 'https://{s}.example.com/{z}/{x}/{y}' } })),
+      null
+    );
+  });
 });
 
 describe('upstreamTileUrl', () => {
@@ -210,6 +222,19 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     fs.writeFileSync(path.join(dir, 'depths.mbtiles'), 'not a database');
     const data = await proxy().getTile('depths', source, 2, 1, 0);
     assert.deepStrictEqual(data && [...data], [...PNG]);
+  });
+
+  it('moves a damaged file aside and keeps tiles in a new one', async () => {
+    store.close();
+    store = new OnlineTileStore(dir);
+    const file = path.join(dir, 'depths.mbtiles');
+    fs.writeFileSync(file, 'not a database');
+    await proxy().getTile('depths', source, 2, 1, 0);
+    assert.strictEqual(fs.readFileSync(`${file}.damaged`, 'utf8'), 'not a database');
+    await proxy().getTile('depths', source, 2, 1, 0);
+    answer = null;
+    const kept = await proxy().getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(kept && [...kept], [...PNG]);
   });
 
   it('serves an old tile when the fetcher itself throws', async () => {
