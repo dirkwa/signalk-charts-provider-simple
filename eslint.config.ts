@@ -31,7 +31,8 @@ export default [
       'test/**/*.ts',
       'e2e/**/*.ts',
       'public/js/**/*.ts',
-      'playwright.config.ts'
+      'playwright.config.ts',
+      'vite.config.ts'
     ]
   })),
   {
@@ -40,7 +41,8 @@ export default [
       'test/**/*.ts',
       'e2e/**/*.ts',
       'public/js/**/*.ts',
-      'playwright.config.ts'
+      'playwright.config.ts',
+      'vite.config.ts'
     ],
     languageOptions: {
       parserOptions: {

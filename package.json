@@ -14,8 +14,8 @@
     "docs/screenshots"
   ],
   "scripts": {
-    "build": "npm run clean && tsc && npm run build:public",
-    "build:watch": "tsc --watch",
+    "build": "npm run clean && vite build && npm run build:public",
+    "build:watch": "vite build --watch",
     "build:tests": "tsc -p tsconfig.test.json",
     "build:e2e": "tsc -p tsconfig.e2e.json",
     "build:public": "tsc -p tsconfig.public.json",
@@ -24,10 +24,10 @@
     "test:fixtures": "node test/fixtures/create-test-mbtiles.ts && node test/fixtures/create-test-vector-mbtiles.ts",
     "test:e2e": "npm run build && npm run build:e2e && playwright test",
     "catalog:preview": "npm run build && node dist/catalog/preview-catalog-cli.js",
-    "lint": "eslint src test e2e public/js playwright.config.ts",
-    "lint:fix": "eslint src test e2e public/js playwright.config.ts --fix",
-    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' 'eslint.config.ts' && eslint src test e2e public/js playwright.config.ts --fix",
-    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' 'eslint.config.ts' && eslint src test e2e public/js playwright.config.ts",
+    "lint": "eslint src test e2e public/js playwright.config.ts vite.config.ts",
+    "lint:fix": "eslint src test e2e public/js playwright.config.ts vite.config.ts --fix",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' 'vite.config.ts' 'eslint.config.ts' && eslint src test e2e public/js playwright.config.ts vite.config.ts --fix",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' 'e2e/**/*.ts' 'public/js/**/*.ts' 'playwright.config.ts' 'vite.config.ts' 'eslint.config.ts' && eslint src test e2e public/js playwright.config.ts vite.config.ts",
     "prepublishOnly": "npm run build",
     "clean": "node -e \"for (const d of ['dist','dist-test','dist-e2e']) require('node:fs').rmSync(d,{recursive:true,force:true})\""
   },
@@ -113,6 +113,9 @@
     "leaflet": "^1.9.4",
     "prettier": "3.9.10",
     "typescript": "^5.8.3",
-    "typescript-eslint": "^8.33.1"
+    "typescript-eslint": "^8.33.1",
+    "vite": "^8.3.4",
+    "vite-plugin-checker": "^0.14.5",
+    "vite-plugin-dts": "^5.1.2"
   }
 }

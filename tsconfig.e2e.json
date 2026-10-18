@@ -8,6 +8,6 @@
     "noEmit": false,
     "lib": ["ES2023", "DOM"]
   },
-  "include": ["e2e/**/*.ts", "playwright.config.ts"],
+  "include": ["e2e/**/*.ts", "playwright.config.ts", "vite.config.ts"],
   "exclude": ["node_modules", "dist", "dist-test", "dist-e2e", "test"]
 }
