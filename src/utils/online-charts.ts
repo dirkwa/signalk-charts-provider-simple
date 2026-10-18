@@ -89,6 +89,10 @@ export function customOnlineChartProblem(custom: CustomOnlineChart): string | nu
   if (custom.type === 'tilelayer' && proxied && unknown) {
     return `${unknown} cannot be used in a chart served through the server`;
   }
+  // The plugin serves zoom 24 at most, so a larger offset leaves no tile to fetch.
+  if ([...url.matchAll(/\{z-(\d+)\}/g)].some((m) => Number(m[1]) > 24)) {
+    return 'The zoom cannot be offset by more than 24';
+  }
   if (
     custom.minzoom !== undefined &&
     custom.maxzoom !== undefined &&

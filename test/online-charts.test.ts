@@ -307,6 +307,13 @@ describe('online charts added by URL', () => {
       assert.strictEqual(customOnlineChartProblem({ type: 'tilelayer', url }), null, url);
     }
   });
+
+  it('refuses a zoom offset that leaves no level the plugin serves', () => {
+    assert.match(
+      customOnlineChartProblem({ type: 'tilelayer', url: 'https://t/{z-30}/{x}/{y}.png' }) ?? '',
+      /more than 24/
+    );
+  });
 });
 
 describe('chartFileNameBeside', () => {
