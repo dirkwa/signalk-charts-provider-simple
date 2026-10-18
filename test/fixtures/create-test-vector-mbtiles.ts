@@ -24,16 +24,16 @@
  *
  * Tile contents are independent per tile (no real pyramid consistency); the
  * overzoom module only ever reads one ancestor at a time, so that's fine.
- * Run with: node test/fixtures/create-test-vector-mbtiles.mjs
+ * Run with: node test/fixtures/create-test-vector-mbtiles.ts
  */
 
-// ESM because geojson-vt is ESM-only (no CJS entry to require()).
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { gzipSync } from 'node:zlib';
+import type { FeatureCollection } from 'geojson';
 import GeoJSONVT from 'geojson-vt';
-import vtpbf from 'vt-pbf';
+import { fromGeojsonVt } from 'vt-pbf';
 
 const outputPath = path.join(import.meta.dirname, 'test-vector-chart.mbtiles');
 
@@ -73,7 +73,7 @@ const AREA_HALF_WIDTH = 0.5;
 const DEEP_LON = -100;
 const DEEP_LAT = 50;
 
-function pointFc(id, name, lon, lat) {
+function pointFc(id: number, name: string, lon: number, lat: number): FeatureCollection {
   return {
     type: 'FeatureCollection',
     features: [
@@ -87,7 +87,7 @@ function pointFc(id, name, lon, lat) {
   };
 }
 
-const areaFc = {
+const areaFc: FeatureCollection = {
   type: 'FeatureCollection',
   features: [
     {
@@ -112,8 +112,13 @@ const areaFc = {
 
 const vtOptions = { maxZoom: 10, indexMaxZoom: 0, buffer: 64, extent: 4096 };
 
-function makeTile(layersSpec, z, x, y) {
-  const layers = {};
+function makeTile(
+  layersSpec: Record<string, FeatureCollection>,
+  z: number,
+  x: number,
+  y: number
+): Buffer {
+  const layers: Record<string, { features: unknown[] }> = {};
   for (const [layerName, fc] of Object.entries(layersSpec)) {
     const tile = new GeoJSONVT(fc, vtOptions).getTile(z, x, y);
     if (!tile) {
@@ -121,13 +126,14 @@ function makeTile(layersSpec, z, x, y) {
     }
     layers[layerName] = tile;
   }
-  return gzipSync(Buffer.from(vtpbf.fromGeojsonVt(layers, { version: 2 })));
+  return gzipSync(Buffer.from(fromGeojsonVt(layers, { version: 2 })));
 }
 
 const insertTile = db.prepare(
   'INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?)'
 );
-const insertXyz = (z, x, y, data) => insertTile.run(z, x, (1 << z) - 1 - y, data);
+const insertXyz = (z: number, x: number, y: number, data: Buffer) =>
+  insertTile.run(z, x, (1 << z) - 1 - y, data);
 
 insertXyz(
   2,
@@ -141,8 +147,10 @@ insertXyz(8, 56, 86, makeTile({ points: pointFc(88, 'z8-buoy', DEEP_LON, DEEP_LA
 insertXyz(2, 1, 1, Buffer.from([0x1f, 0x8b, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03]));
 
 // Hand-built MVTs in raw extent units (no geojson-vt involved).
-function ghostTile(rings) {
-  const mvt = vtpbf.fromGeojsonVt(
+type Ring = [number, number][];
+
+function ghostTile(rings: Ring[]): Buffer {
+  const mvt = fromGeojsonVt(
     {
       ghost: {
         features: rings.map((ring, i) => ({
@@ -158,7 +166,7 @@ function ghostTile(rings) {
   return gzipSync(Buffer.from(mvt));
 }
 
-const square = (x1, y1, x2, y2) => [
+const square = (x1: number, y1: number, x2: number, y2: number): Ring => [
   [x1, y1],
   [x2, y1],
   [x2, y2],

@@ -1,8 +1,8 @@
-const tseslint = require('typescript-eslint');
-const prettier = require('eslint-plugin-prettier');
-const eslintJs = require('@eslint/js');
+import eslintJs from '@eslint/js';
+import prettier from 'eslint-plugin-prettier';
+import tseslint from 'typescript-eslint';
 
-module.exports = [
+export default [
   {
     ignores: [
       'node_modules/**',
@@ -53,7 +53,7 @@ module.exports = [
           './tsconfig.e2e.json',
           './tsconfig.public.json'
         ],
-        tsconfigRootDir: __dirname
+        tsconfigRootDir: import.meta.dirname
       }
     },
     plugins: {
@@ -74,10 +74,7 @@ module.exports = [
       curly: ['error', 'all'],
       'no-var': 'error',
       'prefer-const': 'error',
-      '@typescript-eslint/restrict-template-expressions': [
-        'error',
-        { allowNumber: true }
-      ],
+      '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
       '@typescript-eslint/no-require-imports': 'off',
       '@typescript-eslint/no-unnecessary-condition': 'off',
       '@typescript-eslint/no-misused-promises': [
@@ -129,73 +126,6 @@ module.exports = [
       '@typescript-eslint/no-misused-promises': 'off',
       '@typescript-eslint/no-unnecessary-condition': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off'
-    }
-  },
-
-  // Test fixtures are one-off setup scripts, not under test. Plain-CJS
-  // fixtures keep the `.cjs` extension so they stay parseable as CJS now
-  // that the package is `"type": "module"`; fixtures that import ESM-only
-  // dependencies (geojson-vt) are `.mjs` — see the block below.
-  {
-    files: ['test/fixtures/**/*.cjs'],
-    plugins: {
-      prettier
-    },
-    languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: 'commonjs',
-      globals: {
-        console: 'readonly',
-        process: 'readonly',
-        Buffer: 'readonly',
-        __dirname: 'readonly',
-        module: 'readonly',
-        require: 'readonly',
-        exports: 'readonly',
-        Promise: 'readonly'
-      }
-    },
-    rules: {
-      'prettier/prettier': 'error',
-      'no-unused-vars': [
-        'error',
-        {
-          argsIgnorePattern: '^_',
-          varsIgnorePattern: '^_',
-          caughtErrorsIgnorePattern: '^_'
-        }
-      ],
-      'no-console': 'off'
-    }
-  },
-
-  // ESM fixtures (same policy as the CJS block above, module flavor).
-  {
-    files: ['test/fixtures/**/*.mjs'],
-    plugins: {
-      prettier
-    },
-    languageOptions: {
-      ecmaVersion: 2022,
-      sourceType: 'module',
-      globals: {
-        console: 'readonly',
-        process: 'readonly',
-        Buffer: 'readonly',
-        Promise: 'readonly'
-      }
-    },
-    rules: {
-      'prettier/prettier': 'error',
-      'no-unused-vars': [
-        'error',
-        {
-          argsIgnorePattern: '^_',
-          varsIgnorePattern: '^_',
-          caughtErrorsIgnorePattern: '^_'
-        }
-      ],
-      'no-console': 'off'
     }
   }
 ];

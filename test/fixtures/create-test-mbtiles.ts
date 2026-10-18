@@ -1,13 +1,13 @@
 /**
  * Script to create a minimal test MBTiles file for testing purposes.
- * Run with: node test/fixtures/create-test-mbtiles.js
+ * Run with: node test/fixtures/create-test-mbtiles.ts
  */
 
-const { DatabaseSync } = require('node:sqlite');
-const path = require('path');
-const fs = require('fs');
+import { DatabaseSync } from 'node:sqlite';
+import path from 'node:path';
+import fs from 'node:fs';
 
-const outputPath = path.join(__dirname, 'test-chart.mbtiles');
+const outputPath = path.join(import.meta.dirname, 'test-chart.mbtiles');
 
 // Remove existing file if it exists
 if (fs.existsSync(outputPath)) {
