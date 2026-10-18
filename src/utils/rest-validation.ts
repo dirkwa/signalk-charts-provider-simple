@@ -16,13 +16,13 @@
 
 import type { Response } from 'express';
 import type { Request } from '../types.js';
-import { Value } from '@sinclair/typebox/value';
-import type { TSchema, Static } from '@sinclair/typebox';
+import { Value } from 'typebox/value';
+import type { TSchema, Static } from 'typebox';
 
 function formatErrors(schema: TSchema, input: unknown): string[] {
   return [...Value.Errors(schema, input)]
     .slice(0, 5)
-    .map((e) => `${e.path || '<root>'}: ${e.message}`);
+    .map((e) => `${e.instancePath || '<root>'}: ${e.message}`);
 }
 
 export function parseBody<T extends TSchema>(

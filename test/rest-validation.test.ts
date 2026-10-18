@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
-import { Type } from '@sinclair/typebox';
+import { Type } from 'typebox';
 
 import { parseBody, parseShape } from '../dist/utils/rest-validation.js';
 

@@ -86,3 +86,4 @@ release-please cuts releases; never bump `package.json`'s version by hand. Squas
 
 - TypeScript strict mode + `strictTypeChecked` lints. `eqeqeq`, `curly: all`, `no-var`, `prefer-const` are enforced; `no-console` is intentionally off (the plugin logs through `console`).
 - Prettier is wired through ESLint, so `prettier/prettier` violations fail lint.
+- Schemas use the unscoped `typebox` package (1.x), not `@sinclair/typebox`, which stopped at 0.34. TypeBox 1 was published under a new name rather than a major bump, so `npm outdated` never points at it. Validation errors carry `instancePath`, and a self-referencing schema is a `Type.Cyclic` with `Type.Ref`.

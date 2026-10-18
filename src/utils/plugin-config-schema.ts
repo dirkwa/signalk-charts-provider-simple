@@ -1,5 +1,5 @@
-import { Type, type Static } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
+import { Type, type Static } from 'typebox';
+import { Value } from 'typebox/value';
 
 export const CpuBudgetPresetSchema = Type.Union([
   Type.Literal('single-core'),
@@ -34,7 +34,7 @@ export function parsePluginConfig(input: unknown): PluginConfig {
   }
   const errors = [...Value.Errors(PluginConfigSchema, normalized)]
     .slice(0, 3)
-    .map((e) => `${e.path || '<root>'}: ${e.message}`)
+    .map((e) => `${e.instancePath || '<root>'}: ${e.message}`)
     .join('; ');
   throw new Error(`Invalid plugin configuration — ${errors}`);
 }

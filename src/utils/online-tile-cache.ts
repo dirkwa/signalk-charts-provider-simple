@@ -12,8 +12,8 @@
 import fs from 'fs';
 import path from 'path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { Type } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
+import { Type } from 'typebox';
+import { Value } from 'typebox/value';
 import {
   offlineTemplateProblem,
   type OnlineCatalogChart

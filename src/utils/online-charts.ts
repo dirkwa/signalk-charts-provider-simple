@@ -18,8 +18,8 @@
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { Type, type Static } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
+import { Type, type Static } from 'typebox';
+import { Value } from 'typebox/value';
 import type { OnlineCatalogChart } from '../catalog/merged-catalog-schema.js';
 import type { ChartProvider } from '../types.js';
 import { needsTileProxy, offlineTileSource, type OnlineTileSource } from './online-tile-cache.js';

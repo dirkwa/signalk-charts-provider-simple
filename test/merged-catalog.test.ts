@@ -3,7 +3,8 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Value } from '@sinclair/typebox/value';
+import type { TSchema } from 'typebox';
+import { Value } from 'typebox/value';
 
 import { parseChartcatalogsXml } from '../dist/catalog/chartcatalogs-xml.js';
 import {
@@ -35,8 +36,8 @@ function readJson(relative: string): unknown {
   return JSON.parse(fs.readFileSync(path.join(repoRoot, relative), 'utf8'));
 }
 
-function errors(schema: Parameters<typeof Value.Errors>[0], value: unknown): string[] {
-  return [...Value.Errors(schema, value)].map((e) => `${e.path}: ${e.message}`);
+function errors(schema: TSchema, value: unknown): string[] {
+  return [...Value.Errors(schema, value)].map((e) => `${e.instancePath}: ${e.message}`);
 }
 
 const RNC_XML = `<?xml version="1.0" ?>

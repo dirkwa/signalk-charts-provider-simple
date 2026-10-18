@@ -11,8 +11,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import type { Static, TSchema } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
+import type { Static, TSchema } from 'typebox';
+import { Value } from 'typebox/value';
 import { parseChartcatalogsXml } from './chartcatalogs-xml.js';
 import {
   buildMergedCatalog,

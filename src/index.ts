@@ -1,6 +1,6 @@
 import type { Path, Plugin } from '@signalk/server-api';
 import { ALARM_METHOD, ALARM_STATE, SKVersion } from '@signalk/server-api';
-import { Type } from '@sinclair/typebox';
+import { Type } from 'typebox';
 import Busboy from 'busboy';
 import fs from 'fs';
 import https from 'https';

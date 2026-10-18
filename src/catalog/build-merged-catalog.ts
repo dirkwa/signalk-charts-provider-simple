@@ -5,7 +5,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { Value } from '@sinclair/typebox/value';
+import { Value } from 'typebox/value';
 import type { ParsedChartcatalogsXml } from './chartcatalogs-xml.js';
 import {
   MERGED_CATALOG_SCHEMA_VERSION,

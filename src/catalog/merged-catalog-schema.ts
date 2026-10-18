@@ -18,8 +18,8 @@
  * bbox) is carried explicitly rather than left for consumers to derive.
  */
 
-import { Type, type Static, type TSchema } from '@sinclair/typebox';
-import { Value } from '@sinclair/typebox/value';
+import { Type, type Static, type TSchema } from 'typebox';
+import { Value } from 'typebox/value';
 
 export const MERGED_CATALOG_SCHEMA_VERSION = 1;
 
@@ -503,5 +503,5 @@ export function checkChartcatalogsIndex(index: ChartcatalogsIndex): string[] {
 export function schemaErrors(schema: TSchema, value: unknown): string[] {
   return [...Value.Errors(schema, value)]
     .slice(0, 20)
-    .map((e) => `${e.path || '<root>'}: ${e.message}`);
+    .map((e) => `${e.instancePath || '<root>'}: ${e.message}`);
 }
