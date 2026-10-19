@@ -68,7 +68,7 @@ If `signalk-container` is missing, the plugin still loads and **serves charts** 
 
 ### Web UI
 
-`public/` is a static webapp served by Signal K at `/plugins/signalk-charts-provider-simple/`. It talks to Express routes registered in `index.ts` via `registerWithRouter`. The UI has five tabs: Manage Charts / Download from URL / Convert / Chart Catalog / NOAA Charts. Scripts are plain `<script>` tags (no bundler); cross-file references go through `window.X`. The NOAA Charts tab (`public/js/noaa-chart-selector.ts`) uses Leaflet, vendored under `public/vendor/leaflet/` so the map UI loads offline (only basemap tiles need a network); `@types/leaflet` types the global `L` for the strict `public/js` build.
+`public/` is a static webapp served by Signal K at `/plugins/signalk-charts-provider-simple/`. It talks to Express routes registered in `index.ts` via `registerWithRouter`. The UI has seven tabs: Manage Charts / Download from URL / Convert / Chart Catalog / Online Charts / Satellite / NOAA Charts. The merged catalog's downloadable charts are in Chart Catalog (`public/js/chart-catalog.ts`); its online charts are in Online Charts, except those of category `imagery`, which the Satellite tab lists. Both are an `OnlineChartPanel` in `public/js/online-charts.ts`, which also holds the add-by-URL form; all three read `/catalog-registry`. Scripts are plain `<script>` tags (no bundler); cross-file references go through `window.X`. The NOAA Charts tab (`public/js/noaa-chart-selector.ts`) uses Leaflet, vendored under `public/vendor/leaflet/` so the map UI loads offline (only basemap tiles need a network); `@types/leaflet` types the global `L` for the strict `public/js` build.
 
 ### Type extensions
 

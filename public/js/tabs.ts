@@ -41,6 +41,10 @@ window.openTab = function (evt: MouseEvent | null, tabName: string): void {
     window.handleConvertTabActive?.();
   } else if (tabName === 'catalog') {
     window.handleCatalogTabActive?.();
+  } else if (tabName === 'onlineCharts') {
+    window.handleOnlineChartsTabActive?.();
+  } else if (tabName === 'satellite') {
+    window.handleSatelliteTabActive?.();
   } else if (tabName === 'customCatalogs') {
     window.handleCustomCatalogsTabActive?.();
   }

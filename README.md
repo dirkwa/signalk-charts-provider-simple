@@ -8,7 +8,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 - **Folder Groups**: Enable/disable whole chart folders at once (OpenCPN-style groups, including nested folders); clients like Freeboard-SK see the change live via `resources.charts` deltas
 - **Download Manager**: Built-in download queue with progress tracking and ZIP extraction
 - **Chart Catalog**: Browse and download charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) with automatic update notifications
-- **Online Charts**: Add weather radar and satellite, online nautical charts, depth layers and base maps from the Chart Catalog with one click — no download, no conversion
+- **Online Charts and Satellite imagery**: Add weather radar and satellite, online nautical charts, depth layers, base maps and satellite imagery with one click — no download, no conversion
 - **NOAA Charts**: Draw a coverage region on a map from NOAA band-4 chart footprints; the plugin bundles the overlapping band-3/4/5 ENCs and converts them into a single vector MBTiles named after your chart set
 - **S-57 ENC Conversion**: Convert IENC/ENC charts to vector MBTiles with full S-52 symbology in Freeboard-SK
 - **BSB Raster Conversion**: Convert BSB/KAP raster charts and Pilot Charts to raster MBTiles
@@ -63,7 +63,7 @@ Access the plugin's web interface through your Signal K server:
 http://[your-server]:3000/plugins/signalk-charts-provider-simple/
 ```
 
-The interface provides five tabs:
+The interface provides seven tabs:
 
 1. **Manage Charts**:
    - View all charts with metadata (name, bounds, zoom levels, size)
@@ -81,7 +81,6 @@ The interface provides five tabs:
    - Download charts directly from any URL
    - Supports `.mbtiles` and `.pmtiles` files, and `.zip` archives of `.mbtiles`
    - Download queue with progress tracking
-   - Add an online chart by URL: a `{z}/{x}/{y}` tile service (also `{-y}`, `{z-N}`, `{bbox}` and `{bbox_3857}`) or a WMS the Chart Catalog does not list. Tick **Keep tiles for offline use** only when the provider's terms allow it; the chart is then kept offline like a catalog chart
 
 3. **Convert**:
    - Upload ZIP files containing S-57 ENC (.000) or BSB raster (.kap) charts
@@ -90,15 +89,23 @@ The interface provides five tabs:
    - Live conversion progress with log viewer
 
 4. **Chart Catalog**:
-   - Downloadable charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) and a curated list of online charts, in one list, sectioned by what the charts show, with **Near me** narrowing each section to where you are
-   - **Online charts** (weather radar and satellite, online nautical charts, depths, base maps): press **Add** and the chart appears in Manage Charts and in your chart plotter. Most stream from their provider and need an internet connection to display. Charts whose license allows it (NOAA, CHS, Kartverket, Traficom, GEBCO, EMODnet and USGS imagery) are marked **Kept offline**: they are served through your server, which keeps every tile it fetches, so the areas you have already viewed keep working without internet. To prepare for a passage, press **Offline area** on such a chart in Manage Charts, frame the area on the map, choose the zoom levels and download it ahead of time. Online charts go into an "Online Charts" folder by default, so you can switch them all off at once when you're offline
-   - Live weather layers (radar, satellite, forecasts) keep their recent images or forecast steps up to date, so chart plotters with a time slider (Freeboard-SK) can play them back
+   - Downloadable charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/), sectioned by what the charts show, with **Near me** narrowing each section to where you are
    - One-click download for MBTiles charts (NOAA)
    - Download & convert for S-57 ENC, BSB raster, Pilot Charts, and basemaps
    - Automatic update notifications (Signal K delta + tab badge)
-   - Filters: **Download** (works offline) or **Stream** (needs internet); what the chart shows (Navigation, Weather, Depth & Seabed, Base maps, Overlays); chart type under "More filters"; and **Near me**, using the boat's position
+   - Filters: what the chart shows (Navigation, Depth & Seabed, Base maps); chart type under "More filters"; and **Near me**, using the boat's position
 
-5. **NOAA Charts**:
+5. **Online Charts**:
+   - A curated list of online charts, sectioned into navigation charts, depth and seabed, weather (radar, weather satellites, forecasts) and base maps, with **Near me** to show only what covers the boat
+   - Press **Add** and the chart appears in Manage Charts and in your chart plotter. Most stream from their provider and need an internet connection to display. Charts whose license allows it (NOAA, CHS, Kartverket, Traficom, GEBCO, EMODnet and USGS imagery) are marked **Kept offline**: they are served through your server, which keeps every tile it fetches, so the areas you have already viewed keep working without internet. To prepare for a passage, press **Offline area** on such a chart, here or in Manage Charts, frame the area on the map, choose the zoom levels and download it ahead of time. Online charts go into an "Online Charts" folder by default, so you can switch them all off at once when you're offline
+   - Live weather layers (radar, satellite, forecasts) keep their recent images or forecast steps up to date, so chart plotters with a time slider (Freeboard-SK) can play them back
+   - Add an online chart by URL: a `{z}/{x}/{y}` tile service (also `{-y}`, `{z-N}`, `{bbox}` and `{bbox_3857}`) or a WMS the list does not have. Tick **Keep tiles for offline use** only when the provider's terms allow it; the chart is then kept offline like a catalog chart
+
+6. **Satellite**:
+   - Satellite and aerial imagery side by side (such as EOxCloudless and USGS aerial imagery), so you can pick by sharpness, age, cloud cover and licence. Imagery shows reefs and shallows that a chart may not, as a layer beneath or instead of the chart
+   - Added and kept offline the same way as the online charts, including **Offline area**
+
+7. **NOAA Charts**:
    - Build a named **chart set** of NOAA ENC coverage by clicking band-4 footprints on a map (Leaflet + OpenSeaMap)
    - Each band-4 selection automatically pulls in the overlapping band-3 and band-5 ENCs
    - Footprint data from NOAA's [official chart locator](https://www.charts.noaa.gov/InteractiveCatalog/data/enc.geojson)
@@ -191,7 +198,7 @@ Inspired by [Signal K Charts Plugin](https://github.com/SignalK/charts-plugin) b
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-**Online charts in the Chart Catalog** are curated in this repository. To add or fix one, see
+**Online charts** are curated in this repository. To add or fix one, see
 [Maintaining the catalog](docs/chart-catalog.md#maintaining-the-catalog). If you know a good
 free service but don't want to write the entry yourself, open a
 [Suggest an online chart](https://github.com/dirkwa/signalk-charts-provider-simple/issues/new?template=suggest-online-chart.yml)

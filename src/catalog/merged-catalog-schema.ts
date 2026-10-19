@@ -36,11 +36,12 @@ export const ChartCategorySchema = Type.Union(
     Type.Literal('weather'),
     Type.Literal('depth'),
     Type.Literal('basemap'),
+    Type.Literal('imagery'),
     Type.Literal('overlay')
   ],
   {
     description:
-      'What the chart shows, which picks its section and category filter in the Chart Catalog: nautical charts, weather, depths and the seabed, base maps and imagery, or marine overlays such as seamarks.'
+      'What the chart shows, which picks its tab, section and category filter: nautical charts, weather, depths and the seabed, base maps, satellite and aerial imagery (an online chart in the Satellite tab), or marine overlays such as seamarks.'
   }
 );
 

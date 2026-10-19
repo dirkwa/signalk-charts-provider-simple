@@ -357,7 +357,7 @@ test.describe('Chart Catalog tab', () => {
     await expect(page.locator('#catalogRegistryBanner')).toBeEmpty();
   });
 
-  test('credits both catalog sources with their issue trackers', async ({ page }) => {
+  test('credits chartcatalogs with its issue tracker', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     await setMockState(page, { registry: [] });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
@@ -365,7 +365,6 @@ test.describe('Chart Catalog tab', () => {
     await expect(
       note.locator('a[href="https://github.com/chartcatalogs/catalogs/issues"]')
     ).toBeVisible();
-    await expect(note.locator('a[href*="template=catalog-problem.yml"]')).toBeVisible();
   });
   test('uses catalog-provided source links, but never a non-https one', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
@@ -384,7 +383,6 @@ test.describe('Chart Catalog tab', () => {
     const note = page.locator('#catalogSourceNote');
     await expect(note.locator('a[href="https://example.org/cc-issues"]')).toBeVisible();
     await expect(note.locator('a[href^="javascript:"]')).toHaveCount(0);
-    await expect(note.locator('a[href*="template=catalog-problem.yml"]')).toBeVisible();
   });
 
   test('an incompatible catalog over a populated list shows a banner', async ({ page }) => {
@@ -413,108 +411,6 @@ test.describe('Chart Catalog tab', () => {
     const banner = page.locator('#catalogRegistryBanner .catalog-banner-warning');
     await expect(banner).toContainText(/Update the plugin/i);
   });
-  test('lists online charts by category and adds one to a folder', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
-    await setMockState(page, {
-      registry: [],
-      online: [
-        {
-          id: 'nws-radar-conus',
-          name: 'NWS Radar – Continental US',
-          description: 'Rain radar for the lower 48 states.',
-          category: 'weather',
-          provider: 'NOAA / National Weather Service',
-          license: 'Public domain (U.S. Government)',
-          licenseUrl: 'https://www.weather.gov/disclaimer',
-          chart: { type: 'WMS' },
-          temporal: { kind: 'observation' }
-        },
-        {
-          id: 'openwaters-seamap',
-          name: 'Open Waters Seamap',
-          description: 'Worldwide nautical-style map.',
-          category: 'navigation',
-          provider: 'Open Waters',
-          license: 'CC BY 4.0',
-          licenseUrl: 'https://openwaters.io/charts/seamap',
-          notForNavigation: true,
-          chart: { type: 'mapstyleJSON' }
-        },
-        {
-          id: 'gebco-ocean-depths',
-          name: 'GEBCO Ocean Depths',
-          description: 'Shaded relief of the ocean floor.',
-          category: 'navigation',
-          provider: 'GEBCO',
-          license: 'Public domain',
-          licenseUrl: 'https://www.gebco.net/',
-          chart: { type: 'WMS' },
-          keptOffline: true
-        }
-      ],
-      onlineAdded: { 'openwaters-seamap': ['Online Charts/openwaters-seamap.onlinechart.json'] }
-    });
-    await page.getByRole('button', { name: /Chart Catalog/i }).click();
-
-    await expect(
-      page.locator('[data-filter-group="use"][data-filter-value="stream"]')
-    ).toContainText('3');
-    await page.locator('[data-catalog-toggle="online:weather"]').click();
-    const row = page.locator('.online-chart-row', { hasText: 'NWS Radar' });
-    await expect(row).toContainText('Needs internet');
-    await expect(row).toContainText('Live');
-
-    await expect(row.getByLabel('Save to')).toHaveValue('Online Charts');
-    const request = page.waitForRequest('**/online-charts');
-    await row.locator('[data-online-add]').click();
-    expect((await request).postDataJSON()).toEqual({
-      catalogId: 'nws-radar-conus',
-      folder: 'Online Charts'
-    });
-    await expect(row.locator('.installed-badge')).toHaveText('Added');
-
-    // Already-added charts show as added; Stream hides the downloads.
-    await page.locator('[data-filter-group="use"][data-filter-value="stream"]').click();
-    await page.locator('[data-catalog-toggle="online:navigation"]').click();
-    const seamap = page.locator('.online-chart-row', { hasText: 'Open Waters Seamap' });
-    await expect(seamap.locator('.installed-badge')).toHaveText('Added');
-    await expect(seamap).toContainText('Not for navigation');
-    await expect(seamap).toContainText('Needs internet');
-
-    // A chart whose license allows offline copies says so instead.
-    const gebco = page.locator('.online-chart-row', { hasText: 'GEBCO Ocean Depths' });
-    await expect(gebco).toContainText('Kept offline');
-    await expect(gebco).not.toContainText('Needs internet');
-  });
-  test('reports the HTTP status when adding an online chart gets an error page', async ({
-    page
-  }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
-    await setMockState(page, {
-      registry: [],
-      online: [
-        {
-          id: 'nws-radar-conus',
-          name: 'NWS Radar',
-          description: 'Rain radar.',
-          category: 'weather',
-          provider: 'NOAA',
-          license: 'Public domain',
-          licenseUrl: 'https://www.weather.gov/disclaimer',
-          chart: { type: 'WMS' }
-        }
-      ],
-      onlineAddFailStatus: 502
-    });
-    await page.getByRole('button', { name: /Chart Catalog/i }).click();
-    await page.locator('[data-catalog-toggle="online:weather"]').click();
-    const dialog = page.waitForEvent('dialog');
-    await page.locator('[data-online-add]').click();
-    const alert = await dialog;
-    expect(alert.message()).toContain('HTTP 502');
-    await alert.dismiss();
-  });
-
   test('two catalogs listing the same chart number keep their own folders', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     const catalog = (file: string) => ({
@@ -557,19 +453,8 @@ test.describe('Chart Catalog tab', () => {
     });
   });
 
-  test('filters by use, category, type and position', async ({ page }) => {
+  test('filters by category, type and position, and lists no online charts', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
-    const online = (id: string, category: string, type: string, bbox: number[]) => ({
-      id,
-      name: id,
-      description: `${id} description`,
-      category,
-      provider: 'p',
-      license: 'l',
-      licenseUrl: 'https://example.com',
-      bbox,
-      chart: { type }
-    });
     await setMockState(page, {
       registry: [
         {
@@ -588,22 +473,43 @@ test.describe('Chart Catalog tab', () => {
           chartCount: 42,
           cachedAt: '2026-05-07T10:00:00Z',
           facets: { category: 'navigation', format: 'enc', bbox: [5.8, 47.2, 15.1, 55.1] }
+        },
+        {
+          file: 'World_Shapefile_Catalog.xml',
+          label: 'World Coastlines',
+          category: 'general',
+          chartCount: 1,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'basemap', format: 'shapefile', bbox: [-180, -85, 180, 85] }
         }
       ],
+      // The Online Charts tab lists these, not this one.
       online: [
-        online('us-radar', 'weather', 'WMS', [-130, 20, -60, 55]),
-        online('eu-radar', 'weather', 'WMS', [1.5, 45.7, 18.7, 56.2]),
-        online('world-map', 'basemap', 'mapstyleJSON', [-180, -85, 180, 85])
+        {
+          id: 'us-radar',
+          name: 'us-radar',
+          description: 'd',
+          category: 'weather',
+          provider: 'p',
+          license: 'l',
+          licenseUrl: 'https://example.com',
+          bbox: [-130, 20, -60, 55],
+          chart: { type: 'WMS' }
+        }
       ],
       position: { latitude: 24.55, longitude: -81.8 }
     });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
     const cards = page.locator('.catalog-card');
-    await expect(cards).toHaveCount(4); // 2 downloads + Weather + Base Maps groups
+    await expect(cards).toHaveCount(3);
+    await expect(page.locator('.online-chart-row')).toHaveCount(0);
+    await expect(page.locator('[data-filter-group="use"]')).toHaveCount(0);
+    await expect(
+      page.locator('[data-filter-group="categories"][data-filter-value="weather"]')
+    ).toHaveCount(0);
     // Sectioned by category, in a fixed order; downloads sorted by name.
     await expect(page.locator('.catalog-section-title')).toHaveText([
       'Navigation Charts',
-      'Weather',
       'Base Maps & Imagery'
     ]);
     await expect(
@@ -613,25 +519,13 @@ test.describe('Chart Catalog tab', () => {
     const btn = (group: string, value: string) =>
       page.locator(`[data-filter-group="${group}"][data-filter-value="${value}"]`);
 
-    // Download only.
-    await btn('use', 'download').click();
-    await expect(cards).toHaveCount(2);
-    await btn('use', 'all').click();
-
-    // Weather: one group; counts reflect the other active filters.
-    await btn('categories', 'weather').click();
-    await expect(cards).toHaveCount(1);
-    await expect(btn('use', 'download')).toContainText('0');
-
-    // Near Key West: the US radar only (the EU radar is far away).
-    await btn('nearMe', '').click();
-    await page.locator('[data-catalog-toggle="online:weather"]').click();
-    await expect(page.locator('.online-chart-row')).toHaveCount(1);
-    await expect(page.locator('.online-chart-row')).toContainText('us-radar');
-
-    // Near me + navigation: the antimeridian-crossing NOAA box, not Germany.
-    await btn('categories', 'weather').click();
+    // Navigation: counts reflect the other active filters.
     await btn('categories', 'navigation').click();
+    await expect(cards).toHaveCount(2);
+    await expect(btn('nearMe', '')).toContainText('1');
+
+    // Near Key West: the antimeridian-crossing NOAA box, not Germany.
+    await btn('nearMe', '').click();
     await expect(cards).toHaveCount(1);
     await expect(cards).toContainText('NOAA Vector Charts');
 
@@ -640,9 +534,39 @@ test.describe('Chart Catalog tab', () => {
     await btn('nearMe', '').click();
     await expect(btn('formats', 'enc')).toHaveCount(0);
     await btn('showTypes', '').click();
-    await btn('formats', 'mapstyle').click();
+    await btn('formats', 'shapefile').click();
     await expect(cards).toHaveCount(1);
     await expect(page.locator('.catalog-section-title')).toHaveText(['Base Maps & Imagery']);
+  });
+
+  test('points to the Online Charts tab', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, { registry: [] });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await page.locator('#catalogSourceNote').getByRole('link', { name: 'Online Charts' }).click();
+    await expect(page.locator('#onlineCharts')).toHaveClass(/active/);
+    await expect(page.locator('#onlineChartsTabBtn')).toHaveClass(/active/);
+  });
+
+  test('ignores a saved Stream filter from before online charts moved', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('chartCatalogFilters', JSON.stringify({ use: 'stream' }));
+    });
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'X_Catalog.xml',
+          label: 'Some Charts',
+          category: 'rnc',
+          chartCount: 1,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'rnc', bbox: [0, 0, 1, 1] }
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('.catalog-card')).toHaveCount(1);
   });
 
   test('disables Near me when the server has no position', async ({ page }) => {
@@ -733,52 +657,5 @@ test.describe('Chart Catalog tab', () => {
     ).toHaveAttribute('aria-pressed', 'true');
     await page.locator('#catalogList [data-filter-group="clear"]').click();
     await expect(page.locator('.catalog-card')).toHaveCount(1);
-  });
-
-  test("uses a satellite's useful coverage, not its full disk, for Near me", async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
-    await setMockState(page, {
-      registry: [],
-      online: [
-        {
-          id: 'meteosat',
-          name: 'Meteosat',
-          description: 'd',
-          category: 'weather',
-          provider: 'p',
-          license: 'l',
-          licenseUrl: 'https://example.com',
-          bbox: [-81, -81, 81, 81],
-          coverage: [-65, -65, 65, 65],
-          chart: { type: 'WMS' }
-        }
-      ],
-      position: { latitude: 24.55, longitude: -81.8 }
-    });
-    await page.getByRole('button', { name: /Chart Catalog/i }).click();
-    await expect(page.locator('[data-filter-group="nearMe"]')).toContainText('0');
-  });
-
-  test('Near me reaches across the antimeridian', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
-    await setMockState(page, {
-      registry: [],
-      online: [
-        {
-          id: 'tonga',
-          name: 'Tonga',
-          description: 'd',
-          category: 'navigation',
-          provider: 'p',
-          license: 'l',
-          licenseUrl: 'https://example.com',
-          bbox: [-179.5, -20, -170, -10],
-          chart: { type: 'WMS' }
-        }
-      ],
-      position: { latitude: -15, longitude: 179.8 }
-    });
-    await page.getByRole('button', { name: /Chart Catalog/i }).click();
-    await expect(page.locator('[data-filter-group="nearMe"]')).toContainText('1');
   });
 });

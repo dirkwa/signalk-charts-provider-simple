@@ -23,6 +23,13 @@ declare global {
     // tabs.ts
     openTab(evt: MouseEvent | null, tabName: string): void;
 
+    // near-position.ts
+    isBoundingBox(v: unknown): v is number[];
+    isNearPosition(
+      bbox: number[] | undefined,
+      position: { latitude: number; longitude: number } | null
+    ): boolean;
+
     // emoji-utils.ts
     detectEmojiSupport(): boolean;
     getIcon(iconName: string, preferSvg?: boolean): string;
@@ -32,6 +39,8 @@ declare global {
     handleDownloadTabActive(): void;
     handleConvertTabActive(): void;
     handleCatalogTabActive(): void;
+    handleOnlineChartsTabActive(): void;
+    handleSatelliteTabActive(): void;
     handleCustomCatalogsTabActive(): void;
 
     // chart-catalog.ts
@@ -52,9 +61,11 @@ declare global {
 
     // download-simple.ts
     startDownload(): Promise<void>;
+    cancelDownload(jobId: string): Promise<void>;
+
+    // online-charts.ts
     addOnlineChartByUrl(): Promise<void>;
     onlineChartTypeChanged(): void;
-    cancelDownload(jobId: string): Promise<void>;
 
     // manage-charts-enhanced.ts
     triggerUpload(): void;

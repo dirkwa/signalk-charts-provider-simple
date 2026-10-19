@@ -8,6 +8,8 @@ test.describe('tabs', () => {
     await expect(page.getByRole('button', { name: /Download from URL/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /Convert/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /Chart Catalog/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Online Charts/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Satellite/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /NOAA Charts/i })).toBeVisible();
 
     // Manage tab content area should be the active one on first load.

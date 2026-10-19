@@ -44,6 +44,18 @@
                 Chart Catalog
                 <span id="catalogBadge" class="catalog-tab-badge" style="display: none;"></span>
             </button>
+            <button class="tab" data-tab="onlineCharts" onclick="openTab(event, 'onlineCharts')" id="onlineChartsTabBtn">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="margin-right: 8px;">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+                </svg>
+                Online Charts
+            </button>
+            <button class="tab" data-tab="satellite" onclick="openTab(event, 'satellite')" id="satelliteTabBtn">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="margin-right: 8px;">
+                    <path d="M15.44.59l-3.18 3.18c-.78.78-.78 2.05 0 2.83l1.24 1.24-.71.71-1.24-1.24c-.78-.78-2.05-.78-2.83 0L7.3 8.72c-.78.78-.78 2.05 0 2.83l1.24 1.24-.71.71-1.24-1.24c-.78-.78-2.05-.78-2.83 0L.59 15.44c-.78.78-.78 2.05 0 2.83l3.54 3.54c.78.78 2.05.78 2.83 0l3.18-3.18c.78-.78.78-2.05 0-2.83l-1.24-1.24.71-.71 1.24 1.24c.78.78 2.05.78 2.83 0l1.41-1.41c.78-.78.78-2.05 0-2.83L13.85 9.6l.71-.71 1.24 1.24c.78.78 2.05.78 2.83 0l3.18-3.18c.78-.78.78-2.05 0-2.83L18.27.59c-.78-.78-2.05-.78-2.83 0zM6.25 19.54L4.46 17.75l2.12-2.12 1.79 1.79-2.12 2.12zm6.36-6.36l-1.79-1.79 1.41-1.41 1.79 1.79-1.41 1.41zm4.95-4.95l-1.79-1.79 2.12-2.12 1.79 1.79-2.12 2.12zM16 21v2c3.87 0 7-3.13 7-7h-2c0 2.76-2.24 5-5 5zm0-4v2c1.66 0 3-1.34 3-3h-2c0 .55-.45 1-1 1z"/>
+                </svg>
+                Satellite
+            </button>
             <button class="tab" data-tab="customCatalogs" onclick="openTab(event, 'customCatalogs')" id="customCatalogsTabBtn">
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="margin-right: 8px;">
                     <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/>
@@ -79,6 +91,14 @@
             </div>
         </div>
 
+        <div id="onlineCharts" class="tab-content">
+            <div id="onlineChartsOutput"></div>
+        </div>
+
+        <div id="satellite" class="tab-content">
+            <div id="satelliteOutput"></div>
+        </div>
+
         <div id="customCatalogs" class="tab-content">
             <div id="customCatalogsOutput">
                 <div class="empty-state">
@@ -90,12 +110,14 @@
 
         <script src="vendor/leaflet/leaflet.js"></script>
         <script src="js/emoji-utils.js"></script>
+        <script src="js/near-position.js"></script>
         <script src="js/tabs.js"></script>
         <script src="js/online-area-download.js"></script>
         <script src="js/manage-charts-enhanced.js"></script>
         <script src="js/download-simple.js"></script>
         <script src="js/chart-convert.js"></script>
         <script src="js/chart-catalog.js"></script>
+        <script src="js/online-charts.js"></script>
         <script src="js/noaa-chart-selector.js"></script>
         <script src="js/main.js"></script>
     </div>

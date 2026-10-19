@@ -1,6 +1,6 @@
 # The merged chart catalog
 
-The Chart Catalog tab reads a single catalog file that this repository builds and
+The Chart Catalog, Online Charts and Satellite tabs read a single catalog file that this repository builds and
 publishes to its GitHub Pages site. It merges two sources:
 
 - **Downloadable charts** from [chartcatalogs.github.io](https://chartcatalogs.github.io/)
@@ -84,17 +84,17 @@ however old it is when it does not. WMS layers are requested tile by tile as
 plain `{z}/{x}/{y}` tile cache for the same chart (`{-y}` and `{z-N}` are
 substituted too). Time-varying charts are never kept.
 
-Manage Charts can also download an area of such a chart ahead of time: the
+Manage Charts and the Online Charts tab can also download an area of such a chart ahead of time: the
 user frames the area on a map and picks a zoom range, and the plugin fetches
 every tile in it into the same file, lowest zoom first. One download is capped
 in size, so an area that is too large has to be smaller or use fewer zoom levels.
 Set `"areaDownload": false` in the `offline` block when the provider allows
 keeping the tiles a plotter shows but not downloading areas in advance. The
-chart is still kept offline as it is viewed; Manage Charts just offers no area
-download for it. A provider that allows area downloads in moderation, such as
+chart is still kept offline as it is viewed; there is just no area download
+for it. A provider that allows area downloads in moderation, such as
 a free service that rate-limits heavy use, gets `areaDownloadLimits` instead:
 `maxTiles` caps one download, and `requestsPerSecond` makes it fetch one tile at
-a time at that pace, so Manage Charts shows how long it will take.
+a time at that pace, so the area dialog shows how long it will take.
 
 Add `offline` only when the terms allow storing the data, not merely viewing it.
 Public-domain and open-licence data (CC BY, Open Government Licence) qualify;
@@ -134,7 +134,7 @@ against rules the schema can't express (WMS/WMTS entries must name their layer;
 only WMS/WMTS entries can be temporal; `offline` needs a tile layer, a WMS, or a
 `tileUrl`, and never goes with `temporal`).
 
-To see an entry in the Chart Catalog tab before opening a pull request, run
+To see an entry in the Online Charts tab before opening a pull request, run
 `npm run catalog:preview`. It builds the catalog from your working copy the same
 way the workflow does, serves it locally, and prints how to point a development
 Signal K server at it. Each "Refresh catalog index" rebuilds it, so edits show up
