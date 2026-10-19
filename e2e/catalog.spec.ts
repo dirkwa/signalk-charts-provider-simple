@@ -510,7 +510,7 @@ test.describe('Chart Catalog tab', () => {
     // Sectioned by category, in a fixed order; downloads sorted by name.
     await expect(page.locator('.catalog-section-title')).toHaveText([
       'Navigation Charts',
-      'Base Maps & Imagery'
+      'Base Maps'
     ]);
     await expect(
       page.locator('.catalog-section').first().locator('.catalog-card-title')
@@ -536,7 +536,7 @@ test.describe('Chart Catalog tab', () => {
     await btn('showTypes', '').click();
     await btn('formats', 'shapefile').click();
     await expect(cards).toHaveCount(1);
-    await expect(page.locator('.catalog-section-title')).toHaveText(['Base Maps & Imagery']);
+    await expect(page.locator('.catalog-section-title')).toHaveText(['Base Maps']);
   });
 
   test('points to the Online Charts tab', async ({ page }) => {

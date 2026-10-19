@@ -42,8 +42,12 @@ interface OnlineRegistryResponse {
 interface OnlineLocalChart {
   name: string;
   chartName?: string;
+  enabled?: boolean;
+  /** False when the chart's folder (or an ancestor) is disabled. */
+  folderEnabled?: boolean;
   online?: {
     catalogId: string;
+    available?: boolean;
     areaDownload?: boolean;
     areaDownloadLimits?: AreaDownloadLimits;
     keptOffline?: boolean;
@@ -93,6 +97,51 @@ function onlineEscapeId(str: string): string {
 
 const ONLINE_OTHER_SECTION = 'other';
 
+interface OnlineData {
+  registry: OnlineRegistryResponse;
+  local: OnlineLocalChartsResponse;
+}
+
+// One fetch of both endpoints serves both tabs; a change to the charts drops it.
+let onlineDataRequest: Promise<OnlineData> | null = null;
+
+function fetchOnlineData(): Promise<OnlineData> {
+  onlineDataRequest ??= (async () => {
+    const [registryResponse, localResponse] = await Promise.all([
+      fetch(`${ONLINE_API_BASE}/catalog-registry`),
+      fetch(`${ONLINE_API_BASE}/local-charts`)
+    ]);
+    if (!registryResponse.ok || !localResponse.ok) {
+      throw new Error(
+        `HTTP ${String(registryResponse.ok ? localResponse.status : registryResponse.status)}`
+      );
+    }
+    return {
+      registry: (await registryResponse.json()) as OnlineRegistryResponse,
+      local: (await localResponse.json()) as OnlineLocalChartsResponse
+    };
+  })();
+  const request = onlineDataRequest;
+  // A failed load is retried on the next activation rather than kept.
+  request.catch(() => {
+    if (onlineDataRequest === request) {
+      onlineDataRequest = null;
+    }
+  });
+  return request;
+}
+
+/** Whether a chart in Manage Charts is served, so its offline area can be opened. */
+function onlineChartServed(chart: OnlineLocalChart): boolean {
+  return (
+    chart.enabled !== false && chart.folderEnabled !== false && chart.online?.available !== false
+  );
+}
+
+document.addEventListener('charts-changed', () => {
+  onlineDataRequest = null;
+});
+
 class OnlineChartPanel {
   private initialized = false;
   private loadSeq = 0;
@@ -121,6 +170,8 @@ class OnlineChartPanel {
     if (!this.initialized) {
       this.init();
     }
+    // Each visit picks up charts changed elsewhere since the last.
+    onlineDataRequest = null;
     void this.load();
   }
 
@@ -210,17 +261,7 @@ class OnlineChartPanel {
   async load(): Promise<void> {
     const seq = ++this.loadSeq;
     try {
-      const [registryResponse, localResponse] = await Promise.all([
-        fetch(`${ONLINE_API_BASE}/catalog-registry`),
-        fetch(`${ONLINE_API_BASE}/local-charts`)
-      ]);
-      if (!registryResponse.ok || !localResponse.ok) {
-        throw new Error(
-          `HTTP ${String(registryResponse.ok ? localResponse.status : registryResponse.status)}`
-        );
-      }
-      const registry = (await registryResponse.json()) as OnlineRegistryResponse;
-      const local = (await localResponse.json()) as OnlineLocalChartsResponse;
+      const { registry, local } = await fetchOnlineData();
       if (seq !== this.loadSeq) {
         return;
       }
@@ -232,9 +273,11 @@ class OnlineChartPanel {
       this.issuesUrl = issues && /^https:\/\//.test(issues) ? issues : ONLINE_ISSUES_URL;
       this.folders = ['/', ...(local.folders ?? []).filter((f) => f !== '/')];
       this.localCharts = new Map();
+      // A catalog chart can be added more than once; prefer a copy that is served.
       for (const chart of local.charts ?? []) {
         const catalogId = chart.online?.catalogId;
-        if (catalogId && !this.localCharts.has(catalogId)) {
+        const kept = catalogId ? this.localCharts.get(catalogId) : undefined;
+        if (catalogId && (!kept || (!onlineChartServed(kept) && onlineChartServed(chart)))) {
           this.localCharts.set(catalogId, chart);
         }
       }
@@ -408,6 +451,12 @@ class OnlineChartPanel {
         </div>`;
       return;
     }
+    // Re-rendering must not undo a folder picked on a row not yet added.
+    const picked = new Map(
+      Array.from(list.querySelectorAll<HTMLSelectElement>('select.catalog-folder-select')).map(
+        (select) => [select.id, select.value]
+      )
+    );
     list.innerHTML = this.sectionOrder()
       .map((section) => {
         const rows = charts.filter((c) => this.sectionOf(c.category) === section);
@@ -423,6 +472,12 @@ class OnlineChartPanel {
           </section>`;
       })
       .join('');
+    for (const [id, value] of picked) {
+      const select = document.getElementById(id) as HTMLSelectElement | null;
+      if (select && Array.from(select.options).some((o) => o.value === value)) {
+        select.value = value;
+      }
+    }
   }
 
   /** Where an online chart has been added; an own-key lookup, so no id reads an inherited value. */
@@ -430,7 +485,7 @@ class OnlineChartPanel {
     return Object.hasOwn(this.added, catalogId) ? (this.added[catalogId] ?? []) : [];
   }
 
-  private folderOptions(): string {
+  folderOptions(): string {
     const folders = this.folders.includes(ONLINE_CHARTS_FOLDER)
       ? this.folders
       : [...this.folders, ONLINE_CHARTS_FOLDER];
@@ -461,7 +516,10 @@ class OnlineChartPanel {
     ].join('');
     let action: string;
     if (added) {
-      const local = this.localCharts.get(chart.id)?.online;
+      const localChart = this.localCharts.get(chart.id);
+      // A switched-off chart is not served, so its offline area cannot be reached.
+      const local =
+        localChart && onlineChartServed(localChart) ? localChart.online : undefined;
       let area = '';
       if (local?.chartId && local.areaDownload) {
         area = `<button class="btn btn-sm btn-primary" data-online-area="${onlineEscape(chart.id)}" title="Download an area to use without internet">Offline area</button>`;
@@ -644,7 +702,7 @@ const onlineChartsPanel = new OnlineChartPanel({
   `
 });
 onlineChartsPanel.onLoaded = () => {
-  fillOnlineChartFolders(onlineChartsPanel.folders);
+  fillOnlineChartFolders(onlineChartsPanel.folderOptions());
 };
 
 // Satellite and aerial imagery, side by side so the sources can be compared:
@@ -671,24 +729,16 @@ window.handleSatelliteTabActive = function (): void {
 };
 
 /** Online charts go to their own folder unless the user picks another. */
-function fillOnlineChartFolders(folders: string[]): void {
+function fillOnlineChartFolders(options: string): void {
   const select = document.getElementById('onlineChartFolder') as HTMLSelectElement | null;
   if (!select) {
     return;
   }
   const previous = select.value;
-  const options = folders.includes(ONLINE_CHARTS_FOLDER)
-    ? folders
-    : [...folders, ONLINE_CHARTS_FOLDER];
-  select.replaceChildren(
-    ...options.map((folder) => {
-      const option = document.createElement('option');
-      option.value = folder;
-      option.textContent = folder;
-      return option;
-    })
-  );
-  select.value = previous && options.includes(previous) ? previous : ONLINE_CHARTS_FOLDER;
+  select.innerHTML = options;
+  if (previous && Array.from(select.options).some((o) => o.value === previous)) {
+    select.value = previous;
+  }
 }
 
 function onlineChartTypeChanged(): void {

@@ -51,7 +51,6 @@ interface CatalogStatus {
 
 interface CatalogSources {
   chartcatalogs: { homepage: string; issues: string };
-  online: { homepage: string; issues: string };
 }
 
 interface CatalogRegistryResponse {
@@ -141,7 +140,7 @@ const SECTION_LABELS: Record<string, string> = {
   navigation: 'Navigation Charts',
   weather: 'Weather',
   depth: 'Depth & Seabed',
-  basemap: 'Base Maps & Imagery',
+  basemap: 'Base Maps',
   overlay: 'Marine Overlays'
 };
 const OTHER_SECTION = 'other';
@@ -490,16 +489,11 @@ const DEFAULT_CATALOG_SOURCES: CatalogSources = {
   chartcatalogs: {
     homepage: 'https://chartcatalogs.github.io/',
     issues: 'https://github.com/chartcatalogs/catalogs/issues'
-  },
-  online: {
-    homepage: 'https://github.com/dirkwa/signalk-charts-provider-simple',
-    issues:
-      'https://github.com/dirkwa/signalk-charts-provider-simple/issues/new?template=catalog-problem.yml'
   }
 };
 
-// Attribution for both halves of the merged catalog, each with the tracker
-// its problems belong in. The links come from the catalog itself once loaded.
+// Attribution for the downloadable charts, with the tracker
+// their problems belong in. The links come from the catalog itself once loaded.
 function sourceNoteHtml(sources: CatalogSources | null | undefined): string {
   const { chartcatalogs } = sources ?? DEFAULT_CATALOG_SOURCES;
   // The links come from a downloaded file; only ever render https hrefs.

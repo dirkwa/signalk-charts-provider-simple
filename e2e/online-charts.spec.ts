@@ -379,6 +379,97 @@ test.describe('Online Charts tab', () => {
     const streamed = page.locator('.online-chart-row', { hasText: 'Streamed Chart' });
     await expect(streamed.locator('button')).toHaveCount(0);
   });
+
+  test('offers no offline area for a chart switched off with its folder', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    const chart = {
+      id: 'kept',
+      name: 'Kept Chart',
+      description: 'd',
+      category: 'navigation',
+      provider: 'p',
+      license: 'l',
+      licenseUrl: 'https://example.com',
+      bbox: [0, 0, 1, 1],
+      chart: { type: 'tilelayer' },
+      keptOffline: true
+    };
+    const local = (folder: string, folderEnabled: boolean) => ({
+      relativePath: `${folder}/kept.onlinechart.json`,
+      name: 'kept.onlinechart.json',
+      folder,
+      enabled: true,
+      folderEnabled,
+      online: {
+        catalogId: 'kept',
+        available: true,
+        catalogLoaded: true,
+        type: 'tilelayer',
+        keptOffline: true,
+        areaDownload: true,
+        chartId: folderEnabled ? 'kept-2' : 'kept'
+      }
+    });
+    await setMockState(page, {
+      online: [chart],
+      onlineAdded: { kept: ['Online Charts/kept.onlinechart.json'] },
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/', 'Online Charts'],
+        charts: [local('Online Charts', false)]
+      }
+    });
+    await openOnlineTab(page);
+    const row = page.locator('.online-chart-row', { hasText: 'Kept Chart' });
+    await expect(row.locator('.installed-badge')).toHaveText('Added');
+    await expect(row.locator('button')).toHaveCount(0);
+
+    // A second copy that is switched on is the one the button opens.
+    await setMockState(page, {
+      online: [chart],
+      onlineAdded: { kept: ['Online Charts/kept.onlinechart.json', 'Other/kept.onlinechart.json'] },
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/', 'Online Charts', 'Other'],
+        charts: [local('Online Charts', false), local('Other', true)]
+      }
+    });
+    await page.reload();
+    await openOnlineTab(page);
+    const request = page.waitForRequest((r) => r.url().includes('/online-charts/kept-2/offline'));
+    await row.getByRole('button', { name: 'Offline area' }).click();
+    await request;
+  });
+
+  test('keeps the folder picked on one row while another is added', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    const chart = (id: string) => ({
+      id,
+      name: id,
+      description: 'd',
+      category: 'weather',
+      provider: 'p',
+      license: 'l',
+      licenseUrl: 'https://example.com',
+      bbox: [0, 0, 1, 1],
+      chart: { type: 'WMS' }
+    });
+    await setMockState(page, {
+      online: [chart('radar-a'), chart('radar-b')],
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/', 'Weather'],
+        charts: []
+      }
+    });
+    await openOnlineTab(page);
+    const rowA = page.locator('.online-chart-row', { hasText: 'radar-a' });
+    const rowB = page.locator('.online-chart-row', { hasText: 'radar-b' });
+    await rowB.getByLabel('Save to').selectOption('Weather');
+    await rowA.locator('[data-online-add]').click();
+    await expect(rowA.locator('.installed-badge')).toHaveText('Added');
+    await expect(rowB.getByLabel('Save to')).toHaveValue('Weather');
+  });
 });
 
 test.describe('add an online chart by URL', () => {
