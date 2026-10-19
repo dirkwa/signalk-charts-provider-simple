@@ -181,6 +181,29 @@ describe('catalog source files shipped in the repo', () => {
     assert.notDeepStrictEqual(errors(OnlineChartsSourceFileSchema, { charts: [wrong] }), []);
   });
 
+  it('takes limits on area downloads, but not for a chart that downloads none', () => {
+    const { temporal: _temporal, ...tiles } = onlineEntry({
+      chart: { type: 'tilelayer', url: 'https://example.com/{z}/{y}/{x}.jpg' }
+    });
+    const paced = {
+      ...tiles,
+      offline: { areaDownloadLimits: { maxTiles: 5000, requestsPerSecond: 2 } }
+    };
+    assert.deepStrictEqual(errors(OnlineChartsSourceFileSchema, { charts: [paced] }), []);
+    assert.deepStrictEqual(checkOnlineChartEntry(paced), []);
+    for (const limits of [{ maxTiles: 0 }, { requestsPerSecond: 0.05 }, { maxTiles: 200000 }]) {
+      const wrong = { ...tiles, offline: { areaDownloadLimits: limits } };
+      assert.notDeepStrictEqual(errors(OnlineChartsSourceFileSchema, { charts: [wrong] }), []);
+    }
+    const contradiction = {
+      ...tiles,
+      offline: { areaDownload: false, areaDownloadLimits: { maxTiles: 10 } }
+    };
+    assert.deepStrictEqual(checkOnlineChartEntry(contradiction), [
+      'test-radar: areaDownloadLimits needs area downloads to be allowed'
+    ]);
+  });
+
   it('source schemas reject unknown fields, catching typos', () => {
     const typo = { charts: [{ ...onlineEntry(), descripton: 'typo' }] };
     assert.notDeepStrictEqual(errors(OnlineChartsSourceFileSchema, typo), []);

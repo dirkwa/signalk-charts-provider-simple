@@ -5,7 +5,12 @@
  */
 
 import { randomUUID } from 'crypto';
-import type { EnsureOutcome, OnlineTileProxy, OnlineTileSource } from './online-tile-cache.js';
+import type {
+  AreaDownloadLimits,
+  EnsureOutcome,
+  OnlineTileProxy,
+  OnlineTileSource
+} from './online-tile-cache.js';
 
 /** [west, south, east, north] in degrees; west > east crosses the antimeridian. */
 export type AreaBbox = [number, number, number, number];
@@ -110,6 +115,8 @@ export interface AreaDownloadRequest {
   bbox: AreaBbox;
   minzoom: number;
   maxzoom: number;
+  /** What the chart's provider allows; none means the plugin's own limits. */
+  limits?: AreaDownloadLimits;
 }
 
 export class AreaDownloadError extends Error {}
@@ -130,12 +137,21 @@ export class AreaDownloader {
       throw new AreaDownloadError('The lowest zoom level is above the highest');
     }
     const total = countAreaTiles(req.bbox, req.minzoom, req.maxzoom);
-    if (total > MAX_AREA_TILES) {
+    const maxTiles = Math.min(MAX_AREA_TILES, req.limits?.maxTiles ?? MAX_AREA_TILES);
+    if (total > maxTiles) {
       throw new AreaDownloadError(
-        `That is ${total.toLocaleString('en-US')} tiles; choose a smaller area or a lower zoom level (at most ${MAX_AREA_TILES.toLocaleString('en-US')}).`
+        `That is ${total.toLocaleString('en-US')} tiles; choose a smaller area or a lower zoom level (at most ${maxTiles.toLocaleString('en-US')}).`
       );
     }
-    if (this.list().some((j) => j.chartId === req.chartId && j.status === 'running')) {
+    // A paced provider is paced per catalog entry, however many charts use it.
+    const paced = req.limits?.requestsPerSecond !== undefined;
+    if (
+      this.list().some(
+        (j) =>
+          j.status === 'running' &&
+          (j.chartId === req.chartId || (paced && j.catalogId === req.catalogId))
+      )
+    ) {
       throw new AreaDownloadError('An area of this chart is already downloading');
     }
     const job: AreaDownloadJob = {
@@ -154,7 +170,9 @@ export class AreaDownloader {
     };
     this.jobs.set(job.id, job);
     this.prune();
-    const run = this.run(job, req.source).finally(() => this.runs.delete(job.id));
+    const run = this.run(job, req.source, req.limits?.requestsPerSecond).finally(() =>
+      this.runs.delete(job.id)
+    );
     this.runs.set(job.id, run);
     return job;
   }
@@ -196,13 +214,18 @@ export class AreaDownloader {
     return [...this.jobs.values()];
   }
 
-  private async run(job: AreaDownloadJob, source: OnlineTileSource): Promise<void> {
+  private async run(
+    job: AreaDownloadJob,
+    source: OnlineTileSource,
+    requestsPerSecond: number | undefined
+  ): Promise<void> {
     const tiles = areaTiles(job.bbox, job.minzoom, job.maxzoom);
     let consecutiveFailures = 0;
     // The job stays 'running' until every worker has returned, so nothing
     // (deleting the kept tiles, say) treats it as over while tiles are still
     // being written.
     let gaveUp = false;
+    let lastAsked = false;
     const worker = async (): Promise<void> => {
       for (;;) {
         if (this.cancelled.has(job.id) || gaveUp) {
@@ -212,6 +235,13 @@ export class AreaDownloader {
         if (next.done) {
           return;
         }
+        // A kept tile cost the provider nothing, so only a request waits.
+        if (requestsPerSecond !== undefined && lastAsked) {
+          await this.pause(job.id, 1000 / requestsPerSecond);
+          if (this.cancelled.has(job.id)) {
+            return;
+          }
+        }
         const [z, x, y] = next.value;
         let outcome: EnsureOutcome;
         try {
@@ -220,6 +250,7 @@ export class AreaDownloader {
           outcome = 'failed';
         }
         job.done++;
+        lastAsked = outcome !== 'kept';
         if (outcome === 'failed') {
           job.failed++;
           consecutiveFailures++;
@@ -234,7 +265,9 @@ export class AreaDownloader {
         }
       }
     };
-    await Promise.all(Array.from({ length: this.concurrency }, () => worker()));
+    // A provider that sets a pace gets one request at a time, so the pace holds.
+    const workers = requestsPerSecond === undefined ? this.concurrency : 1;
+    await Promise.all(Array.from({ length: workers }, () => worker()));
     if (gaveUp) {
       job.status = 'failed';
       job.error =
@@ -244,6 +277,14 @@ export class AreaDownloader {
     }
     this.cancelled.delete(job.id);
     job.finishedAt = new Date().toISOString();
+  }
+
+  /** Wait, but no longer than it takes to notice the job was cancelled. */
+  private async pause(id: string, ms: number): Promise<void> {
+    const until = Date.now() + ms;
+    while (!this.cancelled.has(id) && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(100, until - Date.now())));
+    }
   }
 
   private prune(): void {

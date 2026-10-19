@@ -24,6 +24,7 @@ import type { OnlineCatalogChart } from '../catalog/merged-catalog-schema.js';
 import type { ChartProvider } from '../types.js';
 import {
   allowsAreaDownload,
+  areaDownloadLimits,
   needsTileProxy,
   offlineTileSource,
   type OnlineTileSource
@@ -344,6 +345,7 @@ export function onlineChartProvider(
       _offlineSource: proxiedSource,
       _keepTiles: offlineSource !== null,
       _areaDownload: allowsAreaDownload(entry),
+      _areaDownloadLimits: areaDownloadLimits(entry),
       v1: { tilemapUrl: url, chartLayers: [] },
       v2: { url, layers: [], ...(tileSize !== undefined ? { tileSize } : {}) }
     };

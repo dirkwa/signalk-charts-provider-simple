@@ -28,6 +28,10 @@ interface AreaDialogState {
   chartId: string;
   minzoom: number;
   maxzoom: number;
+  /** The most tiles one download of this chart may fetch. */
+  maxTiles: number;
+  /** How fast the provider lets a download fetch, when it sets a pace. */
+  requestsPerSecond: number | null;
   /** Null for a chart whose provider allows no area downloads. */
   map: L.Map | null;
   poll: ReturnType<typeof setInterval> | null;
@@ -90,6 +94,17 @@ function areaFromMap(map: L.Map): AreaBbox {
   return [wrapLon(b.getWest()), south, east === -180 ? 180 : east, north];
 }
 
+function areaFormatDuration(seconds: number): string {
+  if (seconds < 90) {
+    const n = Math.max(1, Math.ceil(seconds));
+    return n === 1 ? '1 second' : `${String(n)} seconds`;
+  }
+  if (seconds < 90 * 60) {
+    return `${String(Math.ceil(seconds / 60))} minutes`;
+  }
+  return `${(seconds / 3600).toFixed(1)} hours`;
+}
+
 function areaFormatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) {
     return `${String(Math.round(bytes / 1024))} KB`;
@@ -134,10 +149,15 @@ function updateAreaEstimate(): void {
     return;
   }
   const count = areaTileCount(areaFromMap(areaDialog.map), from, to);
-  const tooMany = count > AREA_MAX_TILES;
+  const { maxTiles, requestsPerSecond } = areaDialog;
+  const tooMany = count > maxTiles;
+  const pace =
+    requestsPerSecond === null
+      ? ''
+      : ` This provider asks for downloads to go slowly, so it takes about ${areaFormatDuration(count / requestsPerSecond)}.`;
   estimate.textContent = tooMany
-    ? `${count.toLocaleString()} tiles: too many. Zoom the map in or lower the last zoom level (at most ${AREA_MAX_TILES.toLocaleString()}).`
-    : `${count.toLocaleString()} tiles in the visible area.`;
+    ? `${count.toLocaleString()} tiles: too many. Zoom the map in or lower the last zoom level (at most ${maxTiles.toLocaleString()}).`
+    : `${count === 1 ? '1 tile' : `${count.toLocaleString()} tiles`} in the visible area.${pace}`;
   estimate.classList.toggle('area-too-many', tooMany);
   start.disabled = tooMany || areaDialog.jobId !== null;
 }
@@ -329,7 +349,8 @@ async function showOfflineArea(
   name: string,
   minzoom: number | null,
   maxzoom: number | null,
-  areaDownload: boolean
+  areaDownload: boolean,
+  limits: AreaDownloadLimits
 ): Promise<void> {
   closeAreaDialog();
   const lowest = minzoom ?? 0;
@@ -385,6 +406,8 @@ async function showOfflineArea(
     chartId,
     minzoom: lowest,
     maxzoom: highest,
+    maxTiles: Math.min(AREA_MAX_TILES, limits.maxTiles ?? AREA_MAX_TILES),
+    requestsPerSecond: limits.requestsPerSecond ?? null,
     map,
     poll: null,
     jobId: null,
@@ -434,7 +457,17 @@ function showKeptTiles(chartId: string, name: string, minzoom: number, maxzoom: 
       </div>
     </div>`
   );
-  areaDialog = { chartId, minzoom, maxzoom, map: null, poll: null, jobId: null, shownJobId: null };
+  areaDialog = {
+    chartId,
+    minzoom,
+    maxzoom,
+    maxTiles: 0,
+    requestsPerSecond: null,
+    map: null,
+    poll: null,
+    jobId: null,
+    shownJobId: null
+  };
   void refreshKeptStats();
 }
 

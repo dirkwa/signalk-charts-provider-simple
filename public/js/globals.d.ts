@@ -13,6 +13,12 @@
  */
 
 declare global {
+  /** What an online chart's provider allows an area download to fetch, and how fast. */
+  interface AreaDownloadLimits {
+    maxTiles?: number;
+    requestsPerSecond?: number;
+  }
+
   interface Window {
     // tabs.ts
     openTab(evt: MouseEvent | null, tabName: string): void;
@@ -98,7 +104,8 @@ declare global {
       name: string,
       minzoom: number | null,
       maxzoom: number | null,
-      areaDownload: boolean
+      areaDownload: boolean,
+      limits: AreaDownloadLimits
     ): Promise<void>;
     closeAreaDialog(event?: Event): void;
     startAreaDownload(): Promise<void>;

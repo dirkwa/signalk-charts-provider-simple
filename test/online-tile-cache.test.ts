@@ -11,6 +11,7 @@ import {
   OnlineTileStore,
   TILE_REFRESH_MS,
   allowsAreaDownload,
+  areaDownloadLimits,
   httpTileFetcher,
   needsTileProxy,
   offlineTileSource,
@@ -111,6 +112,20 @@ describe('allowsAreaDownload', () => {
   it('allows no area downloads of a chart that is not kept offline', () => {
     assert.strictEqual(allowsAreaDownload(entry()), false);
     assert.strictEqual(allowsAreaDownload(tiles({ areaDownload: 'no' })), false);
+  });
+
+  it("reads the provider's limits on area downloads", () => {
+    const limits = { maxTiles: 5000, requestsPerSecond: 2 };
+    assert.deepStrictEqual(areaDownloadLimits(tiles({ areaDownloadLimits: limits })), limits);
+    assert.deepStrictEqual(areaDownloadLimits(tiles({})), {});
+    assert.deepStrictEqual(areaDownloadLimits(entry()), {});
+  });
+
+  it('keeps the tiles but downloads no areas when it cannot read the limits', () => {
+    const unreadable = tiles({ areaDownloadLimits: { requestsPerSecond: 'slowly' } });
+    assert.notStrictEqual(offlineTileSource(unreadable), null);
+    assert.strictEqual(allowsAreaDownload(unreadable), false);
+    assert.deepStrictEqual(areaDownloadLimits(unreadable), {});
   });
 });
 

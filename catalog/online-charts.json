@@ -501,7 +501,7 @@
         "url": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg",
         "maxzoom": 14
       },
-      "offline": { "areaDownload": false }
+      "offline": { "areaDownloadLimits": { "maxTiles": 5000, "requestsPerSecond": 2 } }
     }
   ]
 }

@@ -148,6 +148,26 @@ const CATALOG = {
       offline: { areaDownload: false },
       use: 'stream',
       format: 'tiles'
+    },
+    {
+      id: 'test-paced',
+      name: 'Test Paced Imagery',
+      description: 'Satellite imagery from a rate-limited service.',
+      category: 'basemap',
+      regions: ['global'],
+      bbox: [-180, -85, 180, 85],
+      provider: 'Test',
+      attribution: 'Test',
+      license: 'CC BY-NC-SA 4.0',
+      licenseUrl: 'https://example.com/license',
+      chart: {
+        type: 'tilelayer',
+        url: 'https://imagery.example.com/paced/{z}/{y}/{x}.jpg',
+        maxzoom: 14
+      },
+      offline: { areaDownloadLimits: { maxTiles: 10, requestsPerSecond: 50 } },
+      use: 'stream',
+      format: 'tiles'
     }
   ]
 };
@@ -442,6 +462,48 @@ describe('online chart routes', () => {
     assert.strictEqual(imagery.areaDownload, false);
     const depths = online(path.join('Online Charts', 'test-depths.onlinechart.json'));
     assert.strictEqual(depths?.areaDownload, true);
+  });
+
+  it("holds area downloads to the provider's limits", async () => {
+    imageryOnline = true;
+    const res = await add({ catalogId: 'test-paced', folder: 'Online Charts' });
+    assert.strictEqual(res.statusCode, 200);
+    const areaRoute = handlers.get('post /online-charts/:chartId/area-download');
+
+    const tooLarge = await call(areaRoute, {
+      params: { chartId: 'test-paced' },
+      body: { bbox: [177, -18.5, 178.5, -17], minzoom: 5, maxzoom: 9 }
+    });
+    assert.strictEqual(tooLarge.statusCode, 400);
+    assert.match((tooLarge.body as { error: string }).error, /at most 10\b/);
+
+    const start = await call(areaRoute, {
+      params: { chartId: 'test-paced' },
+      body: { bbox: [177, -18.5, 178.5, -17], minzoom: 5, maxzoom: 6 }
+    });
+    assert.strictEqual(start.statusCode, 202);
+    const { job } = start.body as { job: { id: string; total: number } };
+    type Job = { id: string; status: string; done: number };
+    let done: Job | undefined;
+    const deadline = Date.now() + 5000;
+    while (done?.status !== 'completed' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+      const list = await call(handlers.get('get /online-area-downloads'), {});
+      done = (list.body as { jobs: Job[] }).jobs.find((j) => j.id === job.id);
+    }
+    assert.strictEqual(done?.status, 'completed');
+    assert.strictEqual(done.done, job.total);
+
+    const listed = await call(handlers.get('get /local-charts'), {});
+    type Listed = {
+      relativePath: string;
+      online?: { areaDownload: boolean; areaDownloadLimits: unknown };
+    };
+    const paced = (listed.body as { charts: Listed[] }).charts.find(
+      (c) => c.relativePath === path.join('Online Charts', 'test-paced.onlinechart.json')
+    )?.online;
+    assert.strictEqual(paced?.areaDownload, true);
+    assert.deepStrictEqual(paced.areaDownloadLimits, { maxTiles: 10, requestsPerSecond: 50 });
   });
 
   it('refuses a custom chart whose name is only spaces', async () => {

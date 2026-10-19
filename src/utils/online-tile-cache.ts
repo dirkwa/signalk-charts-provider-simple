@@ -23,9 +23,20 @@ import {
 export type OnlineTileSource =
   { kind: 'xyz'; url: string } | { kind: 'wms'; url: string; layers: readonly string[] };
 
+const AreaDownloadLimitsSchema = Type.Object({
+  maxTiles: Type.Optional(Type.Integer({ minimum: 1 })),
+  requestsPerSecond: Type.Optional(Type.Number({ minimum: 0.1 }))
+});
+
+/** How far a provider lets an area download go; see the catalog's `areaDownloadLimits`. */
+export type AreaDownloadLimits = Static<typeof AreaDownloadLimitsSchema>;
+
 const OfflineSchema = Type.Object({
   tileUrl: Type.Optional(Type.String({ pattern: '^https://' })),
-  areaDownload: Type.Optional(Type.Boolean())
+  areaDownload: Type.Optional(Type.Boolean()),
+  // Checked on its own, so limits this version cannot read cost the chart
+  // its area downloads, not its kept tiles.
+  areaDownloadLimits: Type.Optional(Type.Unknown())
 });
 
 type OfflineBlock = Static<typeof OfflineSchema>;
@@ -68,7 +79,17 @@ export function offlineTileSource(entry: OnlineCatalogChart): OnlineTileSource |
  */
 export function allowsAreaDownload(entry: OnlineCatalogChart): boolean {
   const proxied = proxiedSource(entry);
-  return proxied !== null && proxied.offline.areaDownload !== false;
+  if (proxied === null || proxied.offline.areaDownload === false) {
+    return false;
+  }
+  const { areaDownloadLimits: limits } = proxied.offline;
+  return limits === undefined || Value.Check(AreaDownloadLimitsSchema, limits);
+}
+
+/** The limits a chart's provider sets on area downloads; empty when it sets none. */
+export function areaDownloadLimits(entry: OnlineCatalogChart): AreaDownloadLimits {
+  const limits = proxiedSource(entry)?.offline.areaDownloadLimits;
+  return Value.Check(AreaDownloadLimitsSchema, limits) ? limits : {};
 }
 
 const HALF_WORLD = 20037508.342789244;

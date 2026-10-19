@@ -4,7 +4,7 @@ import type { MBTilesReader } from './utils/mbtiles-reader.js';
 import type { PMTilesReader } from './utils/pmtiles-reader.js';
 import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
 import type { ChartTimeBlock } from './utils/time-dimension.js';
-import type { OnlineTileSource } from './utils/online-tile-cache.js';
+import type { AreaDownloadLimits, OnlineTileSource } from './utils/online-tile-cache.js';
 import type { CustomOnlineChart } from './utils/online-charts.js';
 
 // ---- Plugin Configuration ----
@@ -84,6 +84,8 @@ export interface ChartProvider {
   _keepTiles?: boolean;
   /** Whether areas of a chart kept offline may be downloaded in advance. */
   _areaDownload?: boolean;
+  /** What its provider allows an area download to fetch, and how fast. */
+  _areaDownloadLimits?: AreaDownloadLimits;
 
   v1: ChartV1Data;
   v2: ChartV2Data;

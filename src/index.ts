@@ -81,7 +81,9 @@ import {
   httpTileFetcher,
   offlineTileSource,
   allowsAreaDownload,
+  areaDownloadLimits,
   tileImageType,
+  type AreaDownloadLimits,
   type OnlineTileSource
 } from './utils/online-tile-cache.js';
 import { AreaDownloader, AreaDownloadError } from './utils/online-area-download.js';
@@ -1601,6 +1603,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     temporal: onlineEntry?.temporal !== undefined,
                     keptOffline: onlineEntry ? offlineTileSource(onlineEntry) !== null : false,
                     areaDownload: onlineEntry ? allowsAreaDownload(onlineEntry) : false,
+                    areaDownloadLimits: onlineEntry ? areaDownloadLimits(onlineEntry) : {},
                     // Read from the tile file rather than the catalog: deleting
                     // the chart deletes its tiles even once the catalog drops it.
                     keptTiles: hasKeptTiles(chart.online.catalogId),
@@ -3240,6 +3243,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       catalogId: string;
       source: OnlineTileSource;
       areaDownload: boolean;
+      limits: AreaDownloadLimits;
       minzoom: number | undefined;
       maxzoom: number | undefined;
     } | null => {
@@ -3252,6 +3256,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         catalogId: provider._catalogId,
         source: provider._offlineSource,
         areaDownload: provider._areaDownload !== false,
+        limits: provider._areaDownloadLimits ?? {},
         minzoom: provider.minzoom,
         maxzoom: provider.maxzoom
       };
@@ -3291,7 +3296,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           source: chart.source,
           bbox: body.bbox,
           minzoom: Math.max(body.minzoom, chart.minzoom ?? 0),
-          maxzoom: Math.min(body.maxzoom, chart.maxzoom ?? body.maxzoom)
+          maxzoom: Math.min(body.maxzoom, chart.maxzoom ?? body.maxzoom),
+          limits: chart.limits
         });
         res.status(202).json({ success: true, job });
       } catch (err) {
@@ -5090,6 +5096,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _offlineSource,
     _keepTiles,
     _areaDownload,
+    _areaDownloadLimits,
     v1: _v1,
     v2: _v2,
     ...rest

@@ -37,6 +37,8 @@ interface ManageChart {
     keptOffline?: boolean;
     /** Areas may be downloaded in advance; some providers allow only keeping viewed tiles. */
     areaDownload?: boolean;
+    /** What the provider allows an area download to fetch, and how fast. */
+    areaDownloadLimits?: AreaDownloadLimits;
     /** Tiles are kept for it, and go when its file is deleted. */
     keptTiles?: boolean;
     /** The served chart id, for its offline-area routes. */
@@ -1780,7 +1782,8 @@ function openOfflineArea(chartPath: string): void {
     chart.chartName ?? chart.name,
     online.minzoom ?? null,
     online.maxzoom ?? null,
-    online.areaDownload === true
+    online.areaDownload === true,
+    online.areaDownloadLimits ?? {}
   );
 }
 

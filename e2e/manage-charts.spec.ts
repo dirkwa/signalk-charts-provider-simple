@@ -553,4 +553,53 @@ test.describe('Manage Charts tab', () => {
     await dialog.locator('#areaZoomFrom').selectOption('13');
     await expect(dialog.locator('#areaEstimate')).toContainText('must not be above');
   });
+  test("holds an offline area to its provider's limits", async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      position: null,
+      localCharts: {
+        basePath: '/tmp/charts',
+        folders: ['/'],
+        charts: [
+          {
+            relativePath: 'eox-cloudless.onlinechart.json',
+            name: 'eox-cloudless.onlinechart.json',
+            chartName: 'EOxCloudless Satellite Imagery',
+            folder: '/',
+            enabled: true,
+            online: {
+              catalogId: 'eox-cloudless',
+              available: true,
+              catalogLoaded: true,
+              type: 'tilelayer',
+              keptOffline: true,
+              areaDownload: true,
+              areaDownloadLimits: { maxTiles: 1, requestsPerSecond: 2 },
+              chartId: 'eox-cloudless',
+              minzoom: 0,
+              maxzoom: 14
+            }
+          }
+        ]
+      }
+    });
+    await page.evaluate(() => {
+      (window as unknown as { handleManageTabActive: () => void }).handleManageTabActive();
+    });
+    await page
+      .locator('.chart-card', { hasText: 'EOxCloudless' })
+      .getByRole('button', { name: 'Offline area' })
+      .click();
+    const dialog = page.locator('.area-modal');
+    const estimate = dialog.locator('#areaEstimate');
+    // Zoom 0 is one tile, and zoom 1 adds more.
+    await dialog.locator('#areaZoomTo').selectOption('1');
+    await expect(estimate).toContainText('too many');
+    await expect(estimate).toContainText('at most 1)');
+    await expect(dialog.getByRole('button', { name: 'Download area' })).toBeDisabled();
+    await dialog.locator('#areaZoomTo').selectOption('0');
+    await expect(estimate).toContainText('1 tile in the visible area.');
+    await expect(estimate).toContainText('go slowly, so it takes about 1 second');
+    await expect(dialog.getByRole('button', { name: 'Download area' })).toBeEnabled();
+  });
 });

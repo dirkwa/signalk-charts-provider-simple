@@ -219,8 +219,33 @@ function onlineChartEntryProps<C extends TSchema, T extends TSchema>(chart: C, t
           areaDownload: Type.Optional(
             Type.Boolean({
               description:
-                'False when the provider allows keeping the tiles a plotter shows but not downloading whole areas in advance, for instance because it rate-limits its free service. Areas already viewed still work with no internet.'
+                'False when the provider allows keeping the tiles a plotter shows but not downloading whole areas in advance. Areas already viewed still work with no internet.'
             })
+          ),
+          areaDownloadLimits: Type.Optional(
+            Type.Object(
+              {
+                maxTiles: Type.Optional(
+                  Type.Integer({
+                    minimum: 1,
+                    maximum: 100000,
+                    description: 'The most tiles one area download may fetch.'
+                  })
+                ),
+                requestsPerSecond: Type.Optional(
+                  Type.Number({
+                    minimum: 0.1,
+                    description:
+                      'How fast an area download may ask the provider for tiles, one request at a time.'
+                  })
+                )
+              },
+              {
+                ...STRICT,
+                description:
+                  'For a provider that allows area downloads only in moderation, for instance a free service that rate-limits heavy use.'
+              }
+            )
           )
         },
         {
@@ -454,6 +479,9 @@ export function checkOnlineChartEntry(entry: OnlineChartEntry): string[] {
     // A time-varying tile layer needs a `{time}` URL template, which the
     // catalog does not model yet.
     problems.push(`${entry.id}: only WMS/WMTS charts can be temporal`);
+  }
+  if (entry.offline?.areaDownload === false && entry.offline.areaDownloadLimits) {
+    problems.push(`${entry.id}: areaDownloadLimits needs area downloads to be allowed`);
   }
   if (entry.offline) {
     if (temporal) {

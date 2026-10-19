@@ -207,6 +207,71 @@ describe('AreaDownloader', () => {
     downloader.cancelAll();
   });
 
+  it("holds to the provider's pace, one request at a time", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const downloader = setup(async () => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await Promise.resolve();
+      inFlight--;
+      return PNG;
+    });
+    const started = Date.now();
+    const { id } = downloader.start({
+      ...request,
+      minzoom: 6,
+      maxzoom: 8,
+      limits: { requestsPerSecond: 100 }
+    });
+    const job = await finished(downloader, id);
+    assert.strictEqual(job.status, 'completed');
+    assert.strictEqual(most, 1);
+    // Timers may fire a little early, so allow some slack per request.
+    assert.ok(
+      Date.now() - started >= (job.fetched - 1) * 5,
+      `took ${String(Date.now() - started)} ms`
+    );
+
+    // Tiles already kept cost the provider nothing and need no wait.
+    const againStarted = Date.now();
+    const again = await finished(
+      downloader,
+      downloader.start({ ...request, minzoom: 6, maxzoom: 8, limits: { requestsPerSecond: 1 } }).id
+    );
+    assert.strictEqual(again.fetched, 0);
+    assert.ok(Date.now() - againStarted < 1000);
+  });
+
+  it('paces a provider once, however many charts use it, and stops mid-pause', async () => {
+    const downloader = setup(() => Promise.resolve(PNG));
+    const limits = { requestsPerSecond: 0.2 };
+    const { id } = downloader.start({ ...request, minzoom: 6, maxzoom: 8, limits });
+    assert.throws(
+      () => downloader.start({ ...request, chartId: 'depths-2', minzoom: 6, maxzoom: 8, limits }),
+      /already downloading/
+    );
+    // Let the first request go out, so the worker is in its five-second pause.
+    await new Promise((r) => setTimeout(r, 50));
+    const stopping = Date.now();
+    await downloader.stop('depths');
+    assert.ok(Date.now() - stopping < 1000, `took ${String(Date.now() - stopping)} ms`);
+    assert.strictEqual(downloader.get(id)?.status, 'cancelled');
+  });
+
+  it("refuses an area larger than the provider's limit", () => {
+    const downloader = setup(() => new Promise(() => {}));
+    const total = countAreaTiles(FIJI, 6, 9);
+    assert.throws(
+      () =>
+        downloader.start({ ...request, minzoom: 6, maxzoom: 9, limits: { maxTiles: total - 1 } }),
+      (err: unknown) =>
+        err instanceof AreaDownloadError && err.message.includes(`at most ${String(total - 1)}`)
+    );
+    downloader.start({ ...request, minzoom: 6, maxzoom: 9, limits: { maxTiles: total } });
+    downloader.cancelAll();
+  });
+
   it('counts levels a service does not offer as done, not failed', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'area-'));
     store = new OnlineTileStore(dir);
