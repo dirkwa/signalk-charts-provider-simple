@@ -23,10 +23,15 @@ import {
 export type OnlineTileSource =
   { kind: 'xyz'; url: string } | { kind: 'wms'; url: string; layers: readonly string[] };
 
-const AreaDownloadLimitsSchema = Type.Object({
-  maxTiles: Type.Optional(Type.Integer({ minimum: 1 })),
-  requestsPerSecond: Type.Optional(Type.Number({ minimum: 0.1 }))
-});
+// A limit this version does not know of could not be held to, so it turns
+// area downloads off rather than being ignored.
+const AreaDownloadLimitsSchema = Type.Object(
+  {
+    maxTiles: Type.Optional(Type.Integer({ minimum: 1 })),
+    requestsPerSecond: Type.Optional(Type.Number({ minimum: 0.1 }))
+  },
+  { additionalProperties: false }
+);
 
 /** How far a provider lets an area download go; see the catalog's `areaDownloadLimits`. */
 export type AreaDownloadLimits = Static<typeof AreaDownloadLimitsSchema>;

@@ -122,10 +122,12 @@ describe('allowsAreaDownload', () => {
   });
 
   it('keeps the tiles but downloads no areas when it cannot read the limits', () => {
-    const unreadable = tiles({ areaDownloadLimits: { requestsPerSecond: 'slowly' } });
-    assert.notStrictEqual(offlineTileSource(unreadable), null);
-    assert.strictEqual(allowsAreaDownload(unreadable), false);
-    assert.deepStrictEqual(areaDownloadLimits(unreadable), {});
+    for (const limits of [{ requestsPerSecond: 'slowly' }, { requestsPerMinute: 30 }]) {
+      const unreadable = tiles({ areaDownloadLimits: limits });
+      assert.notStrictEqual(offlineTileSource(unreadable), null);
+      assert.strictEqual(allowsAreaDownload(unreadable), false);
+      assert.deepStrictEqual(areaDownloadLimits(unreadable), {});
+    }
   });
 });
 
