@@ -431,21 +431,25 @@ export class OnlineTileStore {
     let budget = VACUUM_PAGES_PER_TURN;
     let left = false;
     for (const f of files) {
-      if (pragmaValue(f.db, 'auto_vacuum') !== AUTO_VACUUM_INCREMENTAL) {
-        continue;
+      try {
+        if (pragmaValue(f.db, 'auto_vacuum') !== AUTO_VACUUM_INCREMENTAL) {
+          continue;
+        }
+        const free = pragmaValue(f.db, 'freelist_count');
+        if (free === 0) {
+          continue;
+        }
+        if (budget === 0) {
+          return true;
+        }
+        const pages = Math.min(free, budget);
+        f.db.exec(`PRAGMA incremental_vacuum(${String(pages)})`);
+        f.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        budget -= pages;
+        left ||= pragmaValue(f.db, 'freelist_count') > 0;
+      } catch {
+        // A damaged file must not stop the other charts getting their space back.
       }
-      const free = pragmaValue(f.db, 'freelist_count');
-      if (free === 0) {
-        continue;
-      }
-      if (budget === 0) {
-        return true;
-      }
-      const pages = Math.min(free, budget);
-      f.db.exec(`PRAGMA incremental_vacuum(${String(pages)})`);
-      f.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-      budget -= pages;
-      left ||= pragmaValue(f.db, 'freelist_count') > 0;
     }
     return left;
   }
