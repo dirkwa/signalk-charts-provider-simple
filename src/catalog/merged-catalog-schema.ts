@@ -215,6 +215,12 @@ function onlineChartEntryProps<C extends TSchema, T extends TSchema>(chart: C, t
               description:
                 'A {z}/{x}/{y} tile URL for the same chart, when `chart.url` is not one (a WMTS service with a plain tile cache beside it). Also takes {-y} and {z-N}.'
             })
+          ),
+          areaDownload: Type.Optional(
+            Type.Boolean({
+              description:
+                'False when the provider allows keeping the tiles a plotter shows but not downloading whole areas in advance, for instance because it rate-limits its free service. Areas already viewed still work with no internet.'
+            })
           )
         },
         {

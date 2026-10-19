@@ -80,6 +80,7 @@ import {
   OnlineTileStore,
   httpTileFetcher,
   offlineTileSource,
+  allowsAreaDownload,
   tileImageType,
   type OnlineTileSource
 } from './utils/online-tile-cache.js';
@@ -1599,6 +1600,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     category: onlineEntry?.category ?? null,
                     temporal: onlineEntry?.temporal !== undefined,
                     keptOffline: onlineEntry ? offlineTileSource(onlineEntry) !== null : false,
+                    areaDownload: onlineEntry ? allowsAreaDownload(onlineEntry) : false,
                     // Read from the tile file rather than the catalog: deleting
                     // the chart deletes its tiles even once the catalog drops it.
                     keptTiles: hasKeptTiles(chart.online.catalogId),
@@ -3237,6 +3239,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     ): {
       catalogId: string;
       source: OnlineTileSource;
+      areaDownload: boolean;
       minzoom: number | undefined;
       maxzoom: number | undefined;
     } | null => {
@@ -3248,6 +3251,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       return {
         catalogId: provider._catalogId,
         source: provider._offlineSource,
+        areaDownload: provider._areaDownload !== false,
         minzoom: provider.minzoom,
         maxzoom: provider.maxzoom
       };
@@ -3260,6 +3264,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
       const chart = offlineChart(String(req.params.chartId), res);
       if (!chart) {
+        return;
+      }
+      if (!chart.areaDownload) {
+        res.status(403).json({
+          success: false,
+          error:
+            "This chart's provider does not allow downloading areas in advance; the tiles you view are still kept"
+        });
         return;
       }
       if (!areaDownloader) {
@@ -5077,6 +5089,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _catalogId,
     _offlineSource,
     _keepTiles,
+    _areaDownload,
     v1: _v1,
     v2: _v2,
     ...rest

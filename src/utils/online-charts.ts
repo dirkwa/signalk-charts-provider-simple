@@ -22,7 +22,12 @@ import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import type { OnlineCatalogChart } from '../catalog/merged-catalog-schema.js';
 import type { ChartProvider } from '../types.js';
-import { needsTileProxy, offlineTileSource, type OnlineTileSource } from './online-tile-cache.js';
+import {
+  allowsAreaDownload,
+  needsTileProxy,
+  offlineTileSource,
+  type OnlineTileSource
+} from './online-tile-cache.js';
 
 export const ONLINE_CHART_SUFFIX = '.onlinechart.json';
 
@@ -338,6 +343,7 @@ export function onlineChartProvider(
       _catalogId: entry.id,
       _offlineSource: proxiedSource,
       _keepTiles: offlineSource !== null,
+      _areaDownload: allowsAreaDownload(entry),
       v1: { tilemapUrl: url, chartLayers: [] },
       v2: { url, layers: [], ...(tileSize !== undefined ? { tileSize } : {}) }
     };

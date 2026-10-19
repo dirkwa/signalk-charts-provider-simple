@@ -97,7 +97,8 @@ declare global {
       chartId: string,
       name: string,
       minzoom: number | null,
-      maxzoom: number | null
+      maxzoom: number | null,
+      areaDownload: boolean
     ): Promise<void>;
     closeAreaDialog(event?: Event): void;
     startAreaDownload(): Promise<void>;

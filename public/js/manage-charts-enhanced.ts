@@ -35,6 +35,8 @@ interface ManageChart {
     type: string | null;
     /** Served through the server, which keeps every tile it fetches. */
     keptOffline?: boolean;
+    /** Areas may be downloaded in advance; some providers allow only keeping viewed tiles. */
+    areaDownload?: boolean;
     /** Tiles are kept for it, and go when its file is deleted. */
     keptTiles?: boolean;
     /** The served chart id, for its offline-area routes. */
@@ -550,12 +552,17 @@ function renderChartCard(chart: ManageChart): string {
   const renameAction = online
     ? `renameOnlineChart('${attrPath}')`
     : `showRenameDialog('${attrPath}', '${attrName}', '${attrFolder}')`;
-  const offlineAreaButton =
-    online?.keptOffline && online.available && chart.enabled && chart.folderEnabled !== false
+  const servedOffline =
+    online?.keptOffline && online.available && chart.enabled && chart.folderEnabled !== false;
+  const offlineAreaButton = !servedOffline
+    ? ''
+    : online.areaDownload
       ? `<button class="btn btn-sm btn-primary" onclick="openOfflineArea('${attrPath}')" title="Download an area to use without internet">
             Offline area
           </button>`
-      : '';
+      : `<button class="btn btn-sm btn-secondary" onclick="openOfflineArea('${attrPath}')" title="See and delete the tiles kept on the server">
+            Kept tiles
+          </button>`;
 
   if (viewMode === 'grid') {
     return `
@@ -1772,7 +1779,8 @@ function openOfflineArea(chartPath: string): void {
     online.chartId,
     chart.chartName ?? chart.name,
     online.minzoom ?? null,
-    online.maxzoom ?? null
+    online.maxzoom ?? null,
+    online.areaDownload === true
   );
 }
 

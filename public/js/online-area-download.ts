@@ -1,7 +1,8 @@
 /**
  * "Offline area" dialog for online charts kept offline: show the chart on a
  * map, take the visible part of the map as the area, pick zoom levels, and
- * have the server fetch and keep every tile in it.
+ * have the server fetch and keep every tile in it. A chart whose provider
+ * allows no area downloads gets the same dialog with only its kept tiles.
  */
 
 const AREA_API_BASE = '/plugins/signalk-charts-provider-simple';
@@ -27,7 +28,8 @@ interface AreaDialogState {
   chartId: string;
   minzoom: number;
   maxzoom: number;
-  map: L.Map;
+  /** Null for a chart whose provider allows no area downloads. */
+  map: L.Map | null;
   poll: ReturnType<typeof setInterval> | null;
   /** The download running now, if any. */
   jobId: string | null;
@@ -117,7 +119,7 @@ function selectedZooms(): { from: number; to: number } {
 }
 
 function updateAreaEstimate(): void {
-  if (!areaDialog) {
+  if (!areaDialog?.map) {
     return;
   }
   const { from, to } = selectedZooms();
@@ -238,7 +240,7 @@ function startAreaPolling(): void {
 
 async function startAreaDownload(): Promise<void> {
   const dialog = areaDialog;
-  if (!dialog) {
+  if (!dialog?.map) {
     return;
   }
   const { from, to } = selectedZooms();
@@ -316,7 +318,7 @@ function closeAreaDialog(event?: Event): void {
     if (areaDialog.poll) {
       clearInterval(areaDialog.poll);
     }
-    areaDialog.map.remove();
+    areaDialog.map?.remove();
     areaDialog = null;
   }
   document.getElementById('areaModal')?.remove();
@@ -326,11 +328,16 @@ async function showOfflineArea(
   chartId: string,
   name: string,
   minzoom: number | null,
-  maxzoom: number | null
+  maxzoom: number | null,
+  areaDownload: boolean
 ): Promise<void> {
   closeAreaDialog();
   const lowest = minzoom ?? 0;
   const highest = Math.max(lowest, maxzoom ?? 18);
+  if (!areaDownload) {
+    showKeptTiles(chartId, name, lowest, highest);
+    return;
+  }
   document.body.insertAdjacentHTML(
     'beforeend',
     `
@@ -404,6 +411,31 @@ async function showOfflineArea(
   if (areaDialog?.map === map && areaDialog.jobId !== null) {
     startAreaPolling();
   }
+}
+
+function showKeptTiles(chartId: string, name: string, minzoom: number, maxzoom: number): void {
+  document.body.insertAdjacentHTML(
+    'beforeend',
+    `
+    <div class="delete-modal-overlay" id="areaModal" onclick="closeAreaDialog(event)">
+      <div class="delete-modal area-modal" onclick="event.stopPropagation()">
+        <div class="delete-modal-header">
+          <h3>Kept tiles: ${areaEscape(name)}</h3>
+        </div>
+        <div class="delete-modal-body">
+          <p class="area-help">The server keeps every tile of this chart a chart plotter shows, so areas you have already looked at work without internet until the server's space for online charts is full and the oldest of them make room. Its provider does not allow downloading areas in advance.</p>
+          <div class="area-kept"><span id="areaKept"></span>
+            <button class="btn btn-sm btn-danger" id="areaClear" onclick="clearKeptTiles()" disabled>Delete kept tiles</button>
+          </div>
+        </div>
+        <div class="delete-modal-actions">
+          <button class="btn btn-secondary" onclick="closeAreaDialog()">Close</button>
+        </div>
+      </div>
+    </div>`
+  );
+  areaDialog = { chartId, minzoom, maxzoom, map: null, poll: null, jobId: null, shownJobId: null };
+  void refreshKeptStats();
 }
 
 window.showOfflineArea = showOfflineArea;

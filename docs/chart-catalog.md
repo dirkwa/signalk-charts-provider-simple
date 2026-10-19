@@ -88,6 +88,10 @@ Manage Charts can also download an area of such a chart ahead of time: the
 user frames the area on a map and picks a zoom range, and the plugin fetches
 every tile in it into the same file, lowest zoom first. One download is capped
 in size, so an area that is too large has to be smaller or use fewer zoom levels.
+Set `"areaDownload": false` in the `offline` block when the provider allows
+keeping the tiles a plotter shows but not downloading areas in advance, for
+instance a free service that rate-limits heavy use. The chart is still kept
+offline as it is viewed; Manage Charts just offers no area download for it.
 
 Add `offline` only when the terms allow storing the data, not merely viewing it.
 Public-domain and open-licence data (CC BY, Open Government Licence) qualify;

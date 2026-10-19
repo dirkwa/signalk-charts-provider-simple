@@ -170,6 +170,17 @@ describe('catalog source files shipped in the repo', () => {
     assert.deepStrictEqual(checkChartcatalogsIndex(file as ChartcatalogsIndex), []);
   });
 
+  it('takes a chart that keeps viewed tiles but downloads no areas', () => {
+    const { temporal: _temporal, ...tiles } = onlineEntry({
+      chart: { type: 'tilelayer', url: 'https://example.com/{z}/{y}/{x}.jpg' }
+    });
+    const keepOnly = { ...tiles, offline: { areaDownload: false } };
+    assert.deepStrictEqual(errors(OnlineChartsSourceFileSchema, { charts: [keepOnly] }), []);
+    assert.deepStrictEqual(checkOnlineChartEntry(keepOnly), []);
+    const wrong = { ...tiles, offline: { areaDownload: 'no' } };
+    assert.notDeepStrictEqual(errors(OnlineChartsSourceFileSchema, { charts: [wrong] }), []);
+  });
+
   it('source schemas reject unknown fields, catching typos', () => {
     const typo = { charts: [{ ...onlineEntry(), descripton: 'typo' }] };
     assert.notDeepStrictEqual(errors(OnlineChartsSourceFileSchema, typo), []);

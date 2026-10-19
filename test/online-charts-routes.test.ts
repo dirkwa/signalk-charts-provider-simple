@@ -132,12 +132,30 @@ const CATALOG = {
       offline: {},
       use: 'stream',
       format: 'wms'
+    },
+    {
+      id: 'test-imagery',
+      name: 'Test Imagery',
+      description: 'Satellite imagery.',
+      category: 'basemap',
+      regions: ['global'],
+      bbox: [-180, -85, 180, 85],
+      provider: 'Test',
+      attribution: 'Test',
+      license: 'CC BY-NC-SA 4.0',
+      licenseUrl: 'https://example.com/license',
+      chart: { type: 'tilelayer', url: 'https://imagery.example.com/{z}/{y}/{x}.jpg', maxzoom: 14 },
+      offline: { areaDownload: false },
+      use: 'stream',
+      format: 'tiles'
     }
   ]
 };
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7]);
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
 let depthsOnline = true;
+let imageryOnline = true;
 const lanRequests: string[] = [];
 
 /** Radar capabilities with three frames ending a few minutes ago. */
@@ -183,6 +201,9 @@ describe('online chart routes', () => {
       }
       if (url.startsWith('https://depths.example.com/') && depthsOnline) {
         return Promise.resolve(new Response(PNG, { status: 200 }));
+      }
+      if (url.startsWith('https://imagery.example.com/') && imageryOnline) {
+        return Promise.resolve(new Response(JPEG, { status: 200 }));
       }
       if (url.startsWith('http://charts.lan/')) {
         lanRequests.push(url);
@@ -373,6 +394,54 @@ describe('online chart routes', () => {
       body: { bbox: [-80, 25, -79, 26], minzoom: 5, maxzoom: 6 }
     });
     assert.strictEqual(res.statusCode, 404);
+  });
+
+  it('keeps the viewed tiles of a chart whose provider allows no area downloads', async () => {
+    const res = await add({ catalogId: 'test-imagery', folder: 'Online Charts' });
+    assert.strictEqual(res.statusCode, 200);
+
+    imageryOnline = true;
+    assert.strictEqual((await serveTile('test-imagery', 3, 4, 2)).status, 200);
+    imageryOnline = false;
+    try {
+      const offline = await serveTile('test-imagery', 3, 4, 2);
+      assert.strictEqual(offline.status, 200);
+      assert.strictEqual(offline.type, 'image/jpeg');
+      assert.deepStrictEqual(offline.body && [...offline.body], [...JPEG]);
+    } finally {
+      imageryOnline = true;
+    }
+
+    const area = await call(handlers.get('post /online-charts/:chartId/area-download'), {
+      params: { chartId: 'test-imagery' },
+      body: { bbox: [177, -18.5, 178.5, -17], minzoom: 5, maxzoom: 6 }
+    });
+    assert.strictEqual(area.statusCode, 403);
+    const jobs = await call(handlers.get('get /online-area-downloads'), {});
+    assert.ok(
+      !(jobs.body as { jobs: { catalogId: string }[] }).jobs.some(
+        (j) => j.catalogId === 'test-imagery'
+      )
+    );
+
+    const stats = await call(handlers.get('get /online-charts/:chartId/offline'), {
+      params: { chartId: 'test-imagery' }
+    });
+    assert.strictEqual((stats.body as { tiles: number }).tiles, 1);
+
+    const listed = await call(handlers.get('get /local-charts'), {});
+    type Listed = {
+      relativePath: string;
+      online?: { keptOffline: boolean; areaDownload: boolean };
+    };
+    const online = (relativePath: string) =>
+      (listed.body as { charts: Listed[] }).charts.find((c) => c.relativePath === relativePath)
+        ?.online;
+    const imagery = online(path.join('Online Charts', 'test-imagery.onlinechart.json'));
+    assert.strictEqual(imagery?.keptOffline, true);
+    assert.strictEqual(imagery.areaDownload, false);
+    const depths = online(path.join('Online Charts', 'test-depths.onlinechart.json'));
+    assert.strictEqual(depths?.areaDownload, true);
   });
 
   it('refuses a custom chart whose name is only spaces', async () => {

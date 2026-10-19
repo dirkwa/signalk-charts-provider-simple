@@ -24,7 +24,8 @@ export type OnlineTileSource =
   { kind: 'xyz'; url: string } | { kind: 'wms'; url: string; layers: readonly string[] };
 
 const OfflineSchema = Type.Object({
-  tileUrl: Type.Optional(Type.String({ pattern: '^https://' }))
+  tileUrl: Type.Optional(Type.String({ pattern: '^https://' })),
+  areaDownload: Type.Optional(Type.Boolean())
 });
 
 /**
@@ -48,6 +49,18 @@ export function offlineTileSource(entry: OnlineCatalogChart): OnlineTileSource |
     return { kind: 'wms', url: chart.url, layers: chart.layers };
   }
   return null;
+}
+
+/**
+ * Whether areas of a chart kept offline may be downloaded in advance. Some
+ * providers allow keeping the tiles a plotter shows but not bulk downloads.
+ */
+export function allowsAreaDownload(entry: OnlineCatalogChart): boolean {
+  return (
+    offlineTileSource(entry) !== null &&
+    Value.Check(OfflineSchema, entry.offline) &&
+    entry.offline.areaDownload !== false
+  );
 }
 
 const HALF_WORLD = 20037508.342789244;

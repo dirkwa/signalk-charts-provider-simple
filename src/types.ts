@@ -82,6 +82,8 @@ export interface ChartProvider {
   _offlineSource?: OnlineTileSource;
   /** Whether the plugin keeps the tiles it fetches for `_offlineSource`. */
   _keepTiles?: boolean;
+  /** Whether areas of a chart kept offline may be downloaded in advance. */
+  _areaDownload?: boolean;
 
   v1: ChartV1Data;
   v2: ChartV2Data;

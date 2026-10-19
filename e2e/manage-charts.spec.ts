@@ -380,6 +380,7 @@ test.describe('Manage Charts tab', () => {
               catalogLoaded: true,
               type: 'WMS',
               keptOffline: true,
+              areaDownload: true,
               chartId: 'gebco-ocean-depths',
               minzoom: null,
               maxzoom: null
@@ -400,6 +401,24 @@ test.describe('Manage Charts tab', () => {
             }
           },
           {
+            relativePath: 'Online Charts/eox-cloudless.onlinechart.json',
+            name: 'eox-cloudless.onlinechart.json',
+            chartName: 'Satellite Imagery',
+            folder: 'Online Charts',
+            enabled: true,
+            online: {
+              catalogId: 'eox-cloudless',
+              available: true,
+              catalogLoaded: true,
+              type: 'tilelayer',
+              keptOffline: true,
+              areaDownload: false,
+              chartId: 'eox-cloudless',
+              minzoom: null,
+              maxzoom: 14
+            }
+          },
+          {
             relativePath: 'Online Charts/kartverket-sjokart.onlinechart.json',
             name: 'kartverket-sjokart.onlinechart.json',
             chartName: 'Norwegian Charts',
@@ -411,6 +430,7 @@ test.describe('Manage Charts tab', () => {
               catalogLoaded: true,
               type: 'tilelayer',
               keptOffline: true,
+              areaDownload: true,
               chartId: 'kartverket-sjokart',
               minzoom: null,
               maxzoom: null
@@ -433,6 +453,19 @@ test.describe('Manage Charts tab', () => {
     const off = page.locator('.chart-card', { hasText: 'Norwegian Charts' });
     await expect(off).toContainText('Kept offline');
     await expect(off.getByRole('button', { name: 'Offline area' })).toHaveCount(0);
+    // Its provider allows keeping viewed tiles, not downloading areas.
+    const imagery = page.locator('.chart-card', { hasText: 'Satellite Imagery' });
+    await expect(imagery).toContainText('Kept offline');
+    await expect(imagery.getByRole('button', { name: 'Offline area' })).toHaveCount(0);
+    await imagery.getByRole('button', { name: 'Kept tiles' }).click();
+    const kept = page.locator('.area-modal');
+    await expect(kept).toContainText('Kept tiles: Satellite Imagery');
+    await expect(kept.locator('#areaKept')).toContainText('1,234 tiles (5.0 MB)');
+    await expect(kept.getByRole('button', { name: 'Delete kept tiles' })).toBeEnabled();
+    await expect(kept.getByRole('button', { name: 'Download area' })).toHaveCount(0);
+    await expect(kept.locator('#areaMap')).toHaveCount(0);
+    await kept.getByRole('button', { name: 'Close' }).click();
+    await expect(kept).toHaveCount(0);
 
     await gebco.getByRole('button', { name: 'Offline area' }).click();
     const dialog = page.locator('.area-modal');
@@ -496,6 +529,7 @@ test.describe('Manage Charts tab', () => {
               catalogLoaded: true,
               type: 'WMS',
               keptOffline: true,
+              areaDownload: true,
               chartId: 'gebco-ocean-depths',
               minzoom: null,
               maxzoom: null

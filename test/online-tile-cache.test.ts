@@ -10,6 +10,7 @@ import {
   OnlineTileProxy,
   OnlineTileStore,
   TILE_REFRESH_MS,
+  allowsAreaDownload,
   httpTileFetcher,
   needsTileProxy,
   offlineTileSource,
@@ -87,6 +88,29 @@ describe('offlineTileSource', () => {
       offlineTileSource(entry({ offline: { tileUrl: 'https://{s}.example.com/{z}/{x}/{y}' } })),
       null
     );
+  });
+});
+
+describe('allowsAreaDownload', () => {
+  const tiles = (offline: unknown) =>
+    entry({ chart: { type: 'tilelayer', url: 'https://example.com/{z}/{y}/{x}.jpg' }, offline });
+
+  it('allows area downloads of a chart kept offline unless its entry says otherwise', () => {
+    assert.strictEqual(allowsAreaDownload(tiles({})), true);
+    assert.strictEqual(allowsAreaDownload(tiles({ areaDownload: true })), true);
+    assert.strictEqual(allowsAreaDownload(tiles({ areaDownload: false })), false);
+  });
+
+  it('still keeps the viewed tiles of a chart that downloads no areas', () => {
+    assert.deepStrictEqual(offlineTileSource(tiles({ areaDownload: false })), {
+      kind: 'xyz',
+      url: 'https://example.com/{z}/{y}/{x}.jpg'
+    });
+  });
+
+  it('allows no area downloads of a chart that is not kept offline', () => {
+    assert.strictEqual(allowsAreaDownload(entry()), false);
+    assert.strictEqual(allowsAreaDownload(tiles({ areaDownload: 'no' })), false);
   });
 });
 
