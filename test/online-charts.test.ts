@@ -259,6 +259,32 @@ describe('online charts', () => {
       await assert.rejects(findOnlineChartFiles(broken, broken, { strict: true }));
     });
 
+    it('findOnlineChartFiles skips a subfolder it may not enter', async (t) => {
+      const base = path.join(dir, 'card');
+      const lost = path.join(base, 'lost+found');
+      fs.mkdirSync(lost, { recursive: true });
+      fs.writeFileSync(
+        path.join(base, 'radar.onlinechart.json'),
+        '{"catalogId":"radar","name":"Radar"}'
+      );
+      const readdir = fs.promises.readdir.bind(fs.promises);
+      // Root ignores directory permissions, so the denial is simulated.
+      const denied = new Set([lost, path.join(dir, 'denied')]);
+      t.mock.method(fs.promises, 'readdir', (p: fs.PathLike, ...rest: unknown[]) => {
+        if (denied.has(String(p))) {
+          return Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' }));
+        }
+        return (readdir as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
+      });
+      const refs = await findOnlineChartFiles(base, base, { strict: true });
+      assert.deepStrictEqual(
+        refs.map((r) => r.catalogId),
+        ['radar']
+      );
+      const root = path.join(dir, 'denied');
+      await assert.rejects(findOnlineChartFiles(root, root, { strict: true }));
+    });
+
     it('findOnlineChartFiles reports catalog ids and paths', async () => {
       const refs = (await findOnlineChartFiles(dir)).sort((a, b) =>
         a.catalogId < b.catalogId ? -1 : 1

@@ -388,8 +388,12 @@ export async function findOnlineChartFiles(
     entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
   } catch (err) {
     // A folder that cannot be read may still hold a chart file; callers that
-    // delete what no file uses must not take that for "none".
-    if (strict) {
+    // delete what no file uses must not take that for "none". A subfolder the
+    // plugin may not enter (lost+found on an ext4 card) serves no chart, so
+    // only the chart folder itself has to be readable.
+    const code = (err as NodeJS.ErrnoException).code;
+    const denied = code === 'EACCES' || code === 'EPERM';
+    if (strict && (currentPath === basePath || !denied)) {
       throw err;
     }
     return found;
