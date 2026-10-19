@@ -484,6 +484,24 @@
         "maxzoom": 16
       },
       "offline": {}
+    },
+    {
+      "id": "eox-cloudless",
+      "name": "EOxCloudless Satellite Imagery",
+      "description": "Cloud-free satellite image of the whole world from Sentinel-2 photos taken in 2025, about 10 m per pixel. Shows coastlines, reefs, shallows and islands as they look from above. Free for non-commercial use only; charter and other commercial boats need a licence from EOX.",
+      "category": "basemap",
+      "regions": ["global"],
+      "bbox": [-180, -85, 180, 85],
+      "provider": "EOX IT Services GmbH",
+      "attribution": "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)",
+      "license": "CC BY-NC-SA 4.0 (non-commercial use)",
+      "licenseUrl": "https://cloudless.eox.at/documentation/license",
+      "chart": {
+        "type": "tilelayer",
+        "url": "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg",
+        "maxzoom": 14
+      },
+      "offline": { "areaDownload": false }
     }
   ]
 }
