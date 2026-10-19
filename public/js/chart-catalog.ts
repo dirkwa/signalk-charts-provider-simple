@@ -1099,7 +1099,12 @@ function passesFilters(item: FilterItem, skip?: FilterGroup): boolean {
   }
   // Without a position Near me can't apply (and its button is disabled), so
   // a saved "on" must not hide everything.
-  if (skip !== 'nearMe' && f.nearMe && vesselPosition !== null && !window.isNearPosition(item.bbox, vesselPosition)) {
+  if (
+    skip !== 'nearMe' &&
+    f.nearMe &&
+    vesselPosition !== null &&
+    !window.isNearPosition(item.bbox, vesselPosition)
+  ) {
     return false;
   }
   return true;
@@ -1177,7 +1182,9 @@ function renderFilterBar(): void {
     '',
     vesselPosition ? 'Near me' : 'Near me (no position yet)',
     f.nearMe && vesselPosition !== null,
-    vesselPosition ? optionCount('nearMe', (i) => window.isNearPosition(i.bbox, vesselPosition)) : null,
+    vesselPosition
+      ? optionCount('nearMe', (i) => window.isNearPosition(i.bbox, vesselPosition))
+      : null,
     vesselPosition ? 'title="Charts that cover the boat\'s current position"' : 'disabled'
   );
 

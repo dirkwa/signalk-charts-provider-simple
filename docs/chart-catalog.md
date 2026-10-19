@@ -24,9 +24,9 @@ rather than rejecting the whole file.
 
 ## Why one merged file
 
-- **One place to find charts.** Boaters don't care whether a chart is downloaded
-  or streamed until they choose one, so both kinds share one tab and one set of
-  filters.
+- **One download for every kind of chart.** One file feeds the Chart Catalog,
+  Online Charts and Satellite tabs, so a boat that fetched it once can browse all
+  three offline.
 - **Facets chartcatalogs does not carry.** chartcatalogs has no coverage data, so
   "Near me", category and type filters are impossible from its XML alone.
   `catalog/chartcatalogs-index.json` adds a label, category, format, region tags
@@ -161,10 +161,10 @@ added a catalog. It is still published (so no chart disappears), but without
 location or type facets, so "Near me" and the Type filter skip it. Add the file
 to `catalog/chartcatalogs-index.json`.
 
-**Problem reports.** The Chart Catalog links each chart to the tracker for its
-source: chartcatalogs entries to the chartcatalogs issue tracker, online entries
-to this repository's "Online chart problem" issue form, which applies the
-`catalog` label.
+**Problem reports.** Each chart links to the tracker for its source: the Chart
+Catalog tab links chartcatalogs entries to the chartcatalogs issue tracker, and
+the Online Charts and Satellite tabs link online entries to this repository's
+"Online chart problem" issue form, which applies the `catalog` label.
 
 **Suggestions.** Boaters who know a good service but don't write code can use the
 "Suggest an online chart" issue form, which also applies the `catalog` label. A

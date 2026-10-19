@@ -518,8 +518,7 @@ class OnlineChartPanel {
     if (added) {
       const localChart = this.localCharts.get(chart.id);
       // A switched-off chart is not served, so its offline area cannot be reached.
-      const local =
-        localChart && onlineChartServed(localChart) ? localChart.online : undefined;
+      const local = localChart && onlineChartServed(localChart) ? localChart.online : undefined;
       let area = '';
       if (local?.chartId && local.areaDownload) {
         area = `<button class="btn btn-sm btn-primary" data-online-area="${onlineEscape(chart.id)}" title="Download an area to use without internet">Offline area</button>`;
@@ -754,9 +753,7 @@ function onlineChartTypeChanged(): void {
     hint.style.display = wms ? 'none' : '';
   }
   if (url) {
-    url.placeholder = wms
-      ? 'https://example.com/wms'
-      : 'https://example.com/tiles/{z}/{x}/{y}.png';
+    url.placeholder = wms ? 'https://example.com/wms' : 'https://example.com/tiles/{z}/{x}/{y}.png';
   }
 }
 
