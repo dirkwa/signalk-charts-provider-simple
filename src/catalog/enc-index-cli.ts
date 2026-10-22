@@ -32,12 +32,14 @@
  */
 
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { Value } from 'typebox/value';
 import { CHARTS_TOOLBOX_IMAGE } from '../utils/container-images.js';
@@ -54,7 +56,7 @@ import {
   jobKey,
   jobsToBuild,
   noaaUnits,
-  parseGdalReport,
+  createGdalReportParser,
   readPublishedEncIndex,
   unitsForArchive,
   type ArchiveJob,
@@ -268,7 +270,12 @@ function cellFileName(job: ArchiveJob): string {
   return `${job.title.replace(/[^\w-]+/g, '_') || 'cell'}.000`;
 }
 
-function runGdal(runtime: string, dir: string, cells: string[], name: string): Promise<string> {
+function runGdal(
+  runtime: string,
+  dir: string,
+  cells: string[],
+  name: string
+): Promise<CellReport[]> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       runtime,
@@ -297,9 +304,13 @@ function runGdal(runtime: string, dir: string, cells: string[], name: string): P
       timedOut = true;
       spawn(runtime, ['rm', '-f', name], { stdio: 'ignore' }).on('error', () => undefined);
     }, GDAL_TIMEOUT_MS);
-    const out: Buffer[] = [];
+    // Parsed as it streams: a cell without coverage dumps every feature,
+    // and an archive of such cells could be too big to hold as one string.
+    const parser = createGdalReportParser();
+    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    lines.on('line', parser.line);
+    const linesDone = once(lines, 'close');
     let err = '';
-    child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => {
       err = (err + chunk.toString()).slice(-4000);
     });
@@ -312,7 +323,7 @@ function runGdal(runtime: string, dir: string, cells: string[], name: string): P
       if (timedOut) {
         reject(new Error(`GDAL took longer than ${String(GDAL_TIMEOUT_MS / 60000)} minutes`));
       } else if (code === 0) {
-        resolve(Buffer.concat(out).toString('utf8'));
+        linesDone.then(() => resolve(parser.finish()), reject);
       } else {
         reject(
           new Error(`GDAL exited with ${String(code)}: ${err.trim().split('\n').pop() ?? ''}`)
@@ -361,13 +372,11 @@ async function readArchive(
     }
     return {
       kind,
-      reports: parseGdalReport(
-        await runGdal(
-          runtime,
-          contents,
-          cells,
-          `enc-index-${path.basename(tmp)}-${String(process.pid)}`
-        )
+      reports: await runGdal(
+        runtime,
+        contents,
+        cells,
+        `enc-index-${path.basename(tmp)}-${String(process.pid)}`
       ),
       updateFiles
     };
@@ -556,10 +565,12 @@ async function main(): Promise<void> {
   const published = await fetchPublished(publishedUrl);
   const noaa = selected(NOAA_SOURCE_ID) ? await readNoaa(values['noaa-url']) : null;
 
-  const pending = jobsToBuild(
-    jobs.filter((j) => selected(j.source)),
-    published
+  const unreadSources = new Set(
+    sources
+      .filter((s) => s.file && !files.find((f) => f.file === s.file)?.parsed?.charts.length)
+      .map((s) => s.id)
   );
+  const pending = jobsToBuild(jobs, published, unreadSources).filter((j) => selected(j.source));
   console.log(
     `${String(jobs.length)} chartcatalogs ENC archives; ${String(pending.length)} to read this run`
   );
@@ -588,11 +599,6 @@ async function main(): Promise<void> {
   }
 
   const { built, failed } = outcome;
-  const unreadSources = new Set(
-    sources
-      .filter((s) => s.file && !files.find((f) => f.file === s.file)?.parsed?.charts.length)
-      .map((s) => s.id)
-  );
   const result = assembleEncIndex({
     sources,
     jobs,

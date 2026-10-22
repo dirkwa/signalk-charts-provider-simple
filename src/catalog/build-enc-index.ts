@@ -148,6 +148,22 @@ interface ReportFeature {
  * (warnings) are ignored.
  */
 export function parseGdalReport(stdout: string): CellReport[] {
+  const parser = createGdalReportParser();
+  for (const line of stdout.split('\n')) {
+    parser.line(line);
+  }
+  return parser.finish();
+}
+
+/**
+ * `parseGdalReport` a line at a time, so a large archive's output is never
+ * held in memory as one string: only each cell's coverage and, for a cell
+ * without coverage, its distinct positions are kept.
+ */
+export function createGdalReportParser(): {
+  line: (text: string) => void;
+  finish: () => CellReport[];
+} {
   const reports: CellReport[] = [];
   let current: CellReport | null = null;
   let points: Map<string, Position> | null = null;
@@ -157,7 +173,7 @@ export function parseGdalReport(stdout: string): CellReport[] {
     }
     points = null;
   };
-  for (const line of stdout.split('\n')) {
+  const parseLine = (line: string): void => {
     if (line.startsWith(CELL_MARKER)) {
       finish();
       current = {
@@ -168,27 +184,27 @@ export function parseGdalReport(stdout: string): CellReport[] {
         coverage: []
       };
       reports.push(current);
-      continue;
+      return;
     }
     if (!current) {
-      continue;
+      return;
     }
     if (line.startsWith(FEATURES_MARKER)) {
       points = new Map();
-      continue;
+      return;
     }
     if (!line.startsWith('{')) {
-      continue;
+      return;
     }
     let feature: ReportFeature;
     try {
       feature = JSON.parse(line) as ReportFeature;
     } catch {
-      continue;
+      return;
     }
     if (points) {
       collectPositions(feature.geometry?.coordinates, points);
-      continue;
+      return;
     }
     const props = feature.properties ?? {};
     if (typeof props.DSPM_CSCL === 'number' && props.DSPM_CSCL > 0) {
@@ -202,16 +218,21 @@ export function parseGdalReport(stdout: string): CellReport[] {
     // out of their M_COVR objects altogether, which can only mean coverage.
     const noCoverage = props.CATCOV === 2 || props.CATCOV === '2';
     if (noCoverage || !feature.geometry || !Array.isArray(feature.geometry.coordinates)) {
-      continue;
+      return;
     }
     if (feature.geometry.type === 'Polygon') {
       current.coverage.push(feature.geometry.coordinates as Position[][]);
     } else if (feature.geometry.type === 'MultiPolygon') {
       current.coverage.push(...(feature.geometry.coordinates as Position[][][]));
     }
-  }
-  finish();
-  return reports;
+  };
+  return {
+    line: parseLine,
+    finish: () => {
+      finish();
+      return reports;
+    }
+  };
 }
 
 /** A non-negative whole number from a DSID field, which GDAL gives as text. */
@@ -456,8 +477,10 @@ interface PreviousArchive {
 
 export interface PublishedEncIndex {
   contentHash: string | null;
-  unitCount: number;
-  unitsBySource: Map<string, number>;
+  /** Cells per source, counting cells shadowed by another source as their own. */
+  cellsBySource: Map<string, number>;
+  /** Archive (`jobKey`) holding each non-NOAA cell's unit. */
+  winners: Map<string, string>;
   /** chartcatalogs archives that still validate, with their units, by `jobKey`. */
   archives: Map<string, PreviousArchive>;
   /** NOAA's archives and units, or null when the index has none. */
@@ -477,13 +500,20 @@ export function readPublishedEncIndex(raw: unknown, schemaText: string | null): 
   const rawUnits = Array.isArray(obj.units) ? (obj.units as unknown[]) : [];
   const rawArchives = Array.isArray(obj.archives) ? (obj.archives as unknown[]) : [];
 
-  const unitsBySource = new Map<string, number>();
-  for (const unit of rawUnits) {
-    const source = (unit as { source?: unknown } | null)?.source;
+  const cellsBySource = new Map<string, number>();
+  const count = (source: unknown, n: number): void => {
     if (typeof source === 'string') {
-      unitsBySource.set(source, (unitsBySource.get(source) ?? 0) + 1);
+      cellsBySource.set(source, (cellsBySource.get(source) ?? 0) + n);
     }
+  };
+  for (const unit of rawUnits) {
+    count((unit as { source?: unknown } | null)?.source, 1);
   }
+  for (const archive of rawArchives) {
+    const loose = archive as { source?: unknown; shadowed?: unknown } | null;
+    count(loose?.source, Array.isArray(loose?.shadowed) ? loose.shadowed.length : 0);
+  }
+  const winners = new Map<string, string>();
 
   const archives = new Map<string, PreviousArchive>();
   const noaa: NoaaResult = { archives: [], units: [] };
@@ -512,7 +542,9 @@ export function readPublishedEncIndex(raw: unknown, schemaText: string | null): 
       noaa.units.push(unit);
       continue;
     }
-    archives.get(jobKey({ source: unit.source, url: unit.cells[0].archive }))?.units.push(unit);
+    const key = jobKey({ source: unit.source, url: unit.cells[0].archive });
+    archives.get(key)?.units.push(unit);
+    winners.set(unit.id, key);
   }
   // Dropping an archive with an invalid unit makes the next build download
   // it again, rather than carrying the rest forward without that unit. One
@@ -525,26 +557,62 @@ export function readPublishedEncIndex(raw: unknown, schemaText: string | null): 
 
   return {
     contentHash: typeof obj.contentHash === 'string' ? obj.contentHash : null,
-    unitCount: rawUnits.length,
-    unitsBySource,
+    cellsBySource,
+    winners,
     archives,
     noaa: noaa.units.length > 0 ? noaa : null,
     schemaText
   };
 }
 
-/** True when the published index holds this archive at this version, built by these rules. */
-export function isUnchanged(job: ArchiveJob, previous: PublishedEncIndex | null): boolean {
+/**
+ * True when the published index holds this archive at this version, built
+ * by these rules, and every cell it leaves to another source still has its
+ * unit there. When that source stops publishing one (EuRIS withdraws a
+ * cell, or a whole archive), the archive is read again so its own copy of
+ * the cell comes back. `stillListed` says whether an archive is still
+ * listed this run.
+ */
+export function isUnchanged(
+  job: ArchiveJob,
+  previous: PublishedEncIndex | null,
+  stillListed: (archiveKey: string) => boolean
+): boolean {
   const archive = previous?.archives.get(jobKey(job))?.archive;
-  return archive?.version === job.version && archive.revision === ARCHIVE_REVISION;
+  if (archive?.version !== job.version || archive.revision !== ARCHIVE_REVISION) {
+    return false;
+  }
+  return (archive.shadowed ?? []).every((cell) => {
+    const winner = previous?.winners.get(cell);
+    return winner !== undefined && winner !== jobKey(job) && stillListed(winner);
+  });
+}
+
+/**
+ * Whether an archive is still listed this run: one of today's jobs, or a
+ * published archive of a source whose catalog could not be read (those are
+ * kept as they are).
+ */
+export function listedIn(
+  jobs: readonly ArchiveJob[],
+  previous: PublishedEncIndex | null,
+  unreadSources?: ReadonlySet<string>
+): (archiveKey: string) => boolean {
+  const keys = new Set(jobs.map(jobKey));
+  return (key) => {
+    const source = previous?.archives.get(key)?.archive.source;
+    return keys.has(key) || (source !== undefined && unreadSources?.has(source) === true);
+  };
 }
 
 /** The jobs a build has to download, in a stable order. */
 export function jobsToBuild(
   jobs: readonly ArchiveJob[],
-  previous: PublishedEncIndex | null
+  previous: PublishedEncIndex | null,
+  unreadSources?: ReadonlySet<string>
 ): ArchiveJob[] {
-  return jobs.filter((job) => !isUnchanged(job, previous));
+  const stillListed = listedIn(jobs, previous, unreadSources);
+  return jobs.filter((job) => !isUnchanged(job, previous, stillListed));
 }
 
 // ---- Assembly ----
@@ -657,6 +725,10 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
   const skipped: string[] = [];
   const deferred: string[] = [];
   let reused = 0;
+  const stillListed = listedIn(inputs.jobs, previous, inputs.unreadSources);
+  // Archives taken from the published index rather than read this run: they
+  // keep the cells they already left to another source.
+  const fromPrevious = new Set<string>();
 
   const take = (entry: { archive: EncIndexArchive; units: EncIndexUnit[] } | NoaaResult): void => {
     if ('archive' in entry) {
@@ -665,6 +737,10 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
       archives.push(...entry.archives);
     }
     units.push(...entry.units);
+  };
+  const takePublished = (entry: PreviousArchive): void => {
+    take(entry);
+    fromPrevious.add(jobKey(entry.archive));
   };
 
   const { noaa } = inputs;
@@ -695,19 +771,19 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
         : inputs.failed.get(key);
     if (built && failure === undefined) {
       take(built);
-    } else if (failure === undefined && published && isUnchanged(job, previous)) {
-      take(published);
+    } else if (failure === undefined && published && isUnchanged(job, previous, stillListed)) {
+      takePublished(published);
       reused++;
     } else if (failure !== undefined) {
       if (published) {
-        take(published);
+        takePublished(published);
         carriedForward.push(`${key}: ${failure}`);
       } else {
         skipped.push(`${key}: ${failure}`);
       }
     } else {
       if (published) {
-        take(published);
+        takePublished(published);
       }
       deferred.push(key);
     }
@@ -716,7 +792,7 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
   const unread = new Set<string>();
   for (const [key, entry] of previous?.archives ?? []) {
     if (!listed.has(key) && inputs.unreadSources?.has(entry.archive.source)) {
-      take(entry);
+      takePublished(entry);
       listed.add(key);
       unread.add(entry.archive.source);
     }
@@ -728,6 +804,11 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
   // One unit per cell. NOAA's units are its own boxes and keep their own
   // keys; any other cell that several archives publish appears once.
   const duplicateCells: DuplicateCell[] = [];
+  const shadowed = new Map<string, Set<string>>();
+  const shadow = (unit: EncIndexUnit): void => {
+    const key = jobKey({ source: unit.source, url: unit.cells[0].archive });
+    shadowed.set(key, (shadowed.get(key) ?? new Set()).add(unit.id));
+  };
   const versionOf = new Map(archives.map((a) => [jobKey(a), a.version]));
   const archiveVersion = (u: EncIndexUnit): string =>
     versionOf.get(jobKey({ source: u.source, url: u.cells[0].archive })) ?? '';
@@ -746,10 +827,24 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
       compareStrings(other.cells[0].archive, unit.cells[0].archive);
     const [winner, loser] = order > 0 ? [unit, other] : [other, unit];
     kept.set(key, winner);
+    shadow(loser);
     duplicateCells.push({ cell: unit.id, kept: winner.source, dropped: loser.source });
   }
+  // A published archive's units for the cells it already left to another
+  // source are not in the state, so those cells are carried over by name.
+  // Should their winner be gone, the next run sees it and reads the
+  // archive again.
+  const recorded = archives.map((archive): EncIndexArchive => {
+    const { shadowed: earlier, ...plain } = archive;
+    const key = jobKey(archive);
+    const names = new Set(shadowed.get(key));
+    for (const cell of fromPrevious.has(key) ? (earlier ?? []) : []) {
+      names.add(cell);
+    }
+    return names.size > 0 ? { ...plain, shadowed: [...names].sort(compareStrings) } : plain;
+  });
 
-  const { units: flaggedUnits, flagged } = flagSeparateUpdates([...kept.values()], archives);
+  const { units: flaggedUnits, flagged } = flagSeparateUpdates([...kept.values()], recorded);
   const sortedUnits = flaggedUnits.sort(
     (a, b) => compareStrings(a.source, b.source) || compareStrings(a.id, b.id)
   );
@@ -758,7 +853,7 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
     schemaVersion: ENC_INDEX_SCHEMA_VERSION,
     generatedAt: inputs.now.toISOString(),
     sources: inputs.sources.filter((s) => withUnits.has(s.id)),
-    archives: archives.sort(
+    archives: recorded.sort(
       (a, b) => compareStrings(a.source, b.source) || compareStrings(a.url, b.url)
     ),
     units: sortedUnits
@@ -786,12 +881,27 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
 
 // ---- Publishing ----
 
-function unitsBySource(index: EncIndex): Map<string, number> {
+/**
+ * Cells per source, counting a cell left to another source as its own
+ * source's. Units alone would make a national source look as if it lost
+ * most of its cells the run EuRIS starts publishing them.
+ */
+function cellsBySource(index: EncIndex): Map<string, number> {
   const counts = new Map<string, number>();
+  const count = (source: string, n: number): void => {
+    counts.set(source, (counts.get(source) ?? 0) + n);
+  };
   for (const unit of index.units) {
-    counts.set(unit.source, (counts.get(unit.source) ?? 0) + 1);
+    count(unit.source, 1);
+  }
+  for (const archive of index.archives) {
+    count(archive.source, archive.shadowed?.length ?? 0);
   }
   return counts;
+}
+
+function total(counts: ReadonlyMap<string, number>): number {
+  return [...counts.values()].reduce((sum, n) => sum + n, 0);
 }
 
 /**
@@ -806,18 +916,17 @@ export function encIndexBlockers(next: EncIndex, published: PublishedEncIndex | 
     blockers.push('the index has no units');
   }
   if (published) {
-    if (next.units.length < Math.floor(published.unitCount * 0.8)) {
-      blockers.push(
-        `units dropped from ${String(published.unitCount)} to ${String(next.units.length)}`
-      );
+    const after = cellsBySource(next);
+    const [cellsBefore, cellsAfter] = [total(published.cellsBySource), total(after)];
+    if (cellsAfter < Math.floor(cellsBefore * 0.8)) {
+      blockers.push(`cells dropped from ${String(cellsBefore)} to ${String(cellsAfter)}`);
     }
-    const after = unitsBySource(next);
-    for (const [source, before] of [...published.unitsBySource].sort(([a], [b]) =>
+    for (const [source, before] of [...published.cellsBySource].sort(([a], [b]) =>
       compareStrings(a, b)
     )) {
       const now = after.get(source) ?? 0;
       if (before >= 10 && now < Math.floor(before * 0.5)) {
-        blockers.push(`${source} units dropped from ${String(before)} to ${String(now)}`);
+        blockers.push(`${source} cells dropped from ${String(before)} to ${String(now)}`);
       }
     }
   }

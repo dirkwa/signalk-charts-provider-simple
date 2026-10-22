@@ -173,7 +173,8 @@ export const GRID_PER_DEGREE = 10;
 /**
  * An outline for a cell that has no coverage objects, from where its
  * features are: the 0.1° grid squares holding at least one feature
- * position, merged into rectangles along each row. A cell spread thinly
+ * position, merged into rectangles along each row, and a row's rectangle
+ * with the same one in the row below. A cell spread thinly
  * over a large area, such as an overlay of the buoys on a river network,
  * then outlines the rivers rather than the box around all of them.
  * Returns null when there are no positions.
@@ -194,20 +195,45 @@ export function gridOutline(points: readonly Position[]): {
     rows.set(y, (rows.get(y) ?? new Set()).add(x));
   }
   const edge = (i: number): number => roundCoord(i / GRID_PER_DEGREE);
-  const rings: Ring[] = [];
+  // Open rectangles by their x run ("x0,x1"), growing down while each next
+  // row has the same run.
+  const open = new Map<string, { x0: number; x1: number; y0: number; y1: number }>();
+  const rects: { x0: number; x1: number; y0: number; y1: number }[] = [];
   for (const y of [...rows.keys()].sort((a, b) => a - b)) {
     const xs = [...(rows.get(y) ?? [])].sort((a, b) => a - b);
+    const runs: [number, number][] = [];
     let start = 0;
     for (let i = 1; i <= xs.length; i++) {
       if (i === xs.length || xs[i] !== xs[i - 1] + 1) {
-        rings.push(bboxRing([edge(xs[start]), edge(y), edge(xs[i - 1] + 1), edge(y + 1)]));
+        runs.push([xs[start], xs[i - 1] + 1]);
         start = i;
       }
     }
+    const continued = new Set<string>();
+    for (const [x0, x1] of runs) {
+      const key = `${String(x0)},${String(x1)}`;
+      const rect = open.get(key);
+      if (rect && rect.y1 === y) {
+        rect.y1 = y + 1;
+      } else {
+        open.set(key, { x0, x1, y0: y, y1: y + 1 });
+      }
+      continued.add(key);
+    }
+    for (const [key, rect] of open) {
+      if (!continued.has(key)) {
+        rects.push(rect);
+        open.delete(key);
+      }
+    }
   }
-  if (rings.length === 0) {
+  rects.push(...open.values());
+  if (rects.length === 0) {
     return null;
   }
+  const rings = rects
+    .sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0)
+    .map((r) => bboxRing([edge(r.x0), edge(r.y0), edge(r.x1), edge(r.y1)]));
   const outline: OutlineGeometry =
     rings.length === 1
       ? { type: 'Polygon', coordinates: [rings[0]] }

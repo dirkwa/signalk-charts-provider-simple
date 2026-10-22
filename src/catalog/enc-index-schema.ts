@@ -86,6 +86,12 @@ export const EncIndexArchiveSchema = Type.Object({
         'Paths of update files (".001", ...) inside the archive whose base cell is not in it: corrections for cells published in another archive of the same source. Each file is named after its cell. Applying one needs it next to the base cell, and only to the edition it was written for.'
     })
   ),
+  shadowed: Type.Optional(
+    Type.Array(Type.String({ minLength: 1 }), {
+      description:
+        'Cells in this archive whose unit the index takes from another source (EuRIS first). Recorded so the archive is read again if that source stops publishing one of them.'
+    })
+  ),
   revision: Type.Optional(
     Type.Integer({
       minimum: 1,

@@ -46,7 +46,9 @@ each cell is, is to download every archive and read each cell's `M_COVR`
   cells, one cell per download and usually newer than the national catalogs.
   A cell several sources publish appears once, from EuRIS when it has it, so
   a national source contributes only the cells EuRIS lacks. Among the
-  others, the newest edition wins.
+  others, the newest edition wins. An archive records the cells it leaves to
+  another source in `shadowed`; if that source stops publishing one, the
+  archive is read again and its own copy comes back.
 - **Updates published separately.** A few sources publish update files
   (`.001`, ...) in their own archives, apart from the base cells they correct.
   Examples are the South China Sea notices to mariners and one Dutch "Closed
@@ -57,6 +59,8 @@ each cell is, is to download every archive and read each cell's `M_COVR`
     the cell's archive alone lacks those corrections.
   - Older update archives are taken to be for an earlier edition, or already
     folded into a newer reissue.
+  - The flag only applies to its own source's copy of the cell: when EuRIS
+    supplies the cell, the national corrections do not apply to it.
   - The index does not say how to apply the updates. That needs each update
     matched to the edition it was written for.
 
@@ -93,8 +97,9 @@ merged catalog, because a Pages deployment replaces the whole site.
 - **A failure keeps what was published.** An archive that fails to download or
   read keeps its published units, at its old version, with a warning, so the
   next run tries it again. The same applies to NOAA's footprint file.
-- **A drop guard** refuses to publish when units fall sharply. It checks the
-  total, and each source that had at least ten units. A maintainer can
+- **A drop guard** refuses to publish when cells fall sharply. It checks the
+  total, and each source that had at least ten cells, counting the cells a
+  source leaves to EuRIS as its own, so EuRIS taking them over is not a drop. A maintainer can
   override it with the workflow's `force` input once the drop is understood.
 - **A time budget.** The workflow gives each run a fixed time to read changed
   archives. Any left over keep their published units and are read on the next

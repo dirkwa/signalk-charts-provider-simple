@@ -164,6 +164,17 @@ describe('enc outlines', () => {
     });
   });
 
+  it('merges a column of grid squares into one rectangle', () => {
+    assert.deepStrictEqual(
+      gridOutline([
+        [-90.05, 30.05],
+        [-90.05, 30.15],
+        [-90.05, 30.25]
+      ])?.outline,
+      { type: 'Polygon', coordinates: [bboxRingOf(-90.1, 30, -90, 30.3)] }
+    );
+  });
+
   it('returns no grid outline without positions', () => {
     assert.strictEqual(gridOutline([]), null);
   });
@@ -267,6 +278,38 @@ describe('parseGdalReport', () => {
       [-90.2, 30.1]
     ]);
     assert.deepStrictEqual(report.coverage, []);
+  });
+
+  it('reads a covered cell normally after a cell whose features were dumped', () => {
+    const reports = parseGdalReport(
+      [
+        `${CELL_MARKER}A.000`,
+        FEATURES_MARKER,
+        JSON.stringify({
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'Point', coordinates: [1, 2] }
+        }),
+        `${CELL_MARKER}B.000`,
+        JSON.stringify({
+          type: 'Feature',
+          properties: { DSPM_CSCL: 4000, DSID_EDTN: '3', DSID_UPDN: '0' },
+          geometry: null
+        }),
+        JSON.stringify({
+          type: 'Feature',
+          properties: { CATCOV: 1 },
+          geometry: { type: 'Polygon', coordinates: [square(0, 0, 1)] }
+        })
+      ].join('\n')
+    );
+    assert.deepStrictEqual(reports[1], {
+      path: 'B.000',
+      scale: 4000,
+      edition: 3,
+      update: 0,
+      coverage: [[square(0, 0, 1)]]
+    });
   });
 });
 
@@ -830,6 +873,110 @@ describe('assembleEncIndex', () => {
     ]);
   });
 
+  describe('as EuRIS takes over cells from a national source', () => {
+    const eurisSources = [
+      ...SOURCES,
+      { id: PREFERRED_SOURCE, label: 'EuRIS', kind: 'chartcatalogs' as const, file: 'EURIS.xml' }
+    ];
+    const national = job('national', '2026-09-01');
+    const nationalCells = Array.from(
+      { length: 20 },
+      (_, i) => `1X7NAT${String(i).padStart(2, '0')}`
+    );
+    const euris = nationalCells
+      .slice(0, 15)
+      .map((cell) => job(cell, '2026-10-01', PREFERRED_SOURCE));
+    const before = assembleEncIndex(
+      inputs({
+        sources: eurisSources,
+        jobs: [national],
+        built: new Map([[jobKey(national), built(national, nationalCells)]])
+      })
+    ).index;
+    const after = assembleEncIndex(
+      inputs({
+        sources: eurisSources,
+        jobs: [national, ...euris],
+        built: new Map(euris.map((j, i) => [jobKey(j), built(j, [nationalCells[i]], i)])),
+        previous: published(before)
+      })
+    );
+
+    it('records the cells the national archive leaves to EuRIS', () => {
+      assert.strictEqual(after.reused, 1);
+      assert.deepStrictEqual(
+        after.index.archives.find((x) => x.url === national.url)?.shadowed,
+        nationalCells.slice(0, 15)
+      );
+      assert.strictEqual(after.index.units.filter((u) => u.source === 'XX_IENC_Catalog').length, 5);
+    });
+
+    it('does not trip the drop guard', () => {
+      assert.deepStrictEqual(encIndexBlockers(after.index, published(before)), []);
+    });
+
+    it('reads the national archive again when EuRIS stops listing a cell it took', () => {
+      const state = published(after.index);
+      const remaining = euris.slice(1);
+      assert.deepStrictEqual(jobsToBuild([national, ...remaining], state), [national]);
+      const result = assembleEncIndex(
+        inputs({
+          sources: eurisSources,
+          jobs: [national, ...remaining],
+          built: new Map([[jobKey(national), built(national, nationalCells)]]),
+          previous: state
+        })
+      );
+      assert.strictEqual(
+        result.index.units.find((u) => u.id === nationalCells[0])?.source,
+        'XX_IENC_Catalog'
+      );
+    });
+
+    it('reads it again on the next run when EuRIS still lists the archive but lost the cell', () => {
+      const lost = euris[0];
+      const gap = assembleEncIndex(
+        inputs({
+          sources: eurisSources,
+          jobs: [national, ...euris],
+          built: new Map([[jobKey(lost), built(lost, ['1X7OTHER'])]]),
+          previous: published(after.index)
+        })
+      ).index;
+      assert.strictEqual(
+        gap.units.find((u) => u.id === nationalCells[0]),
+        undefined
+      );
+      assert.deepStrictEqual(jobsToBuild([national, ...euris], published(gap)), [national]);
+    });
+
+    it('drops a national update flag when EuRIS supplies the cell', () => {
+      const updates = job('national-updates', '2026-10-15');
+      const result = assembleEncIndex(
+        inputs({
+          sources: eurisSources,
+          jobs: [national, updates, ...euris],
+          built: new Map([
+            [
+              jobKey(updates),
+              unitsForArchive(
+                updates,
+                'zip',
+                [],
+                [`${nationalCells[0]}.001`, `${nationalCells[19]}.001`]
+              )
+            ]
+          ]),
+          previous: published(after.index)
+        })
+      );
+      const flag = (id: string) =>
+        result.index.units.find((u) => u.id === id)?.cells[0].updatesPublishedSeparately;
+      assert.strictEqual(flag(nationalCells[0]), undefined);
+      assert.strictEqual(flag(nationalCells[19]), true);
+    });
+  });
+
   it('keeps the cell from the newer archive when two archives of a source have it', () => {
     const old = job('old', '2025-01-01');
     const fresh = job('new', '2026-01-01');
@@ -864,7 +1011,10 @@ describe('readPublishedEncIndex', () => {
     const raw = JSON.parse(JSON.stringify(index)) as { units: unknown[] };
     (raw.units[0] as { outline: unknown }).outline = 'broken';
     const state = readPublishedEncIndex(raw, null);
-    assert.strictEqual(state.unitCount, index.units.length);
+    assert.strictEqual(
+      [...state.cellsBySource.values()].reduce((sum, n) => sum + n, 0),
+      index.units.length
+    );
     assert.strictEqual(state.archives.get(jobKey(a)), undefined);
     assert.strictEqual(state.archives.get(jobKey(b))?.units.length, 1);
     assert.deepStrictEqual(jobsToBuild([a, b], state), [a]);
@@ -873,7 +1023,7 @@ describe('readPublishedEncIndex', () => {
 
   it('reads anything that is not an index as empty', () => {
     const state = readPublishedEncIndex('nope', null);
-    assert.strictEqual(state.unitCount, 0);
+    assert.strictEqual(state.cellsBySource.size, 0);
     assert.strictEqual(state.noaa, null);
   });
 });
@@ -890,8 +1040,8 @@ describe('publishing the ENC index', () => {
       inputs({ jobs: [a], built: new Map([[jobKey(a), built(a, cells.slice(0, 5))]]) })
     ).index;
     assert.deepStrictEqual(encIndexBlockers(fewer, published(full)), [
-      'units dropped from 23 to 8',
-      'XX_IENC_Catalog units dropped from 20 to 5'
+      'cells dropped from 23 to 8',
+      'XX_IENC_Catalog cells dropped from 20 to 5'
     ]);
   });
 
