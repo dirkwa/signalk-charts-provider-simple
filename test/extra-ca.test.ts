@@ -6,7 +6,12 @@ import path from 'node:path';
 import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
 
-import { extraCertificateProblem, pemCertificates } from '../dist/catalog/extra-ca.js';
+import {
+  ExtraCaUnsupportedError,
+  extraCertificateProblem,
+  pemCertificates,
+  trustExtraCertificates
+} from '../dist/catalog/extra-ca.js';
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const shipped = fs.readFileSync(path.join(repoRoot, 'catalog/extra-ca-certificates.pem'), 'utf8');
@@ -29,6 +34,22 @@ describe('extra CA certificates', () => {
   it('refuses a root certificate', () => {
     const [root] = tls.rootCertificates;
     assert.match(extraCertificateProblem(root) ?? '', /a root certificate/);
+  });
+
+  it('adds the certificates to the default trusted set', () => {
+    let trusted: string[] = [];
+    const added = trustExtraCertificates(shipped, {
+      getCACertificates: () => ['bundled root'],
+      setDefaultCACertificates: (certs: readonly (string | ArrayBufferView)[]) => {
+        trusted = certs as string[];
+      }
+    });
+    assert.strictEqual(added, pemCertificates(shipped).length);
+    assert.deepStrictEqual(trusted, ['bundled root', ...pemCertificates(shipped)]);
+  });
+
+  it('says so clearly on a Node without the API', () => {
+    assert.throws(() => trustExtraCertificates(shipped, {}), ExtraCaUnsupportedError);
   });
 
   it('refuses an intermediate whose root is not trusted', () => {

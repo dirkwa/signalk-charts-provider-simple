@@ -67,7 +67,7 @@ import {
 } from './build-enc-index.js';
 import { parseChartcatalogsXml, type ParsedChartcatalogsXml } from './chartcatalogs-xml.js';
 import { NOAA_SOURCE_ID, publishedEncIndexJsonSchema } from './enc-index-schema.js';
-import { trustExtraCertificates } from './extra-ca.js';
+import { ExtraCaUnsupportedError, trustExtraCertificates } from './extra-ca.js';
 import {
   HttpStatusError,
   byteLimit,
@@ -553,8 +553,16 @@ const EXTRA_CA_FILE = new URL('../../catalog/extra-ca-certificates.pem', import.
 
 async function main(): Promise<void> {
   if (fs.existsSync(EXTRA_CA_FILE)) {
-    const added = trustExtraCertificates(fs.readFileSync(EXTRA_CA_FILE, 'utf8'));
-    console.log(`Trusting ${String(added)} extra intermediate CA certificate(s)`);
+    try {
+      const added = trustExtraCertificates(fs.readFileSync(EXTRA_CA_FILE, 'utf8'));
+      console.log(`Trusting ${String(added)} extra intermediate CA certificate(s)`);
+    } catch (err) {
+      // An older Node only costs the servers that need these certificates.
+      if (!(err instanceof ExtraCaUnsupportedError)) {
+        throw err;
+      }
+      console.log(`::warning::${err.message}; downloads that need them will fail`);
+    }
   }
   const { values } = parseArgs({
     options: {

@@ -40,12 +40,23 @@ export function extraCertificateProblem(
   return anchored ? null : `${cert.subject}: not issued by a root Node trusts`;
 }
 
+/** This Node cannot change its trusted set: the API arrived in Node 22.15. */
+export class ExtraCaUnsupportedError extends Error {
+  constructor() {
+    super(`Node ${process.version} cannot add trusted certificates (needs 22.15 or later)`);
+    this.name = 'ExtraCaUnsupportedError';
+  }
+}
+
+type TrustApi = Partial<Pick<typeof tls, 'getCACertificates' | 'setDefaultCACertificates'>>;
+
 /**
  * Add the certificates in `text` to the default trusted set used by every
  * TLS connection in this process, including `fetch`. Throws if one of them
- * is not an intermediate under a bundled root. Returns how many were added.
+ * is not an intermediate under a bundled root, and `ExtraCaUnsupportedError`
+ * on a Node without the API. Returns how many were added.
  */
-export function trustExtraCertificates(text: string): number {
+export function trustExtraCertificates(text: string, api: TrustApi = tls): number {
   const extra = pemCertificates(text);
   const problems = extra
     .map((pem) => extraCertificateProblem(pem))
@@ -53,8 +64,12 @@ export function trustExtraCertificates(text: string): number {
   if (problems.length > 0) {
     throw new Error(`Refusing extra CA certificates:\n  ${problems.join('\n  ')}`);
   }
-  if (extra.length > 0) {
-    tls.setDefaultCACertificates([...tls.getCACertificates('default'), ...extra]);
+  if (extra.length === 0) {
+    return 0;
   }
+  if (!api.getCACertificates || !api.setDefaultCACertificates) {
+    throw new ExtraCaUnsupportedError();
+  }
+  api.setDefaultCACertificates([...api.getCACertificates('default'), ...extra]);
   return extra.length;
 }
