@@ -174,7 +174,7 @@ export function outlineBbox(outline: OutlineGeometry): Bbox {
 }
 
 /**
- * The outline of a cell from its `M_COVR` coverage polygons (CATCOV = 1),
+ * The outline of a cell from its `M_COVR` coverage polygons (CATCOV not 2),
  * each given as GeoJSON polygon rings. Only exterior rings are kept: holes
  * in coverage are rare and do not matter for picking a cell on a map.
  * Polygons that reduce to the same ring (producers sometimes repeat a

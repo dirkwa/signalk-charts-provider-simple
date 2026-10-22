@@ -116,7 +116,7 @@ export interface CellReport {
   path: string;
   /** `DSPM_CSCL`, the compilation scale denominator, when the cell has one. */
   scale: number | null;
-  /** Polygons (as GeoJSON rings) of the cell's `M_COVR` objects with CATCOV = 1. */
+  /** Polygons (as GeoJSON rings) of the cell's `M_COVR` coverage objects (CATCOV not 2). */
   coverage: Position[][][];
   /** The union of the cell's layer extents, reported only when it has no `M_COVR` layer. */
   extent?: Bbox;
@@ -175,7 +175,10 @@ export function parseGdalReport(stdout: string): CellReport[] {
     if (typeof props.DSPM_CSCL === 'number' && props.DSPM_CSCL > 0) {
       current.scale = Math.round(props.DSPM_CSCL);
     }
-    if (props.CATCOV !== 1 || !feature.geometry || !Array.isArray(feature.geometry.coordinates)) {
+    // CATCOV 2 marks an area with no coverage. Some producers leave CATCOV
+    // out of their M_COVR objects altogether, which can only mean coverage.
+    const noCoverage = props.CATCOV === 2 || props.CATCOV === '2';
+    if (noCoverage || !feature.geometry || !Array.isArray(feature.geometry.coordinates)) {
       continue;
     }
     if (feature.geometry.type === 'Polygon') {
@@ -208,6 +211,13 @@ export interface ArchiveResult {
 }
 
 /** The cell an update file (`EA200001.041`) belongs to. */
+/**
+ * File name of an S-57 update file: a cell name with a numbered extension
+ * other than `.000`. The exchange set's `CATALOG.031` looks the same and
+ * is not one.
+ */
+export const UPDATE_FILE_NAME = /^(?!catalog\.)[^/]+\.(?!000)\d{3}$/i;
+
 function updateCell(updatePath: string): string {
   const base = updatePath.slice(updatePath.lastIndexOf('/') + 1);
   return base.replace(/\.\d{3}$/, '');
@@ -288,6 +298,7 @@ export function unitsForArchive(
   // with it. The rest correct cells published elsewhere.
   const baseCells = new Set(reports.map((r) => cellName(r.path)));
   const separate = updateFiles
+    .filter((file) => UPDATE_FILE_NAME.test(file.slice(file.lastIndexOf('/') + 1)))
     .filter((file) => !baseCells.has(updateCell(file)))
     .sort(compareStrings);
   return {

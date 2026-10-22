@@ -46,6 +46,7 @@ import { NOAA_ENC_GEOJSON_URL, parseFootprints } from '../utils/noaa-enc-footpri
 import { extractZipSafely } from '../utils/zip-extract.js';
 import {
   CELL_MARKER,
+  UPDATE_FILE_NAME,
   archiveJobs,
   assembleEncIndex,
   decideEncIndexPublish,
@@ -84,14 +85,18 @@ const GDAL_TIMEOUT_MS = 10 * 60 * 1000;
 const DEADLINE_GRACE_MS = 10 * 60 * 1000;
 
 // Prints a marker line per cell, then the cell's compilation scale and its
-// coverage polygons as GeoJSON text sequences. A cell without M_COVR (a few
-// producers omit it) gets its data extent instead. GDAL's S-57 driver
-// applies any update files (.001, ...) next to the base cell before reading.
-// One unreadable cell must not fail the archive, hence the `|| true`s.
+// coverage polygons as GeoJSON text sequences. A cell whose M_COVR is
+// missing or empty (a few producers leave it out) gets its data extent
+// instead. GDAL's S-57 driver applies any update files (.001, ...) next to
+// the base cell before reading. One unreadable cell must not fail the
+// archive, hence the `|| true`s.
 const GDAL_SCRIPT = `for f in "$@"; do
   printf '${CELL_MARKER}%s\\n' "$f"
   ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" DSID -select DSPM_CSCL || true
-  if ! ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" M_COVR -select CATCOV; then
+  covr=$(ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" M_COVR -select CATCOV || true)
+  if [ -n "$covr" ]; then
+    printf '%s\\n' "$covr"
+  else
     ogrinfo -ro -so -al "/data/$f" | grep '^Extent: ' || true
   fi
 done`;
@@ -362,7 +367,7 @@ async function readArchive(
       throw new Error('the download is neither a ZIP archive nor an S-57 cell');
     }
     const cells = findFiles(contents, /\.000$/i);
-    const updateFiles = findFiles(contents, /\.(?!000)\d{3}$/);
+    const updateFiles = findFiles(contents, UPDATE_FILE_NAME);
     if (cells.length === 0) {
       if (updateFiles.length === 0) {
         throw new Error('no S-57 cell (.000) in the archive');

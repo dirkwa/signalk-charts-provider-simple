@@ -137,6 +137,20 @@ describe('enc outlines', () => {
 });
 
 describe('parseGdalReport', () => {
+  it('counts an M_COVR object without CATCOV as coverage', () => {
+    const [report] = parseGdalReport(
+      [
+        `${CELL_MARKER}2P7D1124.000`,
+        JSON.stringify({
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'Polygon', coordinates: [square(20, 44, 1)] }
+        })
+      ].join('\n')
+    );
+    assert.deepStrictEqual(report.coverage, [[square(20, 44, 1)]]);
+  });
+
   it('collects scale and CATCOV=1 coverage per cell, ignoring everything else', () => {
     const report = [
       'Warning 1: No SRS set on layer.',
@@ -262,7 +276,12 @@ describe('unitsForArchive', () => {
       JOB,
       'zip',
       [{ path: 'ENC_ROOT/EA200004.000', scale: null, coverage: [[square(0, 0, 1)]] }],
-      ['ENC_ROOT/EA200004.001', 'ENC_ROOT/EA200003.036', 'ENC_ROOT/EA200001.041']
+      [
+        'ENC_ROOT/CATALOG.031',
+        'ENC_ROOT/EA200004.001',
+        'ENC_ROOT/EA200003.036',
+        'ENC_ROOT/EA200001.041'
+      ]
     );
     assert.deepStrictEqual(result.archive.updates, [
       'ENC_ROOT/EA200001.041',
