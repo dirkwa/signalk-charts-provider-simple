@@ -223,6 +223,20 @@ describe('unitsForArchive', () => {
     ]);
   });
 
+  it('records only the update files whose base cell is in another archive', () => {
+    const result = unitsForArchive(
+      JOB,
+      'zip',
+      [{ path: 'ENC_ROOT/EA200004.000', scale: null, coverage: [[square(0, 0, 1)]] }],
+      ['ENC_ROOT/EA200004.001', 'ENC_ROOT/EA200003.036', 'ENC_ROOT/EA200001.041']
+    );
+    assert.deepStrictEqual(result.archive.updates, [
+      'ENC_ROOT/EA200001.041',
+      'ENC_ROOT/EA200003.036'
+    ]);
+    assert.strictEqual(result.updatesOnly, false);
+  });
+
   it('uses the entry title as-is for a single cell, and keeps the first of a repeated cell', () => {
     const result = unitsForArchive({ ...JOB, title: '1X7RIV01 - River' }, 'zip', [
       { path: 'a/1X7RIV01.000', scale: null, coverage: [[square(0, 0, 1)]] },
@@ -561,6 +575,37 @@ describe('assembleEncIndex', () => {
     const again = assembleEncIndex(inputs({ jobs: [a, u], previous }));
     assert.strictEqual(again.reused, 2);
     assert.ok(again.index.archives.some((x) => x.url === u.url));
+  });
+
+  it('records update files for cells published in another archive, and flags those cells', () => {
+    const base = job('base', '2019-01-01');
+    const fresh = job('entm-003', '2019-03-15');
+    const stale = job('entm-046', '2012-07-15');
+    const archives = new Map([
+      [jobKey(base), built(base, ['EA200001', 'EA200002'])],
+      [jobKey(fresh), unitsForArchive(fresh, 'zip', [], ['ENC_ROOT/EA200001.003'])],
+      [jobKey(stale), unitsForArchive(stale, 'zip', [], ['ENC_ROOT/EA200002.046'])]
+    ]);
+    const result = assembleEncIndex(inputs({ jobs: [base, fresh, stale], built: archives }));
+    const cell = (name: string) =>
+      result.index.units.find((u) => u.id === name)?.cells[0].updatesPublishedSeparately;
+    assert.strictEqual(cell('EA200001'), true);
+    assert.strictEqual(cell('EA200002'), undefined);
+    assert.deepStrictEqual(result.separateUpdates, ['XX_IENC_Catalog EA200001']);
+    assert.deepStrictEqual(result.index.archives.find((x) => x.url === fresh.url)?.updates, [
+      'ENC_ROOT/EA200001.003'
+    ]);
+
+    // The flag is worked out on each build, so it clears when the update
+    // archive is no longer listed, even though the base is reused as-is.
+    const later = assembleEncIndex(
+      inputs({ jobs: [base, stale], previous: published(result.index) })
+    );
+    assert.strictEqual(later.reused, 2);
+    assert.strictEqual(
+      later.index.units.find((u) => u.id === 'EA200001')?.cells[0].updatesPublishedSeparately,
+      undefined
+    );
   });
 
   it('leaves out a failed archive that was never published', () => {

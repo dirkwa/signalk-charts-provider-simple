@@ -40,10 +40,18 @@ each cell is, is to download every archive and read each cell's `M_COVR`
   A cell inside a shared archive is still its own unit, mapped to that archive.
   A cell with no `M_COVR` at all (a few producers omit it) is outlined by its
   data extent instead.
-- **Update-only archives** hold update files (`.001`, ...) for cells whose base
-  file is in another archive, such as the South China Sea notices to mariners.
-  They have no units of their own, but are listed in `archives` so later builds
-  do not download them again.
+- **Updates published separately.** A few sources publish update files
+  (`.001`, ...) in their own archives, apart from the base cells they correct.
+  Examples are the South China Sea notices to mariners and one Dutch "Closed
+  Edition" archive.
+  - Such an archive lists those files' paths in its `updates`.
+  - A cell gets `updatesPublishedSeparately` when an archive of its source,
+    dated no earlier than the cell's own, holds updates for it. A download of
+    the cell's archive alone lacks those corrections.
+  - Older update archives are taken to be for an earlier edition, or already
+    folded into a newer reissue.
+  - The index does not say how to apply the updates. That needs each update
+    matched to the edition it was written for.
 
 NOAA unit ids are NOAA's band-4 chart ids, and NOAA archive versions are NOAA's
 `enc_ed_up` tokens, unchanged. A NOAA chart set saved by the plugin therefore

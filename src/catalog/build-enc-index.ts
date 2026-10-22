@@ -197,6 +197,12 @@ export interface ArchiveResult {
   updatesOnly: boolean;
 }
 
+/** The cell an update file (`EA200001.041`) belongs to. */
+function updateCell(updatePath: string): string {
+  const base = updatePath.slice(updatePath.lastIndexOf('/') + 1);
+  return base.replace(/\.\d{3}$/, '');
+}
+
 function cellName(cellPath: string): string {
   const base = cellPath.slice(cellPath.lastIndexOf('/') + 1);
   return base.replace(/\.000$/i, '');
@@ -261,17 +267,24 @@ export function unitsForArchive(
       statusCells: [name]
     });
   }
+  // Update files whose base cell is in this archive are applied by GDAL
+  // with it. The rest correct cells published elsewhere.
+  const baseCells = new Set(reports.map((r) => cellName(r.path)));
+  const separate = updateFiles
+    .filter((file) => !baseCells.has(updateCell(file)))
+    .sort(compareStrings);
   return {
     archive: {
       url: job.url,
       source: job.source,
       version: job.version,
       kind,
+      ...(separate.length > 0 ? { updates: separate } : {}),
       revision: ARCHIVE_REVISION
     },
     units: [...units.values()],
     problems,
-    updatesOnly: reports.length === 0 && updateFiles.length > 0
+    updatesOnly: reports.length === 0 && separate.length > 0
   };
 }
 
@@ -473,6 +486,47 @@ export interface EncIndexBuildResult {
   removedUpstream: string[];
   /** Cells listed by two archives of one source; the newer archive wins. */
   duplicateCells: string[];
+  /** Cells flagged because another archive holds updates for them. */
+  separateUpdates: string[];
+}
+
+/**
+ * Flag every cell that an archive of its own source, dated no earlier than
+ * the cell's own archive, holds update files for. Older update archives are
+ * taken to be for an earlier edition (South China Sea still lists its
+ * edition 2 notices beside edition 3), or already folded into a newer
+ * reissue. Recomputed on every build, so a flag clears when the update
+ * archive goes away or a newer base arrives.
+ */
+function flagSeparateUpdates(
+  units: readonly EncIndexUnit[],
+  archives: readonly EncIndexArchive[]
+): { units: EncIndexUnit[]; flagged: string[] } {
+  const versionOf = new Map(archives.map((a) => [jobKey(a), a.version]));
+  const updatedAt = new Map<string, string[]>();
+  for (const archive of archives) {
+    for (const file of archive.updates ?? []) {
+      const key = `${archive.source} ${updateCell(file)}`;
+      updatedAt.set(key, [...(updatedAt.get(key) ?? []), archive.version]);
+    }
+  }
+  const flagged: string[] = [];
+  const result = units.map((unit) => ({
+    ...unit,
+    cells: unit.cells.map((cell) => {
+      const { updatesPublishedSeparately: _stale, ...plain } = cell;
+      const own = versionOf.get(jobKey({ source: unit.source, url: cell.archive })) ?? '';
+      const later = (updatedAt.get(`${unit.source} ${cell.name}`) ?? []).some(
+        (version) => compareStrings(version, own) >= 0
+      );
+      if (!later) {
+        return plain;
+      }
+      flagged.push(`${unit.source} ${cell.name}`);
+      return { ...plain, updatesPublishedSeparately: true as const };
+    })
+  }));
+  return { units: result, flagged };
 }
 
 export function computeEncIndexHash(index: Omit<EncIndex, 'contentHash'>): string {
@@ -565,7 +619,8 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
     duplicateCells.push(`${key}: in ${other.cells[0].archive} and ${unit.cells[0].archive}`);
   }
 
-  const sortedUnits = [...kept.values()].sort(
+  const { units: flaggedUnits, flagged } = flagSeparateUpdates([...kept.values()], archives);
+  const sortedUnits = flaggedUnits.sort(
     (a, b) => compareStrings(a.source, b.source) || compareStrings(a.id, b.id)
   );
   const withUnits = new Set(sortedUnits.map((u) => u.source));
@@ -594,7 +649,8 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
     removedUpstream: [...(previous?.archives.keys() ?? [])]
       .filter((key) => !listed.has(key))
       .sort(compareStrings),
-    duplicateCells
+    duplicateCells,
+    separateUpdates: [...new Set(flagged)].sort(compareStrings)
   };
 }
 

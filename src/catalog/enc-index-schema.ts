@@ -79,11 +79,17 @@ export const EncIndexArchiveSchema = Type.Object({
   kind: Type.Union([Type.Literal('zip'), Type.Literal('cell')], {
     description: '"zip": a ZIP archive. "cell": the download is a bare S-57 cell file.'
   }),
+  updates: Type.Optional(
+    Type.Array(Type.String({ minLength: 1 }), {
+      description:
+        'Paths of update files (".001", ...) inside the archive whose base cell is not in it: corrections for cells published in another archive of the same source. Each file is named after its cell. Applying one needs it next to the base cell, and only to the edition it was written for.'
+    })
+  ),
   revision: Type.Optional(
     Type.Integer({
       minimum: 1,
       description:
-        'Revision of the rules that turned a downloaded archive into units. A build reads an archive again when its revision is older than the build\u2019s own. Absent for NOAA, which is rebuilt from its footprint file on every run.'
+        'Revision of the rules that turned a downloaded archive into units. A build reads an archive again when its revision is older than the build’s own. Absent for NOAA, which is rebuilt from its footprint file on every run.'
     })
   )
 });
@@ -95,7 +101,13 @@ export const EncIndexCellSchema = Type.Object({
     minLength: 1,
     description:
       'Path of the cell’s base file (".000") inside the archive, with "/" separators. For a "cell" archive it is the file name the download should be saved as. Update files (".001", ...) sit next to it.'
-  })
+  }),
+  updatesPublishedSeparately: Type.Optional(
+    Type.Literal(true, {
+      description:
+        'Another archive of the same source, dated no earlier than this cell’s, holds update files for it (see `archives[].updates`). A download of the cell’s own archive lacks those corrections.'
+    })
+  )
 });
 
 export const EncIndexUnitSchema = Type.Object({

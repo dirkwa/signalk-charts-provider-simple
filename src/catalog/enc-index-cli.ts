@@ -160,7 +160,15 @@ async function downloadOnce(url: string, target: string): Promise<void> {
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
     });
   } catch (err) {
-    throw new TransientError(message(err));
+    // fetch reports every network failure as "fetch failed"; the reason is
+    // in its cause. A certificate the server will keep sending is not worth
+    // a retry.
+    const code = (err as { cause?: { code?: unknown } }).cause?.code;
+    const reason = typeof code === 'string' ? `${message(err)} (${code})` : message(err);
+    if (typeof code === 'string' && /CERT|SIGNATURE|SELF_SIGNED/.test(code)) {
+      throw new Error(reason, { cause: err });
+    }
+    throw new TransientError(reason);
   }
   if (!response.ok || !response.body) {
     const error = `HTTP ${String(response.status)}`;
@@ -284,7 +292,7 @@ function runGdal(runtime: string, dir: string, cells: string[]): Promise<string>
 interface ArchiveReport {
   kind: 'zip' | 'cell';
   reports: CellReport[];
-  /** Update files (.001, ...) in an archive with no base cells. */
+  /** Update files (.001, ...) in the archive. */
   updateFiles: string[];
 }
 
@@ -305,8 +313,8 @@ async function readArchive(job: ArchiveJob, tmp: string, runtime: string): Promi
       throw new Error('the download is neither a ZIP archive nor an S-57 cell');
     }
     const cells = findFiles(contents, /\.000$/i);
+    const updateFiles = findFiles(contents, /\.(?!000)\d{3}$/);
     if (cells.length === 0) {
-      const updateFiles = findFiles(contents, /\.(?!000)\d{3}$/);
       if (updateFiles.length === 0) {
         throw new Error('no S-57 cell (.000) in the archive');
       }
@@ -315,12 +323,15 @@ async function readArchive(job: ArchiveJob, tmp: string, runtime: string): Promi
     return {
       kind,
       reports: parseGdalReport(await runGdal(runtime, contents, cells)),
-      updateFiles: []
+      updateFiles
     };
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
+
+/** Bumped when what the cache saves changes, so older entries are read again. */
+const CACHE_FORMAT = 2;
 
 /**
  * What GDAL reported for each archive read, saved as it is read, so an
@@ -341,18 +352,16 @@ class WorkCache {
       const saved = JSON.parse(fs.readFileSync(this.file(job), 'utf8')) as Record<string, unknown>;
       const { kind, reports, updateFiles } = saved;
       if (
+        saved.format !== CACHE_FORMAT ||
         saved.key !== jobKey(job) ||
         saved.version !== job.version ||
         (kind !== 'zip' && kind !== 'cell') ||
-        !Array.isArray(reports)
+        !Array.isArray(reports) ||
+        !Array.isArray(updateFiles)
       ) {
         return null;
       }
-      return {
-        kind,
-        reports: reports as CellReport[],
-        updateFiles: Array.isArray(updateFiles) ? (updateFiles as string[]) : []
-      };
+      return { kind, reports: reports as CellReport[], updateFiles: updateFiles as string[] };
     } catch {
       return null;
     }
@@ -360,7 +369,7 @@ class WorkCache {
 
   put(job: ArchiveJob, report: ArchiveReport): void {
     const file = this.file(job);
-    const saved = { key: jobKey(job), version: job.version, ...report };
+    const saved = { format: CACHE_FORMAT, key: jobKey(job), version: job.version, ...report };
     fs.writeFileSync(`${file}.tmp`, JSON.stringify(saved));
     fs.renameSync(`${file}.tmp`, file);
   }
@@ -533,6 +542,9 @@ async function main(): Promise<void> {
   }
   for (const entry of result.removedUpstream) {
     console.log(`::warning::${entry} is no longer listed; removed from the index`);
+  }
+  for (const entry of result.separateUpdates) {
+    console.log(`::notice::${entry} has updates published in a separate archive; flagged`);
   }
   for (const entry of result.duplicateCells) {
     console.log(`::notice::Duplicate cell ${entry}; kept the newer archive`);
