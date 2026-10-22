@@ -99,8 +99,9 @@ merged catalog, because a Pages deployment replaces the whole site.
   next run tries it again. The same applies to NOAA's footprint file.
 - **A drop guard** refuses to publish when cells fall sharply. It checks the
   total, and each source that had at least ten cells, counting the cells a
-  source leaves to EuRIS as its own, so EuRIS taking them over is not a drop. A maintainer can
-  override it with the workflow's `force` input once the drop is understood.
+  source leaves to EuRIS as its own, so EuRIS taking them over is not a drop.
+  A maintainer can override it with the workflow's `force` input once the
+  drop is understood.
 - **A time budget.** The workflow gives each run a fixed time to read changed
   archives. Any left over keep their published units and are read on the next
   run.

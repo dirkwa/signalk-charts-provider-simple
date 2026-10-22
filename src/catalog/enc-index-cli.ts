@@ -310,6 +310,9 @@ function runGdal(
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     lines.on('line', parser.line);
     const linesDone = once(lines, 'close');
+    // Only awaited on a clean exit; on any other path the run has already
+    // failed, and a stream error must not surface as an unhandled rejection.
+    linesDone.catch(() => undefined);
     let err = '';
     child.stderr.on('data', (chunk: Buffer) => {
       err = (err + chunk.toString()).slice(-4000);

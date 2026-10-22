@@ -175,6 +175,22 @@ describe('enc outlines', () => {
     );
   });
 
+  it('keeps both rectangles when a column resumes after an empty row', () => {
+    assert.deepStrictEqual(
+      gridOutline([
+        [0.05, 0.05],
+        [0.05, 0.25]
+      ]),
+      {
+        outline: {
+          type: 'MultiPolygon',
+          coordinates: [[bboxRingOf(0, 0, 0.1, 0.1)], [bboxRingOf(0, 0.2, 0.1, 0.3)]]
+        },
+        bbox: [0, 0, 0.1, 0.3]
+      }
+    );
+  });
+
   it('returns no grid outline without positions', () => {
     assert.strictEqual(gridOutline([]), null);
   });

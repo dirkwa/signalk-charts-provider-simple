@@ -216,6 +216,10 @@ export function gridOutline(points: readonly Position[]): {
       if (rect && rect.y1 === y) {
         rect.y1 = y + 1;
       } else {
+        // The same run after a gap starts a new rectangle; the old one is done.
+        if (rect) {
+          rects.push(rect);
+        }
         open.set(key, { x0, x1, y0: y, y1: y + 1 });
       }
       continued.add(key);
