@@ -37,7 +37,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Readable, Transform } from 'node:stream';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
@@ -67,6 +67,13 @@ import {
 } from './build-enc-index.js';
 import { parseChartcatalogsXml, type ParsedChartcatalogsXml } from './chartcatalogs-xml.js';
 import { NOAA_SOURCE_ID, publishedEncIndexJsonSchema } from './enc-index-schema.js';
+import { trustExtraCertificates } from './extra-ca.js';
+import {
+  HttpStatusError,
+  byteLimit,
+  downloadLenient,
+  isMalformedResponse
+} from './lenient-download.js';
 import { ChartcatalogsIndexSchema, schemaErrors } from './merged-catalog-schema.js';
 
 const USER_AGENT =
@@ -173,15 +180,37 @@ async function readChartcatalogs(
 
 class TransientError extends Error {}
 
-async function downloadOnce(url: string, target: string, stop?: AbortSignal): Promise<void> {
-  const timeout = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
-  let response: Response;
+/** The fallback for a response `fetch` cannot parse (see `lenient-download.ts`). */
+async function downloadWithLenientHeaders(
+  url: string,
+  target: string,
+  signal: AbortSignal
+): Promise<void> {
   try {
-    response = await fetch(url, {
+    await downloadLenient(url, target, {
       headers: { 'User-Agent': USER_AGENT },
-      signal: stop ? AbortSignal.any([timeout, stop]) : timeout
+      maxBytes: MAX_DOWNLOAD_BYTES,
+      signal
     });
   } catch (err) {
+    if (err instanceof HttpStatusError && err.status < 500) {
+      throw err;
+    }
+    throw new TransientError(message(err));
+  }
+}
+
+async function downloadOnce(url: string, target: string, stop?: AbortSignal): Promise<void> {
+  const timeout = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
+  const signal = stop ? AbortSignal.any([timeout, stop]) : timeout;
+  let response: Response;
+  try {
+    response = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal });
+  } catch (err) {
+    if (isMalformedResponse(err)) {
+      await downloadWithLenientHeaders(url, target, signal);
+      return;
+    }
     // fetch reports every network failure as "fetch failed"; the reason is
     // in its cause. A certificate the server will keep sending is not worth
     // a retry.
@@ -197,18 +226,12 @@ async function downloadOnce(url: string, target: string, stop?: AbortSignal): Pr
     await response.body?.cancel();
     throw response.status >= 500 ? new TransientError(error) : new Error(error);
   }
-  let bytes = 0;
-  const limit = new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      bytes += chunk.length;
-      callback(
-        bytes > MAX_DOWNLOAD_BYTES ? new Error('download exceeds the size limit') : null,
-        chunk
-      );
-    }
-  });
   try {
-    await pipeline(Readable.fromWeb(response.body), limit, fs.createWriteStream(target));
+    await pipeline(
+      Readable.fromWeb(response.body),
+      byteLimit(MAX_DOWNLOAD_BYTES),
+      fs.createWriteStream(target)
+    );
   } catch (err) {
     throw new TransientError(message(err));
   }
@@ -521,7 +544,18 @@ function positiveNumber(flag: string, value: string): number {
   return n;
 }
 
+/**
+ * Intermediates some ENC servers leave out of their handshake, trusted in
+ * addition to Node's roots (see `extra-ca.ts`). The file sits in the repo's
+ * `catalog/` folder; the CLI runs from a checkout, never the npm package.
+ */
+const EXTRA_CA_FILE = new URL('../../catalog/extra-ca-certificates.pem', import.meta.url);
+
 async function main(): Promise<void> {
+  if (fs.existsSync(EXTRA_CA_FILE)) {
+    const added = trustExtraCertificates(fs.readFileSync(EXTRA_CA_FILE, 'utf8'));
+    console.log(`Trusting ${String(added)} extra intermediate CA certificate(s)`);
+  }
   const { values } = parseArgs({
     options: {
       chartcatalogs: { type: 'string' },
