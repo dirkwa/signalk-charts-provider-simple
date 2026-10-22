@@ -371,12 +371,13 @@ export function evaluateFreshness(
     reasons.push(`No longer published: ${resolution.missingSelected.join(', ')}`);
   }
 
-  // Coverage set changed (a NOAA box overlap brought in or dropped a cell).
+  // Coverage set changed (a NOAA box overlap brought in or dropped a cell, or
+  // the selection changed). A set never downloaded has nothing to compare.
   const storedSet = new Set(catalog.includedChartIds);
   const changed =
     storedSet.size !== resolution.includedChartIds.length ||
     resolution.includedChartIds.some((id) => !storedSet.has(id));
-  if (changed) {
+  if (changed && (catalog.lastDownloadedAt !== null || catalog.includedChartIds.length > 0)) {
     reasons.push('Coverage set changed');
   }
 

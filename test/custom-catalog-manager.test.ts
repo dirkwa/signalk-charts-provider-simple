@@ -229,6 +229,23 @@ describe('evaluateFreshness', () => {
     assert.strictEqual(r.effectiveStatus, 'out_of_date');
   });
 
+  it('gives no reason beyond needing a build for a set never downloaded', () => {
+    const r = evaluate(
+      {
+        ...convertedCatalog(),
+        includedChartIds: [],
+        chartVersions: {},
+        convertedChartPath: null,
+        status: 'out_of_date',
+        lastDownloadedAt: null
+      },
+      index,
+      () => false
+    );
+    assert.deepStrictEqual(r.reasons, []);
+    assert.strictEqual(r.effectiveStatus, 'out_of_date');
+  });
+
   it('reports empty for a catalog with no selection', () => {
     const r = evaluate(
       { ...convertedCatalog(), selectedBand4ChartIds: [], status: 'empty' },
