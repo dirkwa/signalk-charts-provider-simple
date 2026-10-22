@@ -167,6 +167,54 @@ export function reduceRing(ring: readonly Position[]): Ring | null {
   return west < east && south < north ? bboxRing([west, south, east, north]) : null;
 }
 
+/** Grid cells per degree for `gridOutline`: 0.1°, about 11 km north-south. */
+export const GRID_PER_DEGREE = 10;
+
+/**
+ * An outline for a cell that has no coverage objects, from where its
+ * features are: the 0.1° grid squares holding at least one feature
+ * position, merged into rectangles along each row. A cell spread thinly
+ * over a large area, such as an overlay of the buoys on a river network,
+ * then outlines the rivers rather than the box around all of them.
+ * Returns null when there are no positions.
+ */
+export function gridOutline(points: readonly Position[]): {
+  outline: OutlineGeometry;
+  bbox: Bbox;
+} | null {
+  const rows = new Map<number, Set<number>>();
+  for (const [lon, lat] of points) {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+      continue;
+    }
+    // Clamped so a position on 180°/90° falls in the last square, not one
+    // past the edge of the globe.
+    const x = Math.floor(Math.min(179.99999, Math.max(-180, lon)) * GRID_PER_DEGREE);
+    const y = Math.floor(Math.min(89.99999, Math.max(-90, lat)) * GRID_PER_DEGREE);
+    rows.set(y, (rows.get(y) ?? new Set()).add(x));
+  }
+  const edge = (i: number): number => roundCoord(i / GRID_PER_DEGREE);
+  const rings: Ring[] = [];
+  for (const y of [...rows.keys()].sort((a, b) => a - b)) {
+    const xs = [...(rows.get(y) ?? [])].sort((a, b) => a - b);
+    let start = 0;
+    for (let i = 1; i <= xs.length; i++) {
+      if (i === xs.length || xs[i] !== xs[i - 1] + 1) {
+        rings.push(bboxRing([edge(xs[start]), edge(y), edge(xs[i - 1] + 1), edge(y + 1)]));
+        start = i;
+      }
+    }
+  }
+  if (rings.length === 0) {
+    return null;
+  }
+  const outline: OutlineGeometry =
+    rings.length === 1
+      ? { type: 'Polygon', coordinates: [rings[0]] }
+      : { type: 'MultiPolygon', coordinates: rings.map((r) => [r]) };
+  return { outline, bbox: outlineBbox(outline) };
+}
+
 /** Bounding box of every position in an outline. */
 export function outlineBbox(outline: OutlineGeometry): Bbox {
   const rings = outline.type === 'Polygon' ? outline.coordinates : outline.coordinates.flat();

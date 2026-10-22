@@ -30,12 +30,12 @@ import {
   type EncIndex,
   type EncIndexArchive,
   type EncIndexSource,
-  type EncIndexUnit,
-  type EncOutline
+  type EncIndexUnit
 } from './enc-index-schema.js';
 import { schemaErrors, type ChartcatalogsIndex } from './merged-catalog-schema.js';
 import {
   bboxRing,
+  gridOutline,
   outlineFromCoverage,
   roundCoord,
   type Bbox,
@@ -111,15 +111,28 @@ export function archiveJobs(
 /** Line the GDAL script prints before each cell's features. */
 export const CELL_MARKER = '@@CELL ';
 
+/**
+ * Line the GDAL script prints before dumping every feature of a cell whose
+ * M_COVR is missing or empty, for `gridOutline`.
+ */
+export const FEATURES_MARKER = '@@FEATURES';
+
 export interface CellReport {
   /** Path of the `.000` file inside the archive. */
   path: string;
   /** `DSPM_CSCL`, the compilation scale denominator, when the cell has one. */
   scale: number | null;
+  /** `DSID_EDTN`, the cell's edition. */
+  edition: number | null;
+  /** `DSID_UPDN`, the update the base file already includes. */
+  update: number | null;
   /** Polygons (as GeoJSON rings) of the cell's `M_COVR` coverage objects (CATCOV not 2). */
   coverage: Position[][][];
-  /** The union of the cell's layer extents, reported only when it has no `M_COVR` layer. */
-  extent?: Bbox;
+  /**
+   * Distinct feature positions, rounded to 0.001 degree, reported only when
+   * the cell's M_COVR is missing or empty.
+   */
+  points?: Position[];
 }
 
 interface ReportFeature {
@@ -127,39 +140,41 @@ interface ReportFeature {
   geometry?: { type?: unknown; coordinates?: unknown } | null;
 }
 
-// ogrinfo's summary line: `Extent: (west, south) - (east, north)`.
-const EXTENT_LINE = /^Extent: \(([-\d.]+), ([-\d.]+)\) - \(([-\d.]+), ([-\d.]+)\)/;
-
 /**
  * Parse the GDAL script's output: a `CELL_MARKER` line per cell, followed
- * by that cell's DSID and M_COVR features as GeoJSON text sequences, or by
- * its data extent when it has no M_COVR. Other lines (warnings) are ignored.
+ * by that cell's DSID and M_COVR features as GeoJSON text sequences. A
+ * cell with no M_COVR objects is followed by `FEATURES_MARKER` and every
+ * feature it has, of which only the positions are kept. Other lines
+ * (warnings) are ignored.
  */
 export function parseGdalReport(stdout: string): CellReport[] {
   const reports: CellReport[] = [];
   let current: CellReport | null = null;
+  let points: Map<string, Position> | null = null;
+  const finish = (): void => {
+    if (current && points) {
+      current.points = [...points.values()];
+    }
+    points = null;
+  };
   for (const line of stdout.split('\n')) {
     if (line.startsWith(CELL_MARKER)) {
-      current = { path: line.slice(CELL_MARKER.length).trim(), scale: null, coverage: [] };
+      finish();
+      current = {
+        path: line.slice(CELL_MARKER.length).trim(),
+        scale: null,
+        edition: null,
+        update: null,
+        coverage: []
+      };
       reports.push(current);
       continue;
     }
     if (!current) {
       continue;
     }
-    // ogrinfo prints one extent per layer; the cell's is their union.
-    const extent = EXTENT_LINE.exec(line);
-    if (extent) {
-      const [west, south, east, north] = extent.slice(1, 5).map(Number);
-      const prev = current.extent;
-      current.extent = prev
-        ? [
-            Math.min(prev[0], west),
-            Math.min(prev[1], south),
-            Math.max(prev[2], east),
-            Math.max(prev[3], north)
-          ]
-        : [west, south, east, north];
+    if (line.startsWith(FEATURES_MARKER)) {
+      points = new Map();
       continue;
     }
     if (!line.startsWith('{')) {
@@ -171,9 +186,17 @@ export function parseGdalReport(stdout: string): CellReport[] {
     } catch {
       continue;
     }
+    if (points) {
+      collectPositions(feature.geometry?.coordinates, points);
+      continue;
+    }
     const props = feature.properties ?? {};
     if (typeof props.DSPM_CSCL === 'number' && props.DSPM_CSCL > 0) {
       current.scale = Math.round(props.DSPM_CSCL);
+    }
+    if ('DSID_EDTN' in props) {
+      current.edition = toCount(props.DSID_EDTN);
+      current.update = toCount(props.DSID_UPDN);
     }
     // CATCOV 2 marks an area with no coverage. Some producers leave CATCOV
     // out of their M_COVR objects altogether, which can only mean coverage.
@@ -187,7 +210,32 @@ export function parseGdalReport(stdout: string): CellReport[] {
       current.coverage.push(...(feature.geometry.coordinates as Position[][][]));
     }
   }
+  finish();
   return reports;
+}
+
+/** A non-negative whole number from a DSID field, which GDAL gives as text. */
+function toCount(value: unknown): number | null {
+  const n = typeof value === 'string' ? Number(value.trim()) : value;
+  return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** Every position in a GeoJSON coordinate array, rounded to 0.001 degree and deduplicated. */
+function collectPositions(coordinates: unknown, into: Map<string, Position>): void {
+  if (!Array.isArray(coordinates)) {
+    return;
+  }
+  if (typeof coordinates[0] === 'number' && typeof coordinates[1] === 'number') {
+    const p: Position = [
+      Math.round(coordinates[0] * 1000) / 1000,
+      Math.round(coordinates[1] * 1000) / 1000
+    ];
+    into.set(`${String(p[0])},${String(p[1])}`, p);
+    return;
+  }
+  for (const child of coordinates) {
+    collectPositions(child, into);
+  }
 }
 
 /**
@@ -210,7 +258,6 @@ export interface ArchiveResult {
   updatesOnly: boolean;
 }
 
-/** The cell an update file (`EA200001.041`) belongs to. */
 /**
  * File name of an S-57 update file: a cell name with a numbered extension
  * other than `.000`. The exchange set's `CATALOG.031` looks the same and
@@ -218,6 +265,7 @@ export interface ArchiveResult {
  */
 export const UPDATE_FILE_NAME = /^(?!catalog\.)[^/]+\.(?!000)\d{3}$/i;
 
+/** The cell an update file (`EA200001.041`) belongs to. */
 function updateCell(updatePath: string): string {
   const base = updatePath.slice(updatePath.lastIndexOf('/') + 1);
   return base.replace(/\.\d{3}$/, '');
@@ -228,21 +276,33 @@ function cellName(cellPath: string): string {
   return base.replace(/\.000$/i, '');
 }
 
-/** A box outline for a cell with no coverage objects, from its data extent. */
-function extentOutline(extent: Bbox | undefined): { outline: EncOutline; bbox: Bbox } | null {
-  if (!extent?.every(Number.isFinite)) {
-    return null;
+/**
+ * A cell's version as one token in NOAA's `enc_ed_up` form, e.g.
+ * `1R7WAD01_ED005_UP002`, so every source is checked for updates the same
+ * way. The update number is the last one GDAL applies: the base file's own,
+ * then each update file next to it that follows on without a gap.
+ */
+export function cellVersion(
+  report: CellReport,
+  name: string,
+  updateFiles: readonly string[]
+): string | undefined {
+  if (report.edition === null) {
+    return undefined;
   }
-  const bbox = [
-    clampLon(extent[0]),
-    clampLat(extent[1]),
-    clampLon(extent[2]),
-    clampLat(extent[3])
-  ] as Bbox;
-  if (bbox[0] >= bbox[2] || bbox[1] >= bbox[3]) {
-    return null;
+  const dir = report.path.slice(0, report.path.lastIndexOf('/') + 1);
+  const numbers = new Set(
+    updateFiles
+      .filter((file) => file.slice(0, file.lastIndexOf('/') + 1) === dir)
+      .filter((file) => updateCell(file).toUpperCase() === name.toUpperCase())
+      .map((file) => Number(file.slice(-3)))
+  );
+  let update = report.update ?? 0;
+  while (numbers.has(update + 1)) {
+    update++;
   }
-  return { outline: { type: 'Polygon', coordinates: [bboxRing(bbox)] }, bbox };
+  const pad = (n: number): string => String(n).padStart(3, '0');
+  return `${name}_ED${pad(report.edition)}_UP${pad(update)}`;
 }
 
 function unitTitle(entryTitle: string, name: string, cellCount: number): string {
@@ -268,14 +328,16 @@ export function unitsForArchive(
       problems.push(`${report.path}: cell ${name} appears twice in the archive; kept the first`);
       continue;
     }
-    const reduced = outlineFromCoverage(report.coverage) ?? extentOutline(report.extent);
+    const fromCoverage = outlineFromCoverage(report.coverage);
+    const reduced = fromCoverage ?? gridOutline(report.points ?? []);
     if (!reduced) {
       problems.push(`${report.path}: no usable M_COVR coverage`);
       continue;
     }
-    if (report.coverage.length === 0) {
-      problems.push(`${report.path}: no M_COVR coverage; outlined by its data extent`);
+    if (!fromCoverage) {
+      problems.push(`${report.path}: no M_COVR coverage; outlined from where its features are`);
     }
+    const version = cellVersion(report, name, updateFiles);
     const unit: EncIndexUnit = {
       source: job.source,
       id: name,
@@ -283,7 +345,7 @@ export function unitsForArchive(
       ...(report.scale !== null && report.scale >= 1 ? { scale: report.scale } : {}),
       bbox: reduced.bbox,
       outline: reduced.outline,
-      cells: [{ name, archive: job.url, path: report.path }],
+      cells: [{ name, archive: job.url, path: report.path, ...(version ? { version } : {}) }],
       statusCells: [name]
     };
     // Downloaded data is checked here, cell by cell: one odd cell must cost
@@ -376,7 +438,8 @@ export function noaaUnits(footprints: readonly EncFootprint[]): NoaaResult {
       cells: includedChartIds.map((name) => ({
         name,
         archive: noaaEncZipUrl(name),
-        path: `ENC_ROOT/${name}/${name}.000`
+        path: `ENC_ROOT/${name}/${name}.000`,
+        version: versions.get(name) ?? name
       })),
       statusCells: statusCells[entry.chartId]
     };
@@ -507,6 +570,23 @@ export interface EncIndexInputs {
   now: Date;
 }
 
+/**
+ * The source whose copy of a cell wins when several publish it. EuRIS
+ * republishes most European national producers' cells, one cell per
+ * download and usually newer than the national catalogs, so a national
+ * source only contributes the cells EuRIS lacks.
+ */
+export const PREFERRED_SOURCE = 'EURIS_IENC_Catalog';
+
+/** A cell more than one archive publishes. */
+export interface DuplicateCell {
+  cell: string;
+  /** Source of the copy in the index. */
+  kept: string;
+  /** Source of a copy left out. */
+  dropped: string;
+}
+
 export interface EncIndexBuildResult {
   index: EncIndex;
   /** Archives taken unchanged from the published index. */
@@ -519,8 +599,8 @@ export interface EncIndexBuildResult {
   deferred: string[];
   /** Published archives that their source no longer lists. */
   removedUpstream: string[];
-  /** Cells listed by two archives of one source; the newer archive wins. */
-  duplicateCells: string[];
+  /** Cells that more than one archive publishes, and which source's copy was kept. */
+  duplicateCells: DuplicateCell[];
   /** Cells flagged because another archive holds updates for them. */
   separateUpdates: string[];
 }
@@ -645,25 +725,28 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
     carriedForward.push(`${source}: its catalog could not be read`);
   }
 
-  const duplicateCells: string[] = [];
+  // One unit per cell. NOAA's units are its own boxes and keep their own
+  // keys; any other cell that several archives publish appears once.
+  const duplicateCells: DuplicateCell[] = [];
   const versionOf = new Map(archives.map((a) => [jobKey(a), a.version]));
+  const archiveVersion = (u: EncIndexUnit): string =>
+    versionOf.get(jobKey({ source: u.source, url: u.cells[0].archive })) ?? '';
   const kept = new Map<string, EncIndexUnit>();
   for (const unit of units) {
-    const key = `${unit.source} ${unit.id}`;
+    const key = unit.source === NOAA_SOURCE_ID ? `${NOAA_SOURCE_ID} ${unit.id}` : unit.id;
     const other = kept.get(key);
     if (!other) {
       kept.set(key, unit);
       continue;
     }
-    const version = (u: EncIndexUnit): string =>
-      versionOf.get(jobKey({ source: u.source, url: u.cells[0].archive })) ?? '';
     const order =
-      compareStrings(version(unit), version(other)) ||
+      Number(unit.source === PREFERRED_SOURCE) - Number(other.source === PREFERRED_SOURCE) ||
+      compareStrings(unit.cells[0].version ?? '', other.cells[0].version ?? '') ||
+      compareStrings(archiveVersion(unit), archiveVersion(other)) ||
       compareStrings(other.cells[0].archive, unit.cells[0].archive);
-    if (order > 0) {
-      kept.set(key, unit);
-    }
-    duplicateCells.push(`${key}: in ${other.cells[0].archive} and ${unit.cells[0].archive}`);
+    const [winner, loser] = order > 0 ? [unit, other] : [other, unit];
+    kept.set(key, winner);
+    duplicateCells.push({ cell: unit.id, kept: winner.source, dropped: loser.source });
   }
 
   const { units: flaggedUnits, flagged } = flagSeparateUpdates([...kept.values()], archives);

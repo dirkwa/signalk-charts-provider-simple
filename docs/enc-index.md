@@ -38,8 +38,15 @@ each cell is, is to download every archive and read each cell's `M_COVR`
   coverage. River cells follow the river: their bounding boxes overlap heavily
   but their outlines barely do, so a click lands on the stretch the user meant.
   A cell inside a shared archive is still its own unit, mapped to that archive.
-  A cell with no `M_COVR` at all (a few producers omit it) is outlined by its
-  data extent instead.
+  A cell with no `M_COVR` at all (a few producers omit it) is outlined by the
+  grid squares its features fall in. The USACE buoy overlay, one cell covering
+  the US inland rivers, then outlines the rivers rather than a box from the
+  Gulf of Mexico to the Great Lakes.
+- **One unit per cell.** EuRIS republishes most European national producers'
+  cells, one cell per download and usually newer than the national catalogs.
+  A cell several sources publish appears once, from EuRIS when it has it, so
+  a national source contributes only the cells EuRIS lacks. Among the
+  others, the newest edition wins.
 - **Updates published separately.** A few sources publish update files
   (`.001`, ...) in their own archives, apart from the base cells they correct.
   Examples are the South China Sea notices to mariners and one Dutch "Closed
@@ -56,8 +63,13 @@ each cell is, is to download every archive and read each cell's `M_COVR`
 NOAA unit ids are NOAA's band-4 chart ids, and NOAA archive versions are NOAA's
 `enc_ed_up` tokens, unchanged. A NOAA chart set saved by the plugin therefore
 maps onto the index by name: its selected band-4 ids are unit ids, and its
-stored versions match until NOAA really updates a cell. Unit ids are unique
-within a source; a unit is identified by its `source` and `id` together.
+stored versions match until NOAA really updates a cell.
+
+Every cell carries a `version` in that same form, so one freshness rule works
+for every source. For other sources it is built from the cell's DSID edition
+and update number, counting any update files next to the cell, e.g.
+`1R7WAD01_ED005_UP002`. A chart set can then fetch only the cells whose
+version changed.
 
 Outlines keep exterior rings only and are simplified with one fixed tolerance
 and rounding (`src/catalog/enc-outline.ts`), fine enough to keep a river's
@@ -94,15 +106,11 @@ merged catalog, because a Pages deployment replaces the whole site.
   are simplified and rounded by fixed rules, and everything is sorted. So a
   maintainer's machine and CI produce the same file and content hash.
 
-## The first build, and seeding CI
+## The first build
 
-The first full build downloads every archive, mostly from small government
-servers, which set the pace. It runs on a maintainer's machine rather than in
-CI: it has no time limit there, it resumes where it stopped, and an odd source
-is easier to debug interactively. The CLI is the same one CI runs; its header
-comment lists its flags.
-
-Until an index is published, CI starts from the `enc-index.json` asset of this
-repository's `enc-index-seed` release, if there is one. With the first local
-build uploaded there, the first CI run only reads what changed since. Without
-a seed, CI builds the index over several runs.
+The first build downloads every archive, mostly from small government
+servers, which set the pace. CI does it under the time budget: each run
+publishes what it has read, and the next scheduled run carries on, so the
+index fills over a few runs, all from the same image. The CLI is the same one
+CI runs and can be run locally to debug an odd source; its header comment
+lists its flags.

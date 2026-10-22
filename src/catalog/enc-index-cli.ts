@@ -19,7 +19,6 @@
  *   --index <file>           catalog/chartcatalogs-index.json
  *   --out <dir>              where enc-index.json and its schema are written
  *   --published-url <url>    the published enc-index.json, read as state
- *   --seed-url <url>         state to start from while nothing is published
  *   --work <dir>             keep each archive's GDAL report here, so a rerun
  *                            resumes, and a change to the outline rules
  *                            needs no downloads (default: a temp dir)
@@ -46,6 +45,7 @@ import { NOAA_ENC_GEOJSON_URL, parseFootprints } from '../utils/noaa-enc-footpri
 import { extractZipSafely } from '../utils/zip-extract.js';
 import {
   CELL_MARKER,
+  FEATURES_MARKER,
   UPDATE_FILE_NAME,
   archiveJobs,
   assembleEncIndex,
@@ -84,20 +84,22 @@ const GDAL_TIMEOUT_MS = 10 * 60 * 1000;
 /** How long an archive already in progress may run past `--max-minutes`. */
 const DEADLINE_GRACE_MS = 10 * 60 * 1000;
 
-// Prints a marker line per cell, then the cell's compilation scale and its
-// coverage polygons as GeoJSON text sequences. A cell whose M_COVR is
-// missing or empty (a few producers leave it out) gets its data extent
-// instead. GDAL's S-57 driver applies any update files (.001, ...) next to
-// the base cell before reading. One unreadable cell must not fail the
-// archive, hence the `|| true`s.
+// Prints a marker line per cell, then the cell's scale, edition and update
+// number and its coverage polygons as GeoJSON text sequences. A cell whose
+// M_COVR is missing or empty (a few producers leave it out) has every
+// feature dumped instead, for an outline of where its data is. GDAL's S-57
+// driver applies any update files (.001, ...) next to the base cell before
+// reading. One unreadable cell must not fail the archive, hence the
+// `|| true`s.
 const GDAL_SCRIPT = `for f in "$@"; do
   printf '${CELL_MARKER}%s\\n' "$f"
-  ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" DSID -select DSPM_CSCL || true
+  ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" DSID -select DSPM_CSCL,DSID_EDTN,DSID_UPDN || true
   covr=$(ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" M_COVR -select CATCOV || true)
   if [ -n "$covr" ]; then
     printf '%s\\n' "$covr"
   else
-    ogrinfo -ro -so -al "/data/$f" | grep '^Extent: ' || true
+    printf '${FEATURES_MARKER}\\n'
+    ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" -lco COORDINATE_PRECISION=3 || true
   fi
 done`;
 
@@ -128,31 +130,14 @@ async function fetchText(url: string): Promise<string | null> {
   return response.text();
 }
 
-/**
- * The state to build on: the published index, or the seed when nothing is
- * published yet. A seed is state only, so it never makes a build look
- * unchanged.
- */
-async function fetchPrevious(
-  publishedUrl: string,
-  seedUrl: string | undefined
-): Promise<{ previous: PublishedEncIndex | null; published: PublishedEncIndex | null }> {
+/** The published index, read back as the state to build on, or null before the first publish. */
+async function fetchPublished(publishedUrl: string): Promise<PublishedEncIndex | null> {
   const text = await fetchText(publishedUrl);
-  if (text !== null) {
-    const schemaText = await fetchText(new URL('enc-index.schema.json', publishedUrl).href);
-    const published = readPublishedEncIndex(JSON.parse(text), schemaText);
-    return { previous: published, published };
+  if (text === null) {
+    return null;
   }
-  if (seedUrl) {
-    const seed = await fetchText(seedUrl);
-    if (seed !== null) {
-      console.log(`No published ENC index yet; starting from the seed at ${seedUrl}`);
-      const previous = readPublishedEncIndex(JSON.parse(seed), null);
-      return { previous: { ...previous, contentHash: null }, published: null };
-    }
-    console.log(`::warning::No published ENC index and no seed at ${seedUrl}`);
-  }
-  return { previous: null, published: null };
+  const schemaText = await fetchText(new URL('enc-index.schema.json', publishedUrl).href);
+  return readPublishedEncIndex(JSON.parse(text), schemaText);
 }
 
 async function readNoaa(url: string): Promise<NoaaResult | { error: string }> {
@@ -392,7 +377,7 @@ async function readArchive(
 }
 
 /** Bumped when what the cache saves changes, so older entries are read again. */
-const CACHE_FORMAT = 2;
+const CACHE_FORMAT = 3;
 
 /**
  * What GDAL reported for each archive read, saved as it is read, so an
@@ -531,7 +516,6 @@ async function main(): Promise<void> {
       index: { type: 'string' },
       out: { type: 'string' },
       'published-url': { type: 'string' },
-      'seed-url': { type: 'string' },
       'noaa-url': { type: 'string', default: NOAA_ENC_GEOJSON_URL },
       work: { type: 'string' },
       sources: { type: 'string' },
@@ -569,12 +553,12 @@ async function main(): Promise<void> {
     sources.flatMap((s) => (s.file ? [s.file] : []))
   );
   const jobs = archiveJobs(sources, files);
-  const { previous, published } = await fetchPrevious(publishedUrl, values['seed-url']);
+  const published = await fetchPublished(publishedUrl);
   const noaa = selected(NOAA_SOURCE_ID) ? await readNoaa(values['noaa-url']) : null;
 
   const pending = jobsToBuild(
     jobs.filter((j) => selected(j.source)),
-    previous
+    published
   );
   console.log(
     `${String(jobs.length)} chartcatalogs ENC archives; ${String(pending.length)} to read this run`
@@ -616,7 +600,7 @@ async function main(): Promise<void> {
     failed,
     noaa,
     unreadSources,
-    previous,
+    previous: published,
     now: new Date()
   });
   for (const entry of result.carriedForward) {
@@ -631,8 +615,13 @@ async function main(): Promise<void> {
   for (const entry of result.separateUpdates) {
     console.log(`::notice::${entry} has updates published in a separate archive; flagged`);
   }
-  for (const entry of result.duplicateCells) {
-    console.log(`::notice::Duplicate cell ${entry}; kept the newer archive`);
+  const duplicates = new Map<string, number>();
+  for (const { kept, dropped } of result.duplicateCells) {
+    const pair = kept === dropped ? `${kept} (twice)` : `${kept} over ${dropped}`;
+    duplicates.set(pair, (duplicates.get(pair) ?? 0) + 1);
+  }
+  for (const [pair, count] of [...duplicates].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    console.log(`::notice::${String(count)} cell(s) published more than once: kept ${pair}`);
   }
   if (result.deferred.length > 0) {
     console.log(

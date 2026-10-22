@@ -10,7 +10,8 @@
  *   whose box overlaps it, so a NOAA unit id is the band-4 chart id a NOAA
  *   chart set already stores.
  * - Every other S-57 cell is its own unit, outlined by its real `M_COVR`
- *   coverage. A source shipped as one archive still has one unit per cell.
+ *   coverage. A source shipped as one archive still has one unit per cell,
+ *   and a cell several sources publish appears once (EuRIS's copy first).
  *
  * The file is also the build's state between runs: `archives` records the
  * version each archive was read at, so the next run downloads only archives
@@ -102,6 +103,13 @@ export const EncIndexCellSchema = Type.Object({
     description:
       'Path of the cell’s base file (".000") inside the archive, with "/" separators. For a "cell" archive it is the file name the download should be saved as. Update files (".001", ...) sit next to it.'
   }),
+  version: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description:
+        'The cell’s edition and update as one token in NOAA’s form, e.g. "US4FL1EP_ED003_UP012" (NOAA’s own enc_ed_up, unchanged) or "1R7WAD01_ED005_UP002" (from the cell’s DSID, plus any update files next to it). Compare it with a stored copy to see whether the cell changed.'
+    })
+  ),
   updatesPublishedSeparately: Type.Optional(
     Type.Literal(true, {
       description:
@@ -115,7 +123,7 @@ export const EncIndexUnitSchema = Type.Object({
   id: Type.String({
     minLength: 1,
     description:
-      'Unique within its source: the band-4 chart id for NOAA, the S-57 cell name otherwise.'
+      'The band-4 chart id for NOAA, the S-57 cell name otherwise. Non-NOAA ids are unique across the index: a cell several sources publish appears once, from EuRIS when it has the cell. NOAA ids are unique among NOAA units.'
   }),
   title: Type.String(),
   scale: Type.Optional(Type.Integer({ minimum: 1, description: 'Compilation scale denominator.' })),

@@ -36,9 +36,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # The ENC index reads changed archives for at most 45 minutes a run
-    # (--max-minutes) and leaves the rest for the next run.
-    timeout-minutes: 90
+    # The ENC index starts reading archives for up to 4 hours a run
+    # (--max-minutes) and leaves the rest for the next run, so the first
+    # build fills the index over a few runs. Later runs read only what
+    # changed and take minutes.
+    timeout-minutes: 300
     outputs:
       changed: ${{ steps.build.outputs.changed == 'true' || steps.enc-index.outputs.changed == 'true' }}
 
@@ -77,8 +79,7 @@ jobs:
             $FORCE
 
       # Downloads only archives whose date changed since the published index,
-      # and runs GDAL in the charts-toolbox image. Until an index is published
-      # it starts from the seed release asset (docs/enc-index.md).
+      # and runs GDAL in the charts-toolbox image (docs/enc-index.md).
       - name: Build ENC index
         id: enc-index
         env:
@@ -89,8 +90,7 @@ jobs:
             --index catalog/chartcatalogs-index.json \
             --out "$RUNNER_TEMP/site" \
             --published-url "https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/enc-index.json" \
-            --seed-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/enc-index-seed/enc-index.json" \
-            --max-minutes 45 \
+            --max-minutes 240 \
             $FORCE
 
       - name: Upload Pages artifact

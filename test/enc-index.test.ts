@@ -4,6 +4,7 @@ import { Value } from 'typebox/value';
 
 import {
   OUTLINE_TOLERANCE,
+  gridOutline,
   outlineFromCoverage,
   reduceRing,
   roundCoord,
@@ -13,7 +14,10 @@ import {
 import {
   ARCHIVE_REVISION,
   CELL_MARKER,
+  FEATURES_MARKER,
+  PREFERRED_SOURCE,
   archiveJobs,
+  cellVersion,
   assembleEncIndex,
   decideEncIndexPublish,
   encIndexBlockers,
@@ -26,6 +30,7 @@ import {
   unitsForArchive,
   type ArchiveJob,
   type ArchiveResult,
+  type CellReport,
   type EncIndexInputs,
   type NoaaResult
 } from '../dist/catalog/build-enc-index.js';
@@ -47,6 +52,14 @@ function square(west: number, south: number, size: number): Position[] {
     [west, south + size],
     [west, south]
   ];
+}
+
+function cellReport(
+  path: string,
+  coverage: Position[][][],
+  extra: Partial<CellReport> = {}
+): CellReport {
+  return { path, scale: null, edition: null, update: null, coverage, ...extra };
 }
 
 describe('enc outlines', () => {
@@ -134,7 +147,37 @@ describe('enc outlines', () => {
   it('returns null when there is no coverage', () => {
     assert.strictEqual(outlineFromCoverage([]), null);
   });
+
+  it('outlines scattered features by the grid squares they fall in, merged along rows', () => {
+    const result = gridOutline([
+      [-90.05, 30.05],
+      [-90.15, 30.02],
+      [-90.15, 30.08],
+      [-87.55, 41.85]
+    ]);
+    assert.deepStrictEqual(result, {
+      outline: {
+        type: 'MultiPolygon',
+        coordinates: [[bboxRingOf(-90.2, 30, -90, 30.1)], [bboxRingOf(-87.6, 41.8, -87.5, 41.9)]]
+      },
+      bbox: [-90.2, 30, -87.5, 41.9]
+    });
+  });
+
+  it('returns no grid outline without positions', () => {
+    assert.strictEqual(gridOutline([]), null);
+  });
 });
+
+function bboxRingOf(west: number, south: number, east: number, north: number): Position[] {
+  return [
+    [west, south],
+    [east, south],
+    [east, north],
+    [west, north],
+    [west, south]
+  ];
+}
 
 describe('parseGdalReport', () => {
   it('counts an M_COVR object without CATCOV as coverage', () => {
@@ -176,9 +219,54 @@ describe('parseGdalReport', () => {
       ''
     ].join('\n');
     assert.deepStrictEqual(parseGdalReport(report), [
-      { path: 'ENC_ROOT/AA1/AA1.000', scale: 4000, coverage: [[square(0, 0, 1)]] },
-      { path: 'BB2.000', scale: null, coverage: [[square(0, 0, 1)], [square(2, 0, 1)]] }
+      cellReport('ENC_ROOT/AA1/AA1.000', [[square(0, 0, 1)]], { scale: 4000 }),
+      cellReport('BB2.000', [[square(0, 0, 1)], [square(2, 0, 1)]])
     ]);
+  });
+
+  it('reads the edition and update GDAL gives as text', () => {
+    const [report] = parseGdalReport(
+      [
+        `${CELL_MARKER}1R7WAD01.000`,
+        JSON.stringify({
+          type: 'Feature',
+          properties: { DSPM_CSCL: 8000, DSID_EDTN: '5', DSID_UPDN: '2' },
+          geometry: null
+        })
+      ].join('\n')
+    );
+    assert.deepStrictEqual([report.edition, report.update], [5, 2]);
+  });
+
+  it('keeps only the distinct positions of a dumped cell, rounded to 0.001 degree', () => {
+    const [report] = parseGdalReport(
+      [
+        `${CELL_MARKER}3UABUOYS.000`,
+        FEATURES_MARKER,
+        JSON.stringify({
+          type: 'Feature',
+          properties: { OBJNAM: 'Buoy 1' },
+          geometry: { type: 'Point', coordinates: [-90.12341, 30.00049] }
+        }),
+        JSON.stringify({
+          type: 'Feature',
+          properties: {},
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [-90.1234, 30.0001],
+              [-90.2, 30.1]
+            ]
+          }
+        }),
+        `${CELL_MARKER}NEXT.000`
+      ].join('\n')
+    );
+    assert.deepStrictEqual(report.points, [
+      [-90.123, 30],
+      [-90.2, 30.1]
+    ]);
+    assert.deepStrictEqual(report.coverage, []);
   });
 });
 
@@ -192,9 +280,9 @@ const JOB: ArchiveJob = {
 describe('unitsForArchive', () => {
   it('makes one unit per cell, naming cells of a shared archive', () => {
     const result = unitsForArchive(JOB, 'zip', [
-      { path: 'R/1X7RIV02.000', scale: 5000, coverage: [[square(1, 0, 1)]] },
-      { path: 'R/1X7RIV01.000', scale: null, coverage: [[square(0, 0, 1)]] },
-      { path: 'R/1X7RIV03.000', scale: 5000, coverage: [] }
+      cellReport('R/1X7RIV02.000', [[square(1, 0, 1)]], { scale: 5000 }),
+      cellReport('R/1X7RIV01.000', [[square(0, 0, 1)]]),
+      cellReport('R/1X7RIV03.000', [], { scale: 5000 })
     ]);
     assert.deepStrictEqual(result.archive, {
       url: JOB.url,
@@ -225,35 +313,44 @@ describe('unitsForArchive', () => {
     assert.deepStrictEqual(result.problems, ['R/1X7RIV03.000: no usable M_COVR coverage']);
   });
 
-  it('outlines a cell without M_COVR by its data extent', () => {
-    const [report] = parseGdalReport(
-      `${CELL_MARKER}4C7RH149.000\nExtent: (7.550000, 47.516667) - (7.791333, 47.590905)\n`
-    );
-    const result = unitsForArchive(JOB, 'zip', [report]);
-    assert.deepStrictEqual(result.units[0].bbox, [7.55, 47.51667, 7.79133, 47.59091]);
-    assert.strictEqual(result.units[0].outline.type, 'Polygon');
+  it('outlines a cell without M_COVR from where its features are', () => {
+    const result = unitsForArchive(JOB, 'zip', [
+      cellReport('3UABUOYS.000', [], {
+        points: [
+          [-90.05, 30.05],
+          [-87.55, 41.85]
+        ]
+      })
+    ]);
+    assert.strictEqual(result.units[0].outline.type, 'MultiPolygon');
+    assert.deepStrictEqual(result.units[0].bbox, [-90.1, 30, -87.5, 41.9]);
     assert.deepStrictEqual(result.problems, [
-      '4C7RH149.000: no M_COVR coverage; outlined by its data extent'
+      '3UABUOYS.000: no M_COVR coverage; outlined from where its features are'
     ]);
   });
 
-  it('outlines a cell without M_COVR by the union of its layer extents', () => {
-    const [report] = parseGdalReport(
-      [
-        `${CELL_MARKER}X.000`,
-        'Extent: (7.600000, 47.500000) - (7.600000, 47.500000)',
-        'Extent: (7.550000, 47.520000) - (7.790000, 47.590000)'
-      ].join('\n')
+  it('versions each cell from its edition, its update and the update files beside it', () => {
+    const report = cellReport('ENC_ROOT/1R7WAD01/1R7WAD01.000', [], { edition: 5, update: 0 });
+    const files = [
+      'ENC_ROOT/1R7WAD01/1R7WAD01.001',
+      'ENC_ROOT/1R7WAD01/1R7WAD01.002',
+      'ENC_ROOT/1R7WAD01/1R7WAD01.004',
+      'OTHER/1R7WAD01.003',
+      'ENC_ROOT/1R7WAD01/1R7WAD02.003'
+    ];
+    assert.strictEqual(cellVersion(report, '1R7WAD01', files), '1R7WAD01_ED005_UP002');
+    assert.strictEqual(
+      cellVersion({ ...report, update: 11 }, '1R7WAD01', []),
+      '1R7WAD01_ED005_UP011'
     );
-    assert.deepStrictEqual(report.extent, [7.55, 47.5, 7.79, 47.59]);
+    assert.strictEqual(cellVersion({ ...report, edition: null }, '1R7WAD01', files), undefined);
   });
 
   it('keeps a cell whose coverage strays past the antimeridian, and drops a zero scale', () => {
     const result = unitsForArchive(JOB, 'zip', [
-      {
-        path: 'X.000',
-        scale: 0,
-        coverage: [
+      cellReport(
+        'X.000',
+        [
           [
             [
               [179.5, 50],
@@ -263,8 +360,9 @@ describe('unitsForArchive', () => {
               [179.5, 50]
             ]
           ]
-        ]
-      }
+        ],
+        { scale: 0 }
+      )
     ]);
     assert.deepStrictEqual(result.problems, []);
     assert.deepStrictEqual(result.units[0].bbox, [179.5, 50, 180, 51]);
@@ -275,7 +373,7 @@ describe('unitsForArchive', () => {
     const result = unitsForArchive(
       JOB,
       'zip',
-      [{ path: 'ENC_ROOT/EA200004.000', scale: null, coverage: [[square(0, 0, 1)]] }],
+      [cellReport('ENC_ROOT/EA200004.000', [[square(0, 0, 1)]])],
       [
         'ENC_ROOT/CATALOG.031',
         'ENC_ROOT/EA200004.001',
@@ -292,8 +390,8 @@ describe('unitsForArchive', () => {
 
   it('uses the entry title as-is for a single cell, and keeps the first of a repeated cell', () => {
     const result = unitsForArchive({ ...JOB, title: '1X7RIV01 - River' }, 'zip', [
-      { path: 'a/1X7RIV01.000', scale: null, coverage: [[square(0, 0, 1)]] },
-      { path: 'b/1X7RIV01.000', scale: null, coverage: [[square(0, 0, 1)]] }
+      cellReport('a/1X7RIV01.000', [[square(0, 0, 1)]]),
+      cellReport('b/1X7RIV01.000', [[square(0, 0, 1)]])
     ]);
     assert.deepStrictEqual(
       result.units.map((u) => [u.title, u.cells[0].path]),
@@ -448,12 +546,14 @@ describe('noaaUnits', () => {
       {
         name: 'US4ZZ1ZZ',
         archive: 'https://charts.noaa.gov/ENCs/US4ZZ1ZZ.zip',
-        path: 'ENC_ROOT/US4ZZ1ZZ/US4ZZ1ZZ.000'
+        path: 'ENC_ROOT/US4ZZ1ZZ/US4ZZ1ZZ.000',
+        version: 'US4ZZ1ZZ_ED001_UP000'
       },
       {
         name: 'US5ZZ1ZZ',
         archive: 'https://charts.noaa.gov/ENCs/US5ZZ1ZZ.zip',
-        path: 'ENC_ROOT/US5ZZ1ZZ/US5ZZ1ZZ.000'
+        path: 'ENC_ROOT/US5ZZ1ZZ/US5ZZ1ZZ.000',
+        version: 'US5ZZ1ZZ_ED001_UP000'
       }
     ]);
   });
@@ -480,9 +580,9 @@ const SOURCES = encSources({
   }
 });
 
-function job(name: string, version = 'v1'): ArchiveJob {
+function job(name: string, version = 'v1', source = 'XX_IENC_Catalog'): ArchiveJob {
   return {
-    source: 'XX_IENC_Catalog',
+    source,
     url: `https://example.com/${name}.zip`,
     version,
     title: name
@@ -493,11 +593,7 @@ function built(j: ArchiveJob, cells: string[], west = 0): ArchiveResult {
   return unitsForArchive(
     j,
     'zip',
-    cells.map((name, i) => ({
-      path: `${name}.000`,
-      scale: null,
-      coverage: [[square(west + i, 45, 0.5)]]
-    }))
+    cells.map((name, i) => cellReport(`${name}.000`, [[square(west + i, 45, 0.5)]]))
   );
 }
 
@@ -704,6 +800,34 @@ describe('assembleEncIndex', () => {
     );
     assert.deepStrictEqual(result.carriedForward, ['noaa: timeout']);
     assert.strictEqual(result.index.units.filter((u) => u.source === 'noaa').length, 3);
+  });
+
+  it('keeps one unit per cell across sources, taking EuRIS first', () => {
+    const euris = job('euris-a', '2026-01-01', PREFERRED_SOURCE);
+    const national = job('national', '2026-09-01');
+    const result = assembleEncIndex(
+      inputs({
+        sources: [
+          ...SOURCES,
+          { id: PREFERRED_SOURCE, label: 'EuRIS', kind: 'chartcatalogs', file: 'EURIS.xml' }
+        ],
+        jobs: [euris, national],
+        built: new Map([
+          [jobKey(euris), built(euris, ['1X7SHR01'])],
+          [jobKey(national), built(national, ['1X7SHR01', '1X7NAT01'])]
+        ])
+      })
+    );
+    const cells = result.index.units
+      .filter((u) => u.source !== 'noaa')
+      .map((u) => [u.id, u.source]);
+    assert.deepStrictEqual(cells, [
+      ['1X7SHR01', PREFERRED_SOURCE],
+      ['1X7NAT01', 'XX_IENC_Catalog']
+    ]);
+    assert.deepStrictEqual(result.duplicateCells, [
+      { cell: '1X7SHR01', kept: PREFERRED_SOURCE, dropped: 'XX_IENC_Catalog' }
+    ]);
   });
 
   it('keeps the cell from the newer archive when two archives of a source have it', () => {
