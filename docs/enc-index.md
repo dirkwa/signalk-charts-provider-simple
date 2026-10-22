@@ -18,7 +18,7 @@ the merged catalog's compatibility policy:
 
 chartcatalogs lists ENC downloads, but not where each chart is. Its catalogs
 have one hand-entered box per source, and many entries are archives holding
-dozens of cells: Austria ships 269 cells in one ZIP. The only way to know where
+many cells; Austria ships all of its cells in one ZIP. The only way to know where
 each cell is, is to download every archive and read each cell's `M_COVR`
 (coverage) objects. Doing that once, in CI, means:
 
@@ -59,8 +59,8 @@ maps onto the index by name: its selected band-4 ids are unit ids, and its
 stored versions match until NOAA really updates a cell. Unit ids are unique
 within a source; a unit is identified by its `source` and `id` together.
 
-Outlines keep exterior rings only and are simplified with a fixed tolerance
-(about 11 m), with coordinates rounded to about 1 m. That keeps a river's
+Outlines keep exterior rings only and are simplified with one fixed tolerance
+and rounding (`src/catalog/enc-outline.ts`), fine enough to keep a river's
 outline on the river while keeping the file small.
 
 ## How it is built
@@ -84,8 +84,9 @@ merged catalog, because a Pages deployment replaces the whole site.
 - **A drop guard** refuses to publish when units fall sharply. It checks the
   total, and each source that had at least ten units. A maintainer can
   override it with the workflow's `force` input once the drop is understood.
-- **A time budget.** A run reads changed archives for at most 45 minutes. Any
-  left over keep their published units and are read on the next run.
+- **A time budget.** The workflow gives each run a fixed time to read changed
+  archives. Any left over keep their published units and are read on the next
+  run.
 - **Polite downloads.** Archives are fetched one at a time per host, with a
   pause between requests. Different hosts run side by side.
 - **Identical output everywhere.** GDAL runs in the charts-toolbox image
@@ -93,33 +94,15 @@ merged catalog, because a Pages deployment replaces the whole site.
   are simplified and rounded by fixed rules, and everything is sorted. So a
   maintainer's machine and CI produce the same file and content hash.
 
-## Running it locally
+## The first build, and seeding CI
 
-The first full build downloads every archive, about 1700 of them, mostly from
-small government servers. It runs on a maintainer's machine rather than in CI.
-It needs Docker (or Podman with `--runtime podman`) and a clone of
-chartcatalogs:
+The first full build downloads every archive, mostly from small government
+servers, which set the pace. It runs on a maintainer's machine rather than in
+CI: it has no time limit there, it resumes where it stopped, and an odd source
+is easier to debug interactively. The CLI is the same one CI runs; its header
+comment lists its flags.
 
-```bash
-git clone --depth 1 https://github.com/chartcatalogs/catalogs.git /tmp/chartcatalogs
-npm run build
-node dist/catalog/enc-index-cli.js \
-  --chartcatalogs /tmp/chartcatalogs \
-  --index catalog/chartcatalogs-index.json \
-  --out /tmp/enc-index \
-  --work /tmp/enc-index-work \
-  --published-url https://dirkwa.github.io/signalk-charts-provider-simple/enc-index.json
-```
-
-- `--work` keeps what each archive gave, so an interrupted run picks up where it
-  stopped and a rerun after a change to the outline rules downloads nothing.
-- `--sources noaa,AT_IENC_Catalog` reads only those sources. Every other source
-  keeps what the published index has.
-- `--max-minutes` and `--delay-ms` set the time budget and the pause between
-  requests to one host.
-
-**Seeding CI.** Until an index is published, CI starts from the
-`enc-index.json` asset of this repository's `enc-index-seed` release, if there
-is one. Upload a local first build there, and the first CI run only reads what
-changed since. Without a seed, CI builds the index over several runs, 45 minutes
-at a time.
+Until an index is published, CI starts from the `enc-index.json` asset of this
+repository's `enc-index-seed` release, if there is one. With the first local
+build uploaded there, the first CI run only reads what changed since. Without
+a seed, CI builds the index over several runs.

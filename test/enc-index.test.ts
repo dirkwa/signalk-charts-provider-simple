@@ -223,6 +223,40 @@ describe('unitsForArchive', () => {
     ]);
   });
 
+  it('outlines a cell without M_COVR by the union of its layer extents', () => {
+    const [report] = parseGdalReport(
+      [
+        `${CELL_MARKER}X.000`,
+        'Extent: (7.600000, 47.500000) - (7.600000, 47.500000)',
+        'Extent: (7.550000, 47.520000) - (7.790000, 47.590000)'
+      ].join('\n')
+    );
+    assert.deepStrictEqual(report.extent, [7.55, 47.5, 7.79, 47.59]);
+  });
+
+  it('keeps a cell whose coverage strays past the antimeridian, and drops a zero scale', () => {
+    const result = unitsForArchive(JOB, 'zip', [
+      {
+        path: 'X.000',
+        scale: 0,
+        coverage: [
+          [
+            [
+              [179.5, 50],
+              [180.2, 50],
+              [180.2, 51],
+              [179.5, 51],
+              [179.5, 50]
+            ]
+          ]
+        ]
+      }
+    ]);
+    assert.deepStrictEqual(result.problems, []);
+    assert.deepStrictEqual(result.units[0].bbox, [179.5, 50, 180, 51]);
+    assert.strictEqual(result.units[0].scale, undefined);
+  });
+
   it('records only the update files whose base cell is in another archive', () => {
     const result = unitsForArchive(
       JOB,
@@ -624,6 +658,21 @@ describe('assembleEncIndex', () => {
     assert.ok(result.index.units.some((u) => u.id === '1X7BBB01'));
   });
 
+  it('keeps the published units of a source whose catalog could not be read', () => {
+    const result = assembleEncIndex(
+      inputs({
+        jobs: [],
+        unreadSources: new Set(['XX_IENC_Catalog']),
+        previous: published(first)
+      })
+    );
+    assert.deepStrictEqual(result.carriedForward, [
+      'XX_IENC_Catalog: its catalog could not be read'
+    ]);
+    assert.deepStrictEqual(result.removedUpstream, []);
+    assert.strictEqual(result.index.units.filter((u) => u.source === 'XX_IENC_Catalog').length, 3);
+  });
+
   it('removes archives their source no longer lists', () => {
     const result = assembleEncIndex(inputs({ jobs: [a], previous: published(first) }));
     assert.deepStrictEqual(result.removedUpstream, [jobKey(b)]);
@@ -657,16 +706,25 @@ describe('assembleEncIndex', () => {
 });
 
 describe('readPublishedEncIndex', () => {
-  it('skips entries that no longer validate and counts units from the raw array', () => {
+  it('rebuilds an archive with a unit that no longer validates, and counts units from the raw array', () => {
     const a = job('a');
+    const b = job('b');
     const index = assembleEncIndex(
-      inputs({ jobs: [a], built: new Map([[jobKey(a), built(a, ['1X7AAA01', '1X7AAA02'])]]) })
+      inputs({
+        jobs: [a, b],
+        built: new Map([
+          [jobKey(a), built(a, ['1X7AAA01', '1X7AAA02'])],
+          [jobKey(b), built(b, ['1X7BBB01'], 5)]
+        ])
+      })
     ).index;
     const raw = JSON.parse(JSON.stringify(index)) as { units: unknown[] };
     (raw.units[0] as { outline: unknown }).outline = 'broken';
     const state = readPublishedEncIndex(raw, null);
     assert.strictEqual(state.unitCount, index.units.length);
-    assert.strictEqual(state.archives.get(jobKey(a))?.units.length, 1);
+    assert.strictEqual(state.archives.get(jobKey(a)), undefined);
+    assert.strictEqual(state.archives.get(jobKey(b))?.units.length, 1);
+    assert.deepStrictEqual(jobsToBuild([a, b], state), [a]);
     assert.strictEqual(state.noaa?.units.length, 3);
   });
 

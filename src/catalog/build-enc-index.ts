@@ -118,7 +118,7 @@ export interface CellReport {
   scale: number | null;
   /** Polygons (as GeoJSON rings) of the cell's `M_COVR` objects with CATCOV = 1. */
   coverage: Position[][][];
-  /** The cell's data extent, reported only when it has no `M_COVR` layer. */
+  /** The union of the cell's layer extents, reported only when it has no `M_COVR` layer. */
   extent?: Bbox;
 }
 
@@ -147,9 +147,19 @@ export function parseGdalReport(stdout: string): CellReport[] {
     if (!current) {
       continue;
     }
+    // ogrinfo prints one extent per layer; the cell's is their union.
     const extent = EXTENT_LINE.exec(line);
     if (extent) {
-      current.extent = extent.slice(1, 5).map(Number) as Bbox;
+      const [west, south, east, north] = extent.slice(1, 5).map(Number);
+      const prev = current.extent;
+      current.extent = prev
+        ? [
+            Math.min(prev[0], west),
+            Math.min(prev[1], south),
+            Math.max(prev[2], east),
+            Math.max(prev[3], north)
+          ]
+        : [west, south, east, north];
       continue;
     }
     if (!line.startsWith('{')) {
@@ -256,16 +266,23 @@ export function unitsForArchive(
     if (report.coverage.length === 0) {
       problems.push(`${report.path}: no M_COVR coverage; outlined by its data extent`);
     }
-    units.set(name, {
+    const unit: EncIndexUnit = {
       source: job.source,
       id: name,
       title: unitTitle(job.title, name, sorted.length),
-      ...(report.scale !== null ? { scale: report.scale } : {}),
+      ...(report.scale !== null && report.scale >= 1 ? { scale: report.scale } : {}),
       bbox: reduced.bbox,
       outline: reduced.outline,
       cells: [{ name, archive: job.url, path: report.path }],
       statusCells: [name]
-    });
+    };
+    // Downloaded data is checked here, cell by cell: one odd cell must cost
+    // that cell, not fail the whole index at the final validation.
+    if (!Value.Check(EncIndexUnitSchema, unit)) {
+      problems.push(`${report.path}: ${schemaErrors(EncIndexUnitSchema, unit).join('; ')}`);
+      continue;
+    }
+    units.set(name, unit);
   }
   // Update files whose base cell is in this archive are applied by GDAL
   // with it. The rest correct cells published elsewhere.
@@ -378,8 +395,8 @@ export interface PublishedEncIndex {
 /**
  * Read a published index loosely. It may predate the current schema, so
  * the counts the drop guard uses come from the raw arrays, and archives and
- * units are validated one by one: anything that no longer validates is
- * rebuilt rather than carried forward.
+ * units are validated one by one: an archive with any unit that no longer
+ * validates is rebuilt rather than carried forward.
  */
 export function readPublishedEncIndex(raw: unknown, schemaText: string | null): PublishedEncIndex {
   const obj = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
@@ -423,11 +440,11 @@ export function readPublishedEncIndex(raw: unknown, schemaText: string | null): 
     }
     archives.get(jobKey({ source: unit.source, url: unit.cells[0].archive }))?.units.push(unit);
   }
-  // An archive whose units were all invalid has nothing to carry forward;
-  // dropping it also makes the next build download it again. One that never
-  // had units (update files only) is kept as it is.
+  // Dropping an archive with an invalid unit makes the next build download
+  // it again, rather than carrying the rest forward without that unit. One
+  // that never had units (update files only) is kept as it is.
   for (const [key, entry] of archives) {
-    if (entry.units.length === 0 && (rawUnitsByArchive.get(key) ?? 0) > 0) {
+    if (entry.units.length < (rawUnitsByArchive.get(key) ?? 0)) {
       archives.delete(key);
     }
   }
@@ -468,6 +485,13 @@ export interface EncIndexInputs {
   failed: ReadonlyMap<string, string>;
   /** NOAA's units, an error, or null when NOAA was not read this run. */
   noaa: NoaaResult | { error: string } | null;
+  /**
+   * chartcatalogs sources whose catalog file could not be read, or listed
+   * nothing, this run. Their published archives are kept rather than
+   * treated as withdrawn: a broken upstream file is far more likely than a
+   * withdrawn source.
+   */
+  unreadSources?: ReadonlySet<string>;
   previous: PublishedEncIndex | null;
   now: Date;
 }
@@ -596,6 +620,18 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
       }
       deferred.push(key);
     }
+  }
+
+  const unread = new Set<string>();
+  for (const [key, entry] of previous?.archives ?? []) {
+    if (!listed.has(key) && inputs.unreadSources?.has(entry.archive.source)) {
+      take(entry);
+      listed.add(key);
+      unread.add(entry.archive.source);
+    }
+  }
+  for (const source of [...unread].sort(compareStrings)) {
+    carriedForward.push(`${source}: its catalog could not be read`);
   }
 
   const duplicateCells: string[] = [];

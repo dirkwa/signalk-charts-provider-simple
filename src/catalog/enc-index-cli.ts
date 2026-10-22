@@ -11,6 +11,25 @@
  * same pinned version locally and in CI, so both produce the same file.
  *
  * Writes `changed=true|false` to `$GITHUB_OUTPUT`.
+ *
+ * Needs Docker (or Podman) and a clone of chartcatalogs. After `npm run
+ * build`, run `node dist/catalog/enc-index-cli.js` with:
+ *
+ *   --chartcatalogs <dir>    a clone of github.com/chartcatalogs/catalogs
+ *   --index <file>           catalog/chartcatalogs-index.json
+ *   --out <dir>              where enc-index.json and its schema are written
+ *   --published-url <url>    the published enc-index.json, read as state
+ *   --seed-url <url>         state to start from while nothing is published
+ *   --work <dir>             keep each archive's GDAL report here, so a rerun
+ *                            resumes, and a change to the outline rules
+ *                            needs no downloads (default: a temp dir)
+ *   --sources <ids>          read only these sources (comma-separated, e.g.
+ *                            noaa,AT_IENC_Catalog); the rest keep what is
+ *                            published
+ *   --max-minutes <n>        start no archive after n minutes
+ *   --delay-ms <n>           pause between requests to one host (1000)
+ *   --runtime <cmd>          docker (default) or podman
+ *   --force                  publish past the drop guard
  */
 
 import { spawn } from 'node:child_process';
@@ -51,8 +70,18 @@ const USER_AGENT =
   'signalk-charts-provider-simple ENC index (+https://github.com/dirkwa/signalk-charts-provider-simple)';
 /** No single ENC archive comes near this; it only protects the runner's disk. */
 const MAX_DOWNLOAD_BYTES = 4 * 1024 * 1024 * 1024;
-const DOWNLOAD_TIMEOUT_MS = 20 * 60 * 1000;
+/**
+ * Cap on what one archive may expand to. Hosts are read side by side on a
+ * CI runner with about 14 GB free, so the plugin's 100 GB default for chart
+ * bundles is far too generous here.
+ */
+const MAX_EXTRACT_BYTES = 4 * 1024 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const RETRY_DELAY_MS = 15000;
+/** A GDAL run longer than this is treated as hung on a malformed cell. */
+const GDAL_TIMEOUT_MS = 10 * 60 * 1000;
+/** How long an archive already in progress may run past `--max-minutes`. */
+const DEADLINE_GRACE_MS = 10 * 60 * 1000;
 
 // Prints a marker line per cell, then the cell's compilation scale and its
 // coverage polygons as GeoJSON text sequences. A cell without M_COVR (a few
@@ -63,7 +92,7 @@ const GDAL_SCRIPT = `for f in "$@"; do
   printf '${CELL_MARKER}%s\\n' "$f"
   ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" DSID -select DSPM_CSCL || true
   if ! ogr2ogr -f GeoJSONSeq /vsistdout/ "/data/$f" M_COVR -select CATCOV; then
-    ogrinfo -ro -so -al "/data/$f" | grep -m1 '^Extent: ' || true
+    ogrinfo -ro -so -al "/data/$f" | grep '^Extent: ' || true
   fi
 done`;
 
@@ -152,12 +181,13 @@ async function readChartcatalogs(
 
 class TransientError extends Error {}
 
-async function downloadOnce(url: string, target: string): Promise<void> {
+async function downloadOnce(url: string, target: string, stop?: AbortSignal): Promise<void> {
+  const timeout = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(url, {
       headers: { 'User-Agent': USER_AGENT },
-      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
+      signal: stop ? AbortSignal.any([timeout, stop]) : timeout
     });
   } catch (err) {
     // fetch reports every network failure as "fetch failed"; the reason is
@@ -193,15 +223,15 @@ async function downloadOnce(url: string, target: string): Promise<void> {
 }
 
 /** Download with one retry for network errors and 5xx answers. */
-async function download(url: string, target: string): Promise<void> {
+async function download(url: string, target: string, stop?: AbortSignal): Promise<void> {
   try {
-    await downloadOnce(url, target);
+    await downloadOnce(url, target, stop);
   } catch (err) {
-    if (!(err instanceof TransientError)) {
+    if (!(err instanceof TransientError) || stop?.aborted) {
       throw err;
     }
     await sleep(RETRY_DELAY_MS);
-    await downloadOnce(url, target);
+    await downloadOnce(url, target, stop);
   }
 }
 
@@ -248,13 +278,15 @@ function cellFileName(job: ArchiveJob): string {
   return `${job.title.replace(/[^\w-]+/g, '_') || 'cell'}.000`;
 }
 
-function runGdal(runtime: string, dir: string, cells: string[]): Promise<string> {
+function runGdal(runtime: string, dir: string, cells: string[], name: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       runtime,
       [
         'run',
         '--rm',
+        '--name',
+        name,
         '--network',
         'none',
         '-v',
@@ -268,15 +300,28 @@ function runGdal(runtime: string, dir: string, cells: string[]): Promise<string>
       ],
       { stdio: ['ignore', 'pipe', 'pipe'] }
     );
+    // Killing the CLI process would leave the container running, so a hung
+    // run is removed by name.
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      spawn(runtime, ['rm', '-f', name], { stdio: 'ignore' }).on('error', () => undefined);
+    }, GDAL_TIMEOUT_MS);
     const out: Buffer[] = [];
     let err = '';
     child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => {
       err = (err + chunk.toString()).slice(-4000);
     });
-    child.on('error', reject);
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on('close', (code) => {
-      if (code === 0) {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`GDAL took longer than ${String(GDAL_TIMEOUT_MS / 60000)} minutes`));
+      } else if (code === 0) {
         resolve(Buffer.concat(out).toString('utf8'));
       } else {
         reject(
@@ -287,7 +332,6 @@ function runGdal(runtime: string, dir: string, cells: string[]): Promise<string>
   });
 }
 
-/** Download one archive, read its cells' coverage, and build its units. */
 /** What GDAL reported for one downloaded archive. */
 interface ArchiveReport {
   kind: 'zip' | 'cell';
@@ -297,16 +341,21 @@ interface ArchiveReport {
 }
 
 /** Download one archive and read its cells' scale and coverage. */
-async function readArchive(job: ArchiveJob, tmp: string, runtime: string): Promise<ArchiveReport> {
+async function readArchive(
+  job: ArchiveJob,
+  tmp: string,
+  runtime: string,
+  stop?: AbortSignal
+): Promise<ArchiveReport> {
   fs.rmSync(tmp, { recursive: true, force: true });
   const contents = path.join(tmp, 'contents');
   fs.mkdirSync(contents, { recursive: true });
   try {
     const downloaded = path.join(tmp, 'download');
-    await download(job.url, downloaded);
+    await download(job.url, downloaded, stop);
     const kind = kindOf(downloaded);
     if (kind === 'zip') {
-      await extractZipSafely(downloaded, contents);
+      await extractZipSafely(downloaded, contents, { maxTotalBytes: MAX_EXTRACT_BYTES });
     } else if (kind === 'cell') {
       fs.renameSync(downloaded, path.join(contents, cellFileName(job)));
     } else {
@@ -322,7 +371,14 @@ async function readArchive(job: ArchiveJob, tmp: string, runtime: string): Promi
     }
     return {
       kind,
-      reports: parseGdalReport(await runGdal(runtime, contents, cells)),
+      reports: parseGdalReport(
+        await runGdal(
+          runtime,
+          contents,
+          cells,
+          `enc-index-${path.basename(tmp)}-${String(process.pid)}`
+        )
+      ),
       updateFiles
     };
   } finally {
@@ -379,7 +435,10 @@ interface BuildOptions {
   runtime: string;
   work: string;
   delayMs: number;
+  /** No archive is started after this time (epoch ms). */
   deadline: number;
+  /** Aborts downloads still running well past the deadline. */
+  stop?: AbortSignal;
 }
 
 /**
@@ -428,7 +487,8 @@ async function buildJobs(
           const report = await readArchive(
             job,
             path.join(options.work, 'tmp', hashKey(key)),
-            options.runtime
+            options.runtime,
+            options.stop
           );
           cache.put(job, report);
           const result = unitsForArchive(job, report.kind, report.reports, report.updateFiles);
@@ -449,6 +509,14 @@ async function buildJobs(
     })
   );
   return { built, failed };
+}
+
+function positiveNumber(flag: string, value: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`${flag} must be a number of zero or more, not "${value}"`);
+  }
+  return n;
 }
 
 async function main(): Promise<void> {
@@ -509,14 +577,20 @@ async function main(): Promise<void> {
 
   const ownWork = !values.work;
   const work = values.work ?? fs.mkdtempSync(path.join(os.tmpdir(), 'enc-index-'));
-  const maxMinutes = values['max-minutes'] ? Number(values['max-minutes']) : Infinity;
+  const maxMinutes = values['max-minutes']
+    ? positiveNumber('--max-minutes', values['max-minutes'])
+    : Infinity;
+  const budgetMs = maxMinutes * 60000;
   let outcome: Awaited<ReturnType<typeof buildJobs>>;
   try {
     outcome = await buildJobs(pending, {
       runtime: values.runtime,
       work,
-      delayMs: Number(values['delay-ms']),
-      deadline: Date.now() + maxMinutes * 60000
+      delayMs: positiveNumber('--delay-ms', values['delay-ms']),
+      deadline: Date.now() + budgetMs,
+      ...(Number.isFinite(budgetMs)
+        ? { stop: AbortSignal.timeout(budgetMs + DEADLINE_GRACE_MS) }
+        : {})
     });
   } finally {
     if (ownWork) {
@@ -525,12 +599,18 @@ async function main(): Promise<void> {
   }
 
   const { built, failed } = outcome;
+  const unreadSources = new Set(
+    sources
+      .filter((s) => s.file && !files.find((f) => f.file === s.file)?.parsed?.charts.length)
+      .map((s) => s.id)
+  );
   const result = assembleEncIndex({
     sources,
     jobs,
     built,
     failed,
     noaa,
+    unreadSources,
     previous,
     now: new Date()
   });

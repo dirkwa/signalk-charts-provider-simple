@@ -44,6 +44,18 @@ export function roundCoord(value: number): number {
   return Math.round(value * SCALE) / SCALE + 0;
 }
 
+/**
+ * A position rounded and kept on the globe. A producer's coverage can poke
+ * a little past ±180°, and one such point must not make the whole index
+ * fail validation.
+ */
+function finishPosition([lon, lat]: Position): Position {
+  return [
+    Math.min(180, Math.max(-180, roundCoord(lon))),
+    Math.min(90, Math.max(-90, roundCoord(lat)))
+  ];
+}
+
 function squaredSegmentDistance(p: Position, a: Position, b: Position): number {
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];
@@ -145,16 +157,13 @@ export function reduceRing(ring: readonly Position[]): Ring | null {
     finite[0][0] === finite[finite.length - 1][0] && finite[0][1] === finite[finite.length - 1][1]
       ? finite
       : [...finite, finite[0]];
-  const reduced = dropRepeats(
-    simplifyLine(closed, OUTLINE_TOLERANCE).map((p): Position => [
-      roundCoord(p[0]),
-      roundCoord(p[1])
-    ])
-  );
+  const reduced = dropRepeats(simplifyLine(closed, OUTLINE_TOLERANCE).map(finishPosition));
   if (reduced.length >= 4) {
     return reduced;
   }
-  const [west, south, east, north] = ringBbox(closed).map(roundCoord) as Bbox;
+  const box = ringBbox(closed);
+  const [west, south] = finishPosition([box[0], box[1]]);
+  const [east, north] = finishPosition([box[2], box[3]]);
   return west < east && south < north ? bboxRing([west, south, east, north]) : null;
 }
 
