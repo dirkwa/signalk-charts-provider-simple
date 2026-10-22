@@ -108,7 +108,7 @@ function initDownloadInterface(): void {
         <h3>Where to Find Charts</h3>
         <ul>
           <li><a href="https://chartlocker.brucebalan.com/" target="_blank">Bruce's Chart Locker</a> - Community-maintained chart collection</li>
-          <li><a href="#" onclick="openTab(null, 'customCatalogs'); return false;">NOAA Nautical Charts</a> - build a chart set in the NOAA Charts tab</li>
+          <li><a href="#" onclick="openTab(null, 'customCatalogs'); return false;">ENC charts</a> - build a chart set from NOAA and other free ENC sources in the ENC Charts tab</li>
         </ul>
       </div>
     </div>

@@ -131,3 +131,30 @@ publishes what it has read, and the next scheduled run carries on, so the
 index fills over a few runs, all from the same image. The CLI is the same one
 CI runs and can be run locally to debug an odd source; its header comment
 lists its flags.
+
+## How the plugin uses it
+
+The ENC Charts tab draws the index's units, and a chart set stores the units
+the user picked.
+
+- **Reading the index.** The plugin downloads the index when it starts if the
+  user has chart sets, when the tab is opened and the copy is more than a few
+  hours old, when the user clicks **Refresh**, and before a chart set is
+  downloaded. It keeps the last good copy, so the tab keeps working offline,
+  and revalidates with the ETag. Serving charts never depends on the index.
+  `ENC_INDEX_URL` points a development server at another copy.
+- **Downloading a set.** Each archive is downloaded once, however many of the
+  set's cells it holds, and only those cells' files are extracted. Requests
+  go to one host at a time, with a pause between them, and use the same TLS
+  and header fallbacks as the build.
+- **Separately published updates.** For a cell with
+  `updatesPublishedSeparately`, the plugin applies the updates numbered after
+  the cell's own update, from archives of its source dated no earlier than
+  the cell's, in order up to the first gap. GDAL applies update files in
+  extension order from `.001` and stops at the first missing one, so a
+  reissued base (update 40, with no `.001` to `.040` beside it) gets `.041`
+  as `.001`. The set records the cell's version with the update number it
+  reached.
+- **Update status.** A set is out of date when any of its cells' versions in
+  the index differs from the version recorded at download, or its units
+  bring in different cells. The same rule applies to every source.

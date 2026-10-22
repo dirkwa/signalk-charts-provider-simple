@@ -1,7 +1,9 @@
 /**
- * Tests for the custom-catalog manager: safe-id derivation / path-traversal
- * resistance, CRUD persistence under a temp data dir, and freshness/update
- * evaluation. No network — the footprint index is hand-built.
+ * Tests for the chart-set manager: safe-id derivation / path-traversal
+ * resistance, CRUD persistence under a temp data dir, migration of sets
+ * saved by the NOAA Charts tab, and freshness/update evaluation. No network —
+ * the ENC index is built from hand-made NOAA footprints by the index
+ * builder's own NOAA rules.
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -24,7 +26,13 @@ import {
   slugifyCatalogName,
   type CustomCatalog
 } from '../dist/utils/custom-catalog-manager.js';
-import { parseFootprints, type FootprintIndex } from '../dist/utils/noaa-enc-footprints.js';
+import { parseFootprints } from '../dist/utils/noaa-enc-footprints.js';
+import { noaaUnits } from '../dist/catalog/build-enc-index.js';
+import {
+  buildEncIndexLookup,
+  resolveChartSet,
+  type EncIndexLookup
+} from '../dist/utils/enc-chart-set.js';
 
 let dataDir = '';
 before(() => {
@@ -88,6 +96,26 @@ describe('CRUD persistence', () => {
     assert.strictEqual(reloaded?.status, 'out_of_date');
   });
 
+  it('round-trips a selection from other sources beside the NOAA boxes', () => {
+    const cat = createCustomCatalog('Mixed');
+    cat.selectedBand4ChartIds = ['US4FL1EP'];
+    cat.selectedUnitIds = ['1H7D1430', '3T5RHO01'];
+    saveCustomCatalog(cat);
+    const reloaded = getCustomCatalog('Mixed');
+    assert.deepStrictEqual(reloaded?.selectedBand4ChartIds, ['US4FL1EP']);
+    assert.deepStrictEqual(reloaded?.selectedUnitIds, ['1H7D1430', '3T5RHO01']);
+    assert.strictEqual(reloaded?.schemaVersion, 2);
+  });
+
+  it('never rewrites a set saved by a newer version as an older one', () => {
+    const file = path.join(dataDir, 'custom-catalogs', 'Future.json');
+    const text = JSON.stringify({ schemaVersion: 3, name: 'Future', selectedBand4ChartIds: [] });
+    fs.writeFileSync(file, text);
+    const cat = getCustomCatalog('Future');
+    assert.strictEqual(cat?.schemaVersion, 3);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), text);
+  });
+
   it('returns null for a path-traversal id', () => {
     assert.strictEqual(getCustomCatalog('../../etc/passwd'), null);
     assert.strictEqual(getCustomCatalog('a/b'), null);
@@ -120,7 +148,7 @@ function square(x: number, y: number, s = 1): number[][] {
 
 function makeIndex(
   features: { encEdUp: string; band: number; ring: number[][] }[]
-): FootprintIndex {
+): EncIndexLookup {
   const all = parseFootprints({
     type: 'FeatureCollection',
     features: features.map((f) => ({
@@ -129,8 +157,16 @@ function makeIndex(
       geometry: { type: 'Polygon', coordinates: [f.ring] }
     }))
   });
-  const byChartId = new Map(all.map((f) => [f.chartId, f]));
-  return { fetchedAt: 0, stale: false, all, byChartId };
+  const { units, archives } = noaaUnits(all);
+  return buildEncIndexLookup(units, archives);
+}
+
+function evaluate(cat: CustomCatalog, index: EncIndexLookup, exists: (rel: string) => boolean) {
+  return evaluateFreshness(cat, resolveChartSet(index, cat), exists);
+}
+
+function boxStates(cat: CustomCatalog, index: EncIndexLookup, present: boolean) {
+  return boxStatesForCatalog(cat, resolveChartSet(index, cat), present);
 }
 
 describe('evaluateFreshness', () => {
@@ -141,11 +177,12 @@ describe('evaluateFreshness', () => {
 
   function convertedCatalog(): CustomCatalog {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: 'fl',
       name: 'FL',
       selectedBand: 4,
       selectedBand4ChartIds: ['US4AREAA'],
+      selectedUnitIds: [],
       includedChartIds: ['US3NEAR0', 'US4AREAA'],
       chartVersions: { US4AREAA: 'US4AREAA_ED1_UP1', US3NEAR0: 'US3NEAR0_ED1_UP1' },
       downloadedChartIds: ['US3NEAR0', 'US4AREAA'],
@@ -159,14 +196,14 @@ describe('evaluateFreshness', () => {
   }
 
   it('reports up to date when nothing changed and the file exists', () => {
-    const r = evaluateFreshness(convertedCatalog(), index, () => true);
+    const r = evaluate(convertedCatalog(), index, () => true);
     assert.strictEqual(r.upToDate, true);
     assert.strictEqual(r.effectiveStatus, 'converted');
     assert.deepStrictEqual(r.reasons, []);
   });
 
   it('flags out of date when the output file is missing', () => {
-    const r = evaluateFreshness(convertedCatalog(), index, () => false);
+    const r = evaluate(convertedCatalog(), index, () => false);
     assert.strictEqual(r.upToDate, false);
     assert.strictEqual(r.effectiveStatus, 'out_of_date');
     assert.ok(r.reasons.some((x) => x.includes('missing')));
@@ -177,13 +214,13 @@ describe('evaluateFreshness', () => {
       { encEdUp: 'US4AREAA_ED2_UP9', band: 4, ring: square(0, 0, 2) },
       { encEdUp: 'US3NEAR0_ED1_UP1', band: 3, ring: square(1, 1, 5) }
     ]);
-    const r = evaluateFreshness(convertedCatalog(), bumped, () => true);
+    const r = evaluate(convertedCatalog(), bumped, () => true);
     assert.strictEqual(r.upToDate, false);
     assert.ok(r.reasons.some((x) => x.includes('Updated edition')));
   });
 
   it('flags out of date when a selected area is no longer published', () => {
-    const r = evaluateFreshness(
+    const r = evaluate(
       { ...convertedCatalog(), selectedBand4ChartIds: ['US4AREAA', 'US4GONE00'] },
       index,
       () => true
@@ -193,7 +230,7 @@ describe('evaluateFreshness', () => {
   });
 
   it('reports empty for a catalog with no selection', () => {
-    const r = evaluateFreshness(
+    const r = evaluate(
       { ...convertedCatalog(), selectedBand4ChartIds: [], status: 'empty' },
       index,
       () => true
@@ -204,7 +241,7 @@ describe('evaluateFreshness', () => {
 
 describe('boxStatesForCatalog', () => {
   // Box A (band-4) with one nested band-5 cell inside it.
-  function indexWith(b4: string, b5: string): FootprintIndex {
+  function indexWith(b4: string, b5: string): EncIndexLookup {
     return makeIndex([
       { encEdUp: `US4BOXA00_${b4}`, band: 4, ring: square(0, 0, 4) },
       { encEdUp: `US5NEST00_${b5}`, band: 5, ring: square(1, 1, 1) }
@@ -213,11 +250,12 @@ describe('boxStatesForCatalog', () => {
 
   function builtCatalog(): CustomCatalog {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: 'cs',
       name: 'CS',
       selectedBand: 4,
       selectedBand4ChartIds: ['US4BOXA0'],
+      selectedUnitIds: [],
       includedChartIds: ['US4BOXA0', 'US5NEST0'],
       chartVersions: { US4BOXA0: 'US4BOXA00_ED1', US5NEST0: 'US5NEST00_ED1' },
       downloadedChartIds: ['US4BOXA0', 'US5NEST0'],
@@ -231,17 +269,17 @@ describe('boxStatesForCatalog', () => {
   }
 
   it('up_to_date when converted, present, and editions match current NOAA', () => {
-    const r = boxStatesForCatalog(builtCatalog(), indexWith('ED1', 'ED1'), true);
+    const r = boxStates(builtCatalog(), indexWith('ED1', 'ED1'), true);
     assert.strictEqual(r['US4BOXA0'], 'up_to_date');
   });
 
   it('needs_refresh when a nested band-5 cell has a newer edition', () => {
-    const r = boxStatesForCatalog(builtCatalog(), indexWith('ED1', 'ED2'), true);
+    const r = boxStates(builtCatalog(), indexWith('ED1', 'ED2'), true);
     assert.strictEqual(r['US4BOXA0'], 'needs_refresh');
   });
 
   it('needs_refresh when the catalog was never built', () => {
-    const r = boxStatesForCatalog(
+    const r = boxStates(
       { ...builtCatalog(), convertedChartPath: null, status: 'out_of_date' },
       indexWith('ED1', 'ED1'),
       false
@@ -251,12 +289,12 @@ describe('boxStatesForCatalog', () => {
 
   it('needs_refresh when the output MBTiles is missing (e.g. after a cancel)', () => {
     // Converted + editions match, but the file is gone — must not show green.
-    const r = boxStatesForCatalog(builtCatalog(), indexWith('ED1', 'ED1'), false);
+    const r = boxStates(builtCatalog(), indexWith('ED1', 'ED1'), false);
     assert.strictEqual(r['US4BOXA0'], 'needs_refresh');
   });
 
   it('needs_refresh when the status is no longer converted (cancelled/failed run)', () => {
-    const r = boxStatesForCatalog(
+    const r = boxStates(
       { ...builtCatalog(), status: 'out_of_date' },
       indexWith('ED1', 'ED1'),
       true
@@ -270,14 +308,14 @@ describe('boxStatesForCatalog', () => {
       { encEdUp: 'US5NEST00_ED1', band: 5, ring: square(1, 1, 1) },
       { encEdUp: 'US5NEW000_ED1', band: 5, ring: square(2, 2, 1) } // new cell in the box
     ]);
-    const r = boxStatesForCatalog(builtCatalog(), idx, true);
+    const r = boxStates(builtCatalog(), idx, true);
     assert.strictEqual(r['US4BOXA0'], 'needs_refresh');
   });
 
   // Edition-driven: doesn't depend on the downloaded source ZIPs (cleaned up
   // after conversion), only on the built output existing.
   it('is independent of the downloaded source ZIPs', () => {
-    const r = boxStatesForCatalog(builtCatalog(), indexWith('ED1', 'ED1'), true);
+    const r = boxStates(builtCatalog(), indexWith('ED1', 'ED1'), true);
     assert.strictEqual(r['US4BOXA0'], 'up_to_date');
   });
 });

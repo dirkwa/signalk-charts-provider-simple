@@ -5,23 +5,16 @@
  *   https://www.charts.noaa.gov/InteractiveCatalog/data/enc.geojson
  *
  * The file is large (tens of MB) and uses EPSG:3857 (Web Mercator metre)
- * coordinates. This module fetches it, caches it on disk under the plugin
- * data dir, and turns it into a compact in-memory index:
+ * coordinates. The ENC index build (`src/catalog/enc-index-cli.ts`) reads it
+ * and turns it into the index's NOAA units; the plugin itself never fetches
+ * it, and reads those units from the index instead. This module holds the
+ * pure parsing and inclusion math the build uses:
  *
- *  - the slim band-4 list the Custom Catalogs map renders as selectable
- *    bounding-box areas, and
- *  - the full band-3/4/5 footprint set used to compute which ENCs a custom
- *    catalog includes (every band-3/4/5 cell whose bbox overlaps a selected
- *    band-4 cell's bbox).
- *
- * The geometry / parsing / inclusion helpers are pure and exported so they
- * can be unit-tested without any network access (the boat-dev constraint).
+ *  - the band-4 list, NOAA's selectable bounding-box areas, and
+ *  - the band-3/4/5 bbox-overlap inclusion rule (every band-3/4/5 cell whose
+ *    bbox overlaps a selected band-4 cell's bbox), which gives each NOAA
+ *    unit its cells.
  */
-
-import fs from 'fs';
-import https from 'https';
-import path from 'path';
-import type { DebugFunction } from '../types.js';
 
 export const NOAA_ENC_GEOJSON_URL =
   'https://www.charts.noaa.gov/InteractiveCatalog/data/enc.geojson';
@@ -56,17 +49,7 @@ export interface EncFootprint {
   bbox: BBox;
 }
 
-export interface FootprintIndex {
-  /** epoch ms the underlying GeoJSON was fetched (or read from cache). */
-  fetchedAt: number;
-  /** Whether `fetchedAt` reflects a fresh network fetch or a stale disk read. */
-  stale: boolean;
-  /** Footprints for bands 3, 4 and 5 (others dropped). */
-  all: EncFootprint[];
-  byChartId: Map<string, EncFootprint>;
-}
-
-/** Slim entry sent to the browser for the selectable map. */
+/** One band-4 area, as the build turns it into a NOAA unit. */
 export interface Band4MapEntry {
   chartId: string;
   encEdUp: string;
@@ -176,7 +159,7 @@ function toNumberOrNull(v: unknown): number | null {
 
 /**
  * Parse the NOAA enc.geojson FeatureCollection into footprints. Only band 3,
- * 4 and 5 features are retained (the bands a custom catalog bundles); features
+ * 4 and 5 features are retained (the bands a chart set bundles); features
  * lacking a usable `enc_ed_up`, band, or geometry are skipped.
  */
 export function parseFootprints(geojson: unknown): EncFootprint[] {
@@ -219,7 +202,7 @@ export function parseFootprints(geojson: unknown): EncFootprint[] {
   return out;
 }
 
-/** Slim band-4 list for the selectable map, sorted by chart id. */
+/** The band-4 areas, sorted by chart id. */
 export function band4MapEntries(all: readonly EncFootprint[]): Band4MapEntry[] {
   return all
     .filter((f) => f.scaleBand === 4)
@@ -242,7 +225,7 @@ export interface InclusionResult {
 }
 
 /**
- * Compute the full ENC set for a custom catalog from its selected band-4
+ * Compute the full ENC set for a NOAA selection from its selected band-4
  * chart ids: every band-3/4/5 footprint whose bbox overlaps any selected
  * band-4 footprint's bbox (any overlap qualifies), de-duplicated by chart id.
  */
@@ -325,166 +308,4 @@ export function coverageByBox(
     result[id] = [...ids].sort((a, b) => a.localeCompare(b));
   }
   return result;
-}
-
-// ---- Fetch + disk cache ----
-
-const CACHE_DIR_NAME = 'noaa-enc-cache';
-const CACHE_FILE_NAME = 'enc.geojson';
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-const MAX_FETCH_BYTES = 256 * 1024 * 1024; // hard ceiling so a bad upstream can't OOM us
-const FETCH_TIMEOUT_MS = 60000; // bail if NOAA stalls (connection up, no data)
-
-let dataDir = '';
-let debug: DebugFunction = () => {};
-let cachedIndex: FootprintIndex | null = null;
-let inFlight: Promise<FootprintIndex> | null = null;
-
-export function initNoaaEncFootprints(dir: string, debugFn: DebugFunction): void {
-  dataDir = dir;
-  debug = debugFn || (() => {});
-}
-
-function cacheFilePath(): string {
-  return path.join(dataDir, CACHE_DIR_NAME, CACHE_FILE_NAME);
-}
-
-function buildIndex(geojson: unknown, fetchedAt: number, stale: boolean): FootprintIndex {
-  const all = parseFootprints(geojson);
-  const byChartId = new Map<string, EncFootprint>();
-  for (const f of all) {
-    if (!byChartId.has(f.chartId)) {
-      byChartId.set(f.chartId, f);
-    }
-  }
-  return { fetchedAt, stale, all, byChartId };
-}
-
-function fetchText(url: string, redirectsLeft = 5): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const req = https
-      .get(url, { timeout: FETCH_TIMEOUT_MS }, (response) => {
-        const status = response.statusCode ?? 0;
-        if (status >= 300 && status < 400 && response.headers.location) {
-          response.resume();
-          if (redirectsLeft <= 0) {
-            reject(new Error('Too many redirects fetching NOAA enc.geojson'));
-            return;
-          }
-          // Resolve against the current URL so a relative Location (RFC 7231
-          // allows it) follows correctly instead of failing as a bare path.
-          const next = new URL(response.headers.location, url).toString();
-          fetchText(next, redirectsLeft - 1)
-            .then(resolve)
-            .catch(reject);
-          return;
-        }
-        if (status !== 200) {
-          response.resume();
-          reject(new Error(`NOAA enc.geojson returned HTTP ${status}`));
-          return;
-        }
-        let bytes = 0;
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer) => {
-          bytes += chunk.length;
-          if (bytes > MAX_FETCH_BYTES) {
-            response.destroy();
-            reject(new Error('NOAA enc.geojson exceeded the maximum allowed size'));
-            return;
-          }
-          chunks.push(chunk);
-        });
-        response.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-        response.on('error', reject);
-      })
-      .on('error', reject);
-    // 'timeout' fires on inactivity but doesn't abort by itself; destroy with
-    // an error so the .on('error') handler rejects.
-    req.on('timeout', () => req.destroy(new Error('NOAA enc.geojson request timed out')));
-  });
-}
-
-function persistCache(raw: string): void {
-  try {
-    const file = cacheFilePath();
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, raw);
-  } catch (err) {
-    debug(`Failed to cache NOAA enc.geojson: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-function readCache(): { index: FootprintIndex; mtimeMs: number } | null {
-  try {
-    const file = cacheFilePath();
-    const stat = fs.statSync(file);
-    const raw = fs.readFileSync(file, 'utf8');
-    const json: unknown = JSON.parse(raw);
-    return { index: buildIndex(json, stat.mtimeMs, true), mtimeMs: stat.mtimeMs };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Return the footprint index, fetching from NOAA when the in-memory copy is
- * absent/stale (or `forceRefresh` is set). Falls back to the on-disk cache
- * (even if stale) when the network is unreachable, so the feature keeps
- * working offline once the catalog has been fetched at least once.
- */
-export async function getFootprintIndex(
-  opts: { forceRefresh?: boolean } = {}
-): Promise<FootprintIndex> {
-  const fresh =
-    cachedIndex !== null && !cachedIndex.stale && Date.now() - cachedIndex.fetchedAt < CACHE_TTL_MS;
-  if (fresh && !opts.forceRefresh) {
-    return cachedIndex as FootprintIndex;
-  }
-
-  // Coalesce concurrent callers (two browser tabs opening the page) onto one
-  // network fetch.
-  if (inFlight && !opts.forceRefresh) {
-    return inFlight;
-  }
-
-  const doFetch = async (): Promise<FootprintIndex> => {
-    try {
-      debug('Fetching NOAA enc.geojson…');
-      const raw = await fetchText(NOAA_ENC_GEOJSON_URL);
-      const json: unknown = JSON.parse(raw);
-      const index = buildIndex(json, Date.now(), false);
-      persistCache(raw);
-      cachedIndex = index;
-      debug(`NOAA enc.geojson parsed: ${index.all.length} band-3/4/5 footprints`);
-      return index;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      debug(`NOAA enc.geojson fetch failed (${msg}); trying disk cache…`);
-      const cached = readCache();
-      if (cached) {
-        cachedIndex = cached.index;
-        return cached.index;
-      }
-      throw new Error(
-        `Could not fetch NOAA ENC footprints and no cached copy is available: ${msg}`,
-        { cause: err }
-      );
-    } finally {
-      inFlight = null;
-    }
-  };
-
-  inFlight = doFetch();
-  return inFlight;
-}
-
-/**
- * Return the in-memory footprint index without ever hitting the network.
- * Used by endpoints (catalog list / status) that want to report freshness
- * cheaply but must not trigger a multi-MB download as a side effect — the map
- * endpoint is the one place that fetches.
- */
-export function peekFootprintIndex(): FootprintIndex | null {
-  return cachedIndex;
 }

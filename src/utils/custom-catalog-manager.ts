@@ -1,18 +1,18 @@
 /**
- * Custom NOAA ENC catalogs.
+ * Chart sets (the ENC Charts tab).
  *
- * A "custom catalog" is a user-named bundle of NOAA band-4 coverage areas
- * selected on a map. Each is persisted as JSON under
- * `<dataDir>/custom-catalogs/<id>.json`. Downloading a custom catalog fetches
- * all selected band-4 ENCs plus the overlapping band-3 and band-5 ENCs and
- * runs the S-57 pipeline once to produce a single MBTiles chart named after
- * the catalog.
+ * A chart set is a user-named bundle of ENC units picked on a map (see
+ * `docs/enc-index.md`). Each is persisted as JSON under
+ * `<dataDir>/custom-catalogs/<id>.json`. Downloading a set fetches every
+ * cell its units bring in and runs the S-57 pipeline once to produce a
+ * single MBTiles chart named after the set.
  *
- * This module owns persistence, safe-id derivation (no path traversal),
- * freshness/update evaluation, and the per-catalog progress used by the
- * download-and-convert flow. The geometry / inclusion math lives in
- * `noaa-enc-footprints.ts`; this module consumes a `FootprintIndex` rather
- * than fetching it, so persistence stays unit-testable without network.
+ * This module owns persistence (including the migration of sets saved by
+ * the NOAA Charts tab), safe-id derivation (no path traversal),
+ * freshness/update evaluation, and the per-set progress used by the
+ * download-and-convert flow. Which cells a set holds comes from
+ * `enc-chart-set.ts`; this module takes that resolution as input, so
+ * persistence stays unit-testable without network.
  */
 
 import fs from 'fs';
@@ -20,9 +20,14 @@ import path from 'path';
 import type { ConversionProgress, DebugFunction } from '../types.js';
 import { sanitizeChartFilename } from './catalog-title.js';
 import { isWithinBase } from './path-safety.js';
-import { computeInclusion, coverageByBox, type FootprintIndex } from './noaa-enc-footprints.js';
+import type { ChartSetResolution } from './enc-chart-set.js';
 
-export const CUSTOM_CATALOG_SCHEMA_VERSION = 1;
+/**
+ * Version 2 adds `selectedUnitIds` and keeps every version 1 field as it
+ * was, so an older plugin still opens a version 2 set and shows its NOAA
+ * part.
+ */
+export const CUSTOM_CATALOG_SCHEMA_VERSION = 2;
 const CATALOG_DIR_NAME = 'custom-catalogs';
 export const MAX_CATALOG_MANAGER_LOG_LINES = 200;
 const MAX_LOG_LINES = MAX_CATALOG_MANAGER_LOG_LINES;
@@ -48,12 +53,12 @@ export interface CustomCatalogProgressDetail {
   sectionLabel: string;
   /** Current-step bar, 0–100; -1 = indeterminate. */
   sectionPercent: number;
-  /** Included chart ids staged so far — lets the map flip areas red→yellow. */
+  /** Cells staged so far — lets the map flip units red→yellow. */
   downloadedChartIds: string[];
   /**
-   * Per selected band-4 box, the chart ids (band-4 + nested band-5) that
-   * count toward that box's download-fill. Set once at run start; lets the
-   * map fill each box bottom-to-top by its own completed fraction.
+   * Per selected unit, the cells (its `statusCells`) that count toward its
+   * download-fill. Set once at run start; lets the map fill each unit
+   * bottom-to-top by its own completed fraction.
    */
   coverageByBox?: Record<string, string[]>;
 }
@@ -64,9 +69,13 @@ export interface CustomCatalog {
   id: string;
   name: string;
   selectedBand: 4;
+  /** Selected NOAA units (band-4 boxes), the field older versions read. */
   selectedBand4ChartIds: string[];
+  /** Selected units of every other source: S-57 cell names. */
+  selectedUnitIds: string[];
+  /** Cell names baked into the output. */
   includedChartIds: string[];
-  /** chartId → `enc_ed_up` snapshot captured at last download. */
+  /** Cell name → version snapshot captured at last download. */
   chartVersions: Record<string, string>;
   downloadedChartIds: string[];
   /** Chart-path-relative `.mbtiles` filename, or null before first convert. */
@@ -175,36 +184,79 @@ export function getCustomCatalog(id: string): CustomCatalog | null {
   if (!file) {
     return null;
   }
+  let parsed: Partial<CustomCatalog>;
   try {
-    const raw = fs.readFileSync(file, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<CustomCatalog>;
-    return normalizeCatalog(parsed, id);
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<CustomCatalog>;
   } catch {
     return null;
   }
+  const catalog = normalizeCatalog(parsed, id);
+  if (needsMigration(parsed)) {
+    migrateInPlace(file, catalog);
+  }
+  return catalog;
+}
+
+/** A set saved before version 2 (the NOAA Charts tab), or with no version at all. */
+function needsMigration(parsed: Partial<CustomCatalog>): boolean {
+  return (
+    typeof parsed.schemaVersion !== 'number' || parsed.schemaVersion < CUSTOM_CATALOG_SCHEMA_VERSION
+  );
+}
+
+/**
+ * Rewrite a version 1 set as version 2 on first read. Version 2 only adds
+ * fields, so the selection, the per-cell version snapshot, the status and
+ * the output file name carry over unchanged: nothing is downloaded or
+ * rebuilt, and a set that was current stays current. `updatedAt` is kept,
+ * since the user changed nothing. A failed write is retried on the next
+ * read; the set is served from memory either way.
+ */
+function migrateInPlace(file: string, catalog: CustomCatalog): void {
+  try {
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(catalog, null, 2));
+    fs.renameSync(tmp, file);
+    debug(`Migrated chart set ${catalog.id} to version ${String(catalog.schemaVersion)}`);
+  } catch (err) {
+    debug(
+      `Could not migrate chart set ${catalog.id}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string') : [];
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value).filter((e): e is [string, string] => typeof e[1] === 'string')
+  );
 }
 
 // Coerce a parsed JSON object into a fully-populated CustomCatalog, filling
 // any field a hand-edited / older file might be missing. The on-disk id
-// (filename) wins over any `id` inside the file.
+// (filename) wins over any `id` inside the file. A file from a newer
+// version keeps its version number, so it is never rewritten as an older one.
 function normalizeCatalog(parsed: Partial<CustomCatalog>, id: string): CustomCatalog {
   const now = new Date().toISOString();
   return {
-    schemaVersion: parsed.schemaVersion ?? CUSTOM_CATALOG_SCHEMA_VERSION,
+    schemaVersion:
+      typeof parsed.schemaVersion === 'number'
+        ? Math.max(parsed.schemaVersion, CUSTOM_CATALOG_SCHEMA_VERSION)
+        : CUSTOM_CATALOG_SCHEMA_VERSION,
     id,
     name: typeof parsed.name === 'string' && parsed.name.trim() !== '' ? parsed.name : id,
     selectedBand: 4,
-    selectedBand4ChartIds: Array.isArray(parsed.selectedBand4ChartIds)
-      ? parsed.selectedBand4ChartIds.filter((x): x is string => typeof x === 'string')
-      : [],
-    includedChartIds: Array.isArray(parsed.includedChartIds)
-      ? parsed.includedChartIds.filter((x): x is string => typeof x === 'string')
-      : [],
-    chartVersions:
-      parsed.chartVersions && typeof parsed.chartVersions === 'object' ? parsed.chartVersions : {},
-    downloadedChartIds: Array.isArray(parsed.downloadedChartIds)
-      ? parsed.downloadedChartIds.filter((x): x is string => typeof x === 'string')
-      : [],
+    selectedBand4ChartIds: stringList(parsed.selectedBand4ChartIds),
+    selectedUnitIds: stringList(parsed.selectedUnitIds),
+    includedChartIds: stringList(parsed.includedChartIds),
+    chartVersions: stringRecord(parsed.chartVersions),
+    downloadedChartIds: stringList(parsed.downloadedChartIds),
     convertedChartPath:
       typeof parsed.convertedChartPath === 'string' ? parsed.convertedChartPath : null,
     status: isStatus(parsed.status) ? parsed.status : 'empty',
@@ -213,6 +265,13 @@ function normalizeCatalog(parsed: Partial<CustomCatalog>, id: string): CustomCat
     lastDownloadedAt: typeof parsed.lastDownloadedAt === 'string' ? parsed.lastDownloadedAt : null,
     lastConvertedAt: typeof parsed.lastConvertedAt === 'string' ? parsed.lastConvertedAt : null
   };
+}
+
+/** The number of units a set has selected, from every source. */
+export function selectedUnitCount(
+  catalog: Pick<CustomCatalog, 'selectedBand4ChartIds' | 'selectedUnitIds'>
+): number {
+  return catalog.selectedBand4ChartIds.length + catalog.selectedUnitIds.length;
 }
 
 function isStatus(s: unknown): s is CustomCatalogStatus {
@@ -240,6 +299,7 @@ export function createCustomCatalog(name: string): CustomCatalog {
     name: trimmed,
     selectedBand: 4,
     selectedBand4ChartIds: [],
+    selectedUnitIds: [],
     includedChartIds: [],
     chartVersions: {},
     downloadedChartIds: [],
@@ -288,51 +348,41 @@ export function deleteCustomCatalog(id: string): boolean {
 export interface FreshnessResult {
   upToDate: boolean;
   reasons: string[];
-  recomputed: ReturnType<typeof computeInclusion>;
   /** The status to display, accounting for staleness. */
   effectiveStatus: CustomCatalogStatus;
 }
 
 /**
- * Evaluate whether a catalog's converted output is still current against the
- * live footprint index. A catalog is out of date if any selected band-4 chart
- * vanished or changed edition, the recomputed coverage set changed, any
- * included chart changed edition, or the expected MBTiles output is missing.
+ * Evaluate whether a set's converted output is still current against the
+ * ENC index, resolved for the set's selection. A set is out of date if a
+ * selected unit is no longer published, the cells its units bring in
+ * changed, any of those cells changed version, or the expected MBTiles
+ * output is missing. The same rule applies to every source: each cell's
+ * version in the index against the snapshot taken at download.
  */
 export function evaluateFreshness(
   catalog: CustomCatalog,
-  index: FootprintIndex,
+  resolution: ChartSetResolution,
   chartFileExists: (relPath: string) => boolean
 ): FreshnessResult {
-  const recomputed = computeInclusion(index.all, catalog.selectedBand4ChartIds);
   const reasons: string[] = [];
 
-  if (recomputed.missingSelected.length > 0) {
-    reasons.push(`No longer published: ${recomputed.missingSelected.join(', ')}`);
+  if (resolution.missingSelected.length > 0) {
+    reasons.push(`No longer published: ${resolution.missingSelected.join(', ')}`);
   }
 
-  // Selected band-4 edition drift vs. the snapshot taken at last download.
-  for (const id of catalog.selectedBand4ChartIds) {
-    const cur = index.byChartId.get(id);
-    const stored = catalog.chartVersions[id];
-    if (cur && stored && cur.encEdUp !== stored) {
-      reasons.push(`Updated edition: ${id}`);
-    }
-  }
-
-  // Coverage set changed (overlap brought in / dropped a band-3/5 cell).
+  // Coverage set changed (a NOAA box overlap brought in or dropped a cell).
   const storedSet = new Set(catalog.includedChartIds);
   const changed =
-    storedSet.size !== recomputed.includedChartIds.length ||
-    recomputed.includedChartIds.some((id) => !storedSet.has(id));
+    storedSet.size !== resolution.includedChartIds.length ||
+    resolution.includedChartIds.some((id) => !storedSet.has(id));
   if (changed) {
     reasons.push('Coverage set changed');
   }
 
-  // Any included chart's edition changed.
-  for (const id of recomputed.includedChartIds) {
+  for (const id of resolution.includedChartIds) {
     const stored = catalog.chartVersions[id];
-    const cur = recomputed.chartVersions[id];
+    const cur = resolution.chartVersions[id];
     if (stored && cur && stored !== cur) {
       reasons.push(`Updated edition: ${id}`);
     }
@@ -347,7 +397,7 @@ export function evaluateFreshness(
   const upToDate = catalog.status === 'converted' && reasons.length === 0 && mbtilesPresent;
 
   let effectiveStatus: CustomCatalogStatus;
-  if (catalog.selectedBand4ChartIds.length === 0) {
+  if (selectedUnitCount(catalog) === 0) {
     effectiveStatus = 'empty';
   } else if (upToDate) {
     effectiveStatus = 'converted';
@@ -357,63 +407,57 @@ export function evaluateFreshness(
     effectiveStatus = 'out_of_date';
   }
 
-  // A selected band-4 chart is also in the recomputed included set, so an
-  // edition change can be pushed by both loops above — de-dupe for display.
-  return { upToDate, reasons: [...new Set(reasons)], recomputed, effectiveStatus };
+  return { upToDate, reasons, effectiveStatus };
 }
 
-/** Per selected band-4 box: is what's baked into the MBTiles still current? */
+/** Per selected unit: is what's baked into the MBTiles still current? */
 export type BoxState = 'up_to_date' | 'needs_refresh';
 
 /**
- * Compute, for each selected band-4 box, whether the chart edition baked into
- * the built MBTiles still matches the current NOAA editions for that box's
- * charts (its band-4 cell + the band-5 cells nested in it).
+ * Compute, for each selected unit, whether the versions baked into the
+ * built MBTiles still match the index for that unit's `statusCells` (for a
+ * NOAA box: its band-4 cell and the band-5 cells nested in it).
  *
- * A box is `up_to_date` only when the chart set is cleanly converted, its
- * MBTiles is present on disk, AND every covered chart matches the baked
- * edition snapshot. It is `needs_refresh` otherwise — never built, a cancelled
- * or failed build (status no longer `converted`), the output file missing, a
- * drifted edition, or NOAA having added a new cell to the box.
+ * A unit is `up_to_date` only when the set is cleanly converted, its
+ * MBTiles is present on disk, AND every status cell matches the baked
+ * snapshot. It is `needs_refresh` otherwise — never built, a cancelled or
+ * failed build (status no longer `converted`), the output file missing, a
+ * changed version, a unit no longer published, or a new status cell.
  *
- * Edition-driven, so it doesn't depend on the downloaded *source* ZIPs still
- * being on disk (those are cleaned up after conversion). It does require the
- * built *output* MBTiles, since a missing chart genuinely needs a rebuild.
+ * Version-driven, so it doesn't depend on the downloaded *source* archives
+ * still being on disk (those are cleaned up after conversion). It does
+ * require the built *output* MBTiles, since a missing chart genuinely
+ * needs a rebuild.
  */
 export function boxStatesForCatalog(
   catalog: CustomCatalog,
-  index: FootprintIndex,
+  resolution: ChartSetResolution,
   mbtilesPresent: boolean
 ): Record<string, BoxState> {
-  const coverage = coverageByBox(index.all, catalog.selectedBand4ChartIds);
   const baked = catalog.chartVersions;
   // `chartVersions` is also written at download time (before conversion), so on
-  // a cancelled/failed run it can claim current editions that aren't actually
+  // a cancelled/failed run it can claim current versions that aren't actually
   // baked in. Gating on a clean 'converted' status + a present output file
   // ensures those runs show red, not a false green.
   const built = catalog.status === 'converted' && mbtilesPresent;
 
   const result: Record<string, BoxState> = {};
-  for (const boxId of catalog.selectedBand4ChartIds) {
-    if (!built) {
-      result[boxId] = 'needs_refresh';
-      continue;
-    }
-    const cov = coverage[boxId] ?? [];
-    let fresh = cov.length > 0;
-    for (const chartId of cov) {
-      const bakedEdition = baked[chartId];
-      const currentEdition = index.byChartId.get(chartId)?.encEdUp;
-      // New cell not in the build, or a drifted edition → this box is stale.
+  for (const unitId of [...catalog.selectedBand4ChartIds, ...catalog.selectedUnitIds]) {
+    const cov = resolution.coverageByUnit[unitId] ?? [];
+    let fresh = built && cov.length > 0;
+    for (const cell of fresh ? cov : []) {
+      const bakedVersion = baked[cell];
+      const currentVersion = resolution.chartVersions[cell];
+      // New cell not in the build, or a changed version → this unit is stale.
       if (
-        bakedEdition === undefined ||
-        (currentEdition !== undefined && currentEdition !== bakedEdition)
+        bakedVersion === undefined ||
+        (currentVersion !== undefined && currentVersion !== bakedVersion)
       ) {
         fresh = false;
         break;
       }
     }
-    result[boxId] = fresh ? 'up_to_date' : 'needs_refresh';
+    result[unitId] = fresh ? 'up_to_date' : 'needs_refresh';
   }
   return result;
 }

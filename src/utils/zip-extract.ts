@@ -274,3 +274,37 @@ export async function extractMbtilesFromZip(
 
   return { files, skipped };
 }
+
+/**
+ * Extract only the entries `pick` chooses, each to the target it returns
+ * (relative to `destDir`; null skips the entry). Used where one archive
+ * holds many ENC cells and a chart set wants a few of them. Entry paths are
+ * given to `pick` with `/` separators. A target that would resolve outside
+ * `destDir` is skipped.
+ *
+ * Returns the entry paths written, in archive order.
+ */
+export async function extractZipEntries(
+  zipPath: string,
+  destDir: string,
+  pick: (entryPath: string) => string | null,
+  limits: ExtractLimits = {}
+): Promise<string[]> {
+  const { files, bounds } = await openAndValidate(zipPath, limits);
+  const written: string[] = [];
+  let bytesWritten = 0;
+  for (const entry of files) {
+    const entryPath = entry.path.replace(/\\/g, '/');
+    const rel = pick(entryPath);
+    if (rel === null) {
+      continue;
+    }
+    const target = path.join(destDir, rel);
+    if (!isWithinBase(target, destDir)) {
+      continue;
+    }
+    bytesWritten += await writeEntry(entry, target, bounds.maxTotalBytes - bytesWritten);
+    written.push(entryPath);
+  }
+  return written;
+}

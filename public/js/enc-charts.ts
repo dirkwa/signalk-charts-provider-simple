@@ -1,8 +1,8 @@
-// NOAA Charts tab — build a named "chart set" by selecting NOAA band-4
-// coverage areas on a map. Selected areas plus the overlapping band-3/5 ENCs
-// are downloaded and converted server-side into one MBTiles per chart set.
-// (NOAA is currently the only source of freely-downloadable ENC charts, hence
-// the NOAA-specific labelling; the API/server modules keep the generic
+// ENC Charts tab — build a named "chart set" by picking ENC units on a map
+// of the ENC index: NOAA's band-4 boxes, drawn as rectangles, and every
+// other free ENC source's cells, drawn as their coverage outlines. The
+// cells the picked units bring in are downloaded and converted server-side
+// into one MBTiles per chart set. (The API/server modules keep the generic
 // "custom-catalog" names.)
 
 const CC_API_BASE = '/plugins/signalk-charts-provider-simple';
@@ -12,25 +12,46 @@ const CC_RED = '#e53935'; // selected, needs download / out of date
 const CC_YELLOW = '#f6c000'; // downloaded / in progress, not yet converted
 const CC_GREEN = '#2e9e4f'; // downloaded + converted, up to date
 
-interface CcBBox {
-  minLon: number;
-  minLat: number;
-  maxLon: number;
-  maxLat: number;
-}
+const CC_NOAA_SOURCE = 'noaa';
+// A click or hover this close to a thin river outline still picks it.
+const CC_HIT_TOLERANCE_PX = 6;
+// Ask before a dragged box adds more units than this.
+const CC_BOX_CONFIRM_ABOVE = 50;
 
-interface Band4MapEntry {
-  chartId: string;
-  encEdUp: string;
+type CcPosition = [number, number];
+type CcOutline =
+  | { type: 'Polygon'; coordinates: CcPosition[][] }
+  | { type: 'MultiPolygon'; coordinates: CcPosition[][][] };
+
+interface CcUnit {
+  source: string;
+  id: string;
   title: string;
-  scale: number | null;
-  bbox: CcBBox;
+  scale?: number;
+  /** [west, south, east, north]; west > east crosses the antimeridian. */
+  bbox: [number, number, number, number];
+  outline: CcOutline;
 }
 
-interface FootprintsResponse {
-  band4: Band4MapEntry[];
-  fetchedAt: number;
-  stale: boolean;
+interface CcSource {
+  id: string;
+  label: string;
+  units: number;
+}
+
+interface CcIndexStatus {
+  status: 'ok' | 'error' | 'incompatible' | 'never';
+  message: string | null;
+}
+
+interface EncIndexResponse {
+  status: CcIndexStatus;
+  index: {
+    generatedAt: string;
+    fetchedAt: string;
+    sources: CcSource[];
+    units: CcUnit[];
+  } | null;
 }
 
 type CustomCatalogStatus = 'empty' | 'out_of_date' | 'downloaded' | 'converted';
@@ -39,6 +60,7 @@ interface CustomCatalog {
   id: string;
   name: string;
   selectedBand4ChartIds: string[];
+  selectedUnitIds: string[];
   includedChartIds: string[];
   convertedChartPath: string | null;
   status: CustomCatalogStatus;
@@ -47,7 +69,7 @@ interface CustomCatalog {
   effectiveStatus: string;
   includedCount: number;
   updateReasons: string[];
-  // Per-box freshness by NOAA edition: band-4 chartId -> 'up_to_date' | 'needs_refresh'.
+  // Per-unit freshness by cell version: unit id -> 'up_to_date' | 'needs_refresh'.
   boxStates: Record<string, string>;
 }
 
@@ -82,18 +104,39 @@ interface CatalogStatusResponse extends CustomCatalog {
   detail: CatalogProgressDetail | null;
 }
 
+/** A unit as drawn: its layer, and its outline in a form cheap to hit-test. */
+interface CcDrawnUnit {
+  unit: CcUnit;
+  layer: L.Path;
+  /** West/east with east >= west, unwrapped across the antimeridian. */
+  west: number;
+  east: number;
+  /** Exterior rings as [lon, lat], unwrapped like west/east. */
+  rings: CcPosition[][];
+  /** Rough size, for picking the smallest of overlapping units. */
+  area: number;
+}
+
 let ccInitialized = false;
 let ccMap: L.Map | null = null;
 let ccFootprintLayer: L.LayerGroup | null = null;
-const ccRectByChartId = new Map<string, L.Rectangle>();
-// Per-box bottom-to-top "fill" overlays, shown during download.
+let ccRenderer: L.Renderer | null = null;
+const ccDrawnById = new Map<string, CcDrawnUnit>();
+// Per-box bottom-to-top "fill" overlays on NOAA rectangles, shown during download.
 const ccFillRects = new Map<string, L.Rectangle>();
-let ccBand4: Band4MapEntry[] = [];
+let ccUnits: CcUnit[] = [];
 let ccCatalogs: CustomCatalog[] = [];
 let ccActiveId: string | null = null;
 let ccBusy = false;
 let ccDetail: CatalogProgressDetail | null = null;
 let ccStatusPoll: ReturnType<typeof setInterval> | null = null;
+let ccHoverId: string | null = null;
+let ccHoverTip: L.Tooltip | null = null;
+let ccBoxMode = false;
+// A box drag ends with a click the map must not treat as a unit toggle.
+let ccSuppressClick = false;
+// Source id → display name, from the index.
+const ccSources = new Map<string, string>();
 
 window.handleCustomCatalogsTabActive = function (): void {
   if (!ccInitialized) {
@@ -119,7 +162,7 @@ async function initCustomCatalogsTab(): Promise<void> {
         <div class="cc-list-header">Chart sets</div>
         <div id="ccList" class="cc-list"></div>
         <div id="ccNewForm" class="cc-new-form" style="display:none;">
-          <input type="text" id="ccNewName" class="cc-input" placeholder="Catalog name" maxlength="120" />
+          <input type="text" id="ccNewName" class="cc-input" placeholder="Chart set name" maxlength="120" />
           <div class="cc-new-form-actions">
             <button class="cc-btn cc-btn-primary" data-cc-action="create">Create</button>
             <button class="cc-btn" data-cc-action="create-cancel">Cancel</button>
@@ -135,7 +178,15 @@ async function initCustomCatalogsTab(): Promise<void> {
         <pre id="ccLog" class="cc-log" style="display:none;"></pre>
       </div>
       <div class="cc-right">
-        <div class="cc-map-note" id="ccMapNote">Loading NOAA coverage…</div>
+        <div class="cc-map-note">
+          <span id="ccMapNote">Loading ENC chart areas…</span>
+          <button class="cc-link-btn" data-cc-action="refresh-index">Refresh</button>
+        </div>
+        <div class="cc-map-tools">
+          <button class="cc-btn" id="ccBoxBtn" data-cc-action="box-mode" aria-pressed="false"
+            title="Drag a box on the map to add every chart area it touches (or Shift+drag)">Select by box</button>
+          <span class="cc-map-hint">Click an area to add or remove it.</span>
+        </div>
         <div id="ccMap" class="cc-map"></div>
         <div class="cc-legend">
           <span class="cc-legend-item"><span class="cc-swatch cc-swatch-clear"></span>Available</span>
@@ -149,20 +200,19 @@ async function initCustomCatalogsTab(): Promise<void> {
 
   wireCustomCatalogHandlers();
   initCustomCatalogMap();
-  await Promise.all([loadCatalogs(), loadFootprints()]);
-  // Both the catalog list (auto-selects the first) and the footprints are now
+  await Promise.all([loadCatalogs(), loadEncIndex()]);
+  // Both the chart-set list (auto-selects the first) and the units are now
   // loaded. The map was created the instant this tab became visible, so Leaflet
   // may have cached a stale (zero) container size; recompute it, then frame the
-  // active catalog (or all footprints if none). Deferred a tick so layout has
-  // settled, and non-animated since it's the only fit now (drawFootprints no
-  // longer fits, so there's nothing to race).
+  // active set (or every unit if none). Deferred a tick so layout has settled,
+  // and non-animated since it's the only fit now.
   window.setTimeout(() => {
     ccMap?.invalidateSize();
     const cat = ccActiveCatalog();
-    if (cat && cat.selectedBand4ChartIds.length > 0) {
+    if (cat && ccSelectedIds(cat).size > 0) {
       fitMapToActiveCatalog({ animate: false });
     } else {
-      fitMapToAllFootprints({ animate: false });
+      fitMapToAllUnits({ animate: false });
     }
   }, 0);
 }
@@ -175,9 +225,12 @@ function initCustomCatalogMap(): void {
   if (!el) {
     return;
   }
-  ccMap = L.map(el, { worldCopyJump: true, minZoom: 2 }).setView([37.8, -96], 4);
+  // Shift+drag selects units by box here, so Leaflet's own Shift+drag zoom
+  // is turned off. A canvas renderer keeps thousands of outlines responsive.
+  ccMap = L.map(el, { worldCopyJump: true, minZoom: 2, boxZoom: false }).setView([37.8, -96], 4);
+  ccRenderer = L.canvas({ padding: 0.5 });
   // OpenSeaMap = OSM base + a seamark overlay. Tiles need internet; if they
-  // fail the footprints stay fully usable, so selection still works offline.
+  // fail the units stay fully usable, so selection still works offline.
   // The Signal K server sends Referrer-Policy: no-referrer, which strips the
   // Referer from tile requests; OSM's usage policy then answers with an "Access
   // blocked" placeholder tile. A per-image policy overrides the document one and
@@ -193,6 +246,27 @@ function initCustomCatalogMap(): void {
     attribution: 'Seamarks &copy; OpenSeaMap'
   }).addTo(ccMap);
   ccFootprintLayer = L.layerGroup().addTo(ccMap);
+  ccHoverTip = L.tooltip({ direction: 'top', offset: [0, -6] });
+
+  // Units are not interactive themselves: overlapping outlines are resolved
+  // here, so a click picks the unit the user means (see ccUnitAt).
+  ccMap.on('click', (ev: L.LeafletMouseEvent) => {
+    if (ccBoxMode || ccSuppressClick) {
+      ccSuppressClick = false;
+      return;
+    }
+    const hit = ccUnitAt(ev.latlng);
+    if (hit) {
+      void onAreaClick(hit.unit);
+    }
+  });
+  ccMap.on('mousemove', (ev: L.LeafletMouseEvent) => {
+    onHover(ccBoxMode ? null : ccUnitAt(ev.latlng), ev.latlng);
+  });
+  ccMap.on('mouseout', () => {
+    onHover(null, null);
+  });
+  wireBoxSelect(el);
 }
 
 function ccClearStyle(): L.PathOptions {
@@ -205,6 +279,11 @@ function ccSelectedStyle(color: string): L.PathOptions {
 
 function ccActiveCatalog(): CustomCatalog | null {
   return ccCatalogs.find((c) => c.id === ccActiveId) ?? null;
+}
+
+/** Every unit a set has selected; NOAA and other ids share one namespace. */
+function ccSelectedIds(cat: CustomCatalog | null): Set<string> {
+  return new Set(cat ? [...cat.selectedBand4ChartIds, ...cat.selectedUnitIds] : []);
 }
 
 function ccStatusColor(cat: CustomCatalog): string {
@@ -247,97 +326,480 @@ function ccStatusLabel(cat: CustomCatalog): string {
     case 'downloaded':
       return 'Downloaded, not converted';
     case 'empty':
-      return 'No coverage areas selected';
+      return 'No chart areas selected';
     default:
       return 'Needs download & convert';
   }
 }
 
-async function loadFootprints(forceRefresh = false): Promise<void> {
+function ccSourceLabel(sourceId: string): string {
+  return ccSources.get(sourceId) ?? sourceId;
+}
+
+async function loadEncIndex(forceRefresh = false): Promise<void> {
   const note = document.getElementById('ccMapNote');
+  if (note && forceRefresh) {
+    note.textContent = 'Refreshing ENC chart areas…';
+  }
   try {
     const resp = await fetch(
-      `${CC_API_BASE}/custom-catalogs/noaa-enc-footprints${forceRefresh ? '?refresh=1' : ''}`
+      `${CC_API_BASE}/custom-catalogs/enc-index${forceRefresh ? '?refresh=1' : ''}`
     );
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`);
     }
-    const data = (await resp.json()) as FootprintsResponse;
-    ccBand4 = data.band4;
-    drawFootprints();
-    if (note) {
-      note.textContent = `${ccBand4.length} NOAA band-4 areas${
-        data.stale ? ' (cached copy)' : ''
-      } — click an area to add it to the selected chart set.`;
+    const data = (await resp.json()) as EncIndexResponse;
+    if (data.index) {
+      ccUnits = data.index.units;
+      ccSources.clear();
+      for (const s of data.index.sources) {
+        ccSources.set(s.id, s.label);
+      }
+      drawUnits();
+      // The list's status colours depend on the index the server now holds.
+      void loadCatalogs();
     }
+    renderMapNote(data);
   } catch {
     if (note) {
-      note.textContent = "Could not load NOAA ENC coverage. Check the server's internet connection.";
+      note.textContent = 'Could not load the ENC chart areas from this server.';
     }
   }
 }
 
-function drawFootprints(): void {
+function renderMapNote(data: EncIndexResponse): void {
+  const note = document.getElementById('ccMapNote');
+  if (!note) {
+    return;
+  }
+  if (!data.index) {
+    note.textContent =
+      data.status.message ??
+      "The ENC index has not been downloaded yet. It lists the chart areas to pick from; check this device's internet connection, then click Refresh.";
+    return;
+  }
+  const sourceCount = data.index.sources.filter((s) => s.units > 0).length;
+  const stale =
+    data.status.status === 'error' || data.status.status === 'incompatible'
+      ? ` (saved copy from ${new Date(data.index.fetchedAt).toLocaleDateString()}; ${data.status.message ?? 'refresh failed'})`
+      : '';
+  note.textContent = `${ccUnits.length} chart areas from ${sourceCount} sources${stale}.`;
+  note.title = data.index.sources
+    .filter((s) => s.units > 0)
+    .map((s) => `${s.label}: ${s.units}`)
+    .join('\n');
+}
+
+/** Exterior rings of an outline as [lon, lat] lists. */
+function ccOutlineRings(outline: CcOutline): CcPosition[][] {
+  return outline.type === 'Polygon'
+    ? [outline.coordinates[0]]
+    : outline.coordinates.map((polygon) => polygon[0]);
+}
+
+function drawUnits(): void {
   if (!ccMap || !ccFootprintLayer) {
     return;
   }
   ccFootprintLayer.clearLayers();
-  ccRectByChartId.clear();
+  ccDrawnById.clear();
   ccFillRects.clear();
-  for (const entry of ccBand4) {
-    const rectBounds: L.LatLngBoundsExpression = [
-      [entry.bbox.minLat, entry.bbox.minLon],
-      [entry.bbox.maxLat, entry.bbox.maxLon]
-    ];
-    const rect = L.rectangle(rectBounds, ccClearStyle());
-    rect.bindTooltip(`${entry.chartId} — ${entry.title}`, { sticky: true });
-    rect.on('click', () => {
-      void onAreaClick(entry.chartId);
-    });
-    rect.addTo(ccFootprintLayer);
-    ccRectByChartId.set(entry.chartId, rect);
+  for (const unit of ccUnits) {
+    const [w, s, e, n] = unit.bbox;
+    const west = w;
+    const east = e < w ? e + 360 : e;
+    const unwrap = (p: CcPosition): CcPosition => [e < w && p[0] < w ? p[0] + 360 : p[0], p[1]];
+    const rings = ccOutlineRings(unit.outline).map((ring) => ring.map(unwrap));
+    let layer: L.Path;
+    if (unit.source === CC_NOAA_SOURCE) {
+      layer = L.rectangle(
+        [
+          [s, west],
+          [n, east]
+        ],
+        { ...ccClearStyle(), interactive: false, renderer: ccRenderer ?? undefined }
+      );
+    } else {
+      layer = L.polygon(
+        rings.map((ring) => ring.map(([lon, lat]) => L.latLng(lat, lon))),
+        { ...ccClearStyle(), interactive: false, renderer: ccRenderer ?? undefined }
+      );
+    }
+    layer.addTo(ccFootprintLayer);
+    const area = (east - west) * (n - s) * Math.cos((((n + s) / 2) * Math.PI) / 180);
+    ccDrawnById.set(unit.id, { unit, layer, west, east, rings, area });
   }
   // Note: the map view is framed by init / selectCatalog (fitMapToActiveCatalog
-  // or fitMapToAllFootprints), not here — a fit during draw competed with the
-  // initial catalog fit and won the race, leaving the wide view.
+  // or fitMapToAllUnits), not here — a fit during draw competed with the
+  // initial set fit and won the race, leaving the wide view.
   refreshAreaColors();
+}
+
+// ---- Hit testing ----
+
+function ccInRing(lon: number, lat: number, ring: CcPosition[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** Distance in screen pixels from a point to a ring's edges. */
+function ccRingDistancePx(map: L.Map, point: L.Point, ring: CcPosition[]): number {
+  let best = Infinity;
+  let prev: L.Point | null = null;
+  for (const [lon, lat] of ring) {
+    const cur = map.latLngToContainerPoint([lat, lon]);
+    if (prev) {
+      best = Math.min(best, L.LineUtil.pointToSegmentDistance(point, prev, cur));
+    }
+    prev = cur;
+  }
+  return best;
+}
+
+/** The point's longitude shifted by whole turns into the unit's unwrapped range. */
+function ccLonFor(drawn: CcDrawnUnit, lon: number): number {
+  let x = lon;
+  while (x < drawn.west - 180) {
+    x += 360;
+  }
+  while (x > drawn.west + 180) {
+    x -= 360;
+  }
+  return x;
+}
+
+/**
+ * The unit under a point. Where outlines overlap (a NOAA box and the river
+ * overlay, adjacent river cells, a harbour cell inside an approach cell) the
+ * smallest wins, as the most specific choice; the larger one is still
+ * clickable where it is alone. A point just outside a thin outline, within a
+ * few pixels, still counts, so narrow river cells can be clicked.
+ */
+function ccUnitAt(latlng: L.LatLng): CcDrawnUnit | null {
+  if (!ccMap) {
+    return null;
+  }
+  const map = ccMap;
+  const point = map.latLngToContainerPoint(latlng);
+  const tolDeg = Math.abs(
+    map.containerPointToLatLng([point.x + CC_HIT_TOLERANCE_PX, point.y]).lng - latlng.lng
+  );
+  let inside: CcDrawnUnit | null = null;
+  let near: CcDrawnUnit | null = null;
+  let nearDist = Infinity;
+  for (const drawn of ccDrawnById.values()) {
+    const lon = ccLonFor(drawn, latlng.lng);
+    const [, s, , n] = drawn.unit.bbox;
+    if (
+      lon < drawn.west - tolDeg ||
+      lon > drawn.east + tolDeg ||
+      latlng.lat < s - tolDeg ||
+      latlng.lat > n + tolDeg
+    ) {
+      continue;
+    }
+    if (drawn.rings.some((ring) => ccInRing(lon, latlng.lat, ring))) {
+      if (!inside || drawn.area < inside.area) {
+        inside = drawn;
+      }
+      continue;
+    }
+    if (inside) {
+      continue;
+    }
+    const shifted = L.latLng(latlng.lat, lon);
+    const p = map.latLngToContainerPoint(shifted);
+    const d = Math.min(...drawn.rings.map((ring) => ccRingDistancePx(map, p, ring)));
+    if (d <= CC_HIT_TOLERANCE_PX && (d < nearDist || (d === nearDist && near && drawn.area < near.area))) {
+      near = drawn;
+      nearDist = d;
+    }
+  }
+  return inside ?? near;
+}
+
+function ccSegmentsCross(a: CcPosition, b: CcPosition, c: CcPosition, d: CcPosition): boolean {
+  const cross = (p: CcPosition, q: CcPosition, r: CcPosition): number =>
+    (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const d1 = cross(c, d, a);
+  const d2 = cross(c, d, b);
+  const d3 = cross(a, b, c);
+  const d4 = cross(a, b, d);
+  return d1 * d2 <= 0 && d3 * d4 <= 0;
+}
+
+/** Whether a unit's outline touches a lon/lat box (west <= east, unwrapped). */
+function ccTouchesBox(
+  drawn: CcDrawnUnit,
+  west: number,
+  south: number,
+  east: number,
+  north: number
+): boolean {
+  const shift = ccLonFor(drawn, (west + east) / 2) - (west + east) / 2;
+  const w = west + shift;
+  const e = east + shift;
+  const [, s, , n] = drawn.unit.bbox;
+  if (drawn.east < w || drawn.west > e || n < south || s > north) {
+    return false;
+  }
+  const corners: CcPosition[] = [
+    [w, south],
+    [e, south],
+    [e, north],
+    [w, north]
+  ];
+  for (const ring of drawn.rings) {
+    if (ring.some(([x, y]) => x >= w && x <= e && y >= south && y <= north)) {
+      return true;
+    }
+    if (corners.some(([x, y]) => ccInRing(x, y, ring))) {
+      return true;
+    }
+    for (let i = 1; i < ring.length; i++) {
+      for (let k = 0; k < 4; k++) {
+        if (ccSegmentsCross(ring[i - 1], ring[i], corners[k], corners[(k + 1) % 4])) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// ---- Hover ----
+
+function onHover(drawn: CcDrawnUnit | null, latlng: L.LatLng | null): void {
+  const id = drawn?.unit.id ?? null;
+  if (ccMap && ccHoverTip) {
+    if (drawn && latlng) {
+      const u = drawn.unit;
+      const title = u.title && u.title !== u.id ? u.title : '';
+      ccHoverTip
+        .setLatLng(latlng)
+        .setContent(
+          `<strong>${ccEscHtml(u.id)}</strong>${title ? ` — ${ccEscHtml(title)}` : ''}<br>${ccEscHtml(ccSourceLabel(u.source))}${
+            u.scale ? ` · 1:${u.scale.toLocaleString()}` : ''
+          }`
+        );
+      if (!ccMap.hasLayer(ccHoverTip)) {
+        ccHoverTip.addTo(ccMap);
+      }
+    } else if (ccMap.hasLayer(ccHoverTip)) {
+      ccMap.removeLayer(ccHoverTip);
+    }
+    ccMap.getContainer().style.cursor = ccBoxMode ? 'crosshair' : drawn ? 'pointer' : '';
+  }
+  if (id === ccHoverId) {
+    return;
+  }
+  const previous = ccHoverId;
+  ccHoverId = id;
+  if (previous) {
+    styleUnit(previous);
+  }
+  if (id) {
+    styleUnit(id);
+  }
+}
+
+// ---- Box selection ----
+
+function setBoxMode(on: boolean): void {
+  ccBoxMode = on;
+  const btn = document.getElementById('ccBoxBtn');
+  if (btn) {
+    btn.classList.toggle('cc-btn-active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+  const el = ccMap?.getContainer();
+  if (el) {
+    el.classList.toggle('cc-selecting', on);
+    el.style.cursor = on ? 'crosshair' : '';
+  }
+  if (on) {
+    onHover(null, null);
+  }
+}
+
+// Drag a box to add every unit it touches. Works with the "Select by box"
+// toggle (mouse or touch) or with Shift+drag; never removes anything.
+function wireBoxSelect(el: HTMLElement): void {
+  let start: L.LatLng | null = null;
+  let box: L.Rectangle | null = null;
+  let pointerId: number | null = null;
+
+  el.addEventListener(
+    'pointerdown',
+    (ev: PointerEvent) => {
+      if (!ccMap || ev.button !== 0 || !(ccBoxMode || ev.shiftKey)) {
+        return;
+      }
+      if ((ev.target as HTMLElement | null)?.closest('.leaflet-control')) {
+        return;
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      ccMap.dragging.disable();
+      start = ccMap.mouseEventToLatLng(ev);
+      pointerId = ev.pointerId;
+      el.setPointerCapture(ev.pointerId);
+    },
+    true
+  );
+  el.addEventListener('pointermove', (ev: PointerEvent) => {
+    if (!ccMap || !start || ev.pointerId !== pointerId) {
+      return;
+    }
+    const bounds = L.latLngBounds(start, ccMap.mouseEventToLatLng(ev));
+    if (box) {
+      box.setBounds(bounds);
+    } else {
+      box = L.rectangle(bounds, {
+        color: '#1565c0',
+        weight: 1,
+        dashArray: '4 4',
+        fillOpacity: 0.08,
+        interactive: false
+      }).addTo(ccMap);
+    }
+  });
+  const finish = (ev: PointerEvent): void => {
+    if (!ccMap || !start || ev.pointerId !== pointerId) {
+      return;
+    }
+    const bounds = box?.getBounds() ?? null;
+    if (box) {
+      ccMap.removeLayer(box);
+    }
+    box = null;
+    start = null;
+    pointerId = null;
+    ccMap.dragging.enable();
+    if (bounds) {
+      ccSuppressClick = true;
+      window.setTimeout(() => {
+        ccSuppressClick = false;
+      }, 0);
+      if (ev.type === 'pointerup') {
+        void addUnitsInBox(bounds);
+      }
+    }
+  };
+  el.addEventListener('pointerup', finish);
+  el.addEventListener('pointercancel', finish);
+}
+
+async function addUnitsInBox(bounds: L.LatLngBounds): Promise<void> {
+  const cat = ccActiveCatalog();
+  const note = document.getElementById('ccMapNote');
+  if (!cat) {
+    if (note) {
+      note.textContent = 'Create or select a chart set first, then pick chart areas.';
+    }
+    return;
+  }
+  if (ccBusy) {
+    return;
+  }
+  const west = bounds.getWest();
+  const east = bounds.getEast();
+  const south = bounds.getSouth();
+  const north = bounds.getNorth();
+  const selected = ccSelectedIds(cat);
+  const toAdd: CcUnit[] = [];
+  for (const drawn of ccDrawnById.values()) {
+    if (!selected.has(drawn.unit.id) && ccTouchesBox(drawn, west, south, east, north)) {
+      toAdd.push(drawn.unit);
+    }
+  }
+  if (toAdd.length === 0) {
+    return;
+  }
+  if (
+    toAdd.length > CC_BOX_CONFIRM_ABOVE &&
+    !confirm(`Add ${toAdd.length} chart areas to “${cat.name}”?`)
+  ) {
+    return;
+  }
+  for (const unit of toAdd) {
+    if (unit.source === CC_NOAA_SOURCE) {
+      cat.selectedBand4ChartIds.push(unit.id);
+    } else {
+      cat.selectedUnitIds.push(unit.id);
+    }
+  }
+  refreshAreaColors();
+  await putSelection(cat);
+}
+
+// ---- Colours ----
+
+function unitColor(id: string, cat: CustomCatalog): string {
+  const downloading = ccBusy && ccDetail?.phase === 'downloading';
+  if (downloading) {
+    // NOAA boxes show progress as a rising fill overlay; other units turn
+    // yellow once their cell has landed.
+    const drawn = ccDrawnById.get(id);
+    if (drawn && drawn.unit.source !== CC_NOAA_SOURCE && boxFillFraction(id) >= 1) {
+      return CC_YELLOW;
+    }
+    return CC_RED;
+  }
+  if (ccBusy) {
+    return CC_YELLOW; // converting / combining
+  }
+  // Idle colour is per-unit, driven by cell-version freshness (green = baked
+  // versions still current, red = a newer version / never built). Falls back
+  // to the set-level colour if the server had no index to compare against.
+  const boxStates = cat.boxStates;
+  if (Object.keys(boxStates).length > 0) {
+    return boxStates[id] === 'up_to_date' ? CC_GREEN : CC_RED;
+  }
+  return ccStatusColor(cat);
+}
+
+function styleUnit(id: string): void {
+  const drawn = ccDrawnById.get(id);
+  if (!drawn) {
+    return;
+  }
+  const active = ccActiveCatalog();
+  const selected = active ? ccSelectedIds(active).has(id) : false;
+  const style = active && selected ? ccSelectedStyle(unitColor(id, active)) : ccClearStyle();
+  if (id === ccHoverId) {
+    style.weight = (style.weight ?? 1) + 2;
+  }
+  drawn.layer.setStyle(style);
 }
 
 function refreshAreaColors(): void {
   const active = ccActiveCatalog();
-  const selected = new Set(active?.selectedBand4ChartIds ?? []);
-  // While downloading, each box shows a red base with a yellow fill rising
-  // bottom-to-top by its own band-4 + nested-band-5 completed fraction.
-  const downloading = ccBusy && ccDetail?.phase === 'downloading';
-  // Idle colour is per-box, driven by NOAA-edition freshness (green = baked
-  // editions still current, red = NOAA has a newer edition / never built).
-  // Falls back to the catalog-level colour if the footprint index isn't loaded.
-  const boxStates = active?.boxStates ?? {};
-  const haveBoxStates = Object.keys(boxStates).length > 0;
-  for (const [chartId, rect] of ccRectByChartId) {
-    if (!active || !selected.has(chartId)) {
-      rect.setStyle(ccClearStyle());
-      continue;
-    }
-    let color: string;
-    if (downloading) {
-      color = CC_RED; // base; the fill overlay shows per-box progress
-    } else if (ccBusy) {
-      color = CC_YELLOW; // converting / combining
-    } else if (haveBoxStates) {
-      color = boxStates[chartId] === 'up_to_date' ? CC_GREEN : CC_RED;
-    } else {
-      color = ccStatusColor(active);
-    }
-    rect.setStyle(ccSelectedStyle(color));
+  const selected = ccSelectedIds(active);
+  for (const id of ccDrawnById.keys()) {
+    styleUnit(id);
   }
+  // Selected units draw over the rest, so their outline is never hidden.
+  for (const id of selected) {
+    const layer = ccDrawnById.get(id)?.layer;
+    if (layer && 'bringToFront' in layer) {
+      (layer).bringToFront();
+    }
+  }
+  const downloading = ccBusy && ccDetail?.phase === 'downloading';
   updateFillOverlays(downloading, selected);
 }
 
-// Box fill fraction = (band-4 + nested band-5 charts downloaded) / (that
-// box's total), 0..1.
-function boxFillFraction(chartId: string): number {
-  const cov = ccDetail?.coverageByBox?.[chartId];
+// Fill fraction = (status cells downloaded) / (that unit's status cells), 0..1.
+function boxFillFraction(unitId: string): number {
+  const cov = ccDetail?.coverageByBox?.[unitId];
   if (!cov || cov.length === 0) {
     return 0;
   }
@@ -356,21 +818,20 @@ function updateFillOverlays(downloading: boolean, selected: Set<string>): void {
     clearFillOverlays();
     return;
   }
-  const entryById = new Map(ccBand4.map((e) => [e.chartId, e]));
-  for (const chartId of selected) {
-    const entry = entryById.get(chartId);
-    const frac = boxFillFraction(chartId);
-    if (!entry || frac <= 0) {
-      removeFillOverlay(chartId);
+  for (const id of selected) {
+    const drawn = ccDrawnById.get(id);
+    const frac = boxFillFraction(id);
+    if (!drawn || drawn.unit.source !== CC_NOAA_SOURCE || frac <= 0) {
+      removeFillOverlay(id);
       continue;
     }
-    const { minLat, minLon, maxLat, maxLon } = entry.bbox;
+    const [, minLat, , maxLat] = drawn.unit.bbox;
     const topLat = minLat + frac * (maxLat - minLat);
     const bounds = L.latLngBounds([
-      [minLat, minLon],
-      [topLat, maxLon]
+      [minLat, drawn.west],
+      [topLat, drawn.east]
     ]);
-    const existing = ccFillRects.get(chartId);
+    const existing = ccFillRects.get(id);
     if (existing) {
       existing.setBounds(bounds);
     } else {
@@ -379,13 +840,14 @@ function updateFillOverlays(downloading: boolean, selected: Set<string>): void {
         fill: true,
         fillColor: CC_YELLOW,
         fillOpacity: 0.55,
-        interactive: false
+        interactive: false,
+        renderer: ccRenderer ?? undefined
       });
       overlay.addTo(ccFootprintLayer);
-      ccFillRects.set(chartId, overlay);
+      ccFillRects.set(id, overlay);
     }
   }
-  // Drop overlays for boxes no longer selected.
+  // Drop overlays for units no longer selected.
   for (const id of [...ccFillRects.keys()]) {
     if (!selected.has(id)) {
       removeFillOverlay(id);
@@ -393,11 +855,11 @@ function updateFillOverlays(downloading: boolean, selected: Set<string>): void {
   }
 }
 
-function removeFillOverlay(chartId: string): void {
-  const overlay = ccFillRects.get(chartId);
+function removeFillOverlay(id: string): void {
+  const overlay = ccFillRects.get(id);
   if (overlay) {
     ccFootprintLayer?.removeLayer(overlay);
-    ccFillRects.delete(chartId);
+    ccFillRects.delete(id);
   }
 }
 
@@ -446,7 +908,7 @@ function renderCustomCatalogList(): void {
       )}">
         <span class="cc-status-dot cc-dot-${ccStatusClass(cat)}"></span>
         <span class="cc-list-name">${ccEscHtml(cat.name)}</span>
-        <span class="cc-list-meta">${cat.selectedBand4ChartIds.length}</span>
+        <span class="cc-list-meta">${ccSelectedIds(cat).size}</span>
       </div>`
     )
     .join('');
@@ -457,9 +919,10 @@ function renderDetail(): void {
   const dlBtn = document.getElementById('ccDownloadBtn') as HTMLButtonElement | null;
   const delBtn = document.getElementById('ccDeleteBtn') as HTMLButtonElement | null;
   const cat = ccActiveCatalog();
+  const count = ccSelectedIds(cat).size;
 
   if (dlBtn) {
-    dlBtn.disabled = !cat || cat.selectedBand4ChartIds.length === 0 || ccBusy;
+    dlBtn.disabled = !cat || count === 0 || ccBusy;
   }
   if (delBtn) {
     delBtn.disabled = !cat || ccBusy;
@@ -469,15 +932,13 @@ function renderDetail(): void {
     return;
   }
   if (!cat) {
-    detail.innerHTML = `<div class="cc-detail-empty">Select or create a chart set, then click coverage areas on the map.</div>`;
+    detail.innerHTML = `<div class="cc-detail-empty">Select or create a chart set, then click chart areas on the map.</div>`;
     return;
   }
   detail.innerHTML = `
     <div class="cc-detail-name">${ccEscHtml(cat.name)}</div>
     <div class="cc-detail-status cc-status-${ccStatusClass(cat)}">${ccEscHtml(ccStatusLabel(cat))}</div>
-    <div class="cc-detail-meta">${cat.selectedBand4ChartIds.length} selected area(s) &rarr; ${
-      cat.includedCount
-    } ENC(s) incl. band 3/5</div>
+    <div class="cc-detail-meta">${count} selected area(s) &rarr; ${cat.includedCount} ENC cell(s)</div>
     ${
       cat.updateReasons.length > 0
         ? `<ul class="cc-reasons">${cat.updateReasons
@@ -546,8 +1007,8 @@ function renderProgress(): void {
   if (ccBusy && d?.phase === 'cancelling') {
     cancelHtml = `<span class="cc-cancel-pending">Cancelling…</span>`;
   } else if (ccBusy) {
-    // Every phase — including the combine — is now cancellable: the cancel
-    // route aborts the in-flight container job (signalk-container >= 1.16.0).
+    // Every phase — including the combine — is cancellable: the cancel
+    // route aborts the in-flight download or container job.
     cancelHtml = `<button class="cc-btn cc-btn-danger cc-cancel-btn" data-cc-action="cancel">Cancel</button>`;
   }
 
@@ -603,25 +1064,26 @@ function replaceCatalog(updated: CustomCatalog): void {
   refreshAreaColors();
 }
 
-async function onAreaClick(chartId: string): Promise<void> {
+async function onAreaClick(unit: CcUnit): Promise<void> {
   const cat = ccActiveCatalog();
   if (!cat) {
     const note = document.getElementById('ccMapNote');
     if (note) {
-      note.textContent = 'Create or select a chart set first, then click coverage areas.';
+      note.textContent = 'Create or select a chart set first, then click chart areas.';
     }
     return;
   }
   if (ccBusy) {
     return;
   }
-  const selected = new Set(cat.selectedBand4ChartIds);
-  if (selected.has(chartId)) {
-    selected.delete(chartId);
+  const key = unit.source === CC_NOAA_SOURCE ? 'selectedBand4ChartIds' : 'selectedUnitIds';
+  const selected = new Set(cat[key]);
+  if (selected.has(unit.id)) {
+    selected.delete(unit.id);
   } else {
-    selected.add(chartId);
+    selected.add(unit.id);
   }
-  cat.selectedBand4ChartIds = Array.from(selected);
+  cat[key] = Array.from(selected);
   // Optimistic recolour; the PUT response refreshes counts/status.
   refreshAreaColors();
   await putSelection(cat);
@@ -632,7 +1094,10 @@ async function putSelection(cat: CustomCatalog): Promise<void> {
     const resp = await fetch(`${CC_API_BASE}/custom-catalogs/${encodeURIComponent(cat.id)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selectedBand4ChartIds: cat.selectedBand4ChartIds })
+      body: JSON.stringify({
+        selectedBand4ChartIds: cat.selectedBand4ChartIds,
+        selectedUnitIds: cat.selectedUnitIds
+      })
     });
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`);
@@ -660,29 +1125,32 @@ function selectCatalog(id: string): void {
   void maybeStartStatusPoll();
 }
 
-// Center + zoom the map to the bounding box of the active catalog's selected
-// band-4 areas. No-op if the map/footprints aren't ready or the catalog has
-// no selection (we leave the current view rather than jumping to the world).
+function ccBoundsOf(drawn: CcDrawnUnit): L.LatLngExpression[] {
+  const [, s, , n] = drawn.unit.bbox;
+  return [
+    [s, drawn.west],
+    [n, drawn.east]
+  ];
+}
+
+// Center + zoom the map to the active set's selected units. No-op if the
+// map/units aren't ready or the set has no selection (we leave the current
+// view rather than jumping to the world).
 function fitMapToActiveCatalog(opts: { animate?: boolean } = {}): void {
   if (!ccMap) {
     return;
   }
-  const cat = ccActiveCatalog();
-  if (!cat || cat.selectedBand4ChartIds.length === 0) {
-    return;
-  }
-  const entryById = new Map(ccBand4.map((e) => [e.chartId, e]));
   const points: L.LatLngExpression[] = [];
-  for (const id of cat.selectedBand4ChartIds) {
-    const e = entryById.get(id);
-    if (e) {
-      points.push([e.bbox.minLat, e.bbox.minLon], [e.bbox.maxLat, e.bbox.maxLon]);
+  for (const id of ccSelectedIds(ccActiveCatalog())) {
+    const drawn = ccDrawnById.get(id);
+    if (drawn) {
+      points.push(...ccBoundsOf(drawn));
     }
   }
   if (points.length === 0) {
     return;
   }
-  // maxZoom keeps a single small box from zooming in uncomfortably far.
+  // maxZoom keeps a single small unit from zooming in uncomfortably far.
   ccMap.fitBounds(L.latLngBounds(points), {
     padding: [30, 30],
     maxZoom: 11,
@@ -690,15 +1158,15 @@ function fitMapToActiveCatalog(opts: { animate?: boolean } = {}): void {
   });
 }
 
-// Fit to all NOAA band-4 footprints — the fallback view when no catalog is
-// selected (e.g. a fresh install with no catalogs yet).
-function fitMapToAllFootprints(opts: { animate?: boolean } = {}): void {
-  if (!ccMap || ccBand4.length === 0) {
+// Fit to every unit — the fallback view when no set is selected (e.g. a
+// fresh install with no chart sets yet).
+function fitMapToAllUnits(opts: { animate?: boolean } = {}): void {
+  if (!ccMap || ccDrawnById.size === 0) {
     return;
   }
   const points: L.LatLngExpression[] = [];
-  for (const e of ccBand4) {
-    points.push([e.bbox.minLat, e.bbox.minLon], [e.bbox.maxLat, e.bbox.maxLon]);
+  for (const drawn of ccDrawnById.values()) {
+    points.push(...ccBoundsOf(drawn));
   }
   ccMap.fitBounds(L.latLngBounds(points), { padding: [20, 20], animate: opts.animate ?? true });
 }
@@ -768,7 +1236,7 @@ async function deleteActiveCatalog(): Promise<void> {
 
 async function downloadConvertActive(): Promise<void> {
   const cat = ccActiveCatalog();
-  if (!cat || ccBusy || cat.selectedBand4ChartIds.length === 0) {
+  if (!cat || ccBusy || ccSelectedIds(cat).size === 0) {
     return;
   }
   try {
@@ -937,6 +1405,12 @@ function wireCustomCatalogHandlers(): void {
       case 'delete':
         void deleteActiveCatalog();
         break;
+      case 'box-mode':
+        setBoxMode(!ccBoxMode);
+        break;
+      case 'refresh-index':
+        void loadEncIndex(true);
+        break;
       default:
         break;
     }
@@ -944,7 +1418,7 @@ function wireCustomCatalogHandlers(): void {
 
   output.addEventListener('keydown', (ev) => {
     const target = ev.target as HTMLElement | null;
-    if (target?.id === 'ccNewName' && (ev).key === 'Enter') {
+    if (target?.id === 'ccNewName' && ev.key === 'Enter') {
       ev.preventDefault();
       void createCatalog();
     }

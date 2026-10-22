@@ -9,7 +9,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 - **Download Manager**: Built-in download queue with progress tracking and ZIP extraction
 - **Chart Catalog**: Browse and download charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/) with automatic update notifications
 - **Online Charts and Satellite imagery**: Add weather radar and satellite, online nautical charts, depth layers, base maps and satellite imagery with one click — no download, no conversion
-- **NOAA Charts**: Draw a coverage region on a map from NOAA band-4 chart footprints; the plugin bundles the overlapping band-3/4/5 ENCs and converts them into a single vector MBTiles named after your chart set
+- **ENC Charts**: Pick chart areas on a map from every free ENC source (NOAA, the European inland waterways and more); the plugin downloads their ENC cells and converts them into a single vector MBTiles named after your chart set
 - **S-57 ENC Conversion**: Convert IENC/ENC charts to vector MBTiles with full S-52 symbology in Freeboard-SK
 - **BSB Raster Conversion**: Convert BSB/KAP raster charts and Pilot Charts to raster MBTiles
 - **World Basemaps**: GSHHG and OSM coastline basemaps for offline use
@@ -49,7 +49,7 @@ Chart conversion (S-57 ENC, BSB raster, basemaps) is the only CPU-heavy thing th
 |---|---|---|
 | `single-core` | One job at a time, one thread; each `ogr2ogr` runs sequentially | Multi-tenant Pi (Signal K + Grafana + Node-RED + …) where keeping the rest of the box responsive matters more than conversion speed |
 | `half` (default) | `cpus/2` concurrent jobs, each tippecanoe gets `cpus / max-jobs` threads (typically ~2), `ogr2ogr` parallelizes to the same per-job ceiling | Balanced — leaves half the box for everything else. Matches the behaviour of plugin versions before 1.10 |
-| `all` | One full-throttle job using every core in both the GDAL export and tippecanoe stages; multi-bundle uploads queue serially | Dedicated chart-prep box, or when you just want a NOAA bundle to finish as fast as possible |
+| `all` | One full-throttle job using every core in both the GDAL export and tippecanoe stages; multi-bundle uploads queue serially | Dedicated chart-prep box, or when you just want a chart set to finish as fast as possible |
 
 The setting hot-applies — change it in the plugin config and Signal K will restart the plugin automatically; no server restart needed. In-flight conversions keep their already-spawned threads; the next conversion picks up the new budget.
 
@@ -105,14 +105,16 @@ The interface provides seven tabs:
    - Satellite and aerial imagery side by side (such as EOxCloudless and USGS aerial imagery), so you can pick by sharpness, age, cloud cover and licence. Imagery shows reefs and shallows that a chart may not, as a layer beneath or instead of the chart
    - Added and kept offline the same way as the online charts, including **Offline area**
 
-7. **NOAA Charts**:
-   - Build a named **chart set** of NOAA ENC coverage by clicking band-4 footprints on a map (Leaflet + OpenSeaMap)
-   - Each band-4 selection automatically pulls in the overlapping band-3 and band-5 ENCs
-   - Footprint data from NOAA's [official chart locator](https://www.charts.noaa.gov/InteractiveCatalog/data/enc.geojson)
-   - Download & convert produces one `.mbtiles` per chart set, with live progress and a log
-   - Out-of-date detection when NOAA publishes new editions or your selection changes
+7. **ENC Charts**:
+   - Build a named **chart set** by clicking chart areas on a map (Leaflet + OpenSeaMap): NOAA's band-4 boxes in US waters, and the cells of every other free ENC source, such as the European inland waterways (EuRIS), the Rhône, Poland, Brazil, the South China Sea and the US inland river buoys, drawn as their real coverage
+   - Click an area to add or remove it. **Select by box** (or Shift+drag) adds every area a box touches. Where areas overlap, a click picks the smallest
+   - One chart set can mix sources, e.g. NOAA charts plus the US inland river buoy overlay
+   - Each NOAA box automatically pulls in the overlapping band-3 and band-5 ENCs
+   - The chart areas come from the ENC index this project publishes (see [`docs/enc-index.md`](docs/enc-index.md)); the plugin keeps the last copy, so the map works offline once it has been downloaded
+   - Download & convert produces one `.mbtiles` per chart set, with live progress and a log. Each archive is downloaded once, and updates a source publishes separately are applied
+   - Out-of-date detection when a source publishes a new edition or update of a cell, or your selection changes; the set lists the cells that changed
+   - Chart sets made in the NOAA Charts tab of earlier versions carry over as they are. A set that includes other sources still opens in an earlier version, which shows only its NOAA part and drops the rest if it saves the set
    - Container runtime (`signalk-container`) required, same as other conversions
-   - US waters only — NOAA is the only source of freely-downloadable ENC charts
 
 ### Supported Formats
 

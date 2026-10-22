@@ -49,6 +49,12 @@ export interface LenientDownloadOptions {
   headers: Record<string, string>;
   maxBytes: number;
   signal?: AbortSignal;
+  /** Relax header parsing (the default). False parses as strictly as `fetch`. */
+  insecureHTTPParser?: boolean;
+  /** Trusted certificates in place of Node's default set. */
+  ca?: string[];
+  /** Fail when the connection is silent this long. */
+  timeoutMs?: number;
 }
 
 /** Download `url` to `target`, following redirects, with header parsing relaxed. */
@@ -67,7 +73,13 @@ export function downloadLenient(
     let responded = false;
     const request = get(
       parsed,
-      { headers: options.headers, insecureHTTPParser: true, signal: options.signal },
+      {
+        headers: options.headers,
+        insecureHTTPParser: options.insecureHTTPParser ?? true,
+        signal: options.signal,
+        ...(options.ca ? { ca: options.ca } : {}),
+        ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {})
+      },
       (response) => {
         responded = true;
         const status = response.statusCode ?? 0;
@@ -99,6 +111,11 @@ export function downloadLenient(
       if (!responded) {
         reject(err);
       }
+    });
+    // 'timeout' only reports a silent socket; destroying it with an error
+    // fails the request (or the body, once a response has arrived).
+    request.on('timeout', () => {
+      request.destroy(new Error('the server stopped responding'));
     });
   });
 }

@@ -126,13 +126,14 @@ import {
   setConversionFailed as setS57Failed
 } from './utils/s57-converter.js';
 import {
-  band4MapEntries,
-  computeInclusion,
-  coverageByBox,
-  getFootprintIndex,
-  initNoaaEncFootprints,
-  peekFootprintIndex
-} from './utils/noaa-enc-footprints.js';
+  getEncIndex,
+  getEncIndexStatus,
+  getEncMapPayload,
+  initEncIndexManager,
+  refreshEncIndex,
+  refreshEncIndexIfStale
+} from './utils/enc-index-manager.js';
+import { resolveChartSet } from './utils/enc-chart-set.js';
 import {
   appendCatalogLog,
   boxStatesForCatalog,
@@ -154,6 +155,7 @@ import {
   registerCatalogAbort,
   requestCatalogCancel,
   saveCustomCatalog,
+  selectedUnitCount,
   setCatalogBusy,
   setCatalogDetail,
   setCatalogFailed,
@@ -660,8 +662,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     });
     initCatalogManager(dataDir, app.debug.bind(app));
-    initNoaaEncFootprints(dataDir, app.debug.bind(app));
+    initEncIndexManager(dataDir, app.debug.bind(app));
     initCustomCatalogManager(dataDir, app.debug.bind(app));
+    // Saved chart sets need a current index for their update status; a
+    // device without any waits until the ENC Charts tab is opened.
+    if (listCustomCatalogs().length > 0) {
+      void refreshEncIndex();
+    }
     // Synthesized raster tiles; kept in the data dir, never the chart folder.
     void initRasterTileCache(path.join(dataDir, 'raster-tile-cache'));
     onlineTileStore?.close();
@@ -3863,38 +3870,41 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    // ---- Custom NOAA ENC catalogs ----
-    // Build a named bundle of NOAA band-4 coverage areas selected on a map,
-    // then download all selected band-4 ENCs plus overlapping band-3/5 ENCs
-    // and convert them once into a single MBTiles named after the catalog.
+    // ---- Chart sets (the ENC Charts tab) ----
+    // Build a named bundle of ENC units picked on a map of the ENC index
+    // (NOAA band-4 boxes and every other source's cells), then download
+    // every cell they bring in and convert them once into a single MBTiles
+    // named after the set.
 
     const CustomCatalogCreateBody = Type.Object({
       name: Type.String({ minLength: 1, maxLength: 120 })
     });
+    const UnitIdList = Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
+      maxItems: 20000
+    });
     const CustomCatalogUpdateBody = Type.Object({
       name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-      selectedBand4ChartIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 32 })))
+      selectedBand4ChartIds: Type.Optional(UnitIdList),
+      selectedUnitIds: Type.Optional(UnitIdList)
     });
 
-    // Map data: all NOAA band-4 footprints as selectable bbox areas. This is
-    // the one endpoint that fetches the (large) NOAA enc.geojson; every other
-    // endpoint reads the in-memory index via peekFootprintIndex(). Registered
-    // BEFORE '/custom-catalogs/:id' so the literal path wins over the param.
-    router.get('/custom-catalogs/noaa-enc-footprints', (req: Request, res: Response) => {
+    // Map data: every unit of the ENC index, outline and labels only. The
+    // first visit after a start waits for a download when nothing is cached;
+    // later visits answer from memory and refresh a stale index in the
+    // background. Registered BEFORE '/custom-catalogs/:id' so the literal
+    // path wins over the param.
+    router.get('/custom-catalogs/enc-index', (req: Request, res: Response) => {
       const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
       void (async () => {
-        try {
-          const index = await getFootprintIndex({ forceRefresh });
-          res.json({
-            band4: band4MapEntries(index.all),
-            fetchedAt: index.fetchedAt,
-            stale: index.stale
-          });
-        } catch (error) {
-          res.status(502).json({
-            error: error instanceof Error ? error.message : 'Failed to load NOAA ENC footprints'
-          });
+        if (forceRefresh || !getEncIndex()) {
+          await refreshEncIndex();
+        } else {
+          refreshEncIndexIfStale();
         }
+        const payload = getEncMapPayload();
+        res
+          .type('application/json')
+          .send(`{"status":${JSON.stringify(getEncIndexStatus())},"index":${payload ?? 'null'}}`);
       })();
     });
 
@@ -3947,20 +3957,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       if (body.name !== undefined && body.name.trim() !== '') {
         catalog.name = body.name.trim();
       }
-      if (body.selectedBand4ChartIds !== undefined) {
-        catalog.selectedBand4ChartIds = Array.from(new Set(body.selectedBand4ChartIds));
-        // Recompute coverage from the cached footprint index when available so
-        // the UI shows an included-chart count immediately. The snapshot in
-        // `chartVersions` is only refreshed at download time.
-        const index = peekFootprintIndex();
-        if (index) {
-          catalog.includedChartIds = computeInclusion(
-            index.all,
-            catalog.selectedBand4ChartIds
-          ).includedChartIds;
+      if (body.selectedBand4ChartIds !== undefined || body.selectedUnitIds !== undefined) {
+        if (body.selectedBand4ChartIds !== undefined) {
+          catalog.selectedBand4ChartIds = Array.from(new Set(body.selectedBand4ChartIds));
         }
+        if (body.selectedUnitIds !== undefined) {
+          catalog.selectedUnitIds = Array.from(new Set(body.selectedUnitIds));
+        }
+        // `includedChartIds` and `chartVersions` keep describing what is
+        // baked into the built chart; they change only at download time.
         // Any selection change requires a rebuild of the single combined chart.
-        catalog.status = catalog.selectedBand4ChartIds.length === 0 ? 'empty' : 'out_of_date';
+        catalog.status = selectedUnitCount(catalog) === 0 ? 'empty' : 'out_of_date';
       }
       saveCustomCatalog(catalog);
       res.json(decorateCatalog(catalog));
@@ -3989,8 +3996,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         res.status(404).json({ error: 'Custom catalog not found' });
         return;
       }
-      if (catalog.selectedBand4ChartIds.length === 0) {
-        res.status(400).json({ success: false, error: 'Select at least one coverage area first' });
+      if (selectedUnitCount(catalog) === 0) {
+        res.status(400).json({ success: false, error: 'Select at least one chart area first' });
         return;
       }
       if (isCatalogBusy(id)) {
@@ -4589,12 +4596,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
   }
 
-  // Augment a persisted catalog with derived, non-persisted fields the UI
-  // needs: the freshness-aware effective status, the live included-chart
-  // count, and any reasons it's out of date. Freshness is only computed when
-  // the NOAA footprint index is already in memory (the map endpoint loads it);
-  // otherwise we fall back to the stored status so this never blocks on the
-  // network.
+  // Augment a persisted chart set with derived, non-persisted fields the UI
+  // needs: the freshness-aware effective status, the live included-cell
+  // count, and any reasons it's out of date. Freshness needs the ENC index
+  // (downloaded, or cached from an earlier start); without one this falls
+  // back to the stored status, so it never blocks on the network.
   function decorateCatalog(catalog: CustomCatalog): CustomCatalog & {
     effectiveStatus: string;
     includedCount: number;
@@ -4602,39 +4608,40 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     boxStates: Record<string, string>;
   } {
     const chartPath = props.chartPath || defaultChartsPath;
-    const index = peekFootprintIndex();
+    const index = getEncIndex();
     if (!index) {
       return {
         ...catalog,
-        effectiveStatus: catalog.selectedBand4ChartIds.length === 0 ? 'empty' : catalog.status,
+        effectiveStatus: selectedUnitCount(catalog) === 0 ? 'empty' : catalog.status,
         includedCount: catalog.includedChartIds.length,
         updateReasons: [],
         boxStates: {}
       };
     }
+    const resolution = resolveChartSet(index, catalog);
     const mbtilesPresent =
       catalog.convertedChartPath !== null &&
       fs.existsSync(path.join(chartPath, catalog.convertedChartPath));
-    const freshness = evaluateFreshness(catalog, index, (rel) =>
+    const freshness = evaluateFreshness(catalog, resolution, (rel) =>
       fs.existsSync(path.join(chartPath, rel))
     );
     return {
       ...catalog,
       effectiveStatus: freshness.effectiveStatus,
-      includedCount: freshness.recomputed.includedChartIds.length,
+      includedCount: resolution.includedChartIds.length,
       updateReasons: freshness.reasons,
-      // Per-box freshness by NOAA edition. A box is green only when the set is
-      // cleanly converted and its MBTiles exists — a cancelled/failed build or
-      // a deleted output shows red, matching the catalog-level status.
-      boxStates: boxStatesForCatalog(catalog, index, mbtilesPresent)
+      // Per-unit freshness by cell version. A unit is green only when the set
+      // is cleanly converted and its MBTiles exists — a cancelled/failed build
+      // or a deleted output shows red, matching the set-level status.
+      boxStates: boxStatesForCatalog(catalog, resolution, mbtilesPresent)
     };
   }
 
-  // Async download-and-convert flow for a custom catalog. Fetches the current
-  // NOAA footprint index, resolves the band-3/4/5 ENC set, downloads every ZIP
-  // into one combined tree, converts it once via processS57Directory, and
-  // promotes the single MBTiles into the live chart library. The client polls
-  // /custom-catalogs/:id/status and /log for progress.
+  // Async download-and-convert flow for a chart set. Refreshes the ENC index,
+  // resolves the cells the selected units bring in, downloads each archive
+  // once into one combined tree, converts it once via processS57Directory,
+  // and promotes the single MBTiles into the live chart library. The client
+  // polls /custom-catalogs/:id/status and /log for progress.
   function handleCustomCatalogDownloadConvert(catalog: CustomCatalog): void {
     const id = catalog.id;
     const chartPath = props.chartPath || defaultChartsPath;
@@ -4663,34 +4670,46 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       let quarantineDir: string | null = null;
       let convertingFlagged = false;
       try {
-        // Refresh the footprint index so we download the current editions.
-        const index = await getFootprintIndex();
-        const inclusion = computeInclusion(index.all, catalog.selectedBand4ChartIds);
-        if (inclusion.includedChartIds.length === 0) {
-          throw new Error('No NOAA charts match the selected coverage areas');
+        // Refresh the index so we download the current versions; a failed
+        // refresh falls back to the copy already loaded.
+        await refreshEncIndex();
+        const index = getEncIndex();
+        if (!index) {
+          throw new Error(
+            getEncIndexStatus().message ?? 'The ENC index has not been downloaded yet'
+          );
+        }
+        const resolution = resolveChartSet(index, catalog);
+        if (resolution.cells.length === 0) {
+          throw new Error('No ENC charts match the selected chart areas');
         }
         appendCatalogLog(
           id,
-          `Resolved ${inclusion.includedChartIds.length} ENC(s) from ` +
-            `${catalog.selectedBand4ChartIds.length} selected area(s)`
+          `Resolved ${resolution.cells.length} ENC cell(s) from ` +
+            `${selectedUnitCount(catalog)} selected area(s)`
         );
-        if (inclusion.missingSelected.length > 0) {
+        if (resolution.missingSelected.length > 0) {
           appendCatalogLog(
             id,
-            `Note: no longer published: ${inclusion.missingSelected.join(', ')}`
+            `Note: no longer published: ${resolution.missingSelected.join(', ')}`
+          );
+        }
+        const withUpdates = resolution.cells.filter((c) => c.updates.length > 0);
+        if (withUpdates.length > 0) {
+          appendCatalogLog(
+            id,
+            `Applying separately published updates to ${withUpdates.map((c) => c.name).join(', ')}`
           );
         }
 
-        // Per-box coverage so the map can fill each band-4 box by its own
-        // band-4 + nested-band-5 download fraction.
-        setCatalogDetail(id, {
-          coverageByBox: coverageByBox(index.all, catalog.selectedBand4ChartIds)
-        });
+        // Per-unit coverage so the map can fill each unit by the share of
+        // its status cells downloaded.
+        setCatalogDetail(id, { coverageByBox: resolution.coverageByUnit });
 
-        // 1. Download + extract every ENC ZIP into one combined input tree.
-        const result = await downloadAndExtractEncs(inclusion.includedChartIds, encDir, zipsDir, {
-          onProgress: (done, total, chartId) => {
-            setCatalogProgress(id, 'downloading', `Downloading ${done}/${total}: ${chartId}`);
+        // 1. Download + extract every cell into one combined input tree.
+        const result = await downloadAndExtractEncs(resolution.cells, encDir, zipsDir, {
+          onProgress: (done, total, label) => {
+            setCatalogProgress(id, 'downloading', `Downloading ${done}/${total}: ${label}`);
             setCatalogDetail(id, {
               phase: 'downloading',
               overallPercent: 0,
@@ -4698,13 +4717,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               sectionPercent: total > 0 ? Math.round((done / total) * 100) : -1
             });
           },
-          // Flip the map area as each ENC lands, rather than all at once.
+          // Flip the map area as each cell lands, rather than all at once.
           onStaged: (chartId) => {
             stagedSoFar.push(chartId);
             setCatalogDetail(id, { downloadedChartIds: [...stagedSoFar] });
           },
           onLog: (line) => appendCatalogLog(id, line),
-          isAborted: () => isCatalogCancelRequested(id)
+          isAborted: () => isCatalogCancelRequested(id),
+          signal: abortController.signal
         });
         // Cancel during download → stop before converting.
         if (isCatalogCancelRequested(id)) {
@@ -4715,7 +4735,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
         appendCatalogLog(
           id,
-          `Downloaded ${result.staged.length}/${inclusion.includedChartIds.length} ENC(s)` +
+          `Downloaded ${result.staged.length}/${resolution.cells.length} ENC cell(s)` +
             (result.failed.length > 0 ? `, ${result.failed.length} failed` : '')
         );
         // A partial download yields an MBTiles that omits the failed cells, so
@@ -4738,11 +4758,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         // and per-box edition state shows the affected boxes as needing a
         // refresh. On a complete download staged == the full set, so nothing
         // changes for the common case.
+        // `versions` holds what was actually staged: a cell whose separate
+        // updates did not all download records fewer, so it shows as needing
+        // an update.
         const staged = new Set(result.staged);
-        catalog.includedChartIds = inclusion.includedChartIds.filter((cid) => staged.has(cid));
-        catalog.chartVersions = Object.fromEntries(
-          Object.entries(inclusion.chartVersions).filter(([cid]) => staged.has(cid))
-        );
+        catalog.includedChartIds = resolution.includedChartIds.filter((cid) => staged.has(cid));
+        catalog.chartVersions = result.versions;
         catalog.downloadedChartIds = result.staged;
         catalog.lastDownloadedAt = new Date().toISOString();
         catalog.status = 'downloaded';
@@ -4778,7 +4799,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           (status, message) => setCatalogProgress(id, status, message),
           {
             displayName: catalog.name,
-            displayDescription: `Custom catalog: ${catalog.name}`,
+            displayDescription: `Chart set: ${catalog.name}`,
             isAborted: () => isCatalogCancelRequested(id),
             // Overall (convert-only) bar treats the per-band tippecanoe passes
             // plus the final combine as equal slices, so it rises monotonically
@@ -4885,7 +4906,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         // Mark out_of_date (unless it had a prior good conversion) so the UI
         // shows the coverage needs a (re)build.
         const latest = getCustomCatalog(id);
-        if (latest && latest.selectedBand4ChartIds.length > 0 && latest.status !== 'converted') {
+        if (latest && selectedUnitCount(latest) > 0 && latest.status !== 'converted') {
           latest.status = 'out_of_date';
           saveCustomCatalog(latest);
         }

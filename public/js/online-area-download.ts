@@ -393,7 +393,7 @@ async function showOfflineArea(
     return;
   }
   const map = L.map(mapEl, { worldCopyJump: true, minZoom: 1 }).setView([20, 0], 2);
-  // See noaa-chart-selector.ts: OSM blocks tiles sent without a referrer.
+  // See enc-charts.ts: OSM blocks tiles sent without a referrer.
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 18,
     referrerPolicy: 'origin',
