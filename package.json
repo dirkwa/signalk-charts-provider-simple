@@ -9,6 +9,7 @@
     "dist",
     "!dist/catalog/publish-catalog-cli.*",
     "!dist/catalog/preview-catalog-cli.*",
+    "!dist/catalog/enc-index-cli.*",
     "assets",
     "public",
     "docs/screenshots"

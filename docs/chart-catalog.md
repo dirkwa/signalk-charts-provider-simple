@@ -22,6 +22,9 @@ it. Consumers, including released versions of this plugin, must ignore unknown
 fields and validate entries one at a time, skipping any they cannot interpret
 rather than rejecting the whole file.
 
+The same site also carries the ENC index, which lists every free ENC as a map of
+selectable units; see `docs/enc-index.md`.
+
 ## Why one merged file
 
 - **One download for every kind of chart.** One file feeds the Chart Catalog,

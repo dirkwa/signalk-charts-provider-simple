@@ -1,9 +1,11 @@
 name: Publish chart catalog
 
 # Builds the merged chart catalog (chartcatalogs.github.io + catalog/online-charts.json)
-# and publishes it to this repo's GitHub Pages site, where the Chart Catalog tab
-# downloads it. Deploys only when the content hash differs from what is already
-# published, so most scheduled runs end after the build job.
+# and the ENC index (docs/enc-index.md), and publishes both to this repo's GitHub
+# Pages site, where the plugin downloads them. Deploys only when either content
+# hash differs from what is already published, so most scheduled runs end after
+# the build job. Both are built in one job because a Pages deployment replaces
+# the whole site: each deployment has to carry both files.
 
 on:
   schedule:
@@ -14,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: 'Publish even if unchanged, or if the drop guard objects'
+        description: 'Publish the catalog and ENC index even if unchanged, or if a drop guard objects'
         type: boolean
         default: false
   push:
@@ -34,8 +36,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # The ENC index reads changed archives for at most 45 minutes a run
+    # (--max-minutes) and leaves the rest for the next run.
+    timeout-minutes: 90
     outputs:
-      changed: ${{ steps.build.outputs.changed }}
+      changed: ${{ steps.build.outputs.changed == 'true' || steps.enc-index.outputs.changed == 'true' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -71,8 +76,25 @@ jobs:
             --published-url "https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/catalog.json" \
             $FORCE
 
+      # Downloads only archives whose date changed since the published index,
+      # and runs GDAL in the charts-toolbox image. Until an index is published
+      # it starts from the seed release asset (docs/enc-index.md).
+      - name: Build ENC index
+        id: enc-index
+        env:
+          FORCE: ${{ inputs.force && '--force' || '' }}
+        run: |
+          node dist/catalog/enc-index-cli.js \
+            --chartcatalogs "$RUNNER_TEMP/chartcatalogs" \
+            --index catalog/chartcatalogs-index.json \
+            --out "$RUNNER_TEMP/site" \
+            --published-url "https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/enc-index.json" \
+            --seed-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/enc-index-seed/enc-index.json" \
+            --max-minutes 45 \
+            $FORCE
+
       - name: Upload Pages artifact
-        if: steps.build.outputs.changed == 'true'
+        if: steps.build.outputs.changed == 'true' || steps.enc-index.outputs.changed == 'true'
         uses: actions/upload-pages-artifact@v5
         with:
           path: ${{ runner.temp }}/site

@@ -90,6 +90,8 @@ function landingPage(catalog: MergedCatalog): string {
 <ul>
 <li><a href="catalog.json">catalog.json</a></li>
 <li><a href="catalog.schema.json">catalog.schema.json</a></li>
+<li><a href="enc-index.json">enc-index.json</a>: every free ENC as a map of selectable units
+(<a href="enc-index.schema.json">enc-index.schema.json</a>)</li>
 </ul>
 <p>Downloadable charts come from <a href="${escapeHtml(chartcatalogs.homepage)}">chartcatalogs.github.io</a>
 (${escapeHtml(chartcatalogs.license)}). Report problems with them to the
