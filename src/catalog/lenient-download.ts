@@ -2,9 +2,12 @@
  * A download fallback for servers whose HTTP responses Node's strict parser
  * refuses. The Brazilian Navy's download host folds a long header across
  * lines ("obsolete line folding"), which HTTP/1.1 deprecated and which
- * curl and browsers still accept. `fetch` cannot relax its parser, so a
- * download that fails that way is retried once through `node:https` with
- * `insecureHTTPParser`.
+ * curl and browsers still accept. Node versions differ in how `fetch`
+ * handles it: some refuse the header, others accept it but then miscount
+ * the body against its Content-Length. `fetch` cannot relax its parser, so
+ * a download that fails either way is retried once through `node:https`
+ * with `insecureHTTPParser`. A body genuinely cut short fails the same
+ * way, and the retry is harmless for it.
  *
  * Only header parsing is relaxed. TLS is untouched: the certificate is
  * verified exactly as for `fetch`. The parser's strictness guards against
@@ -18,12 +21,20 @@ import https from 'node:https';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
-/** True when `fetch` failed because the response was not valid HTTP/1.1. */
+/**
+ * True when `fetch` failed because it could not read the response as
+ * valid HTTP/1.1: a header it refused, or a body that did not match the
+ * Content-Length it read.
+ */
 export function isMalformedResponse(err: unknown): boolean {
   const cause = (err as { cause?: { code?: unknown; message?: unknown } } | null)?.cause;
   const code = typeof cause?.code === 'string' ? cause.code : '';
   const text = typeof cause?.message === 'string' ? cause.message : '';
-  return code.startsWith('HPE_') || text.includes('does not match the HTTP/1.1 protocol');
+  return (
+    code.startsWith('HPE_') ||
+    code === 'UND_ERR_RES_CONTENT_LENGTH_MISMATCH' ||
+    text.includes('does not match the HTTP/1.1 protocol')
+  );
 }
 
 /** A pass-through stream that fails once more than `maxBytes` have gone through it. */

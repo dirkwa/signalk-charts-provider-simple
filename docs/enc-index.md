@@ -112,8 +112,8 @@ merged catalog, because a Pages deployment replaces the whole site.
   download is still verified up to a root Node already trusts. A test checks
   that each one is an intermediate under such a root.
 - **Malformed response headers.** The Brazilian Navy's download server folds
-  a long header across lines, which HTTP/1.1 deprecated and Node's `fetch`
-  refuses.
+  a long header across lines, which HTTP/1.1 deprecated. Depending on the
+  Node version, `fetch` refuses the header or misreads the body after it.
   A download that fails that way is retried once with only header parsing
   relaxed (`src/catalog/lenient-download.ts`); TLS is verified as before.
 - **Polite downloads.** Archives are fetched one at a time per host, with a

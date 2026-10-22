@@ -65,13 +65,17 @@ describe('lenient download fallback', () => {
     assert.strictEqual(isMalformedResponse(err), true);
   });
 
-  it('recognises a parser error by its code or its message', () => {
+  it('recognises a parser error or a body length mismatch by its code or its message', () => {
     const failed = (cause: object) => Object.assign(new TypeError('fetch failed'), { cause });
     assert.strictEqual(isMalformedResponse(failed({ code: 'HPE_INVALID_HEADER_TOKEN' })), true);
     assert.strictEqual(
       isMalformedResponse(
         failed({ message: 'Response does not match the HTTP/1.1 protocol (Unexpected whitespace)' })
       ),
+      true
+    );
+    assert.strictEqual(
+      isMalformedResponse(failed({ code: 'UND_ERR_RES_CONTENT_LENGTH_MISMATCH' })),
       true
     );
     assert.strictEqual(isMalformedResponse(failed({ code: 'ECONNRESET' })), false);
