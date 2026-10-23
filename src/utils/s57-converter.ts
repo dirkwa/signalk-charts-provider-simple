@@ -1190,6 +1190,8 @@ export async function exportS57CellsToGeoJSON(
   }
   fs.mkdirSync(geojsonDir, { recursive: true });
   makeContainerWritable(geojsonDir);
+  // A fresh log, so it holds only what this export reports.
+  conversionProgress[chartNumber] = { status: 'converting', message: '', log: [] };
   appendLog(chartNumber, `Exporting ${encFiles.length} changed cell(s) to GeoJSON...`);
   await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber, signal, true);
 }

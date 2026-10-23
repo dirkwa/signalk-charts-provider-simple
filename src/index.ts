@@ -4634,6 +4634,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
   }
 
+  // A finished run's progress lingers for the UI, then goes; unless a newer
+  // run of the same set has started meanwhile, whose log it would wipe.
+  function clearFinishedRun(setId: string): void {
+    if (!isCatalogBusy(setId)) {
+      clearCatalogProgress(setId);
+    }
+  }
+
   // A set's cache size, read at most once a minute and not while a run is
   // changing it: the status route asks every two seconds during a run.
   const cacheSizes = new Map<string, { bytes: number; at: number }>();
@@ -4862,7 +4870,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 // The conversion below starts a fresh S-57 log for this set;
                 // keep what GDAL reported, without its progress lines.
                 for (const line of getS57Progress(id)?.log ?? []) {
-                  if (!line.startsWith('PROGRESS:')) {
+                  if (!line.trim().startsWith('PROGRESS:')) {
                     appendCatalogLog(id, line);
                   }
                 }
@@ -4894,7 +4902,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             sectionLabel: 'Nothing changed',
             sectionPercent: 100
           });
-          setTimeout(() => clearCatalogProgress(id), 8000);
+          setTimeout(() => clearFinishedRun(id), 8000);
           return;
         }
         const partialDownload = update.partial;
@@ -5017,7 +5025,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         appendCatalogLog(id, `Done: ${conv.mbtilesFile}`);
         // Let the completed state linger briefly, then clear so the UI settles
         // onto the persisted 'converted' status.
-        setTimeout(() => clearCatalogProgress(id), 8000);
+        setTimeout(() => clearFinishedRun(id), 8000);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (isCatalogCancelRequested(id)) {
@@ -5029,7 +5037,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             sectionPercent: -1
           });
           // Drop the cancelled state after a short linger.
-          setTimeout(() => clearCatalogProgress(id), 6000);
+          setTimeout(() => clearFinishedRun(id), 6000);
         } else {
           app.error(`Custom catalog ${id} download/convert failed: ${msg}`);
           setCatalogFailed(id, msg);
