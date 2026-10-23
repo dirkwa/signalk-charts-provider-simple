@@ -28,6 +28,13 @@ import type { ChartSetResolution } from './enc-chart-set.js';
  * part.
  */
 export const CUSTOM_CATALOG_SCHEMA_VERSION = 2;
+
+/**
+ * Bump when building a set's chart from its cells changes (tile pipeline,
+ * layer naming, metadata), so the next update builds every set again even
+ * when none of its cells changed.
+ */
+export const CHART_SET_BUILD_REVISION = 1;
 const CATALOG_DIR_NAME = 'custom-catalogs';
 export const MAX_CATALOG_MANAGER_LOG_LINES = 200;
 const MAX_LOG_LINES = MAX_CATALOG_MANAGER_LOG_LINES;
@@ -80,6 +87,11 @@ export interface CustomCatalog {
   downloadedChartIds: string[];
   /** Chart-path-relative `.mbtiles` filename, or null before first convert. */
   convertedChartPath: string | null;
+  /**
+   * `CHART_SET_BUILD_REVISION` of the build that made the chart, or null
+   * before one (and for sets built before this was recorded).
+   */
+  buildRevision: number | null;
   status: CustomCatalogStatus;
   createdAt: string;
   updatedAt: string;
@@ -155,6 +167,22 @@ function catalogFilePath(id: string): string | null {
 export function catalogMbtilesName(catalog: Pick<CustomCatalog, 'name' | 'id'>): string {
   const base = sanitizeChartFilename(catalog.name) || catalog.id;
   return `${base}.mbtiles`;
+}
+
+/**
+ * The ids of every saved set, from the file names alone (a file that does
+ * not parse still names a set), or null when the folder cannot be read.
+ */
+export function savedCatalogIds(): string[] | null {
+  try {
+    return fs
+      .readdirSync(catalogsDir())
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => f.slice(0, -'.json'.length))
+      .filter(isValidCatalogId);
+  } catch {
+    return null;
+  }
 }
 
 export function listCustomCatalogs(): CustomCatalog[] {
@@ -260,6 +288,7 @@ function normalizeCatalog(parsed: Partial<CustomCatalog>, id: string): CustomCat
     downloadedChartIds: stringList(parsed.downloadedChartIds),
     convertedChartPath:
       typeof parsed.convertedChartPath === 'string' ? parsed.convertedChartPath : null,
+    buildRevision: typeof parsed.buildRevision === 'number' ? parsed.buildRevision : null,
     status: isStatus(parsed.status) ? parsed.status : 'empty',
     createdAt: typeof parsed.createdAt === 'string' ? parsed.createdAt : now,
     updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : now,
@@ -305,6 +334,7 @@ export function createCustomCatalog(name: string): CustomCatalog {
     chartVersions: {},
     downloadedChartIds: [],
     convertedChartPath: null,
+    buildRevision: null,
     status: 'empty',
     createdAt: now,
     updatedAt: now,

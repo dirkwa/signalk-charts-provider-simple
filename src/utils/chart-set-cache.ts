@@ -22,7 +22,7 @@ import type { DebugFunction } from '../types.js';
 import type { EncDownloadResult } from './custom-catalog-download.js';
 import type { PlannedCell } from './enc-chart-set.js';
 import { isWithinBase } from './path-safety.js';
-import { COMPLETE_MARKER_PREFIX } from './s57-converter.js';
+import { COMPLETE_MARKER_PREFIX, EXPORT_ERROR_FILE_BASENAME } from './s57-converter.js';
 
 /**
  * Bump when the GDAL export changes what it writes for the same cell, so
@@ -239,11 +239,18 @@ export async function commitCells(
       .map((f) => f.slice(COMPLETE_MARKER_PREFIX.length))
   );
   // Output files by the cell they came from: `<LAYER>_<cell>.geojson`.
+  // Layer names and some cell names contain `_` (the Dutch
+  // `IENC_Haven_Waspik_7_`), so a file goes to the longest of this batch's
+  // cell names it ends with, not to whatever follows its last `_`.
+  const stems = cells
+    .map((cell) => baseFileIn(cell.rawDir)?.replace(/\.000$/i, ''))
+    .filter((stem): stem is string => stem !== undefined)
+    .sort((a, b) => b.length - a.length);
   const byStem = new Map<string, string[]>();
   for (const file of exported) {
-    const match = /_([^_]+)\.geojson$/.exec(file);
-    if (match) {
-      byStem.set(match[1], [...(byStem.get(match[1]) ?? []), file]);
+    const stem = stems.find((st) => file.endsWith(`_${st}.geojson`));
+    if (stem !== undefined) {
+      byStem.set(stem, [...(byStem.get(stem) ?? []), file]);
     }
   }
   const result: CommitResult = { committed: [], incomplete: [] };
@@ -410,6 +417,20 @@ export function cachedGeojsonFor(
   };
 }
 
+/** The first lines GDAL wrote to the export's error log, if any. */
+function exportErrorSample(exportDir: string): string[] {
+  try {
+    return fs
+      .readFileSync(path.join(exportDir, EXPORT_ERROR_FILE_BASENAME), 'utf8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l !== '')
+      .slice(0, 10);
+  } catch {
+    return [];
+  }
+}
+
 /** The steps of a cache update that touch the network or the container. */
 export interface CacheUpdateSteps {
   /** Download and stage cells, each into `<encDir>/<cell>/`. */
@@ -494,7 +515,8 @@ export async function updateSetCache(
         ' — the set stays flagged for an update.'
     );
   }
-  const usable = cells.filter((c) => cached.has(c.name) || downloaded.staged.includes(c.name));
+  const staged = new Set(downloaded.staged);
+  const usable = cells.filter((c) => cached.has(c.name) || staged.has(c.name));
   if (usable.length === 0) {
     throw new Error('All ENC downloads failed — check network connectivity');
   }
@@ -534,6 +556,12 @@ export async function updateSetCache(
     const done = await commitCells(setId, stagingDir, exportOut, batch, image);
     commit.committed.push(...done.committed);
     commit.incomplete.push(...done.incomplete);
+    if (done.incomplete.length > 0) {
+      // What GDAL said about the cells it could not read, before it goes.
+      for (const line of exportErrorSample(exportOut)) {
+        steps.log(`  ${line}`);
+      }
+    }
     fs.rmSync(exportIn, { recursive: true, force: true });
     fs.rmSync(exportOut, { recursive: true, force: true });
   }

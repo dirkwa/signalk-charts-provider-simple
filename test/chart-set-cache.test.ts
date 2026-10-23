@@ -164,6 +164,35 @@ describe('the cache on disk', () => {
     fs.rmSync(staging, { recursive: true, force: true });
   });
 
+  it('files GDAL output under cells whose names contain underscores', async () => {
+    const staging = createStagingDir('Set_U');
+    const waspik = stage(staging, 'IENC_Haven_Waspik_7_', ['DEPARE', 'M_COVR']);
+    const cd = stage(staging, 'AB_CD', ['DEPARE']);
+    const plain = stage(staging, 'CD', ['LNDARE']);
+    const result = await commitCells(
+      'Set_U',
+      staging,
+      path.join(staging, 'export-out'),
+      [
+        { name: 'IENC_Haven_Waspik_7_', rawDir: waspik, version: undefined },
+        { name: 'AB_CD', rawDir: cd, version: undefined },
+        { name: 'CD', rawDir: plain, version: undefined }
+      ],
+      'img:1'
+    );
+    assert.deepStrictEqual(result.committed, ['IENC_Haven_Waspik_7_', 'AB_CD', 'CD']);
+    const files = (cell: string) =>
+      fs.readdirSync(path.join(cellsDir('Set_U'), cell, 'geojson')).sort();
+    assert.deepStrictEqual(files('IENC_Haven_Waspik_7_'), [
+      'DEPARE_IENC_Haven_Waspik_7_.geojson.gz',
+      'M_COVR_IENC_Haven_Waspik_7_.geojson.gz'
+    ]);
+    assert.deepStrictEqual(files('AB_CD'), ['DEPARE_AB_CD.geojson.gz']);
+    assert.deepStrictEqual(files('CD'), ['LNDARE_CD.geojson.gz']);
+    fs.rmSync(staging, { recursive: true, force: true });
+    removeSetCache('Set_U');
+  });
+
   it('replaces a cell only with a complete new copy', async () => {
     const staging = createStagingDir('Set_A');
     const raw = stage(staging, 'AA1CELL1', ['SOUNDG']);
@@ -251,7 +280,12 @@ describe('updateSetCache', () => {
   /** Steps that stage and "export" cells on disk; `bad` cells export partially. */
   function steps(
     fakes: Fakes,
-    opts: { failDownload?: Set<string>; bad?: Set<string>; cancelAfterExports?: number } = {}
+    opts: {
+      failDownload?: Set<string>;
+      bad?: Set<string>;
+      cancelAfterExports?: number;
+      throwOnExport?: number;
+    } = {}
   ): CacheUpdateSteps {
     return {
       download: (cells, encDir) => {
@@ -279,10 +313,18 @@ describe('updateSetCache', () => {
       exportCells: (inDir, outDir) => {
         const names = fs.readdirSync(inDir);
         fakes.exported.push(names);
+        if (opts.throwOnExport === fakes.exported.length) {
+          return Promise.reject(new Error('gdal-export failed with exit code 137'));
+        }
         fs.mkdirSync(outDir, { recursive: true });
         for (const name of names) {
           fs.writeFileSync(path.join(outDir, `DEPARE_${name}.geojson`), `{"cell":"${name}"}`);
-          if (!opts.bad?.has(name)) {
+          if (opts.bad?.has(name)) {
+            fs.appendFileSync(
+              path.join(outDir, '.export-errors.log'),
+              `ERROR 1: ${name}.000: unexpected end of file\n`
+            );
+          } else {
             fs.writeFileSync(path.join(outDir, `.complete-${name}`), '');
           }
         }
@@ -362,6 +404,7 @@ describe('updateSetCache', () => {
     );
     assert.strictEqual(readSetCache('Bad').size, 0);
     assert.ok(fakes.log.some((l) => l.includes('GDAL could not read all of CELLCCC1')));
+    assert.ok(fakes.log.some((l) => l.includes('CELLCCC1.000: unexpected end of file')));
     // Read again on the next run, not reused.
     const again = fresh();
     const result = await run('Bad', cells, again);
@@ -404,7 +447,7 @@ describe('updateSetCache', () => {
     assert.strictEqual(result.changed, true);
   });
 
-  it('reads cells in batches and keeps the batches done when cancelled', async () => {
+  it('keeps nothing of a batch cancelled after its export, before it is kept', async () => {
     const fakes = fresh();
     const cells = Array.from({ length: CELLS_PER_EXPORT + 5 }, (_, i) => {
       const name = `CELLE${String(i).padStart(3, '0')}`;
@@ -426,6 +469,21 @@ describe('updateSetCache', () => {
       again.exported.map((b) => b.length),
       [CELLS_PER_EXPORT, 5]
     );
+    assert.strictEqual(result.used.length, CELLS_PER_EXPORT + 5);
+  });
+
+  it('keeps the batches done when a later one fails', async () => {
+    const fakes = fresh();
+    const cells = Array.from({ length: CELLS_PER_EXPORT + 5 }, (_, i) => {
+      const name = `CELLF${String(i).padStart(3, '0')}`;
+      return planned(name, v(name, 1));
+    });
+    await assert.rejects(run('Partway', cells, fakes, { throwOnExport: 2 }), /exit code 137/);
+    assert.strictEqual(readSetCache('Partway').size, CELLS_PER_EXPORT);
+
+    const again = fresh();
+    const result = await run('Partway', cells, again);
+    assert.deepStrictEqual(again.downloaded, [cells.slice(CELLS_PER_EXPORT).map((c) => c.name)]);
     assert.strictEqual(result.used.length, CELLS_PER_EXPORT + 5);
   });
 });

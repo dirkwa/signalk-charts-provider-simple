@@ -77,6 +77,11 @@ export function setConversionFailed(chartNumber: string, message: string): void 
   setConversionResult(conversionProgress, chartNumber, 'failed', message);
 }
 
+/** Forget a conversion's progress and log, once its caller has kept what it needs. */
+export function clearConversionProgress(chartNumber: string): void {
+  delete conversionProgress[chartNumber];
+}
+
 export function setConversionCompleted(chartNumber: string, message: string): void {
   setConversionResult(conversionProgress, chartNumber, 'completed', message);
 }
@@ -291,7 +296,7 @@ export const COMPLETE_MARKER_PREFIX = '.complete-';
 // indistinguishable from "every chart failed for the same reason".
 // Surfaced into the user-visible conversion log when zero output files
 // land in /output.
-const EXPORT_ERROR_FILE_BASENAME = '.export-errors.log';
+export const EXPORT_ERROR_FILE_BASENAME = '.export-errors.log';
 /**
  * Container path the export script writes per-file ogr2ogr stderr to,
  * for the default `/output` mount.  The script computes the actual

@@ -116,6 +116,7 @@ import {
   setConversionFailed as setRncFailed
 } from './utils/rnc-converter.js';
 import {
+  clearConversionProgress as clearS57Progress,
   exportS57CellsToGeoJSON,
   getAllConversionProgress as getAllS57Progress,
   getConversionProgress as getS57Progress,
@@ -170,6 +171,8 @@ import {
   registerCatalogAbort,
   requestCatalogCancel,
   saveCustomCatalog,
+  savedCatalogIds,
+  CHART_SET_BUILD_REVISION,
   selectedUnitCount,
   setCatalogBusy,
   setCatalogDetail,
@@ -683,9 +686,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // A start never has a chart set in flight in this lifecycle's state,
     // but a config save restarts the plugin while module-level runs survive,
     // so only sweep when nothing is building.
-    const savedSets = listCustomCatalogs();
-    if (savedSets.every((c) => !isCatalogBusy(c.id))) {
-      sweepChartSetCache(new Set(savedSets.map((c) => c.id)));
+    // Sets are named by their files, parsed or not; a folder that cannot be
+    // read names none, and then no cache is taken for a deleted set's.
+    const savedSetIds = savedCatalogIds();
+    if (savedSetIds !== null && savedSetIds.every((setId) => !isCatalogBusy(setId))) {
+      sweepChartSetCache(new Set(savedSetIds));
     }
     // Saved chart sets need a current index for their update status; a
     // device without any waits until the ENC Charts tab is opened.
@@ -4636,8 +4641,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
   // A finished run's progress lingers for the UI, then goes; unless a newer
   // run of the same set has started meanwhile, whose log it would wipe.
-  function clearFinishedRun(setId: string): void {
-    if (!isCatalogBusy(setId)) {
+  // Each run takes a number; a delayed clear only clears its own.
+  const runCounters = new Map<string, number>();
+  function startRun(setId: string): number {
+    const run = (runCounters.get(setId) ?? 0) + 1;
+    runCounters.set(setId, run);
+    return run;
+  }
+  function clearFinishedRun(setId: string, run: number): void {
+    if (runCounters.get(setId) === run) {
       clearCatalogProgress(setId);
     }
   }
@@ -4717,6 +4729,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // polls /custom-catalogs/:id/status and /log for progress.
   function handleCustomCatalogDownloadConvert(catalog: CustomCatalog): void {
     const id = catalog.id;
+    const run = startRun(id);
     const chartPath = props.chartPath || defaultChartsPath;
     setCatalogBusy(id, true);
     clearCatalogProgress(id);
@@ -4874,6 +4887,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     appendCatalogLog(id, line);
                   }
                 }
+                clearS57Progress(id);
               }
             },
             isCancelled: () => isCatalogCancelRequested(id),
@@ -4889,20 +4903,29 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         if (
           !update.changed &&
           catalog.status === 'converted' &&
+          catalog.buildRevision === CHART_SET_BUILD_REVISION &&
           chartFile !== null &&
           fs.existsSync(chartFile) &&
           sameStrings(catalog.includedChartIds, update.used) &&
           sameVersions(catalog.chartVersions, update.versions)
         ) {
-          appendCatalogLog(id, 'Nothing changed since the chart was built; it is current.');
-          setCatalogProgress(id, 'completed', 'Nothing changed');
+          const label = update.partial
+            ? 'No new cells could be read; the chart is unchanged'
+            : 'Nothing changed';
+          appendCatalogLog(
+            id,
+            update.partial
+              ? 'No new cells could be read, so the chart is unchanged and the set stays flagged for an update.'
+              : 'Nothing changed since the chart was built; it is current.'
+          );
+          setCatalogProgress(id, 'completed', label);
           setCatalogDetail(id, {
             phase: 'completed',
             overallPercent: 100,
-            sectionLabel: 'Nothing changed',
+            sectionLabel: label,
             sectionPercent: 100
           });
-          setTimeout(() => clearFinishedRun(id), 8000);
+          setTimeout(() => clearFinishedRun(id, run), 8000);
           return;
         }
         const partialDownload = update.partial;
@@ -5002,6 +5025,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         setChartEnabled(conv.mbtilesFile, true);
 
         catalog.convertedChartPath = conv.mbtilesFile;
+        catalog.buildRevision = CHART_SET_BUILD_REVISION;
         catalog.lastConvertedAt = new Date().toISOString();
         // Only a complete bundle counts as up-to-date. A partial download
         // produced a chart that omits some cells, so leave it out_of_date and
@@ -5025,7 +5049,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         appendCatalogLog(id, `Done: ${conv.mbtilesFile}`);
         // Let the completed state linger briefly, then clear so the UI settles
         // onto the persisted 'converted' status.
-        setTimeout(() => clearFinishedRun(id), 8000);
+        setTimeout(() => clearFinishedRun(id, run), 8000);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         if (isCatalogCancelRequested(id)) {
@@ -5037,7 +5061,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             sectionPercent: -1
           });
           // Drop the cancelled state after a short linger.
-          setTimeout(() => clearFinishedRun(id), 6000);
+          setTimeout(() => clearFinishedRun(id, run), 6000);
         } else {
           app.error(`Custom catalog ${id} download/convert failed: ${msg}`);
           setCatalogFailed(id, msg);
