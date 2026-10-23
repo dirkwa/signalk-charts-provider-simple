@@ -1216,6 +1216,8 @@ async function createCatalog(): Promise<void> {
     showNewForm(false);
     ccActiveId = cat.id;
     replaceCatalog(cat);
+    // A new set starts empty: show every area there is to pick from.
+    fitMapToAllUnits();
   } catch {
     alert('Could not create chart set. Check your connection.');
   }
