@@ -15,7 +15,7 @@ const CC_GREEN = '#2e9e4f'; // downloaded + converted, up to date
 const CC_NOAA_SOURCE = 'noaa';
 // A click or hover this close to a thin river outline still picks it.
 const CC_HIT_TOLERANCE_PX = 6;
-// Ask before a dragged box adds more units than this.
+// Ask before a dragged box changes more units than this.
 const CC_BOX_CONFIRM_ABOVE = 50;
 
 type CcPosition = [number, number];
@@ -184,8 +184,8 @@ async function initCustomCatalogsTab(): Promise<void> {
         </div>
         <div class="cc-map-tools">
           <button class="cc-btn" id="ccBoxBtn" data-cc-action="box-mode" aria-pressed="false"
-            title="Drag a box on the map to add every chart area it touches (or Shift+drag)">Select by box</button>
-          <span class="cc-map-hint">Click an area to add or remove it.</span>
+            title="Drag a box on the map to add or remove every chart area it touches (or Shift+drag)">Select by box</button>
+          <span class="cc-map-hint" id="ccMapHint"></span>
         </div>
         <div id="ccMap" class="cc-map"></div>
         <div class="cc-legend">
@@ -200,6 +200,7 @@ async function initCustomCatalogsTab(): Promise<void> {
 
   wireCustomCatalogHandlers();
   initCustomCatalogMap();
+  setBoxMode(false);
   await Promise.all([loadCatalogs(), loadEncIndex()]);
   // Both the chart-set list (auto-selects the first) and the units are now
   // loaded. The map was created the instant this tab became visible, so Leaflet
@@ -627,10 +628,17 @@ function setBoxMode(on: boolean): void {
   if (on) {
     onHover(null, null);
   }
+  const hint = document.getElementById('ccMapHint');
+  if (hint) {
+    hint.textContent = on
+      ? 'Click and drag to select areas to add or remove.'
+      : 'Click a rectangular area to add or remove it.';
+  }
 }
 
-// Drag a box to add every unit it touches. Works with the "Select by box"
-// toggle (mouse or touch) or with Shift+drag; never removes anything.
+// Drag a box to toggle every unit it touches: unselected ones are added and
+// selected ones removed. Works with the "Select by box" toggle (mouse or
+// touch) or with Shift+drag.
 function wireBoxSelect(el: HTMLElement): void {
   let start: L.LatLng | null = null;
   let box: L.Rectangle | null = null;
@@ -689,7 +697,7 @@ function wireBoxSelect(el: HTMLElement): void {
         ccSuppressClick = false;
       }, 0);
       if (ev.type === 'pointerup') {
-        void addUnitsInBox(bounds);
+        void toggleUnitsInBox(bounds);
       }
     }
   };
@@ -697,7 +705,7 @@ function wireBoxSelect(el: HTMLElement): void {
   el.addEventListener('pointercancel', finish);
 }
 
-async function addUnitsInBox(bounds: L.LatLngBounds): Promise<void> {
+async function toggleUnitsInBox(bounds: L.LatLngBounds): Promise<void> {
   const cat = ccActiveCatalog();
   const note = document.getElementById('ccMapNote');
   if (!cat) {
@@ -714,27 +722,30 @@ async function addUnitsInBox(bounds: L.LatLngBounds): Promise<void> {
   const south = bounds.getSouth();
   const north = bounds.getNorth();
   const selected = ccSelectedIds(cat);
-  const toAdd: CcUnit[] = [];
+  const touched: CcUnit[] = [];
   for (const drawn of ccDrawnById.values()) {
-    if (!selected.has(drawn.unit.id) && ccTouchesBox(drawn, west, south, east, north)) {
-      toAdd.push(drawn.unit);
+    if (ccTouchesBox(drawn, west, south, east, north)) {
+      touched.push(drawn.unit);
     }
   }
-  if (toAdd.length === 0) {
+  if (touched.length === 0) {
     return;
   }
+  const removing = touched.filter((u) => selected.has(u.id)).length;
+  const adding = touched.length - removing;
   if (
-    toAdd.length > CC_BOX_CONFIRM_ABOVE &&
-    !confirm(`Add ${toAdd.length} chart areas to “${cat.name}”?`)
+    touched.length > CC_BOX_CONFIRM_ABOVE &&
+    !confirm(
+      `Change ${touched.length} chart areas in “${cat.name}”: add ${adding}, remove ${removing}?`
+    )
   ) {
     return;
   }
-  for (const unit of toAdd) {
-    if (unit.source === CC_NOAA_SOURCE) {
-      cat.selectedBand4ChartIds.push(unit.id);
-    } else {
-      cat.selectedUnitIds.push(unit.id);
-    }
+  for (const unit of touched) {
+    const key = unit.source === CC_NOAA_SOURCE ? 'selectedBand4ChartIds' : 'selectedUnitIds';
+    cat[key] = selected.has(unit.id)
+      ? cat[key].filter((id) => id !== unit.id)
+      : [...cat[key], unit.id];
   }
   refreshAreaColors();
   await putSelection(cat);
