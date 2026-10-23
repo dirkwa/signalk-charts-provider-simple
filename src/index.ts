@@ -3459,8 +3459,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 `${file.name} (${MASK_LABELS[body.mask]})`,
                 file.custom,
                 body.mask,
-                // A Water only version starts where its chart does.
-                file.defaultOpacity
+                // A Water only version starts where its chart does; Land only
+                // starts at its own default, so the charts beneath show through.
+                body.mask === 'water-only' ? file.defaultOpacity : undefined
               ));
             res.json({ success: true, relativePath });
             return;

@@ -293,6 +293,21 @@ describe('online charts', () => {
         true
       );
       assert.strictEqual(landOnly?.defaultOpacity, 0.7, 'starts at 0.7 whatever its chart');
+      assert.strictEqual(
+        onlineChartProvider(
+          path.join(dir, 'kept-depths-land-only.onlinechart.json'),
+          {
+            catalogId: 'kept-depths',
+            name: 'Depths (Land only)',
+            mask: 'land-only',
+            defaultOpacity: 0.5
+          },
+          lookup,
+          true
+        )?.defaultOpacity,
+        0.5,
+        "the file's own opacity overrides it"
+      );
       assert.match(landOnly?.description ?? '', /Not for navigation/);
 
       const streamed = { catalogId: 'nws-radar-conus', name: 'Radar', mask: 'water-only' as const };
