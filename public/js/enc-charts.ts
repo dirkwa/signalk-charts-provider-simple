@@ -183,9 +183,9 @@ async function initCustomCatalogsTab(): Promise<void> {
           <button class="cc-link-btn" data-cc-action="refresh-index">Refresh</button>
         </div>
         <div class="cc-map-tools">
+          <span class="cc-map-hint" id="ccMapHint"></span>
           <button class="cc-btn" id="ccBoxBtn" data-cc-action="box-mode" aria-pressed="false"
             title="Drag a box on the map to add or remove every chart area it touches (or Shift+drag)">Select by box</button>
-          <span class="cc-map-hint" id="ccMapHint"></span>
         </div>
         <div id="ccMap" class="cc-map"></div>
         <div class="cc-legend">
@@ -632,7 +632,7 @@ function setBoxMode(on: boolean): void {
   if (hint) {
     hint.textContent = on
       ? 'Click and drag to select areas to add or remove.'
-      : 'Click a rectangular area to add or remove it.';
+      : 'Click a rectangular area to add or remove it. To select with a click/drag, use Shift+click and drag or';
   }
 }
 

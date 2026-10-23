@@ -283,16 +283,23 @@
   cursor: pointer;
 }
 
+/* Text flow, so the button follows the instructions' last word. */
 .cc-map-tools {
-  display: flex;
-  align-items: center;
-  gap: 12px;
   margin-bottom: 8px;
+  line-height: 2.2;
 }
 
+.cc-map-tools .cc-btn {
+  margin-left: 6px;
+  vertical-align: middle;
+  line-height: normal;
+}
+
+/* Same emphasis as the "Chart sets" heading: the map's instructions. */
 .cc-map-hint {
-  font-size: 0.85rem;
-  color: var(--md-sys-color-on-surface-variant, #43474e);
+  font-weight: 600;
+  font-size: 1.05rem;
+  color: var(--md-sys-color-on-surface, #1a1c1e);
 }
 
 .cc-btn.cc-btn-active {
