@@ -345,8 +345,11 @@ export class RasterTileCache {
     const size = data.byteLength;
     // A replacement only grows the cache by the difference: room for all of
     // it could evict other charts, or skip the write and leave a stale tile.
+    // A chart directory being removed no longer counts, so a tile in it
+    // replaced now is new space, and nothing is released for it later.
+    const removal = this.removing.get(key);
     let replaced = 0;
-    if (replace) {
+    if (replace && !removal) {
       try {
         replaced = fs.statSync(target).size;
       } catch {
@@ -375,7 +378,7 @@ export class RasterTileCache {
     const write = (async () => {
       try {
         // Otherwise the removal could delete the new tile.
-        await this.removing.get(key);
+        await (removal ?? this.removing.get(key));
         const existing = await fs.promises.stat(target).catch(() => null);
         if (existing && !replace) {
           // Stored by a request that made it too and finished first.
@@ -385,7 +388,7 @@ export class RasterTileCache {
         await fs.promises.mkdir(path.dirname(target), { recursive: true });
         await fs.promises.writeFile(tmp, data);
         await fs.promises.rename(tmp, target);
-        if (existing) {
+        if (existing && !removal) {
           // The replaced file no longer takes space.
           release(existing.size);
         }
