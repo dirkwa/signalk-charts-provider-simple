@@ -154,6 +154,71 @@
       "offline": {}
     },
     {
+      "id": "noaa-hi-res-relief",
+      "name": "NOAA Hi-Res Relief",
+      "description": "Shaded relief of the seafloor from NOAA's high-resolution hydrographic surveys, showing channels, shoals and wrecks in fine detail. Only where NOAA has surveyed, mostly U.S. harbours and coasts; surveys range from recent to several decades old.",
+      "category": "depth",
+      "regions": ["us", "us-conus", "us-alaska", "us-hawaii", "us-territories", "great-lakes"],
+      "bbox": [144, -18, -64, 80],
+      "provider": "NOAA National Centers for Environmental Information",
+      "attribution": "NOAA NCEI hydrographic survey data",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://www.ncei.noaa.gov/products/bathymetry",
+      "notForNavigation": true,
+      "chart": {
+        "type": "tilelayer",
+        "url": "https://gis.ngdc.noaa.gov/arcgis/rest/services/bag_hillshades_subsets/ImageServer/exportImage?bbox={bbox_3857}&bboxSR=3857&imageSR=3857&size=256,256&format=png32&transparent=true&f=image",
+        "minzoom": 8,
+        "maxzoom": 18,
+        "defaultOpacity": 0.75
+      },
+      "offline": { "areaDownloadLimits": { "requestsPerSecond": 2 } }
+    },
+    {
+      "id": "bluetopo-relief",
+      "name": "BlueTopo Relief",
+      "description": "Shaded relief of the seafloor from NOAA's BlueTopo, the best available depth data blended into one surface and updated as new surveys arrive. Covers most U.S. coastal waters and Puerto Rico.",
+      "category": "depth",
+      "regions": ["us", "us-conus", "us-alaska", "us-territories", "caribbean"],
+      "bbox": [-139.25, 16.5, -64, 60.3],
+      "provider": "NOAA Office of Coast Survey",
+      "attribution": "NOAA Office of Coast Survey, BlueTopo",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://nauticalcharts.noaa.gov/data/bluetopo.html",
+      "notForNavigation": true,
+      "chart": {
+        "type": "tilelayer",
+        "url": "https://nowcoast.noaa.gov/geoserver/gwc/service/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=bluetopo:hillshade&STYLE=&FORMAT=image/png8&TILEMATRIXSET=EPSG:3857&TILEMATRIX=EPSG:3857:{z}&TILEROW={y}&TILECOL={x}",
+        "minzoom": 8,
+        "maxzoom": 16,
+        "tileSize": 512,
+        "defaultOpacity": 0.5
+      },
+      "offline": {}
+    },
+    {
+      "id": "bluetopo-depth-color",
+      "name": "BlueTopo Depth Color",
+      "description": "Water depth shown as colour, from NOAA's BlueTopo, the best available depth data blended into one surface and updated as new surveys arrive. Covers most U.S. coastal waters and Puerto Rico.",
+      "category": "depth",
+      "regions": ["us", "us-conus", "us-alaska", "us-territories", "caribbean"],
+      "bbox": [-139.25, 16.5, -64, 60.3],
+      "provider": "NOAA Office of Coast Survey",
+      "attribution": "NOAA Office of Coast Survey, BlueTopo",
+      "license": "Public domain (U.S. Government)",
+      "licenseUrl": "https://nauticalcharts.noaa.gov/data/bluetopo.html",
+      "notForNavigation": true,
+      "chart": {
+        "type": "tilelayer",
+        "url": "https://nowcoast.noaa.gov/geoserver/gwc/service/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=bluetopo:bathymetry&STYLE=&FORMAT=image/png8&TILEMATRIXSET=EPSG:3857&TILEMATRIX=EPSG:3857:{z}&TILEROW={y}&TILECOL={x}",
+        "minzoom": 8,
+        "maxzoom": 16,
+        "tileSize": 512,
+        "defaultOpacity": 0.3
+      },
+      "offline": {}
+    },
+    {
       "id": "nws-radar-conus",
       "name": "NWS Radar – Continental US",
       "description": "Rain and thunderstorm radar for the lower 48 states and nearby coastal waters. A new image about every 2 minutes, with the last 2 hours available for playback.",

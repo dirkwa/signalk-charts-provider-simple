@@ -67,10 +67,13 @@ export function closeChartHandle(chart: ChartProvider): void {
 /**
  * @param resolveOnline Looks up the catalog entry an `.onlinechart.json`
  *   file refers to. Online charts whose entry is unknown are not served.
+ * @param masksReady Whether masked chart versions can be served yet: they
+ *   need the land index, and are left out until it is built.
  */
 export async function findCharts(
   chartBaseDir: string,
-  resolveOnline: OnlineChartResolver = () => undefined
+  resolveOnline: OnlineChartResolver = () => undefined,
+  masksReady = false
 ): Promise<Record<string, ChartProvider>> {
   // A directory-read failure must reject so callers can tell a failed scan
   // apart from an empty-but-readable directory — swallowing it here used to
@@ -86,7 +89,7 @@ export async function findCharts(
   // rethrowing; the rejection itself is the contract and must survive.
   const opened: ChartProvider[] = [];
   try {
-    const results = await findChartsRecursive(chartBaseDir, opened, resolveOnline);
+    const results = await findChartsRecursive(chartBaseDir, opened, resolveOnline, masksReady);
     const filtered = results.filter((c): c is ChartProvider => c !== null);
     return filtered.reduce<Record<string, ChartProvider>>((result, chart) => {
       // Two folders can hold the same .mbtiles basename, which yields the same
@@ -113,7 +116,8 @@ async function findChartsRecursive(
   currentDir: string,
   /** Every provider opened so far, so a throw mid-walk can still close them. */
   opened: ChartProvider[],
-  resolveOnline: OnlineChartResolver
+  resolveOnline: OnlineChartResolver,
+  masksReady: boolean
 ): Promise<(ChartProvider | null)[]> {
   const files = await fs.readdir(currentDir, { withFileTypes: true });
   const results: (ChartProvider | null)[][] = [];
@@ -133,7 +137,9 @@ async function findChartsRecursive(
       results.push([chart]);
     } else if (file.isFile() && isOnlineChartFile(file.name)) {
       const online = readOnlineChartFile(filePath);
-      results.push([online ? onlineChartProvider(filePath, online, resolveOnline) : null]);
+      results.push([
+        online ? onlineChartProvider(filePath, online, resolveOnline, masksReady) : null
+      ]);
     } else if (isDirectory) {
       if (file.name.startsWith('.') || file.name === 'node_modules') {
         results.push([]);
@@ -144,7 +150,7 @@ async function findChartsRecursive(
       if (chartInfo) {
         results.push([chartInfo]);
       } else {
-        const subResults = await findChartsRecursive(filePath, opened, resolveOnline);
+        const subResults = await findChartsRecursive(filePath, opened, resolveOnline, masksReady);
         results.push(subResults);
       }
     } else {

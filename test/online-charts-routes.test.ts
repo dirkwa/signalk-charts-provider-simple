@@ -692,6 +692,97 @@ describe('online chart routes', () => {
     }
   });
 
+  it('adds and removes a Water only version, served only once the land index is built', async () => {
+    const added = await add({ catalogId: 'test-imagery', folder: 'Masks' });
+    assert.strictEqual(added.statusCode, 200);
+    const chartPathParam = (added.body as { relativePath: string }).relativePath;
+    // The chart's own opacity is where its Water only version starts.
+    await call(handlers.get('put /chart-metadata/:chartPath'), {
+      params: { chartPath: chartPathParam },
+      body: { name: 'Imagery', defaultOpacity: 0.6 }
+    });
+    const masked = path.join('Masks', 'test-imagery-water-only.onlinechart.json');
+    const setVersion = (enabled: boolean, chart = chartPathParam) =>
+      call(handlers.get('post /online-charts/masked-version'), {
+        body: { chartPath: chart, mask: 'water-only', enabled }
+      });
+    const masks = async () =>
+      (
+        (
+          await call(handlers.get('get /chart-metadata/:chartPath'), {
+            params: { chartPath: chartPathParam }
+          })
+        ).body as { masks?: Record<string, boolean> }
+      ).masks;
+    const landIndex = async () =>
+      (await call(handlers.get('get /land-index'), {})).body as {
+        status: string;
+        requested: boolean;
+        maskedVersions: number;
+        approxDownloadBytes: number;
+        approxDiskBytes: number;
+      };
+
+    const before = await landIndex();
+    assert.strictEqual(before.status, 'absent');
+    assert.strictEqual(before.requested, false);
+    assert.ok(before.approxDownloadBytes > before.approxDiskBytes);
+    assert.deepStrictEqual(await masks(), { 'water-only': false });
+
+    const on = await setVersion(true);
+    assert.strictEqual(on.statusCode, 200);
+    assert.strictEqual((on.body as { relativePath: string }).relativePath, masked);
+    assert.deepStrictEqual(
+      JSON.parse(fs.readFileSync(path.join(chartPath, masked), 'utf-8')) as object,
+      {
+        catalogId: 'test-imagery',
+        name: 'Imagery (Water only)',
+        mask: 'water-only',
+        defaultOpacity: 0.6
+      }
+    );
+    assert.deepStrictEqual(await masks(), { 'water-only': true });
+    await setVersion(true);
+    assert.strictEqual(fs.readdirSync(path.join(chartPath, 'Masks')).length, 2, 'added once');
+
+    // Adding a version never starts the download, and without the land
+    // index it is listed as waiting but not served.
+    const after = await landIndex();
+    assert.strictEqual(after.status, 'absent');
+    assert.strictEqual(after.maskedVersions, 1);
+    const v2 = (await provider!.methods.listResources({})) as Record<string, unknown>;
+    assert.ok(!('test-imagery-water-only' in v2));
+    const listing = (await call(handlers.get('get /local-charts'), {})).body as {
+      charts: { relativePath: string; online?: { mask?: string; maskReady?: boolean } }[];
+    };
+    const listed = listing.charts.find((c) => c.relativePath === masked);
+    assert.deepStrictEqual(
+      [listed?.online?.mask, listed?.online?.maskReady],
+      ['water-only', false]
+    );
+
+    // Without built data there is nothing in use to protect; this only takes back consent.
+    assert.strictEqual((await call(handlers.get('delete /land-index'), {})).statusCode, 200);
+    assert.strictEqual((await setVersion(true, masked)).statusCode, 400, 'no version of a version');
+
+    const off = await setVersion(false);
+    assert.strictEqual(off.statusCode, 200);
+    assert.ok(!fs.existsSync(path.join(chartPath, masked)));
+    assert.deepStrictEqual(await masks(), { 'water-only': false });
+    assert.strictEqual((await call(handlers.get('delete /land-index'), {})).statusCode, 200);
+  });
+
+  it('refuses a masked version of a chart whose tiles are not kept', async () => {
+    const res = await call(handlers.get('post /online-charts/masked-version'), {
+      body: {
+        chartPath: path.join('Online Charts', 'nws-radar-conus-2.onlinechart.json'),
+        mask: 'water-only',
+        enabled: true
+      }
+    });
+    assert.strictEqual(res.statusCode, 400);
+  });
+
   it('lists added charts whose file names an inherited key as its catalog id', async () => {
     for (const id of ['constructor', '__proto__']) {
       fs.writeFileSync(

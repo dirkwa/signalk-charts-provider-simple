@@ -48,6 +48,11 @@ import {
   readOnlineChartFile,
   writeOnlineChartFile,
   onlineChartEntry,
+  isMaskable,
+  MASK_LABELS,
+  LAND_ATTRIBUTION,
+  ChartMaskSchema,
+  type ChartMask,
   customChartId,
   CustomOnlineChartSchema,
   customOnlineChartProblem,
@@ -74,7 +79,17 @@ import { PMTilesReader, pmtilesBounds } from './utils/pmtiles-reader.js';
 import { writeChartPathMarker } from './utils/path-marker.js';
 import { getBlankTileReplacement, getOverzoomedTile } from './utils/tile-overzoom.js';
 import { getRasterOverzoomedTile } from './utils/raster-overzoom.js';
-import { initRasterTileCache, pruneRasterTileCache } from './utils/raster-tile-cache.js';
+import { maskedTileCache, overzoomTileCache } from './utils/raster-tile-cache.js';
+import {
+  deleteLandIndex,
+  getLandIndex,
+  initLandIndex,
+  landIndexState,
+  requestLandIndex,
+  stopLandIndex
+} from './utils/land-index-manager.js';
+import { APPROX_DOWNLOAD_BYTES, APPROX_INDEX_BYTES, LAND_SOURCES } from './utils/land-index.js';
+import { MaskedTiles, maskedCacheText } from './utils/masked-tiles.js';
 import {
   OnlineTileProxy,
   OnlineTileStore,
@@ -213,6 +228,7 @@ let globalJobCompletedListener: ((job: DownloadJob) => void) | null = null;
 const PLUGIN_ID = PLUGIN_OWNER_ID;
 // Small enough for the SD card of a Raspberry Pi, large enough for a cruising area at harbour zoom.
 const DEFAULT_ONLINE_CACHE_LIMIT_MB = 2048;
+const DEFAULT_MASKED_CACHE_LIMIT_MB = 1024;
 // Tile URLs live under the Signal K v1 charts namespace so non-admin
 // users (readwrite/readonly) can fetch tiles. Routes under /plugins/* are
 // gated by adminAuthenticationMiddleware in the server, which blocks tile
@@ -347,6 +363,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let pluginDataDir = '';
   let onlineTileStore: OnlineTileStore | null = null;
   let onlineTileProxy: OnlineTileProxy | null = null;
+  let maskedTiles: MaskedTiles | null = null;
   let areaDownloader: AreaDownloader | null = null;
   let defaultChartsPath = '';
   let serverMajorVersion = 1;
@@ -413,6 +430,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           minimum: 0,
           default: DEFAULT_ONLINE_CACHE_LIMIT_MB
         },
+        maskedCacheLimitMB: {
+          type: 'integer',
+          title: 'Space for masked chart tiles (MB)',
+          description:
+            'Masked chart versions ("Water only") keep each tile once it has been masked, so it is not masked again. ' +
+            'Above this size the versions used longest ago lose their masked tiles first; they are made again when needed. ' +
+            'A version that alone fills this space keeps what it has and masks newer tiles each time they are shown. ' +
+            'The online chart tiles they are made from are not affected. 0 keeps nothing.',
+          minimum: 0,
+          default: DEFAULT_MASKED_CACHE_LIMIT_MB
+        },
         // A `null`-typed field renders as a section header in the admin UI,
         // visually separating this toggle from the CPU-budget setting above.
         _notificationsHeader: {
@@ -466,6 +494,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       chartProviders = {};
       areaDownloader?.cancelAll();
       areaDownloader = null;
+      stopLandIndex();
+      maskedTiles = null;
       onlineTileProxy = null;
       onlineTileStore?.close();
       onlineTileStore = null;
@@ -507,7 +537,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               // Streamed online charts are fetched from their provider by
               // the chart plotter; only those kept offline, or whose tile
               // template only the plugin can fill in, come through here.
-              if (provider._offlineSource && provider._catalogId && onlineTileProxy) {
+              if (provider._mask && provider._offlineSource && provider._catalogId && maskedTiles) {
+                void serveMaskedTile(
+                  res,
+                  maskedTiles,
+                  provider._catalogId,
+                  provider._offlineSource,
+                  provider._mask,
+                  iz,
+                  ix,
+                  iy
+                );
+              } else if (provider._offlineSource && provider._catalogId && onlineTileProxy) {
                 void serveOnlineTile(
                   res,
                   onlineTileProxy,
@@ -661,23 +702,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // A catalog update can change what an online chart points at, or make
     // one resolvable for the first time; re-serve them all.
     setCatalogChangedListener(() => {
-      const onlineBefore = Object.keys(chartProviders).filter(
-        (id) => chartProviders[id]?._fileFormat === 'online'
-      );
-      void refreshChartProviders().then(() => {
-        for (const [id, provider] of Object.entries(chartProviders)) {
-          if (provider._fileFormat === 'online') {
-            emitChartDelta(id, sanitizeProvider(provider, 2));
-          }
-        }
-        // Charts whose entry left the catalog are no longer served; retract
-        // them so connected plotters drop them too.
-        for (const id of onlineBefore) {
-          if (!chartProviders[id]) {
-            emitChartDelta(id, null);
-          }
-        }
-      });
+      reannounceOnlineCharts();
     });
     initCatalogManager(dataDir, app.debug.bind(app));
     initEncIndexManager(dataDir, app.debug.bind(app));
@@ -697,8 +722,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     if (listCustomCatalogs().length > 0) {
       void refreshEncIndex();
     }
-    // Synthesized raster tiles; kept in the data dir, never the chart folder.
-    void initRasterTileCache(path.join(dataDir, 'raster-tile-cache'));
+    // Synthesized and masked raster tiles; kept in the data dir, never the chart folder.
+    void overzoomTileCache.init(path.join(dataDir, 'raster-tile-cache'));
+    void maskedTileCache.init(path.join(dataDir, 'masked-tile-cache'), {
+      maxBytes: (props.maskedCacheLimitMB ?? DEFAULT_MASKED_CACHE_LIMIT_MB) * 1024 * 1024
+    });
     onlineTileStore?.close();
     onlineTileStore = new OnlineTileStore(path.join(dataDir, 'online-tile-cache'));
     // Applies a limit lowered since the last start without waiting for a tile.
@@ -711,6 +739,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     );
     areaDownloader?.cancelAll();
     areaDownloader = new AreaDownloader(onlineTileProxy);
+    maskedTiles = new MaskedTiles(onlineTileProxy, maskedTileCache, getLandIndex);
+    // Masked chart versions appear once the land index is built, and go if it is deleted.
+    initLandIndex(dataDir, {
+      userAgent: `signalk-charts-provider-simple/${pluginVersion}`,
+      onChange: () => {
+        reannounceOnlineCharts();
+      },
+      // A build cut short resumes only while a masked version waits for it.
+      needed: async () => (await findOnlineChartFiles(chartPath)).some((f) => f.mask)
+    });
 
     const tempDirPattern =
       /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-|custom-catalog-)\d+$/;
@@ -971,13 +1009,48 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
   };
 
-  // Drop cached synthesized tiles of charts that were deleted or replaced.
-  // Takes the full scan, so a disabled chart keeps its tiles.
+  // Drop cached synthesized tiles of charts that were deleted or replaced,
+  // and masked tiles of versions that are gone or were made from an older
+  // land index. Takes the full scan, so a disabled chart keeps its tiles.
   const pruneRasterTileCacheFor = (charts: Record<string, ChartProvider>): void => {
-    const files = Object.values(charts)
+    const overzoomKeys = Object.values(charts)
       .filter((c) => c._fileFormat === 'mbtiles' && c._filePath)
-      .map((c) => c._filePath);
-    void pruneRasterTileCache(files);
+      .map((c) => overzoomTileCache.fileKey(c._filePath))
+      .filter((key): key is string => key !== null);
+    void overzoomTileCache.prune(overzoomKeys);
+    const landVersion = getLandIndex()?.version;
+    const maskedKeys = Object.values(charts)
+      .filter((c) => c._mask && c._catalogId && landVersion)
+      .map((c) =>
+        maskedTileCache.key(
+          maskedCacheText(c._catalogId ?? '', c._mask ?? 'water-only', landVersion ?? '')
+        )
+      )
+      .filter((key): key is string => key !== null);
+    void maskedTileCache.prune(maskedKeys);
+  };
+
+  // A catalog update can change what an online chart points at, or make one
+  // resolvable for the first time, and the land index coming or going adds
+  // or removes masked versions; re-serve them all.
+  const reannounceOnlineCharts = (): void => {
+    const onlineBefore = Object.keys(chartProviders).filter(
+      (id) => chartProviders[id]?._fileFormat === 'online'
+    );
+    void refreshChartProviders().then(() => {
+      for (const [id, provider] of Object.entries(chartProviders)) {
+        if (provider._fileFormat === 'online') {
+          emitChartDelta(id, sanitizeProvider(provider, 2));
+        }
+      }
+      // Charts no longer served (their entry left the catalog, or a masked
+      // version lost its land index); retract them so plotters drop them too.
+      for (const id of onlineBefore) {
+        if (!chartProviders[id]) {
+          emitChartDelta(id, null);
+        }
+      }
+    });
   };
 
   const partitionVisibleCharts = (
@@ -1003,7 +1076,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // true on success, false if the chart directory could not be read.
   const loadChartProviders = async (chartPath: string): Promise<boolean> => {
     try {
-      const charts = await findCharts(chartPath, resolveOnlineChart);
+      const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
       pruneRasterTileCacheFor(charts);
       const enabledCharts = partitionVisibleCharts(chartPath, charts);
 
@@ -1035,7 +1108,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // directory. Closed in the finally below, on every path.
     let scanned: ChartProvider[] = [];
     try {
-      const charts = await findCharts(chartPath, resolveOnlineChart);
+      const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
       scanned = Object.values(charts);
       const allFiles = await scanChartsRecursively(chartPath);
       const validPaths = new Set(
@@ -1247,6 +1320,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const AddOnlineChartBody = Type.Object({
     catalogId: Type.String({ minLength: 1 }),
     folder: Type.String({ minLength: 1 })
+  });
+
+  const MaskedVersionBody = Type.Object({
+    chartPath: Type.String({ minLength: 1 }),
+    mask: ChartMaskSchema,
+    enabled: Type.Boolean()
   });
 
   const AddCustomOnlineChartBody = Type.Object({
@@ -1647,6 +1726,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                     // the chart deletes its tiles even once the catalog drops it.
                     keptTiles: hasKeptTiles(chart.online.catalogId),
                     chartId: chartIdFromFilename(path.basename(chart.relativePath)),
+                    // A masked version is served only once the land index is built.
+                    ...(chart.online.mask ? { maskReady: getLandIndex() !== null } : {}),
                     minzoom: onlineEntry?.chart.minzoom ?? null,
                     maxzoom: onlineEntry?.chart.maxzoom ?? null
                   }
@@ -1697,6 +1778,23 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     };
 
+    // A shoreline download no masked version waits for any more is not finished.
+    const cancelUnneededLandIndex = async (basePath: string): Promise<void> => {
+      try {
+        const { status } = landIndexState();
+        if (
+          (status === 'building' || status === 'failed') &&
+          !(await findOnlineChartFiles(basePath, basePath, { strict: true })).some((f) => f.mask)
+        ) {
+          await deleteLandIndex();
+        }
+      } catch (err) {
+        app.error(
+          `Could not cancel the shoreline data download: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    };
+
     router.delete('/local-charts/:chartPath', async (req: Request, res: Response) => {
       const chartPathParam = decodeURIComponent((req.params as Record<string, string>).chartPath);
       try {
@@ -1736,6 +1834,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           for (const catalogId of new Set(deletedCatalogIds.filter(Boolean))) {
             await forgetOfflineTiles(basePath, catalogId);
           }
+          await cancelUnneededLandIndex(basePath);
 
           // Primary path: reverse-lookup by the on-disk filename. The
           // converter records this in the install record after a
@@ -2369,6 +2468,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         if (isOnlineChartFile(fullPath)) {
           const file = readOnlineChartFile(fullPath);
           const entry = file ? onlineChartEntry(file, resolveOnlineChart) : undefined;
+          const masks: Partial<Record<ChartMask, boolean>> = {};
+          if (file && entry && isMaskable(file, entry)) {
+            for (const mask of Object.keys(MASK_LABELS) as ChartMask[]) {
+              masks[mask] = (await maskedVersionFiles(file.catalogId, mask)).length > 0;
+            }
+          }
           res.json({
             name: file?.name,
             catalogId: file?.catalogId,
@@ -2376,11 +2481,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             // The file's own opacity, and the catalog's it falls back to.
             defaultOpacity: file?.defaultOpacity,
             catalogOpacity: entry?.chart.defaultOpacity,
+            ...(file?.mask ? { mask: file.mask } : {}),
+            // Which masked versions exist, for a chart that can have them.
+            ...(Object.keys(masks).length > 0 ? { masks } : {}),
             ...(entry
               ? {
                   description: entry.description,
                   provider: entry.provider,
-                  attribution: entry.attribution,
+                  attribution: file?.mask
+                    ? `${entry.attribution}; ${LAND_ATTRIBUTION}`
+                    : entry.attribution,
                   license: entry.license,
                   licenseUrl: entry.licenseUrl,
                   type: entry.chart.type,
@@ -3231,11 +3341,21 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       dir: string,
       catalogId: string,
       name: string,
-      custom?: CustomOnlineChart
+      custom?: CustomOnlineChart,
+      mask?: ChartMask,
+      defaultOpacity?: number
     ): Promise<string> => {
       const basePath = props.chartPath || defaultChartsPath;
       const takenIds = await collectChartIds(basePath);
-      const filename = writeOnlineChartFile(dir, catalogId, name, takenIds, custom);
+      const filename = writeOnlineChartFile(
+        dir,
+        catalogId,
+        name,
+        takenIds,
+        custom,
+        mask,
+        defaultOpacity
+      );
       await refreshChartProviders();
       const chartId = chartIdFromFilename(filename);
       if (chartProviders[chartId]) {
@@ -3276,6 +3396,129 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         } catch (error) {
           console.error('Error adding online chart by URL:', error);
           res.status(500).json({ success: false, error: 'Failed to add online chart' });
+        }
+      })();
+    });
+
+    // The chart files, anywhere in the library, that are the `mask` version
+    // of the chart with this catalog id.
+    const maskedVersionFiles = async (catalogId: string, mask: ChartMask): Promise<string[]> => {
+      const basePath = props.chartPath || defaultChartsPath;
+      return (await findOnlineChartFiles(basePath))
+        .filter((f) => f.catalogId === catalogId && f.mask === mask)
+        .map((f) => f.relativePath);
+    };
+
+    // Add or remove the "Water only" version of a kept online chart: its own
+    // chart file beside the chart's, sharing its kept tiles. It is served once
+    // the land index is built, which this never starts: the user agrees to
+    // that download separately (POST /land-index/download).
+    router.post('/online-charts/masked-version', (req: Request, res: Response) => {
+      const body = parseBody(MaskedVersionBody, req, res);
+      if (!body) {
+        return;
+      }
+      void (async () => {
+        try {
+          const basePath = props.chartPath || defaultChartsPath;
+          const fullPath = path.join(basePath, body.chartPath);
+          if (!isWithinBase(fullPath, basePath) || !isOnlineChartFile(fullPath)) {
+            res.status(403).json({ success: false, error: 'Access denied: Invalid path' });
+            return;
+          }
+          const file = readOnlineChartFile(fullPath);
+          const entry = file ? onlineChartEntry(file, resolveOnlineChart) : undefined;
+          if (!file || !entry || !isMaskable(file, entry)) {
+            res.status(400).json({
+              success: false,
+              error: 'Only an online chart whose tiles are kept can have masked versions'
+            });
+            return;
+          }
+          const existing = await maskedVersionFiles(file.catalogId, body.mask);
+          if (body.enabled) {
+            const relativePath =
+              existing[0] ??
+              (await addOnlineChartFile(
+                path.dirname(fullPath),
+                file.catalogId,
+                `${file.name} (${MASK_LABELS[body.mask]})`,
+                file.custom,
+                body.mask,
+                // A Water only version starts where its chart does.
+                file.defaultOpacity
+              ));
+            res.json({ success: true, relativePath });
+            return;
+          }
+          for (const relativePath of existing) {
+            await fs.promises.rm(path.join(basePath, relativePath), { force: true });
+          }
+          await cancelUnneededLandIndex(basePath);
+          await refreshChartProviders();
+          for (const relativePath of existing) {
+            emitChartDelta(chartIdFromFilename(path.basename(relativePath)), null);
+          }
+          res.json({ success: true, removed: existing });
+        } catch (error) {
+          console.error('Error changing a masked chart version:', error);
+          res.status(500).json({ success: false, error: 'Failed to change the masked version' });
+        }
+      })();
+    });
+
+    // The shoreline data masked versions need: its state, and what the
+    // one-time download takes, for the confirmation before it starts.
+    router.get('/land-index', (_req: Request, res: Response) => {
+      void (async () => {
+        try {
+          const basePath = props.chartPath || defaultChartsPath;
+          const maskedVersions = (await findOnlineChartFiles(basePath)).filter(
+            (f) => f.mask !== undefined
+          ).length;
+          res.json({
+            ...landIndexState(),
+            maskedVersions,
+            approxDownloadBytes: APPROX_DOWNLOAD_BYTES,
+            approxDiskBytes: APPROX_INDEX_BYTES,
+            sources: LAND_SOURCES.map((s) => s.url)
+          });
+        } catch (error) {
+          console.error('Error reading the shoreline data state:', error);
+          res.status(500).json({ error: 'Failed to read the shoreline data state' });
+        }
+      })();
+    });
+
+    // Start the one-time download, once the user has agreed to it.
+    router.post('/land-index/download', (_req: Request, res: Response) => {
+      void (async () => {
+        try {
+          await requestLandIndex();
+          res.status(202).json(landIndexState());
+        } catch (error) {
+          console.error('Error starting the shoreline data download:', error);
+          res.status(500).json({ error: 'Failed to start the download' });
+        }
+      })();
+    });
+
+    // Cancel the download, or delete the built shoreline data once no masked
+    // version uses it.
+    router.delete('/land-index', (_req: Request, res: Response) => {
+      void (async () => {
+        try {
+          const basePath = props.chartPath || defaultChartsPath;
+          const inUse = (await findOnlineChartFiles(basePath)).some((f) => f.mask !== undefined);
+          if (inUse && landIndexState().status === 'ready') {
+            res.status(409).json({ error: 'Masked chart versions still use the shoreline data' });
+            return;
+          }
+          await deleteLandIndex();
+          res.json(landIndexState());
+        } catch (error) {
+          console.error('Error deleting the shoreline data:', error);
+          res.status(500).json({ error: 'Failed to delete the shoreline data' });
         }
       })();
     });
@@ -5156,7 +5399,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // getDefaultChartsPath() (not the raw field) so a refresh requested
       // before start() has run still resolves the computed default path.
       const chartPath = props.chartPath || getDefaultChartsPath();
-      const charts = await findCharts(chartPath, resolveOnlineChart);
+      const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
       pruneRasterTileCacheFor(charts);
 
       // Close the handles of the map being replaced — findCharts reopened
@@ -5294,6 +5537,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _catalogId,
     _offlineSource,
     _keepTiles,
+    _mask,
     _areaDownload,
     _areaDownloadLimits,
     v1: _v1,
@@ -5407,6 +5651,37 @@ const serveOnlineTile = async (
   } catch (err) {
     console.error(
       `Online tile ${catalogId ?? 'streamed'}/${String(z)}/${String(x)}/${String(y)} failed:`,
+      err
+    );
+    res.sendStatus(500);
+  }
+};
+
+const serveMaskedTile = async (
+  res: Response,
+  tiles: MaskedTiles,
+  catalogId: string,
+  source: OnlineTileSource,
+  mask: ChartMask,
+  z: number,
+  x: number,
+  y: number
+): Promise<void> => {
+  try {
+    const tile = await tiles.getTile(catalogId, source, mask, z, x, y);
+    const contentType = tile ? tileImageType(tile.data) : null;
+    if (!tile || !contentType) {
+      res.sendStatus(404);
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Cache-Control': tile.provisional ? 'no-store' : 'public, max-age=86400'
+    });
+    res.end(tile.data);
+  } catch (err) {
+    console.error(
+      `Masked tile ${catalogId}/${mask}/${String(z)}/${String(x)}/${String(y)} failed:`,
       err
     );
     res.sendStatus(500);

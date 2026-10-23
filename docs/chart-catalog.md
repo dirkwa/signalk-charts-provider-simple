@@ -86,7 +86,11 @@ kept tile is fetched again after 30 days when the provider answers, and served
 however old it is when it does not. WMS layers are requested tile by tile as
 256 px EPSG:3857 `GetMap` images; a WMTS service needs a `tileUrl` pointing at a
 plain `{z}/{x}/{y}` tile cache for the same chart (`{-y}` and `{z-N}` are
-substituted too). Time-varying charts are never kept.
+substituted too). Time-varying charts are never kept. A provider that answers
+404 or 204, or GeoWebCache's 400 `TileOutOfRange` for a tile outside a layer's
+tile matrix limits, has no tile there; the plotter gets none and nothing counts
+as failed. A `tileSize` of 512 is passed on to the plotter, and the tiles are
+kept and served at that size.
 
 Manage Charts and the Online Charts tab can also download an area of such a chart ahead of time: the
 user frames the area on a map and picks a zoom range, and the plugin fetches
