@@ -305,59 +305,65 @@ describe('buildExportScript', () => {
     );
   });
 
-  it('writes files the merge parses back into layer and cell, in both branches', () => {
-    if (spawnSync('bash', ['--version']).status !== 0) {
-      return;
-    }
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 's57-export-run-'));
-    try {
-      // Stand-ins for GDAL: two layers per cell, and an empty output file.
-      const bin = path.join(root, 'bin');
-      fs.mkdirSync(bin);
-      fs.writeFileSync(
-        path.join(bin, 'ogrinfo'),
-        '#!/bin/bash\necho "1: DEPARE (Polygon)"\necho "2: M_COVR (Polygon)"\n',
-        { mode: 0o755 }
-      );
-      fs.writeFileSync(
-        path.join(bin, 'ogr2ogr'),
-        '#!/bin/bash\nfor a in "$@"; do case "$a" in *.geojson) : > "$a";; esac; done\n',
-        { mode: 0o755 }
-      );
-      const cells = ['IENC_Haven_Waspik_7_', 'US5MA1SK', '_LEADING'];
-      for (const parallelism of [1, 4]) {
-        const input = path.join(root, `in-${String(parallelism)}`);
-        const output = path.join(root, `out-${String(parallelism)}`);
-        fs.mkdirSync(path.join(input, 'ENC_ROOT'), { recursive: true });
-        fs.mkdirSync(output);
-        for (const cell of cells) {
-          fs.writeFileSync(path.join(input, 'ENC_ROOT', `${cell}.000`), '');
-        }
-        const script = buildExportScript({
-          multiFile: true,
-          parallelism,
-          skipLayers,
-          inputPrefix: input,
-          outputPrefix: output
-        });
-        const result = spawnSync('bash', ['-c', script], {
-          env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` }
-        });
-        assert.strictEqual(result.status, 0, result.stderr.toString());
-        const parsed = fs
-          .readdirSync(output)
-          .filter((f) => f.endsWith('.geojson'))
-          .map((f) => exportFileParts(f))
-          .sort((a, b) => `${a.cell ?? ''}${a.layer}`.localeCompare(`${b.cell ?? ''}${b.layer}`));
-        const expected = cells
-          .flatMap((cell) => ['DEPARE', 'M_COVR'].map((layer) => ({ layer, cell })))
-          .sort((a, b) => `${a.cell}${a.layer}`.localeCompare(`${b.cell}${b.layer}`));
-        assert.deepStrictEqual(parsed, expected, `parallelism ${String(parallelism)}`);
+  // The script runs in the GDAL container, so it is run here only where
+  // the temp dir has POSIX paths.
+  it(
+    'writes files the merge parses back into layer and cell, in both branches',
+    { skip: process.platform === 'win32' && 'needs POSIX paths' },
+    () => {
+      if (spawnSync('bash', ['--version']).status !== 0) {
+        return;
       }
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 's57-export-run-'));
+      try {
+        // Stand-ins for GDAL: two layers per cell, and an empty output file.
+        const bin = path.join(root, 'bin');
+        fs.mkdirSync(bin);
+        fs.writeFileSync(
+          path.join(bin, 'ogrinfo'),
+          '#!/bin/bash\necho "1: DEPARE (Polygon)"\necho "2: M_COVR (Polygon)"\n',
+          { mode: 0o755 }
+        );
+        fs.writeFileSync(
+          path.join(bin, 'ogr2ogr'),
+          '#!/bin/bash\nfor a in "$@"; do case "$a" in *.geojson) : > "$a";; esac; done\n',
+          { mode: 0o755 }
+        );
+        const cells = ['IENC_Haven_Waspik_7_', 'US5MA1SK', '_LEADING'];
+        for (const parallelism of [1, 4]) {
+          const input = path.join(root, `in-${String(parallelism)}`);
+          const output = path.join(root, `out-${String(parallelism)}`);
+          fs.mkdirSync(path.join(input, 'ENC_ROOT'), { recursive: true });
+          fs.mkdirSync(output);
+          for (const cell of cells) {
+            fs.writeFileSync(path.join(input, 'ENC_ROOT', `${cell}.000`), '');
+          }
+          const script = buildExportScript({
+            multiFile: true,
+            parallelism,
+            skipLayers,
+            inputPrefix: input,
+            outputPrefix: output
+          });
+          const result = spawnSync('bash', ['-c', script], {
+            env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` }
+          });
+          assert.strictEqual(result.status, 0, result.stderr.toString());
+          const parsed = fs
+            .readdirSync(output)
+            .filter((f) => f.endsWith('.geojson'))
+            .map((f) => exportFileParts(f))
+            .sort((a, b) => `${a.cell ?? ''}${a.layer}`.localeCompare(`${b.cell ?? ''}${b.layer}`));
+          const expected = cells
+            .flatMap((cell) => ['DEPARE', 'M_COVR'].map((layer) => ({ layer, cell })))
+            .sort((a, b) => `${a.cell}${a.layer}`.localeCompare(`${b.cell}${b.layer}`));
+          assert.deepStrictEqual(parsed, expected, `parallelism ${String(parallelism)}`);
+        }
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('passes enc / name / multi to the parallel inner shell as positional args, not interpolated', () => {
     // Defence-in-depth: the parallel branch must invoke `sh -c '...' _ '{}' "$enc" "$name"
