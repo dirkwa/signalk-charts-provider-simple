@@ -1,0 +1,10 @@
+{
+  "sources": [
+    {
+      "id": "USACE_IENC",
+      "label": "US Inland Rivers ENC (USACE)",
+      "format": "usace-ienc-product-catalog",
+      "catalog": "https://ienccloud.us/ienc/products/catalog/IENCU37ProductsCatalog.xml"
+    }
+  ]
+}

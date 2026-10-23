@@ -21,6 +21,7 @@ import {
 } from '../utils/noaa-enc-footprints.js';
 import { canonicalJson } from './build-merged-catalog.js';
 import type { ParsedChartcatalogsXml } from './chartcatalogs-xml.js';
+import type { DirectArchive, EncDirectSource } from './enc-direct-sources.js';
 import {
   ENC_INDEX_SCHEMA_VERSION,
   EncIndexArchiveSchema,
@@ -61,8 +62,14 @@ export function jobKey(job: { source: string; url: string }): string {
   return `${job.source} ${job.url}`;
 }
 
-/** The ENC sources: NOAA plus every chartcatalogs file whose facets say `enc`. */
-export function encSources(index: ChartcatalogsIndex): EncIndexSource[] {
+/**
+ * The ENC sources: NOAA, every chartcatalogs file whose facets say `enc`,
+ * and the direct sources read from their producers' own catalogs.
+ */
+export function encSources(
+  index: ChartcatalogsIndex,
+  direct: readonly EncDirectSource[] = []
+): EncIndexSource[] {
   const chartcatalogs = Object.entries(index)
     .filter(([, facets]) => facets.format === 'enc')
     .map(([file, facets]): EncIndexSource => ({
@@ -71,36 +78,49 @@ export function encSources(index: ChartcatalogsIndex): EncIndexSource[] {
       kind: 'chartcatalogs',
       file
     }));
+  const directSources = direct.map((source): EncIndexSource => ({
+    id: source.id,
+    label: source.label,
+    kind: 'direct',
+    catalog: source.catalog
+  }));
   const noaa: EncIndexSource = { id: NOAA_SOURCE_ID, label: NOAA_SOURCE_LABEL, kind: 'noaa' };
-  return [noaa, ...chartcatalogs].sort((a, b) => compareStrings(a.id, b.id));
+  return [noaa, ...chartcatalogs, ...directSources].sort((a, b) => compareStrings(a.id, b.id));
 }
 
 /**
- * The archives the chartcatalogs ENC sources list today. A URL listed twice
+ * The archives the ENC sources list today: the chartcatalogs files' charts
+ * and the direct sources' catalog entries, by source id. A URL listed twice
  * in one source is one download, at the newest version given for it.
  */
 export function archiveJobs(
   sources: readonly EncIndexSource[],
-  files: readonly { file: string; parsed: ParsedChartcatalogsXml | null }[]
+  files: readonly { file: string; parsed: ParsedChartcatalogsXml | null }[],
+  direct: ReadonlyMap<string, readonly DirectArchive[]> = new Map()
 ): ArchiveJob[] {
   const byFile = new Map(files.map((f) => [f.file, f.parsed]));
   const jobs = new Map<string, ArchiveJob>();
+  const add = (job: ArchiveJob): void => {
+    if (!/^https?:\/\//.test(job.url)) {
+      return;
+    }
+    const existing = jobs.get(jobKey(job));
+    if (!existing || compareStrings(existing.version, job.version) < 0) {
+      jobs.set(jobKey(job), job);
+    }
+  };
   for (const source of sources) {
     const parsed = source.file ? byFile.get(source.file) : undefined;
     for (const chart of parsed?.charts ?? []) {
-      if (!/^https?:\/\//.test(chart.zipfile_location)) {
-        continue;
-      }
-      const job: ArchiveJob = {
+      add({
         source: source.id,
         url: chart.zipfile_location,
         version: chart.zipfile_datetime_iso8601,
         title: chart.title || chart.number
-      };
-      const existing = jobs.get(jobKey(job));
-      if (!existing || compareStrings(existing.version, job.version) < 0) {
-        jobs.set(jobKey(job), job);
-      }
+      });
+    }
+    for (const archive of direct.get(source.id) ?? []) {
+      add({ source: source.id, ...archive });
     }
   }
   return [...jobs.values()].sort((a, b) => compareStrings(jobKey(a), jobKey(b)));

@@ -22,6 +22,9 @@
  *   --work <dir>             keep each archive's GDAL report here, so a rerun
  *                            resumes, and a change to the outline rules
  *                            needs no downloads (default: a temp dir)
+ *   --direct-sources <file>  catalog/enc-direct-sources.json: producers'
+ *                            catalogs read directly (see
+ *                            enc-direct-sources.ts)
  *   --sources <ids>          read only these sources (comma-separated, e.g.
  *                            noaa,AT_IENC_Catalog); the rest keep what is
  *                            published
@@ -66,6 +69,13 @@ import {
   type PublishedEncIndex
 } from './build-enc-index.js';
 import { parseChartcatalogsXml, type ParsedChartcatalogsXml } from './chartcatalogs-xml.js';
+import {
+  DIRECT_SOURCE_ADAPTERS,
+  EncDirectSourcesFileSchema,
+  checkDirectSources,
+  type DirectArchive,
+  type EncDirectSource
+} from './enc-direct-sources.js';
 import { NOAA_SOURCE_ID, publishedEncIndexJsonSchema } from './enc-index-schema.js';
 import { ExtraCaUnsupportedError, trustExtraCertificates } from './extra-ca.js';
 import {
@@ -159,6 +169,45 @@ async function readNoaa(url: string): Promise<NoaaResult | { error: string }> {
   } catch (err) {
     return { error: message(err) };
   }
+}
+
+/** The hand-edited direct-source list, validated against its strict schema. */
+function readDirectSources(file: string, otherIds: readonly string[]): EncDirectSource[] {
+  const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!Value.Check(EncDirectSourcesFileSchema, value)) {
+    throw new Error(
+      `${file} is invalid:\n  ${schemaErrors(EncDirectSourcesFileSchema, value).join('\n  ')}`
+    );
+  }
+  const problems = checkDirectSources(value, otherIds);
+  if (problems.length > 0) {
+    throw new Error(`${file} is invalid:\n  ${problems.join('\n  ')}`);
+  }
+  return value.sources;
+}
+
+/**
+ * Each direct source's archives from its producer's catalog, or null when
+ * the catalog could not be read; that source then keeps what the published
+ * index has, as a broken chartcatalogs file does.
+ */
+async function readDirectCatalogs(
+  sources: readonly EncDirectSource[]
+): Promise<Map<string, DirectArchive[] | null>> {
+  const result = new Map<string, DirectArchive[] | null>();
+  for (const source of sources) {
+    try {
+      const text = await fetchText(source.catalog);
+      if (text === null) {
+        throw new Error(`HTTP 404 fetching ${source.catalog}`);
+      }
+      result.set(source.id, await DIRECT_SOURCE_ADAPTERS[source.format](text));
+    } catch (err) {
+      console.log(`::warning::Could not read the ${source.id} catalog: ${message(err)}`);
+      result.set(source.id, null);
+    }
+  }
+  return result;
 }
 
 async function readChartcatalogs(
@@ -580,6 +629,7 @@ async function main(): Promise<void> {
       work: { type: 'string' },
       sources: { type: 'string' },
       'max-minutes': { type: 'string' },
+      'direct-sources': { type: 'string' },
       'delay-ms': { type: 'string', default: '1000' },
       runtime: { type: 'string', default: 'docker' },
       force: { type: 'boolean', default: false }
@@ -597,7 +647,13 @@ async function main(): Promise<void> {
       `${indexFile} is invalid:\n  ${schemaErrors(ChartcatalogsIndexSchema, facets).join('\n  ')}`
     );
   }
-  const sources = encSources(facets);
+  const direct = values['direct-sources']
+    ? readDirectSources(
+        values['direct-sources'],
+        encSources(facets).map((s) => s.id)
+      )
+    : [];
+  const sources = encSources(facets, direct);
   // --sources limits what is read this run; every other source keeps what
   // the published index has.
   const only = values.sources ? new Set(values.sources.split(',').map((s) => s.trim())) : null;
@@ -612,19 +668,23 @@ async function main(): Promise<void> {
     ccDir,
     sources.flatMap((s) => (s.file ? [s.file] : []))
   );
-  const jobs = archiveJobs(sources, files);
+  const directArchives = await readDirectCatalogs(direct);
+  const jobs = archiveJobs(
+    sources,
+    files,
+    new Map([...directArchives].flatMap(([id, archives]) => (archives ? [[id, archives]] : [])))
+  );
   const published = await fetchPublished(publishedUrl);
   const noaa = selected(NOAA_SOURCE_ID) ? await readNoaa(values['noaa-url']) : null;
 
-  const unreadSources = new Set(
-    sources
+  const unreadSources = new Set([
+    ...sources
       .filter((s) => s.file && !files.find((f) => f.file === s.file)?.parsed?.charts.length)
-      .map((s) => s.id)
-  );
+      .map((s) => s.id),
+    ...[...directArchives].filter(([, archives]) => !archives?.length).map(([id]) => id)
+  ]);
   const pending = jobsToBuild(jobs, published, unreadSources).filter((j) => selected(j.source));
-  console.log(
-    `${String(jobs.length)} chartcatalogs ENC archives; ${String(pending.length)} to read this run`
-  );
+  console.log(`${String(jobs.length)} ENC archives; ${String(pending.length)} to read this run`);
 
   const ownWork = !values.work;
   const work = values.work ?? fs.mkdtempSync(path.join(os.tmpdir(), 'enc-index-'));

@@ -64,9 +64,15 @@ export const EncIndexSourceSchema = Type.Object({
       '"noaa", or the chartcatalogs catalog file name without ".xml" (the merged catalog’s entry id for that file).'
   }),
   label: Type.String({ minLength: 1, description: 'Display name of the source.' }),
-  kind: Type.Union([Type.Literal('noaa'), Type.Literal('chartcatalogs')]),
+  kind: Type.Union([Type.Literal('noaa'), Type.Literal('chartcatalogs'), Type.Literal('direct')], {
+    description:
+      '"noaa": NOAA’s ENC footprints. "chartcatalogs": a chartcatalogs.github.io catalog file. "direct": a producer’s own catalog, read directly.'
+  }),
   file: Type.Optional(
     Type.String({ description: 'The chartcatalogs catalog file the source comes from.' })
+  ),
+  catalog: Type.Optional(
+    Type.String({ description: 'For a direct source: the producer’s catalog URL.' })
   )
 });
 

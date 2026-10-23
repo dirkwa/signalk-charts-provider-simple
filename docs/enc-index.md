@@ -3,8 +3,9 @@
 The ENC index lists every free ENC (Electronic Navigational Chart) as a map of
 **selectable units**. Each unit has an outline to draw and click, and the S-57
 cells that picking it brings in. Each cell has the archive it downloads from
-and its path inside that archive. One index covers NOAA and every chartcatalogs
-source whose format is `enc` in `catalog/chartcatalogs-index.json`.
+and its path inside that archive. One index covers NOAA, every chartcatalogs
+source whose format is `enc` in `catalog/chartcatalogs-index.json`, and the
+direct sources in `catalog/enc-direct-sources.json` (see below).
 
 It is published next to the merged chart catalog (`docs/chart-catalog.md`) as
 `enc-index.json`, with its JSON Schema as `enc-index.schema.json`. It follows
@@ -78,6 +79,29 @@ version changed.
 Outlines keep exterior rings only and are simplified with one fixed tolerance
 and rounding (`src/catalog/enc-outline.ts`), fine enough to keep a river's
 outline on the river while keeping the file small.
+
+## Direct sources
+
+Some producers publish a machine-readable catalog of their own ENCs that
+chartcatalogs does not carry. The US Army Corps of Engineers' inland river
+cells are one: chartcatalogs lists only their buoy overlay. The builder reads
+such catalogs itself, so a new source does not wait on chartcatalogs.
+
+- `catalog/enc-direct-sources.json` lists them by hand, checked against a
+  strict schema (`src/catalog/enc-direct-sources.ts`): an id, a label, the
+  catalog's format and its URL.
+- Each format has one adapter in that module, which turns the producer's
+  catalog into the list of archives the source offers, each with the
+  catalog's own date for it. From there a direct source is built like any
+  other: coverage from `M_COVR`, a version per cell, reuse while the date is
+  unchanged, carry-forward when the catalog or an archive cannot be read,
+  the drop guard and one unit per cell.
+- Adding a catalog in a format the builder already reads is a config entry.
+  A new format also needs an adapter, a format name in the schema, and a
+  test with a sample of the catalog.
+
+Direct sources appear only in the ENC index, with `kind` "direct" and their
+catalog URL; the merged catalog and the Chart Catalog tab are unaffected.
 
 ## How it is built
 
