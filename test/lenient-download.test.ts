@@ -23,6 +23,10 @@ function respond(socket: net.Socket, request: string): void {
     socket.end(
       `HTTP/1.1 301 Moved\r\nLocation: /cell.zip\r\n${folded}Content-Length: 0\r\nConnection: close\r\n\r\n`
     );
+  } else if (target === '/short') {
+    socket.end(
+      `HTTP/1.1 200 OK\r\nContent-Length: ${String(BODY.length + 10)}\r\nConnection: close\r\n\r\n${BODY}`
+    );
   } else if (target === '/cell.zip') {
     socket.end(
       `HTTP/1.1 200 OK\r\n${folded}Content-Length: ${String(BODY.length)}\r\nConnection: close\r\n\r\n${BODY}`
@@ -79,6 +83,16 @@ describe('lenient download fallback', () => {
       true
     );
     assert.strictEqual(isMalformedResponse(failed({ code: 'ECONNRESET' })), false);
+  });
+
+  it('recognises a body shorter than its Content-Length, found while reading it', async () => {
+    const response = await fetch(`${base}/short`);
+    const err = await response.arrayBuffer().then(
+      () => null,
+      (e: unknown) => e
+    );
+    assert.ok(err, 'reading a short body should fail');
+    assert.strictEqual(isMalformedResponse(err), true);
   });
 
   it('does not treat other network failures as malformed responses', async () => {

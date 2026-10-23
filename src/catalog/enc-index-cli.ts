@@ -233,6 +233,12 @@ async function downloadOnce(url: string, target: string, stop?: AbortSignal): Pr
       fs.createWriteStream(target)
     );
   } catch (err) {
+    // A body that does not match its Content-Length only shows up here,
+    // after fetch itself resolved.
+    if (isMalformedResponse(err)) {
+      await downloadWithLenientHeaders(url, target, signal);
+      return;
+    }
     throw new TransientError(message(err));
   }
 }
