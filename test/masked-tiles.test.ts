@@ -226,9 +226,11 @@ describe('masked chart tiles', () => {
     try {
       const broken = await tiles.getTile('broken-land', source, 'land-only', 2, 0, 0);
       assert.ok(transparent(broken?.data), 'the raw bytes never reach the plotter');
+      assert.strictEqual(broken?.provisional, true, 'and plotters do not keep the stand-in');
       await cache.flush();
       const again = await tiles.getTile('broken-land', source, 'land-only', 2, 0, 0);
       assert.ok(transparent(again?.data), 'nor from the cache');
+      assert.strictEqual(again?.provisional, true);
     } finally {
       upstream = solidJpeg();
     }

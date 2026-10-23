@@ -122,7 +122,7 @@ export class MaskedTiles {
         return { data: raw.data };
       }
       if (stored[0] === UNMASKABLE) {
-        return landOnly ? { data: TRANSPARENT_TILE } : { data: raw.data };
+        return landOnly ? transparent() : { data: raw.data };
       }
       if (stored[0] === MASKED && stored.length > 1) {
         return { data: stored.subarray(1) };
@@ -186,7 +186,7 @@ export class MaskedTiles {
         };
       case 'undecodable':
         keep(UNMASKABLE);
-        return landOnly ? { data: TRANSPARENT_TILE } : { data: raw.data };
+        return landOnly ? transparent() : { data: raw.data };
       case 'failed':
         return fallback();
     }
