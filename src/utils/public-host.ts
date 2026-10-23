@@ -32,11 +32,11 @@ for (const [prefix, bits] of [
 }
 for (const [prefix, bits] of [
   ['::', 96], // unspecified, loopback, and IPv4-compatible (::a.b.c.d)
-  ['64:ff9b::', 96], // NAT64: an IPv4 address reached through translation
+  ['::ffff:0:0:0', 96], // IPv4-translated
   ['64:ff9b:1::', 48], // local-use NAT64
-  ['2002::', 16], // 6to4: an IPv4 address inside
   ['fc00::', 7], // unique local
   ['fe80::', 10], // link-local
+  ['fec0::', 10], // site-local (deprecated)
   ['ff00::', 8] // multicast
 ] as const) {
   blocked.addSubnet(prefix, bits, 'ipv6');
@@ -60,14 +60,43 @@ export function isPrivateAddress(address: string): boolean {
     }
     const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(address);
     if (hex) {
-      const high = parseInt(hex[1], 16);
-      const low = parseInt(hex[2], 16);
-      const v4 = [high >> 8, high & 255, low >> 8, low & 255].join('.');
-      return blocked.check(v4, 'ipv4');
+      return blocked.check(ipv4From(hex[1], hex[2]), 'ipv4');
+    }
+    // NAT64 (64:ff9b::/96) and 6to4 (2002::/16) carry an IPv4 address and
+    // reach it; on an IPv6-only network DNS64 answers every IPv4-only host
+    // in the NAT64 form, so these are judged by the address they carry.
+    const groups = expandIpv6(address);
+    if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
+      return blocked.check(ipv4From(groups[6], groups[7]), 'ipv4');
+    }
+    if (groups[0] === 0x2002) {
+      return blocked.check(ipv4From(groups[1], groups[2]), 'ipv4');
     }
     return blocked.check(address, 'ipv6');
   }
   return true;
+}
+
+/** An IPv4 address from two 16-bit groups, as hex text or numbers. */
+function ipv4From(high: string | number, low: string | number): string {
+  const h = typeof high === 'number' ? high : parseInt(high, 16);
+  const l = typeof low === 'number' ? low : parseInt(low, 16);
+  return [h >> 8, h & 255, l >> 8, l & 255].join('.');
+}
+
+/** The eight 16-bit groups of an IPv6 address (any dotted IPv4 tail folded in). */
+function expandIpv6(address: string): number[] {
+  let text = address.toLowerCase();
+  const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (dotted) {
+    const [a, b, c, d] = dotted.slice(1).map(Number);
+    text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, tail] = text.includes('::') ? text.split('::') : [text, undefined];
+  const left = head ? head.split(':') : [];
+  const right = tail !== undefined && tail !== '' ? tail.split(':') : [];
+  const fill = tail === undefined ? [] : Array<string>(8 - left.length - right.length).fill('0');
+  return [...left, ...fill, ...right].map((g) => parseInt(g, 16));
 }
 
 /**

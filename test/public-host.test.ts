@@ -36,6 +36,10 @@ describe('isPrivateAddress', () => {
       '::127.0.0.1',
       '64:ff9b::c0a8:101',
       '2002:c0a8:101::1',
+      '64:ff9b::127.0.0.1',
+      '64:ff9b:1::808:808',
+      'fec0::1',
+      '::ffff:0:7f00:1',
       'not-an-address'
     ]) {
       assert.strictEqual(isPrivateAddress(address), true, address);
@@ -49,7 +53,11 @@ describe('isPrivateAddress', () => {
       '192.169.0.1',
       '2606:4700::1111',
       '::ffff:8.8.8.8',
-      '::ffff:808:808'
+      '::ffff:808:808',
+      // DNS64 on an IPv6-only network answers public IPv4 hosts this way.
+      '64:ff9b::808:808',
+      '64:ff9b::8.8.8.8',
+      '2002:808:808::1'
     ]) {
       assert.strictEqual(isPrivateAddress(address), false, address);
     }

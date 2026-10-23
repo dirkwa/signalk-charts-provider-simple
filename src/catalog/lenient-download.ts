@@ -114,7 +114,11 @@ export function downloadLenient(
         signal: options.signal,
         ...(options.ca ? { ca: options.ca } : {}),
         ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-        ...(options.lookup ? { lookup: options.lookup } : {})
+        // A guarded download gets a connection of its own: through the
+        // shared agent, an environment proxy (NODE_USE_ENV_PROXY) would
+        // resolve the host instead of `lookup`, and a kept-alive socket
+        // opened without the check could be reused.
+        ...(options.lookup ? { lookup: options.lookup, agent: false } : {})
       },
       (response) => {
         responded = true;
