@@ -108,12 +108,11 @@ How they are configured and read:
   catalog's format and its URL. A `links` pattern picks the archives out of a
   web page or feed, and an `attribution` carries the credit a licence such as
   CC BY asks for into the index's source entry.
-- The formats read today are USACE's product catalog XML, an INSPIRE ATOM
-  dataset feed (each entry's enclosure, versioned by the entry's date), and
-  the archive links on a web page. A page link has no date of its own: a
-  WordPress upload is versioned by its upload month, since WordPress never
-  overwrites a file and a reissue gets a new URL; any other link is versioned
-  by its URL.
+- The formats are described with `format` in the schema. A catalog entry is
+  versioned by the catalog's date for it. A web page link has no date of its
+  own, so its version combines the link (for a WordPress upload, its upload
+  month) with the server's `Last-Modified` from a HEAD request. A file
+  replaced in place under the same URL is then still read again.
 - A page or feed is scraped, so its layout can change. When nothing on it
   matches any more, the source counts as unreadable and keeps what is
   published, with a warning, rather than losing its cells.

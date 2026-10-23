@@ -211,11 +211,20 @@ export async function parseUsaceIencCatalog(xml: string): Promise<DirectCatalog>
 
 // ---- Archive links on a web page ----
 
+/** A numeric character reference's character, or the reference itself when it names none. */
+function codePoint(reference: string, value: number): string {
+  try {
+    return String.fromCodePoint(value);
+  } catch {
+    return reference;
+  }
+}
+
 /** The entities that turn up in HTML attribute values. */
 function decodeEntities(value: string): string {
   return value
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number(dec)))
+    .replace(/&#x([0-9a-f]+);/gi, (ref, hex: string) => codePoint(ref, parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (ref, dec: string) => codePoint(ref, Number(dec)))
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&lt;/g, '<')
@@ -225,16 +234,22 @@ function decodeEntities(value: string): string {
 
 /** The file name a URL ends in, without its extension, for a title. */
 function fileStem(url: string): string {
-  const name = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '');
+  const raw = new URL(url).pathname.split('/').pop() ?? '';
+  let name = raw;
+  try {
+    name = decodeURIComponent(raw);
+  } catch {
+    // A stray "%" or an unencoded byte: keep the name as it is written.
+  }
   return name.replace(/\.[^.]+$/, '') || url;
 }
 
 /**
- * The version of an archive known only by its link. A WordPress upload sits
- * under `/wp-content/uploads/YYYY/MM/`, and WordPress never overwrites a
- * file: a reissue gets a new URL (a new month, or a `-1` suffix). So the
- * upload month is a stable version, and a reissue arrives as a new archive.
- * Elsewhere the URL itself is the version.
+ * The base version of an archive known only by its link. A WordPress upload
+ * sits under `/wp-content/uploads/YYYY/MM/`, and a reissue usually gets a
+ * new URL (a new month, or a `-1` suffix), so the upload month is stable.
+ * Elsewhere the URL itself is the base. A file replaced in place keeps its
+ * URL, so the builder adds the server's own date to this (`withServerDate`).
  */
 export function linkVersion(url: string): string {
   const upload = /\/wp-content\/uploads\/(\d{4})\/(\d{2})\//.exec(url);
@@ -242,20 +257,38 @@ export function linkVersion(url: string): string {
 }
 
 /**
- * The archives a publisher's web page links: every `href` on the page,
- * resolved against it, kept when it matches the source's `links` pattern.
- * Titled by file name. A page whose layout changed so that nothing matches
- * yields no archives, which leaves the source as published.
+ * An archive's version with the server's own date for the file added: its
+ * `Last-Modified`, or its `ETag` when it sends no date. Used for page links,
+ * whose base version cannot see a file replaced in place. The base alone
+ * when the server sends neither.
+ */
+export function withServerDate(
+  base: string,
+  headers: { lastModified: string | null; etag: string | null }
+): string {
+  const date = headers.lastModified ?? headers.etag;
+  return date ? `${base} ${date}` : base;
+}
+
+/**
+ * The archives a publisher's web page links: every `href` on the page
+ * (outside HTML comments), resolved against it, kept when it matches the
+ * source's `links` pattern. Titled by file name. A link that cannot be read
+ * is skipped and reported. A page whose layout changed so that nothing
+ * matches yields no archives, which leaves the source as published.
  */
 export function parseHtmlLinks(html: string, source: EncDirectSource): Promise<DirectCatalog> {
   const pattern = new RegExp(source.links ?? '(?!)');
+  const page = html.replace(/<!--[\s\S]*?-->/g, '');
   const urls = new Set<string>();
-  for (const match of html.matchAll(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
-    const href = decodeEntities((match[1] ?? match[2] ?? '').trim());
+  const problems: string[] = [];
+  for (const match of page.matchAll(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+    const href = (match[1] ?? match[2] ?? '').trim();
     let url: string;
     try {
-      url = new URL(href, source.catalog).href;
+      url = new URL(decodeEntities(href), source.catalog).href;
     } catch {
+      problems.push(`cannot read the link "${href}"`);
       continue;
     }
     if (/^https?:\/\//.test(url) && pattern.test(url)) {
@@ -265,7 +298,7 @@ export function parseHtmlLinks(html: string, source: EncDirectSource): Promise<D
   const archives = [...urls]
     .sort()
     .map((url): DirectArchive => ({ url, version: linkVersion(url), title: fileStem(url) }));
-  return Promise.resolve({ archives, problems: [] });
+  return Promise.resolve({ archives, problems });
 }
 
 // ---- INSPIRE ATOM dataset feed ----

@@ -14,12 +14,14 @@ import {
   parseInspireAtom,
   parseUsaceIencCatalog,
   usaceDateTime,
+  withServerDate,
   type EncDirectSource,
   type EncDirectSourcesFile
 } from '../dist/catalog/enc-direct-sources.js';
 import {
   archiveJobs,
   assembleEncIndex,
+  computeEncIndexHash,
   encIndexBlockers,
   encSources,
   jobKey,
@@ -587,5 +589,106 @@ describe('a scraped source whose page changes layout', () => {
       }).index.units.find((u) => u.id === 'P17OD725')?.cells[0].archive;
     assert.strictEqual(pick(6), cell.url);
     assert.strictEqual(pick(7), bundle.url);
+  });
+});
+
+describe('reading web pages safely', () => {
+  it('adds the server\u2019s date to a page link\u2019s version', () => {
+    const base = '2026-04';
+    assert.strictEqual(
+      withServerDate(base, { lastModified: 'Tue, 14 Apr 2026 10:21:49 GMT', etag: '"30df3"' }),
+      '2026-04 Tue, 14 Apr 2026 10:21:49 GMT'
+    );
+    assert.strictEqual(
+      withServerDate(base, { lastModified: null, etag: '"30df3"' }),
+      '2026-04 "30df3"'
+    );
+    assert.strictEqual(withServerDate(base, { lastModified: null, etag: null }), base);
+  });
+
+  it('ignores links in HTML comments, and gets past links it cannot read', async () => {
+    const html = `
+      <!-- <a href="https://example.gov.pl/wp-content/uploads/2020/01/OLD.zip">old</a> -->
+      <a href="https://example.gov.pl/wp-content/uploads/2026/04/%E9.zip">odd name</a>
+      <a href="https://example.gov.pl/wp-content/uploads/2026/04/A&#99999999;.zip">odd entity</a>
+      <a href="http://[bad">broken</a>
+      <a href="https://example.gov.pl/wp-content/uploads/2026/04/P17OD725.zip">fine</a>`;
+    const { archives, problems } = await parseHtmlLinks(html, PAGE);
+    // Neither odd link throws: the stray "%" keeps its raw name, and the
+    // entity naming no character is left as written.
+    assert.deepStrictEqual(
+      archives.map((a) => a.title),
+      ['%E9', 'A&', 'P17OD725']
+    );
+    assert.deepStrictEqual(problems, ['cannot read the link "http://[bad"']);
+  });
+});
+
+describe('the fewer-cells tie-break over several builds', () => {
+  const page = encSources({}, [PAGE]);
+  const job = (name: string): ArchiveJob => ({
+    source: PAGE.id,
+    url: `https://example.gov.pl/wp-content/uploads/2026/04/${name}.zip`,
+    version: '2026-04',
+    title: name
+  });
+  const archive = (j: ArchiveJob, cells: string[]): ArchiveResult =>
+    unitsForArchive(
+      j,
+      'zip',
+      cells.map((cell) => ({
+        path: `${cell}.000`,
+        scale: null,
+        edition: 6,
+        update: 0,
+        coverage: [SQUARE]
+      }))
+    );
+  const bundleA = job('BUNDLE_A');
+  const cellX = job('X');
+  const cellZ = job('Z');
+  const bundleC = job('BUNDLE_C');
+  const run = (
+    jobs: ArchiveJob[],
+    built: [ArchiveJob, string[]][],
+    previous: EncIndex | null
+  ): EncIndex =>
+    assembleEncIndex({
+      sources: page,
+      jobs,
+      built: new Map(built.map(([j, cells]) => [jobKey(j), archive(j, cells)])),
+      failed: new Map(),
+      noaa: null,
+      previous: previous ? readPublishedEncIndex(JSON.parse(JSON.stringify(previous)), null) : null,
+      now: new Date('2026-10-23T00:00:00Z')
+    }).index;
+
+  it('picks the same copy whether the bundle was read this run or reused', () => {
+    const first = run(
+      [bundleA, cellX, cellZ],
+      [
+        [bundleA, ['Y', 'X', 'Z']],
+        [cellX, ['X']],
+        [cellZ, ['Z']]
+      ],
+      null
+    );
+    // Bundle A keeps Y and gives X and Z to their own archives.
+    assert.deepStrictEqual(first.archives.find((a) => a.url === bundleA.url)?.shadowed, ['X', 'Z']);
+    const incremental = run([bundleA, cellX, cellZ, bundleC], [[bundleC, ['Y', 'Q']]], first);
+    const fresh = run(
+      [bundleA, cellX, cellZ, bundleC],
+      [
+        [bundleA, ['Y', 'X', 'Z']],
+        [cellX, ['X']],
+        [cellZ, ['Z']],
+        [bundleC, ['Y', 'Q']]
+      ],
+      null
+    );
+    const owner = (index: EncIndex) => index.units.find((u) => u.id === 'Y')?.cells[0].archive;
+    assert.strictEqual(owner(incremental), bundleC.url);
+    assert.strictEqual(owner(incremental), owner(fresh));
+    assert.strictEqual(computeEncIndexHash(incremental), computeEncIndexHash(fresh));
   });
 });

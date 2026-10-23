@@ -868,10 +868,19 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
   const directIds = new Set(inputs.sources.filter((s) => s.kind === 'direct').map((s) => s.id));
   // With equal versions, the archive holding fewer cells is the smaller
   // download: a per-cell ZIP rather than a bundle of the whole river.
+  // An archive taken from the published index carries only the units it
+  // won; the cells it left to others are its `shadowed` names, and count
+  // too, or the result would depend on build history.
   const cellsIn = new Map<string, number>();
   for (const unit of units) {
     const key = jobKey({ source: unit.source, url: unit.cells[0].archive });
     cellsIn.set(key, (cellsIn.get(key) ?? 0) + 1);
+  }
+  for (const archive of archives) {
+    const key = jobKey(archive);
+    if (fromPrevious.has(key)) {
+      cellsIn.set(key, (cellsIn.get(key) ?? 0) + (archive.shadowed?.length ?? 0));
+    }
   }
   const archiveCells = (u: EncIndexUnit): number =>
     cellsIn.get(jobKey({ source: u.source, url: u.cells[0].archive })) ?? 0;
