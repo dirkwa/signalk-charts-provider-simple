@@ -1287,7 +1287,9 @@ async function runPerBandPipeline(
     );
     appendLog(
       chartNumber,
-      `${bucketProgressPrefix} Exporting ${cells.length} cell(s) to GeoJSON...`
+      options.geojsonFor
+        ? `${bucketProgressPrefix} Using the kept GeoJSON of ${cells.length} cell(s)`
+        : `${bucketProgressPrefix} Exporting ${cells.length} cell(s) to GeoJSON...`
     );
     emitBucket('export', bucketLabel, -1);
     await geojsonForBucket(encDir, cells, bandEncDir, bandGeojsonDir, chartNumber, options);
@@ -1327,7 +1329,9 @@ async function runPerBandPipeline(
     );
     appendLog(
       chartNumber,
-      `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s) to GeoJSON...`
+      options.geojsonFor
+        ? `${bucketProgressPrefix} Using the kept GeoJSON of ${grouping.unbanded.length} cell(s)`
+        : `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s) to GeoJSON...`
     );
     emitBucket('export', bucketLabel, -1);
     await geojsonForBucket(

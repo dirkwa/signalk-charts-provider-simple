@@ -113,6 +113,7 @@ The interface provides seven tabs:
    - The chart areas come from the ENC index this project publishes (see [`docs/enc-index.md`](docs/enc-index.md)); the plugin keeps the last copy, so the map works offline once it has been downloaded
    - Download & convert produces one `.mbtiles` per chart set, with live progress and a log. Each archive is downloaded once, and updates a source publishes separately are applied
    - Out-of-date detection when a source publishes a new edition or update of a cell, or your selection changes; the set lists the cells that changed
+   - Each chart set keeps its downloaded cells, so an update downloads and reads only the cells that changed before building the chart again. The set's details show how much disk they take; deleting the set frees it
    - Chart sets made in the NOAA Charts tab of earlier versions carry over as they are. A set that includes other sources still opens in an earlier version, which shows only its NOAA part and drops the rest if it saves the set
    - Container runtime (`signalk-container`) required, same as other conversions
 

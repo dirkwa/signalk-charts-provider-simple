@@ -4901,7 +4901,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           if (isCatalogCancelRequested(id)) {
             throw new Error('Cancelled by user');
           }
-          await commitCells(id, stagingRoot, exportOut, toCommit);
+          const committed = await commitCells(id, stagingRoot, exportOut, toCommit);
+          appendCatalogLog(
+            id,
+            `Read ${String(committed.length)} changed cell(s) with GDAL: ${committed.join(', ')}`
+          );
         }
         const removed = pruneSetCache(id, new Set(resolution.includedChartIds));
         if (removed.length > 0) {

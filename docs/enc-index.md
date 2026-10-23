@@ -147,6 +147,10 @@ the user picked.
   set's cells it holds, and only those cells' files are extracted. Requests
   go to one host at a time, with a pause between them, and use the same TLS
   and header fallbacks as the build.
+- **Updates per cell.** A chart set keeps each cell it downloaded, with the
+  version it was downloaded at and its GDAL output. An update downloads and
+  runs GDAL only on cells whose version in the index changed, then builds
+  the set's chart from every cell again.
 - **Separately published updates.** For a cell with
   `updatesPublishedSeparately`, the plugin applies the updates numbered after
   the cell's own update, from archives of its source dated no earlier than
