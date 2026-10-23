@@ -614,6 +614,8 @@ export const TILE_REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 20_000;
 /** Far above any real map tile; a larger answer is not one. */
 const MAX_TILE_BYTES = 10 * 1024 * 1024;
+/** An OWS exception report is a few hundred bytes; a larger error body is not read. */
+const MAX_ERROR_BYTES = 64 * 1024;
 
 /**
  * A tile's bytes; `'absent'` when the provider says it has no tile there,
@@ -651,6 +653,12 @@ export function httpTileFetcher(userAgent: string): TileFetcher {
       });
       if (res.status === 404 || res.status === 204) {
         return 'absent';
+      }
+      // GeoWebCache answers a tile outside a layer's tile matrix limits with
+      // 400 TileOutOfRange: no coverage there, not a failure.
+      if (res.status === 400) {
+        const body = await readCapped(res, MAX_ERROR_BYTES);
+        return body && new TextDecoder().decode(body).includes('TileOutOfRange') ? 'absent' : null;
       }
       if (!res.ok || Number(res.headers.get('content-length') ?? 0) > MAX_TILE_BYTES) {
         return null;
