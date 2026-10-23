@@ -504,7 +504,6 @@ describe('updateSetCache', () => {
     assert.strictEqual(result.used.length, CELLS_PER_EXPORT + 5);
   });
 
-  /** Mark a cached cell as written by an older export revision. */
   function makeOutdated(setId: string, cell: string): void {
     const file = path.join(cellsDir(setId), cell, 'cell.json');
     const info = JSON.parse(fs.readFileSync(file, 'utf8')) as CachedCellInfo;
@@ -535,21 +534,22 @@ describe('updateSetCache', () => {
 
   it('drops an older export’s copy GDAL cannot read again', async () => {
     const cells = [planned('CELLGGG1', v('CELLGGG1', 1)), planned('CELLHHH1', v('CELLHHH1', 1))];
-    makeOutdated('Outdated', 'CELLHHH1');
+    await run('Unreadable', cells, fresh());
+    makeOutdated('Unreadable', 'CELLHHH1');
 
     const fakes = fresh();
-    const result = await run('Outdated', cells, fakes, { bad: new Set(['CELLHHH1']) });
+    const result = await run('Unreadable', cells, fakes, { bad: new Set(['CELLHHH1']) });
     assert.deepStrictEqual(fakes.downloaded, []);
     assert.deepStrictEqual(fakes.exported, [['CELLHHH1']]);
     assert.deepStrictEqual(result.used, ['CELLGGG1'], 'never built from output it cannot read');
-    assert.strictEqual(readSetCache('Outdated').has('CELLHHH1'), false);
+    assert.strictEqual(readSetCache('Unreadable').has('CELLHHH1'), false);
     assert.strictEqual(result.partial, true);
     assert.strictEqual(result.changed, true);
     assert.ok(fakes.log.some((l) => l.startsWith('WARNING: removed CELLHHH1')));
     assert.ok(!fakes.log.some((l) => l.includes('no longer has')));
 
     const again = fresh();
-    const next = await run('Outdated', cells, again);
+    const next = await run('Unreadable', cells, again);
     assert.deepStrictEqual(again.downloaded, [['CELLHHH1']]);
     assert.deepStrictEqual(next.used, ['CELLGGG1', 'CELLHHH1']);
   });
