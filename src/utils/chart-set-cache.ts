@@ -4,7 +4,7 @@
  *
  * `<dataDir>/chart-set-cache/<setId>/cells/<cell>/` holds the cell as it was
  * staged (`raw/`: the `.000` and its update files), its GDAL output
- * (`geojson/<LAYER>_<cell>.geojson.gz`) and `cell.json`, which records the
+ * (`geojson/<LAYER>__<cell>.geojson.gz`) and `cell.json`, which records the
  * version and the export revision. Building the final MBTiles (tippecanoe
  * and tile-join) still runs over every cell of the set.
  *
@@ -22,13 +22,15 @@ import type { DebugFunction } from '../types.js';
 import type { EncDownloadResult } from './custom-catalog-download.js';
 import type { PlannedCell } from './enc-chart-set.js';
 import { isWithinBase } from './path-safety.js';
+import { exportFileParts } from './s57-band.js';
 import { COMPLETE_MARKER_PREFIX, EXPORT_ERROR_FILE_BASENAME } from './s57-converter.js';
 
 /**
  * Bump when the GDAL export changes what it writes for the same cell, so
- * cached output from older plugin versions is exported again.
+ * cached output from older plugin versions is exported again (from the kept
+ * raw cell, without downloading it). 2: files are named `<LAYER>__<cell>`.
  */
-export const CELL_EXPORT_REVISION = 1;
+export const CELL_EXPORT_REVISION = 2;
 
 const CACHE_DIR_NAME = 'chart-set-cache';
 /** Cells per GDAL run; each batch is kept as soon as it is read. */
@@ -219,7 +221,7 @@ export interface CommitResult {
 
 /**
  * Move freshly exported cells into the cache: each cell's raw files and its
- * share of the GDAL output in `exportDir` (the files named `_<cell>.geojson`,
+ * share of the GDAL output in `exportDir` (the files named `<LAYER>__<cell>.geojson`,
  * gzipped). Only a cell the export marked complete is kept: one that GDAL
  * could not read, or read in part, would otherwise be reused as it is until
  * its edition changes. A cell replaces its older cached copy only once
@@ -238,19 +240,12 @@ export async function commitCells(
       .filter((f) => f.startsWith(COMPLETE_MARKER_PREFIX))
       .map((f) => f.slice(COMPLETE_MARKER_PREFIX.length))
   );
-  // Output files by the cell they came from: `<LAYER>_<cell>.geojson`.
-  // Layer names and some cell names contain `_` (the Dutch
-  // `IENC_Haven_Waspik_7_`), so a file goes to the longest of this batch's
-  // cell names it ends with, not to whatever follows its last `_`.
-  const stems = cells
-    .map((cell) => baseFileIn(cell.rawDir)?.replace(/\.000$/i, ''))
-    .filter((stem): stem is string => stem !== undefined)
-    .sort((a, b) => b.length - a.length);
+  // Output files by the cell they came from: `<LAYER>__<cell>.geojson`.
   const byStem = new Map<string, string[]>();
-  for (const file of exported) {
-    const stem = stems.find((st) => file.endsWith(`_${st}.geojson`));
-    if (stem !== undefined) {
-      byStem.set(stem, [...(byStem.get(stem) ?? []), file]);
+  for (const file of exported.filter((f) => f.endsWith('.geojson'))) {
+    const { cell } = exportFileParts(file);
+    if (cell !== null) {
+      byStem.set(cell, [...(byStem.get(cell) ?? []), file]);
     }
   }
   const result: CommitResult = { committed: [], incomplete: [] };

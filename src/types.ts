@@ -354,7 +354,7 @@ export interface S57ConversionOptions {
   signal?: AbortSignal;
   /**
    * Optional source of the GeoJSON for a group of cells, in place of
-   * running GDAL on them: it fills `outDir` with `<LAYER>_<cell>.geojson`
+   * running GDAL on them: it fills `outDir` with `<LAYER>__<cell>.geojson`
    * or `.geojson.gz` files. The chart-set cache passes this to convert
    * from GDAL output it kept from earlier runs.
    */

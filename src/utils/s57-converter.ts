@@ -53,6 +53,7 @@ import {
   BAND_MIN_ZOOM,
   bandClampedMaxzoom,
   groupCellsByBand,
+  exportFileParts,
   highestBandForFiles
 } from './s57-band.js';
 
@@ -318,7 +319,8 @@ const EXPORT_ERROR_SAMPLE_LINES = 10;
 export function buildExportScript(opts: ExportScriptOptions): string {
   const skipPattern = opts.skipLayers.join('|');
   const parallel = Math.max(1, Math.floor(opts.parallelism));
-  const multiBranch = opts.multiFile ? '${layer}_${name}' : '${layer}';
+  // `<LAYER>__<cell>`: see EXPORT_NAME_SEPARATOR for why two underscores.
+  const multiBranch = opts.multiFile ? '${layer}__${name}' : '${layer}';
   const inDir = opts.inputPrefix ?? '/input';
   const outDir = opts.outputPrefix ?? '/output';
   const errLog = `${outDir}/${EXPORT_ERROR_FILE_BASENAME}`;
@@ -381,7 +383,7 @@ find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -
     name="$3"
     multi="$4"
     case "$layer" in ${skipPattern}) exit 0 ;; esac
-    if [ "$multi" = "1" ]; then outname="\${layer}_\${name}"; else outname="$layer"; fi
+    if [ "$multi" = "1" ]; then outname="\${layer}__\${name}"; else outname="$layer"; fi
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
         "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || exit 1
@@ -401,7 +403,7 @@ async function exportAllLayersToGeoJSON(
   chartNumber: string,
   signal?: AbortSignal,
   // For the chart-set cache, which keeps output per cell: name every output
-  // `<LAYER>_<cell>.geojson`, even for one cell, and mark each cell exported
+  // `<LAYER>__<cell>.geojson`, even for one cell, and mark each cell exported
   // without an error, so a partial export is never kept as complete.
   perCell = false
 ): Promise<void> {
@@ -551,7 +553,7 @@ function surfaceExportErrorsIfEmpty(geojsonDir: string, chartNumber: string): vo
 }
 
 // One row per merged layer. `sourceFiles` are the per-chart GeoJSON filenames
-// (basenames, e.g. 'HRBFAC_US5MA1SK.geojson') that fed the merge — kept for
+// (basenames, e.g. 'HRBFAC__US5MA1SK.geojson') that fed the merge — kept for
 // caller diagnostics (per-band log line). Per-feature minzoom is already
 // stamped onto features inside the merged file via `tippecanoe.minzoom`.
 type ConsolidatedLayer = { file: string; sourceFiles: string[] };
@@ -578,13 +580,8 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
     return (file.endsWith('.gz') ? zlib.gunzipSync(bytes) : bytes).toString('utf8');
   };
 
-  // Group by layer name. The export script writes 'LAYER_CHART.geojson' for
-  // multi-chart bundles and 'LAYER.geojson' for single-chart. Many S-57 layer
-  // names contain underscores (M_COVR, M_QUAL, M_NPUB, M_NSYS, M_PROP, …),
-  // and S-57 layer names are uppercase letters and underscores only — no
-  // digits. NOAA chart IDs (US3CO100, US5MA1SK) always contain digits. So
-  // strip the trailing '_<id>' suffix only when that tail looks like a chart
-  // ID (contains a digit); otherwise the basename is already the layer name.
+  // Group by layer name. The export script writes `<LAYER>__<cell>.geojson`
+  // for multi-chart bundles and `<LAYER>.geojson` for single-chart ones.
   const layerGroups = new Map<string, string[]>();
   for (const file of files) {
     const fullPath = path.join(geojsonDir, file);
@@ -595,10 +592,7 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
     ) {
       continue;
     }
-    const base = path.basename(file.replace(/\.gz$/, ''), '.geojson');
-    const underscore = base.lastIndexOf('_');
-    const tailLooksLikeChartId = underscore !== -1 && /\d/.test(base.slice(underscore + 1));
-    const layer = tailLooksLikeChartId ? base.slice(0, underscore) : base;
+    const { layer } = exportFileParts(file);
     const list = layerGroups.get(layer) ?? [];
     list.push(file);
     layerGroups.set(layer, list);
@@ -617,7 +611,7 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
       // Per-source-chart band → per-feature minzoom. Files in this source
       // share a band because they all come from the same chart cell, so the
       // band lookup is one-shot per source file.
-      const band = highestBandForFiles([source.replace(/\.gz$/, '')]);
+      const band = highestBandForFiles([source]);
       const bandFloor = band !== null ? BAND_MIN_ZOOM[band] : null;
       const featureMinzoom = bandFloor !== null ? Math.max(userMinzoom, bandFloor) : null;
 
@@ -1171,7 +1165,7 @@ async function geojsonForBucket(
 }
 
 /**
- * Run GDAL on every cell under `encDir`, writing one `<LAYER>_<cell>.geojson`
+ * Run GDAL on every cell under `encDir`, writing one `<LAYER>__<cell>.geojson`
  * per layer and cell into `geojsonDir`, without making tiles. The chart-set
  * cache keeps this output per cell, so an update runs GDAL only on the cells
  * that changed. Progress and errors go to `chartNumber`'s conversion log.

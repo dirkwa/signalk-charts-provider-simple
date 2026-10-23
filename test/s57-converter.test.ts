@@ -57,9 +57,9 @@ describe('consolidateGeoJSONByLayer', () => {
 
   it('preserves S-57 layer names that contain underscores (M_COVR, M_QUAL)', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'm-layers-'));
-    writeFC(path.join(dir, 'M_COVR_US3CO100.geojson'), [point({ kind: 'm-covr' })]);
-    writeFC(path.join(dir, 'M_QUAL_US3CO100.geojson'), [point({ kind: 'm-qual' })]);
-    writeFC(path.join(dir, 'M_NPUB_US3CO100.geojson'), [point({ kind: 'm-npub' })]);
+    writeFC(path.join(dir, 'M_COVR__US3CO100.geojson'), [point({ kind: 'm-covr' })]);
+    writeFC(path.join(dir, 'M_QUAL__US3CO100.geojson'), [point({ kind: 'm-qual' })]);
+    writeFC(path.join(dir, 'M_NPUB__US3CO100.geojson'), [point({ kind: 'm-npub' })]);
 
     const merged = consolidateGeoJSONByLayer(dir, 9);
     const names = merged.map((m) => path.basename(m.file, '.geojson')).sort();
@@ -75,16 +75,16 @@ describe('consolidateGeoJSONByLayer', () => {
 
   it('reads gzipped GeoJSON beside plain files, with the band from the name', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'gz-'));
-    writeFC(path.join(dir, 'BUAARE_US3CO100.geojson'), [point({ name: 'plain' })]);
+    writeFC(path.join(dir, 'BUAARE__US3CO100.geojson'), [point({ name: 'plain' })]);
     fs.writeFileSync(
-      path.join(dir, 'BUAARE_US5CO200.geojson.gz'),
+      path.join(dir, 'BUAARE__US5CO200.geojson.gz'),
       zlib.gzipSync(
         JSON.stringify({ type: 'FeatureCollection', features: [point({ name: 'gz' })] })
       )
     );
     // An empty collection, gzipped: no layer of its own.
     fs.writeFileSync(
-      path.join(dir, 'LNDARE_US5CO200.geojson.gz'),
+      path.join(dir, 'LNDARE__US5CO200.geojson.gz'),
       zlib.gzipSync(JSON.stringify({ type: 'FeatureCollection', features: [] }))
     );
 
@@ -100,11 +100,41 @@ describe('consolidateGeoJSONByLayer', () => {
     assert.strictEqual(byName.get('gz')?.tippecanoe?.minzoom, 12);
   });
 
+  it('reads the standard layer of cells whose names contain underscores', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'underscore-cells-'));
+    // A trailing `_` (live Dutch cells), an `_` before a digit, and a cell
+    // whose name ends like a layer.
+    writeFC(path.join(dir, 'DEPARE__IENC_Haven_Waspik_7_.geojson'), [point({ c: 'waspik' })]);
+    writeFC(path.join(dir, 'LIGHTS__IENC_Haven_Waspik_7_.geojson'), [point({ c: 'waspik' })]);
+    writeFC(path.join(dir, 'DEPARE__NL_1R7WAD01.geojson'), [point({ c: 'nl' })]);
+    writeFC(path.join(dir, 'M_COVR__AB_M_COVR.geojson'), [point({ c: 'ab' })]);
+    writeFC(path.join(dir, 'DEPARE__US5MA1SK.geojson'), [point({ c: 'us5' })]);
+
+    const merged = consolidateGeoJSONByLayer(dir, 9);
+    const byLayer = new Map(
+      merged.map((m) => [
+        path.basename(m.file, '.geojson'),
+        (JSON.parse(fs.readFileSync(m.file, 'utf8')) as FeatureCollection).features
+      ])
+    );
+    assert.deepStrictEqual([...byLayer.keys()].sort(), ['DEPARE', 'LIGHTS', 'M_COVR']);
+    assert.deepStrictEqual(
+      byLayer
+        .get('DEPARE')
+        ?.map((f) => f.properties.c)
+        .sort(),
+      ['nl', 'us5', 'waspik']
+    );
+    // Band 5 from the US cell's name still sets its features' minzoom.
+    const us5 = byLayer.get('DEPARE')?.find((f) => f.properties.c === 'us5');
+    assert.strictEqual(us5?.tippecanoe?.minzoom, 12);
+  });
+
   it('merges multi-source layers across charts', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'multi-'));
-    writeFC(path.join(dir, 'BUAARE_US3CO100.geojson'), [point({ name: 'a' })]);
-    writeFC(path.join(dir, 'BUAARE_US3CO200.geojson'), [point({ name: 'b' })]);
-    writeFC(path.join(dir, 'BUAARE_US3CO400.geojson'), [point({ name: 'c' })]);
+    writeFC(path.join(dir, 'BUAARE__US3CO100.geojson'), [point({ name: 'a' })]);
+    writeFC(path.join(dir, 'BUAARE__US3CO200.geojson'), [point({ name: 'b' })]);
+    writeFC(path.join(dir, 'BUAARE__US3CO400.geojson'), [point({ name: 'c' })]);
 
     const merged = consolidateGeoJSONByLayer(dir, 9);
     assert.strictEqual(merged.length, 1);
@@ -138,8 +168,8 @@ describe('consolidateGeoJSONByLayer', () => {
 
   it('skips empty files (size <= 100 bytes)', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'empty-'));
-    fs.writeFileSync(path.join(dir, 'EMPTY_US3CO100.geojson'), '{}');
-    writeFC(path.join(dir, 'REAL_US3CO100.geojson'), [point({ k: 'real' })]);
+    fs.writeFileSync(path.join(dir, 'EMPTY__US3CO100.geojson'), '{}');
+    writeFC(path.join(dir, 'REAL__US3CO100.geojson'), [point({ k: 'real' })]);
 
     const merged = consolidateGeoJSONByLayer(dir, 9);
     const names = merged.map((m) => path.basename(m.file, '.geojson'));
@@ -153,14 +183,13 @@ describe('consolidateGeoJSONByLayer', () => {
   });
 
   it('does not collapse M_COVR + M_QUAL into a single "M" layer in multi-chart bundles', () => {
-    // The pre-fix bug: lastIndexOf('_') on 'M_COVR_US3CO100' yielded layer='M_COVR',
-    // but indexOf('_') would have yielded layer='M' and merged unrelated layers.
-    // This regression test ensures both layers stay distinct across multiple charts.
+    // Layer names hold single underscores (M_COVR, M_QUAL); the `__` separator
+    // keeps them whole and distinct across multiple charts.
     const dir = fs.mkdtempSync(path.join(tmp, 'm-multi-'));
-    writeFC(path.join(dir, 'M_COVR_US3CO100.geojson'), [point({ k: 'covr-100' })]);
-    writeFC(path.join(dir, 'M_COVR_US3CO200.geojson'), [point({ k: 'covr-200' })]);
-    writeFC(path.join(dir, 'M_QUAL_US3CO100.geojson'), [point({ k: 'qual-100' })]);
-    writeFC(path.join(dir, 'M_QUAL_US3CO200.geojson'), [point({ k: 'qual-200' })]);
+    writeFC(path.join(dir, 'M_COVR__US3CO100.geojson'), [point({ k: 'covr-100' })]);
+    writeFC(path.join(dir, 'M_COVR__US3CO200.geojson'), [point({ k: 'covr-200' })]);
+    writeFC(path.join(dir, 'M_QUAL__US3CO100.geojson'), [point({ k: 'qual-100' })]);
+    writeFC(path.join(dir, 'M_QUAL__US3CO200.geojson'), [point({ k: 'qual-200' })]);
 
     const merged = consolidateGeoJSONByLayer(dir, 9);
     const names = merged.map((m) => path.basename(m.file, '.geojson')).sort();
@@ -176,16 +205,16 @@ describe('consolidateGeoJSONByLayer', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'mixed-band-'));
 
     for (const chart of ['US3CO100', 'US3CO200', 'US5MA1SK']) {
-      writeFC(path.join(dir, `LNDARE_${chart}.geojson`), [point({ src: chart })]);
-      writeFC(path.join(dir, `DEPARE_${chart}.geojson`), [point({ src: chart })]);
-      writeFC(path.join(dir, `COALNE_${chart}.geojson`), [point({ src: chart })]);
+      writeFC(path.join(dir, `LNDARE__${chart}.geojson`), [point({ src: chart })]);
+      writeFC(path.join(dir, `DEPARE__${chart}.geojson`), [point({ src: chart })]);
+      writeFC(path.join(dir, `COALNE__${chart}.geojson`), [point({ src: chart })]);
     }
 
-    writeFC(path.join(dir, 'HRBFAC_US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
-    writeFC(path.join(dir, 'ACHARE_US5MA1SK.geojson'), [point({ obj: 'anchorage' })]);
-    writeFC(path.join(dir, 'BRIDGE_US5MA1SK.geojson'), [point({ obj: 'bridge' })]);
-    writeFC(path.join(dir, 'MORFAC_US5MA1SK.geojson'), [point({ obj: 'mooring' })]);
-    writeFC(path.join(dir, 'PILBOP_US5MA1SK.geojson'), [point({ obj: 'pilot-boarding' })]);
+    writeFC(path.join(dir, 'HRBFAC__US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
+    writeFC(path.join(dir, 'ACHARE__US5MA1SK.geojson'), [point({ obj: 'anchorage' })]);
+    writeFC(path.join(dir, 'BRIDGE__US5MA1SK.geojson'), [point({ obj: 'bridge' })]);
+    writeFC(path.join(dir, 'MORFAC__US5MA1SK.geojson'), [point({ obj: 'mooring' })]);
+    writeFC(path.join(dir, 'PILBOP__US5MA1SK.geojson'), [point({ obj: 'pilot-boarding' })]);
 
     const merged = consolidateGeoJSONByLayer(dir, 9);
     const layerNames = new Set(merged.map((m) => path.basename(m.file, '.geojson')));
@@ -263,7 +292,7 @@ describe('buildExportScript', () => {
 
   it('multi-file=true emits LAYER_<chart> output names; multi-file=false emits LAYER', () => {
     const multi = buildExportScript({ multiFile: true, parallelism: 1, skipLayers });
-    assert.match(multi, /\$\{layer\}_\$\{name\}/);
+    assert.match(multi, /\$\{layer\}__\$\{name\}/);
     const single = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
     // Single-file path keeps just $layer in the outname assignment.
     assert.match(single, /outname="\$\{layer\}"/);
@@ -483,8 +512,8 @@ describe('bandClampedMaxzoom (re-export from s57-converter._testInternals)', () 
 describe('buildLayerManifest (newline-delimited NAME:FILE form)', () => {
   it('emits one LAYER:/input/LAYER.geojson line per consolidated layer', () => {
     const layers = [
-      { file: '/some/host/path/HRBFAC.geojson', sourceFiles: ['HRBFAC_US5MA1SK.geojson'] },
-      { file: '/some/host/path/LNDARE.geojson', sourceFiles: ['LNDARE_US3CO100.geojson'] }
+      { file: '/some/host/path/HRBFAC.geojson', sourceFiles: ['HRBFAC__US5MA1SK.geojson'] },
+      { file: '/some/host/path/LNDARE.geojson', sourceFiles: ['LNDARE__US3CO100.geojson'] }
     ];
     assert.strictEqual(
       buildLayerManifest(layers),
@@ -493,7 +522,9 @@ describe('buildLayerManifest (newline-delimited NAME:FILE form)', () => {
   });
 
   it('uses the layer name from the merged file basename', () => {
-    const layers = [{ file: '/anywhere/M_COVR.geojson', sourceFiles: ['M_COVR_US5MA1SK.geojson'] }];
+    const layers = [
+      { file: '/anywhere/M_COVR.geojson', sourceFiles: ['M_COVR__US5MA1SK.geojson'] }
+    ];
     assert.strictEqual(buildLayerManifest(layers), 'M_COVR:/input/M_COVR.geojson\n');
   });
 
@@ -502,7 +533,7 @@ describe('buildLayerManifest (newline-delimited NAME:FILE form)', () => {
     // mounted at /input and the consumer must navigate to the merged-GeoJSON
     // dir via its subPath.  buildLayerManifest threads that into each line.
     const layers = [
-      { file: '/some/host/path/HRBFAC.geojson', sourceFiles: ['HRBFAC_US5MA1SK.geojson'] }
+      { file: '/some/host/path/HRBFAC.geojson', sourceFiles: ['HRBFAC__US5MA1SK.geojson'] }
     ];
     assert.strictEqual(
       buildLayerManifest(layers, '/input/charts/scratch/.merged'),
@@ -695,7 +726,7 @@ describe('per-feature tippecanoe.minzoom stamping (band-aware consolidation)', (
 
   it('stamps tippecanoe.minzoom = BAND_MIN_ZOOM[5] = 12 on band-5 features', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'b5-'));
-    writeFC(path.join(dir, 'HRBFAC_US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
+    writeFC(path.join(dir, 'HRBFAC__US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
     const merged = consolidateGeoJSONByLayer(dir, /* userMinzoom */ 9);
     const entry = merged.find((m) => m.file.endsWith('HRBFAC.geojson'));
     assert.ok(entry);
@@ -712,8 +743,8 @@ describe('per-feature tippecanoe.minzoom stamping (band-aware consolidation)', (
     // layer-wide floor: the band-3 LNDARE outline is visible at z9 while
     // band-5 detail kicks in at z12.
     const dir = fs.mkdtempSync(path.join(tmp, 'mixed-'));
-    writeFC(path.join(dir, 'LNDARE_US3CO100.geojson'), [point({ src: 'b3' })]);
-    writeFC(path.join(dir, 'LNDARE_US5MA1SK.geojson'), [point({ src: 'b5' })]);
+    writeFC(path.join(dir, 'LNDARE__US3CO100.geojson'), [point({ src: 'b3' })]);
+    writeFC(path.join(dir, 'LNDARE__US5MA1SK.geojson'), [point({ src: 'b5' })]);
     const merged = consolidateGeoJSONByLayer(dir, /* userMinzoom */ 9);
     const fc = readFeatures(merged[0]!.file);
     assert.strictEqual(fc.length, 2);
@@ -727,7 +758,7 @@ describe('per-feature tippecanoe.minzoom stamping (band-aware consolidation)', (
 
   it('respects userMinzoom as a floor (never goes below user-asked)', () => {
     const dir = fs.mkdtempSync(path.join(tmp, 'user-floor-'));
-    writeFC(path.join(dir, 'HRBFAC_US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
+    writeFC(path.join(dir, 'HRBFAC__US5MA1SK.geojson'), [point({ obj: 'harbour' })]);
     const merged = consolidateGeoJSONByLayer(dir, /* userMinzoom */ 14);
     const fc = readFeatures(merged[0]!.file);
     assert.strictEqual(fc[0]!.tippecanoe?.minzoom, 14, 'user 14 > band-5 floor 12 → user wins');
@@ -752,7 +783,7 @@ describe('per-feature tippecanoe.minzoom stamping (band-aware consolidation)', (
       tippecanoe: { layer: 'override', maxzoom: 18 }
     };
     fs.writeFileSync(
-      path.join(dir, 'HRBFAC_US5MA1SK.geojson'),
+      path.join(dir, 'HRBFAC__US5MA1SK.geojson'),
       JSON.stringify({ type: 'FeatureCollection', features: [feat] })
     );
     const merged = consolidateGeoJSONByLayer(dir, 9);

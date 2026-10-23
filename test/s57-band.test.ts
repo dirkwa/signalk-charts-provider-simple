@@ -6,6 +6,7 @@ import {
   BAND_MAX_ZOOM,
   BAND_MIN_ZOOM,
   bandClampedMaxzoom,
+  exportFileParts,
   groupCellsByBand,
   highestBandForFiles
 } from '../dist/utils/s57-band.js';
@@ -110,13 +111,13 @@ describe('BAND_MIN_ZOOM', () => {
 describe('highestBandForFiles', () => {
   it('returns the highest band among conforming filenames', () => {
     assert.strictEqual(
-      highestBandForFiles(['HRBFAC_US5MA1SK.geojson', 'LNDARE_US3CO100.geojson']),
+      highestBandForFiles(['HRBFAC__US5MA1SK.geojson', 'LNDARE__US3CO100.geojson']),
       5
     );
   });
 
   it('ignores non-conforming filenames (IENC, hand-named) when others conform', () => {
-    assert.strictEqual(highestBandForFiles(['HRBFAC_US5MA1SK.geojson', 'WEIRD_NAME.geojson']), 5);
+    assert.strictEqual(highestBandForFiles(['HRBFAC__US5MA1SK.geojson', 'WEIRD_NAME.geojson']), 5);
   });
 
   it('returns null when nothing conforms', () => {
@@ -128,7 +129,7 @@ describe('highestBandForFiles', () => {
   });
 
   it('takes the basename so directory-prefixed paths still work', () => {
-    assert.strictEqual(highestBandForFiles(['/tmp/enc/HRBFAC_US5MA1SK.geojson']), 5);
+    assert.strictEqual(highestBandForFiles(['/tmp/enc/HRBFAC__US5MA1SK.geojson']), 5);
   });
 });
 
@@ -282,5 +283,37 @@ describe('groupCellsByBand', () => {
       '/tmp/enc/US5NY1SK.000',
       '/tmp/enc/US5CA1SK.000'
     ]);
+  });
+});
+
+describe('exportFileParts', () => {
+  it('splits at the first double underscore, whatever the cell is called', () => {
+    assert.deepStrictEqual(exportFileParts('M_COVR__US5MA1SK.geojson'), {
+      layer: 'M_COVR',
+      cell: 'US5MA1SK'
+    });
+    assert.deepStrictEqual(exportFileParts('DEPARE__IENC_Haven_Waspik_7_.geojson.gz'), {
+      layer: 'DEPARE',
+      cell: 'IENC_Haven_Waspik_7_'
+    });
+    assert.deepStrictEqual(exportFileParts('/tmp/x/SOUNDG__NL_1R7WAD01.geojson'), {
+      layer: 'SOUNDG',
+      cell: 'NL_1R7WAD01'
+    });
+    assert.deepStrictEqual(exportFileParts('LIGHTS___LEADING.geojson'), {
+      layer: 'LIGHTS',
+      cell: '_LEADING'
+    });
+  });
+
+  it('takes a single-chart file name as the layer, with no cell', () => {
+    assert.deepStrictEqual(exportFileParts('M_COVR.geojson'), { layer: 'M_COVR', cell: null });
+    assert.deepStrictEqual(exportFileParts('DEPARE.geojson.gz'), { layer: 'DEPARE', cell: null });
+  });
+
+  it('gives the band of an underscore cell from its own name', () => {
+    assert.strictEqual(highestBandForFiles(['DEPARE__NL_1R7WAD01.geojson']), null);
+    assert.strictEqual(highestBandForFiles(['DEPARE__US5MA1SK.geojson.gz']), 5);
+    assert.strictEqual(highestBandForFiles(['IENC_Haven_Waspik_7_.000']), null);
   });
 });

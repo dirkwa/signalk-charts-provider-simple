@@ -116,7 +116,7 @@ describe('the cache on disk', () => {
     fs.mkdirSync(out, { recursive: true });
     for (const layer of layers) {
       fs.writeFileSync(
-        path.join(out, `${layer}_${name}.geojson`),
+        path.join(out, `${layer}__${name}.geojson`),
         `{"layer":"${layer}","cell":"${name}"}`
       );
     }
@@ -146,11 +146,11 @@ describe('the cache on disk', () => {
       'AA1CELL1.001'
     ]);
     assert.deepStrictEqual(fs.readdirSync(path.join(cell, 'geojson')).sort(), [
-      'DEPARE_AA1CELL1.geojson.gz',
-      'M_COVR_AA1CELL1.geojson.gz'
+      'DEPARE__AA1CELL1.geojson.gz',
+      'M_COVR__AA1CELL1.geojson.gz'
     ]);
     const text = zlib
-      .gunzipSync(fs.readFileSync(path.join(cell, 'geojson', 'DEPARE_AA1CELL1.geojson.gz')))
+      .gunzipSync(fs.readFileSync(path.join(cell, 'geojson', 'DEPARE__AA1CELL1.geojson.gz')))
       .toString('utf8');
     assert.strictEqual(text, '{"layer":"DEPARE","cell":"AA1CELL1"}');
 
@@ -184,11 +184,11 @@ describe('the cache on disk', () => {
     const files = (cell: string) =>
       fs.readdirSync(path.join(cellsDir('Set_U'), cell, 'geojson')).sort();
     assert.deepStrictEqual(files('IENC_Haven_Waspik_7_'), [
-      'DEPARE_IENC_Haven_Waspik_7_.geojson.gz',
-      'M_COVR_IENC_Haven_Waspik_7_.geojson.gz'
+      'DEPARE__IENC_Haven_Waspik_7_.geojson.gz',
+      'M_COVR__IENC_Haven_Waspik_7_.geojson.gz'
     ]);
-    assert.deepStrictEqual(files('AB_CD'), ['DEPARE_AB_CD.geojson.gz']);
-    assert.deepStrictEqual(files('CD'), ['LNDARE_CD.geojson.gz']);
+    assert.deepStrictEqual(files('AB_CD'), ['DEPARE__AB_CD.geojson.gz']);
+    assert.deepStrictEqual(files('CD'), ['LNDARE__CD.geojson.gz']);
     fs.rmSync(staging, { recursive: true, force: true });
     removeSetCache('Set_U');
   });
@@ -206,7 +206,7 @@ describe('the cache on disk', () => {
     const cell = path.join(cellsDir('Set_A'), 'AA1CELL1');
     assert.deepStrictEqual(fs.readdirSync(path.join(cell, 'raw')), ['AA1CELL1.000']);
     assert.deepStrictEqual(fs.readdirSync(path.join(cell, 'geojson')), [
-      'SOUNDG_AA1CELL1.geojson.gz'
+      'SOUNDG__AA1CELL1.geojson.gz'
     ]);
     assert.strictEqual(readSetCache('Set_A').get('AA1CELL1')?.version, 'AA1CELL1_ED002_UP000');
     fs.rmSync(staging, { recursive: true, force: true });
@@ -222,7 +222,7 @@ describe('the cache on disk', () => {
       ],
       out
     );
-    assert.deepStrictEqual(fs.readdirSync(out), ['DEPARE_AA1CELL2.geojson.gz']);
+    assert.deepStrictEqual(fs.readdirSync(out), ['DEPARE__AA1CELL2.geojson.gz']);
   });
 
   it('prunes cells the set no longer has', () => {
@@ -318,7 +318,7 @@ describe('updateSetCache', () => {
         }
         fs.mkdirSync(outDir, { recursive: true });
         for (const name of names) {
-          fs.writeFileSync(path.join(outDir, `DEPARE_${name}.geojson`), `{"cell":"${name}"}`);
+          fs.writeFileSync(path.join(outDir, `DEPARE__${name}.geojson`), `{"cell":"${name}"}`);
           if (opts.bad?.has(name)) {
             fs.appendFileSync(
               path.join(outDir, '.export-errors.log'),

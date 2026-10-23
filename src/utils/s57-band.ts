@@ -21,8 +21,8 @@ export function detectEncBand(filename: string): number | null {
   // among them. Letter-only (`US`, `DE`) is the maritime case; mixed
   // letter+digit / digit+letter covers IENC producers like RWS `1V`.
   // Pure-digit prefixes (`12`, `00`) are excluded so a degenerate string
-  // like `001` (which can fall out of the per-chart `extractChartId`
-  // lookup on weird-named files) doesn't get parsed as a band.
+  // like `001` (which can fall out of the per-file cell lookup on
+  // weird-named files) doesn't get parsed as a band.
   const m = base.match(/^(?:[A-Z][A-Z0-9]|[A-Z0-9][A-Z])(\d)/);
   if (!m) {
     return null;
@@ -79,23 +79,39 @@ export const BAND_MIN_ZOOM: Record<number, number> = {
 };
 
 /**
- * Pull the chart-ID portion out of a per-chart-per-layer filename like
- * 'HRBFAC_US5MA1SK.geojson'. The consolidator (s57-converter.ts) writes
- * these as `<LAYER>_<CHART>.geojson` for multi-chart bundles, where LAYER
- * is uppercase letters/underscores with no digits and CHART always has
- * digits (NOAA chart IDs follow the IHO Annex E filename convention).
- *
- * For files already named '<CHART>.geojson' (single-chart bundles or raw
- * .000 inputs), returns the basename minus extension unchanged.
+ * Separator between the layer and the cell in a GDAL export file name:
+ * `<LAYER>__<cell>.geojson`. S-57 layer names (DEPARE, M_COVR, …) never hold
+ * two underscores in a row, so the first `__` always ends the layer, however
+ * the cell is named: cell names may contain `_` themselves (the Dutch
+ * `IENC_Haven_Waspik_7_`), so splitting at the last `_` cannot work.
  */
-function extractChartId(filename: string): string {
-  const base = path.basename(filename).replace(/\.[^.]+$/, '');
-  const underscore = base.lastIndexOf('_');
-  if (underscore === -1) {
-    return base;
+export const EXPORT_NAME_SEPARATOR = '__';
+
+/**
+ * The layer and cell of a GDAL export file (`<LAYER>__<cell>.geojson`, or
+ * `.geojson.gz` from the chart-set cache). A one-cell export names its files
+ * `<LAYER>.geojson`, with no cell.
+ */
+export function exportFileParts(filename: string): { layer: string; cell: string | null } {
+  const base = path
+    .basename(filename)
+    .replace(/\.gz$/, '')
+    .replace(/\.geojson$/, '');
+  const at = base.indexOf(EXPORT_NAME_SEPARATOR);
+  return at > 0
+    ? { layer: base.slice(0, at), cell: base.slice(at + EXPORT_NAME_SEPARATOR.length) }
+    : { layer: base, cell: null };
+}
+
+/**
+ * The cell a file belongs to: the cell part of a GDAL export file name, or
+ * the base name of a raw cell file such as `US5MA1SK.000`.
+ */
+function cellOfFile(filename: string): string {
+  if (/\.geojson(\.gz)?$/.test(filename)) {
+    return exportFileParts(filename).cell ?? '';
   }
-  const tail = base.slice(underscore + 1);
-  return /\d/.test(tail) ? tail : base;
+  return path.basename(filename).replace(/\.[^.]+$/, '');
 }
 
 /**
@@ -107,12 +123,12 @@ function extractChartId(filename: string): string {
  * filenames.
  *
  * Accepts both raw chart names (e.g. 'US5MA1SK.000') and per-layer-per-chart
- * filenames produced by the GDAL export step (e.g. 'HRBFAC_US5MA1SK.geojson').
+ * filenames produced by the GDAL export step (e.g. 'HRBFAC__US5MA1SK.geojson').
  */
 export function highestBandForFiles(filenames: readonly string[]): number | null {
   let highest: number | null = null;
   for (const f of filenames) {
-    const b = detectEncBand(extractChartId(f));
+    const b = detectEncBand(cellOfFile(f));
     if (b !== null && (highest === null || b > highest)) {
       highest = b;
     }
