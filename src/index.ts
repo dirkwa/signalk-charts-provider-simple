@@ -5515,6 +5515,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _catalogId,
     _offlineSource,
     _keepTiles,
+    _mask,
     _areaDownload,
     _areaDownloadLimits,
     v1: _v1,

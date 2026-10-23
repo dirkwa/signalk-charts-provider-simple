@@ -55,6 +55,16 @@ const MAX_POINTS_PER_PIECE = 2048;
 
 const INSERTS_PER_TRANSACTION = 2000;
 
+// Far shorter than fetch's own five minutes: a stalled download should
+// fail, so the user can retry it, rather than hang.
+const HEAD_TIMEOUT_MS = 30_000;
+const STALL_TIMEOUT_MS = 120_000;
+
+/** `signal` and a timeout together, either aborting the request. */
+function withTimeout(signal: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 export type LandSet = 'simplified' | 'full';
 
 /** The sets stored: the two downloaded, and the coarse copies made from the simplified one. */
@@ -93,6 +103,8 @@ export interface LandBuildOptions {
   fetch?: typeof fetch;
   signal?: AbortSignal;
   onProgress?: (progress: LandBuildProgress) => void;
+  /** How long a download may receive nothing before it fails; tests shorten it. */
+  stallTimeoutMs?: number;
 }
 
 function rtreeTable(set: StoredSet): string {
@@ -114,7 +126,7 @@ async function sourceSize(
     const res = await fetchImpl(source.url, {
       method: 'HEAD',
       headers: { 'User-Agent': options.userAgent },
-      signal: options.signal
+      signal: withTimeout(options.signal, AbortSignal.timeout(HEAD_TIMEOUT_MS))
     });
     const length = Number(res.headers.get('content-length'));
     return res.ok && length > 0 ? length : null;
@@ -191,11 +203,28 @@ async function readSource(
   options: LandBuildOptions,
   fetchImpl: typeof fetch
 ): Promise<string | null> {
-  const res = await fetchImpl(source.url, {
-    headers: { 'User-Agent': options.userAgent },
-    signal: options.signal
-  });
+  // Aborts the download once nothing has arrived for STALL_TIMEOUT_MS.
+  const stall = new AbortController();
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const watchStall = (): void => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      stall.abort(new Error(`Downloading ${source.url} stalled`));
+    }, options.stallTimeoutMs ?? STALL_TIMEOUT_MS);
+  };
+  watchStall();
+  let res: Response;
+  try {
+    res = await fetchImpl(source.url, {
+      headers: { 'User-Agent': options.userAgent },
+      signal: withTimeout(options.signal, stall.signal)
+    });
+  } catch (err) {
+    clearTimeout(stallTimer);
+    throw err;
+  }
   if (!res.ok || !res.body) {
+    clearTimeout(stallTimer);
     throw new Error(`Downloading ${source.url} failed: HTTP ${String(res.status)}`);
   }
   const boxInserter = (set: StoredSet): StatementSync =>
@@ -223,6 +252,7 @@ async function readSource(
   let reported = 0;
   const counter = new Transform({
     transform(chunk: Buffer, _encoding, done) {
+      watchStall();
       progress.receivedBytes += chunk.length;
       // About every megabyte: enough for a progress bar, few enough messages.
       if (progress.receivedBytes - reported >= 1 << 20) {
@@ -235,9 +265,15 @@ async function readSource(
   const body = Readable.fromWeb(res.body);
   const zip = unzipper.Parse({ forceStream: true });
   // .pipe() passes data on but not errors: a dropped connection must end the
-  // read below rather than surface as an uncaught exception.
-  body.on('error', (err) => zip.destroy(err));
-  counter.on('error', (err) => zip.destroy(err));
+  // read below rather than surface as an uncaught exception. The entry being
+  // read is a stream of its own and would otherwise wait for data forever.
+  let reading: Entry | null = null;
+  const fail = (err: Error): void => {
+    reading?.destroy(err);
+    zip.destroy(err);
+  };
+  body.on('error', fail);
+  counter.on('error', fail);
   body.pipe(counter).pipe(zip);
   let found = false;
   let pending = 0;
@@ -250,6 +286,7 @@ async function readSource(
         continue;
       }
       found = true;
+      reading = entry;
       for await (const polygon of readShapefilePolygons(entry)) {
         const pieces = splitPolygon(polygon, MAX_POINTS_PER_PIECE);
         store(pieces, insertBox);
@@ -268,6 +305,7 @@ async function readSource(
     }
     throw err;
   } finally {
+    clearTimeout(stallTimer);
     // Stops the download when the read ended early.
     body.destroy();
   }

@@ -120,7 +120,14 @@ export class MaskedTiles {
       polygons,
       bbox: tileBbox3857(z, x, y),
       mode
-    }).catch(() => ({ kind: 'failed' }) as const);
+    }).catch((err: unknown) => {
+      // A worker that crashed or could not start; the tile is served unmasked.
+      console.error(
+        `[charts-provider] Masking tile ${String(z)}/${String(x)}/${String(y)} failed:`,
+        err
+      );
+      return { kind: 'failed' } as const;
+    });
     const keep = (kind: number, data: Uint8Array = new Uint8Array(0)): void => {
       if (key) {
         this.cache.writeStamped(

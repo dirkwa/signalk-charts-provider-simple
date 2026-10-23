@@ -2557,11 +2557,13 @@ async function saveChartMetadata(): Promise<void> {
       return;
     }
 
+    let masksFailed = false;
     if (currentMetadata?.masks) {
       const masks = await window.saveMaskOptions(currentChartPath, currentMetadata.masks);
       if (masks) {
         currentMetadata.masks = masks;
       } else {
+        masksFailed = true;
         showErrorNotification('The name was saved, but a masked version could not be changed');
       }
     }
@@ -2577,7 +2579,9 @@ async function saveChartMetadata(): Promise<void> {
       renderMetadataModal(currentMetadata);
     }
 
-    showSuccessNotification('Chart metadata updated successfully');
+    if (!masksFailed) {
+      showSuccessNotification('Chart metadata updated successfully');
+    }
     // The card shows the chart's name, which just changed.
     document.dispatchEvent(new CustomEvent('charts-changed'));
     void loadCharts();

@@ -101,6 +101,36 @@ describe('land index', () => {
     }
   });
 
+  it('fails a download that stops sending', async () => {
+    const file = path.join(tempDir, 'stalled.sqlite');
+    const zip = ZIPS['/simplified.zip'];
+    const stalled: typeof fetch = (_url, init) => {
+      if (init?.method === 'HEAD') {
+        return Promise.resolve(new Response(null, { headers: { 'content-length': '1' } }));
+      }
+      // Half the zip, then nothing, until the request is aborted.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(zip.subarray(0, zip.length / 2));
+          init?.signal?.addEventListener('abort', () => {
+            controller.error(init.signal?.reason);
+          });
+        }
+      });
+      return Promise.resolve(new Response(body));
+    };
+    await assert.rejects(
+      buildLandIndex(file, {
+        userAgent: 'test',
+        sources: [{ set: 'simplified', url: 'https://land/simplified.zip' }],
+        fetch: stalled,
+        stallTimeoutMs: 200
+      }),
+      /stalled/
+    );
+    assert.ok(!fs.existsSync(`${file}.building`));
+  });
+
   it('leaves nothing behind when a download fails', async () => {
     const file = path.join(tempDir, 'failed.sqlite');
     failFull = true;

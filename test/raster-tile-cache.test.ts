@@ -313,6 +313,22 @@ describe('stamped tile cache entries', () => {
     assert.strictEqual(cache.readStamped(key, 3, 1, 2, 5678)?.toString(), 'second');
   });
 
+  it('counts only the growth when it replaces a tile, so other charts stay', async () => {
+    const tile = Buffer.alloc(1000, 1);
+    // Room for two entries but not three.
+    await cache.init(tempDir, { maxBytes: 2500 });
+    const a = cache.key('a') ?? '';
+    const b = cache.key('b') ?? '';
+    cache.writeStamped(a, 1, 0, 0, 1, tile);
+    await cache.flush();
+    cache.writeStamped(b, 1, 0, 0, 1, tile);
+    await cache.flush();
+    cache.writeStamped(a, 1, 0, 0, 2, tile);
+    await cache.flush();
+    assert.ok(cache.readStamped(a, 1, 0, 0, 2), 'the replacement is stored');
+    assert.ok(cache.readStamped(b, 1, 0, 0, 1), 'the other chart is not evicted for it');
+  });
+
   it('stores nothing when its space is set to zero', async () => {
     await cache.init(tempDir, { maxBytes: 0 });
     const key = cache.key('other');

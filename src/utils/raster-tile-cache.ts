@@ -343,7 +343,17 @@ export class RasterTileCache {
       return;
     }
     const size = data.byteLength;
-    if (!this.evictFor(key, size)) {
+    // A replacement only grows the cache by the difference: room for all of
+    // it could evict other charts, or skip the write and leave a stale tile.
+    let replaced = 0;
+    if (replace) {
+      try {
+        replaced = fs.statSync(target).size;
+      } catch {
+        // Nothing there yet.
+      }
+    }
+    if (!this.evictFor(key, size - replaced)) {
       return;
     }
     const entry = this.index.get(key) ?? { bytes: 0, lastUsed: 0 };
