@@ -45,6 +45,7 @@ export const CustomOnlineChartSchema = Type.Object({
 
 export type CustomOnlineChart = Static<typeof CustomOnlineChartSchema>;
 
+const OpacitySchema = Type.Number({ minimum: 0, maximum: 1 });
 /**
  * A masked version of a chart, named for what it keeps. "Water only"
  * (`water-only`) cuts the land away, so imagery underneath shows on land;
@@ -59,6 +60,8 @@ export const OnlineChartFileSchema = Type.Object({
   catalogId: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1 }),
   custom: Type.Optional(CustomOnlineChartSchema),
+  // Overrides the catalog entry's defaultOpacity for this file only.
+  defaultOpacity: Type.Optional(OpacitySchema),
   mask: Type.Optional(ChartMaskSchema)
 });
 
@@ -255,24 +258,45 @@ export function chartFileNamesBeside(
 export function readOnlineChartFile(filePath: string): OnlineChartFile | null {
   try {
     const raw: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (raw !== null && typeof raw === 'object' && 'defaultOpacity' in raw) {
+      // A hand-edited opacity out of range falls back to the catalog's,
+      // rather than dropping the chart.
+      const { defaultOpacity, ...rest } = raw as Record<string, unknown>;
+      const file = Value.Check(OpacitySchema, defaultOpacity) ? { ...rest, defaultOpacity } : rest;
+      return Value.Check(OnlineChartFileSchema, file) ? file : null;
+    }
     return Value.Check(OnlineChartFileSchema, raw) ? raw : null;
   } catch {
     return null;
   }
 }
 
+/** What the Edit dialog changes in a chart file; a null opacity goes back to the catalog's. */
+export interface OnlineChartFileChanges {
+  name?: string;
+  defaultOpacity?: number | null;
+}
+
 /**
- * Rewrite a chart file's display name, keeping any other fields. Written to
- * a temporary file and renamed into place, so a power cut or a concurrent
- * scan never sees a half-written file (which would drop the chart).
+ * Rewrite a chart file's display name or opacity, keeping any other fields.
+ * Written to a temporary file and renamed into place, so a power cut or a
+ * concurrent scan never sees a half-written file (which would drop the chart).
  */
-export function renameOnlineChartFile(filePath: string, name: string): boolean {
+export function updateOnlineChartFile(filePath: string, changes: OnlineChartFileChanges): boolean {
   if (!readOnlineChartFile(filePath)) {
     return false;
   }
   const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+  if (changes.name !== undefined) {
+    raw.name = changes.name;
+  }
+  if (changes.defaultOpacity === null) {
+    delete raw.defaultOpacity;
+  } else if (changes.defaultOpacity !== undefined) {
+    raw.defaultOpacity = changes.defaultOpacity;
+  }
   const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify({ ...raw, name }, null, 2)}\n`, 'utf-8');
+  fs.writeFileSync(tmpPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf-8');
   fs.renameSync(tmpPath, filePath);
   return true;
 }
@@ -305,13 +329,21 @@ export function writeOnlineChartFile(
   name: string,
   takenIds: ReadonlySet<string> = new Set(),
   custom?: CustomOnlineChart,
-  mask?: ChartMask
+  mask?: ChartMask,
+  defaultOpacity?: number
 ): string {
   fs.mkdirSync(dir, { recursive: true });
   const base = safeStem(custom ? name.toLowerCase() : catalogId);
   // A masked version of a chart added by URL is named after the chart already.
   const stem = mask && !custom ? `${base}-${mask}` : base;
-  const content = `${JSON.stringify({ catalogId, name, ...(custom ? { custom } : {}), ...(mask ? { mask } : {}) }, null, 2)}\n`;
+  const file = {
+    catalogId,
+    name,
+    ...(custom ? { custom } : {}),
+    ...(mask ? { mask } : {}),
+    ...(defaultOpacity !== undefined ? { defaultOpacity } : {})
+  };
+  const content = `${JSON.stringify(file, null, 2)}\n`;
   for (let n = 1; ; n++) {
     const id = n === 1 ? stem : `${stem}-${String(n)}`;
     if (takenIds.has(id)) {
@@ -357,6 +389,7 @@ export function onlineChartProvider(
   }
   const { chart } = entry;
   const identifier = chartIdFromFilename(path.basename(filePath));
+  const defaultOpacity = file.defaultOpacity ?? chart.defaultOpacity;
   if (file.mask) {
     return masksReady ? maskedChartProvider(filePath, file, file.mask, entry, identifier) : null;
   }
@@ -390,7 +423,7 @@ export function onlineChartProvider(
       type: 'tilelayer',
       scale: 250000,
       ...(tileSize !== undefined ? { tileSize } : {}),
-      ...(chart.defaultOpacity !== undefined ? { defaultOpacity: chart.defaultOpacity } : {}),
+      ...(defaultOpacity !== undefined ? { defaultOpacity } : {}),
       _catalogId: entry.id,
       _offlineSource: proxiedSource,
       _keepTiles: offlineSource !== null,
@@ -417,7 +450,7 @@ export function onlineChartProvider(
     type: chart.type,
     scale: 250000,
     ...(tileSize !== undefined ? { tileSize } : {}),
-    ...(chart.defaultOpacity !== undefined ? { defaultOpacity: chart.defaultOpacity } : {}),
+    ...(defaultOpacity !== undefined ? { defaultOpacity } : {}),
     ...(entry.temporal ? { refreshInterval: entry.temporal.refreshInterval } : {}),
     _catalogId: entry.id,
     v1: { tilemapUrl: chart.url, chartLayers: layers },
@@ -446,6 +479,9 @@ function maskedChartProvider(
       ? chart.tileSize
       : undefined;
   const url = `~tilePath~/${identifier}/{z}/{x}/{y}`;
+  // The file's own opacity wins; otherwise Land only starts at its fixed default.
+  const maskedOpacity =
+    file.defaultOpacity ?? (mask === 'land-only' ? LAND_ONLY_OPACITY : chart.defaultOpacity);
   return {
     _fileFormat: 'online',
     _filePath: filePath,
@@ -460,11 +496,7 @@ function maskedChartProvider(
     type: 'tilelayer',
     scale: 250000,
     ...(tileSize !== undefined ? { tileSize } : {}),
-    ...(mask === 'land-only'
-      ? { defaultOpacity: LAND_ONLY_OPACITY }
-      : chart.defaultOpacity !== undefined
-        ? { defaultOpacity: chart.defaultOpacity }
-        : {}),
+    ...(maskedOpacity !== undefined ? { defaultOpacity: maskedOpacity } : {}),
     _catalogId: entry.id,
     _offlineSource: source,
     _keepTiles: true,

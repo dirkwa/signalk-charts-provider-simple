@@ -640,10 +640,67 @@ describe('online chart routes', () => {
     assert.strictEqual(v2['nws-radar-conus-2']?.name, 'My radar');
   });
 
+  it("sets an online chart's starting opacity, and clears it back to the catalog's", async () => {
+    const chartPathParam = path.join('Online Charts', 'nws-radar-conus-2.onlinechart.json');
+    const put = (body: unknown) =>
+      call(handlers.get('put /chart-metadata/:chartPath'), {
+        params: { chartPath: chartPathParam },
+        body
+      });
+    const served = async () =>
+      ((await provider!.methods.listResources({})) as Record<string, { defaultOpacity?: number }>)[
+        'nws-radar-conus-2'
+      ]?.defaultOpacity;
+    const catalogOpacity = await served();
+
+    assert.strictEqual((await put({ name: 'My radar', defaultOpacity: 0.4 })).statusCode, 200);
+    assert.strictEqual(await served(), 0.4);
+    const meta = await call(handlers.get('get /chart-metadata/:chartPath'), {
+      params: { chartPath: chartPathParam }
+    });
+    assert.deepStrictEqual(
+      [
+        (meta.body as { defaultOpacity?: number }).defaultOpacity,
+        (meta.body as { catalogOpacity?: number }).catalogOpacity
+      ],
+      [0.4, catalogOpacity]
+    );
+
+    assert.strictEqual((await put({ name: 'My radar', defaultOpacity: 1.5 })).statusCode, 400);
+    assert.strictEqual((await put({ name: 'My radar', defaultOpacity: null })).statusCode, 200);
+    assert.strictEqual(await served(), catalogOpacity);
+    const file = JSON.parse(
+      fs.readFileSync(path.join(chartPath, chartPathParam), 'utf-8')
+    ) as object;
+    assert.ok(!('defaultOpacity' in file));
+  });
+
+  it('refuses a default opacity for a chart file that is not an online chart', async () => {
+    const chartFile = path.join(chartPath, 'opacity-test.mbtiles');
+    fs.copyFileSync(
+      path.join(import.meta.dirname, '..', 'test', 'fixtures', 'test-chart.mbtiles'),
+      chartFile
+    );
+    try {
+      const put = await call(handlers.get('put /chart-metadata/:chartPath'), {
+        params: { chartPath: 'opacity-test.mbtiles' },
+        body: { name: 'Renamed', defaultOpacity: 0.5 }
+      });
+      assert.strictEqual(put.statusCode, 400);
+    } finally {
+      fs.rmSync(chartFile, { force: true });
+    }
+  });
+
   it('adds and removes a Water only version, served only once the land index is built', async () => {
     const added = await add({ catalogId: 'test-imagery', folder: 'Masks' });
     assert.strictEqual(added.statusCode, 200);
     const chartPathParam = (added.body as { relativePath: string }).relativePath;
+    // The chart's own opacity is where its Water only version starts.
+    await call(handlers.get('put /chart-metadata/:chartPath'), {
+      params: { chartPath: chartPathParam },
+      body: { name: 'Imagery', defaultOpacity: 0.6 }
+    });
     const masked = path.join('Masks', 'test-imagery-water-only.onlinechart.json');
     const setVersion = (enabled: boolean, chart = chartPathParam) =>
       call(handlers.get('post /online-charts/masked-version'), {
@@ -675,9 +732,14 @@ describe('online chart routes', () => {
     const on = await setVersion(true);
     assert.strictEqual(on.statusCode, 200);
     assert.strictEqual((on.body as { relativePath: string }).relativePath, masked);
-    assert.strictEqual(
-      (JSON.parse(fs.readFileSync(path.join(chartPath, masked), 'utf-8')) as { mask: string }).mask,
-      'water-only'
+    assert.deepStrictEqual(
+      JSON.parse(fs.readFileSync(path.join(chartPath, masked), 'utf-8')) as object,
+      {
+        catalogId: 'test-imagery',
+        name: 'Imagery (Water only)',
+        mask: 'water-only',
+        defaultOpacity: 0.6
+      }
     );
     assert.deepStrictEqual(await masks(), { 'water-only': true, 'land-only': false });
     await setVersion(true);

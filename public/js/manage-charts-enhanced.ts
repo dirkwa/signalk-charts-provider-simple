@@ -120,6 +120,10 @@ interface ChartMetadata {
   legend?: string;
   /** Set for PMTiles charts, whose metadata can't be edited in place. */
   readOnly?: boolean;
+  /** Online charts: the file's own starting opacity, 0–1, when it sets one. */
+  defaultOpacity?: number;
+  /** Online charts: the catalog entry's starting opacity, which the file overrides. */
+  catalogOpacity?: number;
   /** Online charts that can have masked versions: which of them exist. */
   masks?: Record<string, boolean>;
   [key: string]: unknown;
@@ -2380,6 +2384,28 @@ async function showChartInfo(chartPath: string): Promise<void> {
   }
 }
 
+const opacityAsPercent = (opacity: number): string => String(Math.round(opacity * 100));
+
+/**
+ * An online chart's starting opacity: the file's own, else the catalog's.
+ * Edited as a percentage; left empty, the chart follows the catalog.
+ */
+function formatChartOpacity(metadata: ChartMetadata): string {
+  const fallback = metadata.catalogOpacity ?? 1;
+  // Charts added by URL, or no longer in the catalog, have no catalog value.
+  const source = metadata.catalogOpacity === undefined ? 'default' : 'catalog';
+  if (isEditMode) {
+    const value =
+      metadata.defaultOpacity === undefined ? '' : opacityAsPercent(metadata.defaultOpacity);
+    return `<input type="number" id="editChartOpacity" class="text-input" min="0" max="100" step="5" value="${value}" placeholder="${opacityAsPercent(fallback)}" style="width: 6em; padding: 8px;" /> %
+      <div style="color: var(--text-secondary); font-size: 0.85em; margin-top: 4px;">Where a chart plotter starts this chart. Leave empty for the ${source} ${opacityAsPercent(fallback)}%.</div>`;
+  }
+  if (metadata.defaultOpacity !== undefined) {
+    return `${opacityAsPercent(metadata.defaultOpacity)}%`;
+  }
+  return `${opacityAsPercent(fallback)}% <span style="color: var(--text-secondary);">(${source})</span>`;
+}
+
 function renderMetadataModal(metadata: ChartMetadata): void {
   // Coerce an unknown metadata value to a displayable string. Primitives
   // pass through; objects/arrays go via JSON so the user sees real
@@ -2395,6 +2421,9 @@ function renderMetadataModal(metadata: ChartMetadata): void {
   };
 
   const formatValue = (key: string, value: unknown, isEditable = false): string => {
+    if (key === 'defaultOpacity' && metadata.catalogId !== undefined) {
+      return formatChartOpacity(metadata);
+    }
     if (value === null || value === undefined || value === '') {
       return '<span style="color: var(--text-secondary); font-style: italic;">Not specified</span>';
     }
@@ -2441,6 +2470,7 @@ function renderMetadataModal(metadata: ChartMetadata): void {
     { label: 'Service URL', key: 'url' },
     { label: 'Layers', key: 'layers' },
     { label: 'Catalog Entry', key: 'catalogId' },
+    { label: 'Default Opacity', key: 'defaultOpacity' },
     { label: 'Version', key: 'version' },
     { label: 'Type', key: 'type' },
     { label: 'Format', key: 'format' },
@@ -2457,7 +2487,11 @@ function renderMetadataModal(metadata: ChartMetadata): void {
 
   const maskRows = window.renderMaskRows(metadata.masks, isEditMode);
   const metadataHTML = metadataRows
-    .filter((row) => metadata[row.key] !== undefined)
+    .filter(
+      (row) =>
+        metadata[row.key] !== undefined ||
+        (row.key === 'defaultOpacity' && metadata.catalogId !== undefined)
+    )
     .map(
       (row) => `
       <div class="chart-info-row">
@@ -2537,6 +2571,23 @@ async function saveChartMetadata(): Promise<void> {
     return;
   }
 
+  const opacityInput = document.getElementById('editChartOpacity') as HTMLInputElement | null;
+  const opacityText = opacityInput?.value.trim() ?? '';
+  const opacityPercent = Number(opacityText);
+  // A half-typed number reads as empty; it must not clear a saved opacity.
+  const badInput = opacityInput?.validity.badInput === true;
+  if (badInput || (opacityText !== '' && !(opacityPercent >= 0 && opacityPercent <= 100))) {
+    showErrorNotification('Opacity must be between 0 and 100');
+    return;
+  }
+  // Only online charts have the field; empty goes back to the catalog's
+  // opacity. An untouched field is not sent, so a hand-set value finer than
+  // a whole percent survives a rename.
+  const newOpacity =
+    opacityInput && opacityText !== opacityInput.defaultValue
+      ? { defaultOpacity: opacityText === '' ? null : opacityPercent / 100 }
+      : {};
+
   if (!currentChartPath) {
     return;
   }
@@ -2547,7 +2598,7 @@ async function saveChartMetadata(): Promise<void> {
       {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newChartName })
+        body: JSON.stringify({ name: newChartName, ...newOpacity })
       }
     );
 
@@ -2570,6 +2621,9 @@ async function saveChartMetadata(): Promise<void> {
 
     if (currentMetadata) {
       currentMetadata.name = newChartName;
+      if ('defaultOpacity' in newOpacity) {
+        currentMetadata.defaultOpacity = newOpacity.defaultOpacity ?? undefined;
+      }
       // Only an MBTiles edit stamps the file; renaming an online chart
       // changes nothing but its label.
       if (!currentMetadata.catalogId) {

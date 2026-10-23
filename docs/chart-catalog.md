@@ -53,8 +53,9 @@ again. Development servers can point it at a fork's Pages site with the
 
 Pressing **Add** on an online chart writes `<catalogId>.onlinechart.json` into
 the chosen chart folder (by default "Online Charts"). The file holds only the
-catalog id and the chart's display name; the plugin looks the entry up in the
-downloaded catalog whenever it serves the chart. So a corrected URL or layer in
+catalog id and the chart's display name, plus, optionally, its own starting
+opacity, which overrides the catalog entry's `defaultOpacity`; the plugin looks
+the entry up in the downloaded catalog whenever it serves the chart. So a corrected URL or layer in
 the catalog reaches every boat on its next catalog refresh, and a chart whose
 entry is removed from the catalog stays listed in Manage Charts, marked as no
 longer available, instead of silently disappearing.
