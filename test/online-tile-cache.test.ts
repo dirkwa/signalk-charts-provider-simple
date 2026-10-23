@@ -251,6 +251,25 @@ describe('httpTileFetcher', () => {
       globalThis.fetch = original;
     }
   });
+
+  it('takes a 400 TileOutOfRange for no tile and any other 400 for a failure', async () => {
+    const original = globalThis.fetch;
+    const outOfRange =
+      '<?xml version="1.0" encoding="UTF-8"?><ExceptionReport version="1.1.0">' +
+      '<Exception exceptionCode="TileOutOfRange" locator="TILEROW">' +
+      '<ExceptionText>Row 0 is out of range, min: 1 max: 2</ExceptionText></Exception></ExceptionReport>';
+    let body = outOfRange;
+    globalThis.fetch = () =>
+      Promise.resolve(new Response(body, { status: 400, headers: { 'content-type': 'text/xml' } }));
+    try {
+      assert.strictEqual(await httpTileFetcher('test')('https://t/2/0/0'), 'absent');
+      body =
+        '<ExceptionReport><Exception exceptionCode="InvalidParameterValue"/></ExceptionReport>';
+      assert.strictEqual(await httpTileFetcher('test')('https://t/2/0/0'), null);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });
 
 describe('tileImageType', () => {
