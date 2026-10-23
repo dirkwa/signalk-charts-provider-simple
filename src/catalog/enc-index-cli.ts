@@ -75,6 +75,7 @@ import {
   DIRECT_SOURCE_ADAPTERS,
   EncDirectSourcesFileSchema,
   checkDirectSources,
+  withServerDate,
   type DirectArchive,
   type EncDirectSource
 } from './enc-direct-sources.js';
@@ -194,7 +195,9 @@ function readDirectSources(file: string, otherIds: readonly string[]): EncDirect
  * index has, as a broken chartcatalogs file does.
  */
 async function readDirectCatalogs(
-  sources: readonly EncDirectSource[]
+  sources: readonly EncDirectSource[],
+  published: PublishedEncIndex | null,
+  delayMs: number
 ): Promise<Map<string, DirectArchive[] | null>> {
   const result = new Map<string, DirectArchive[] | null>();
   for (const source of sources) {
@@ -203,17 +206,65 @@ async function readDirectCatalogs(
       if (text === null) {
         throw new Error(`HTTP 404 fetching ${source.catalog}`);
       }
-      const { archives, problems } = await DIRECT_SOURCE_ADAPTERS[source.format](text);
+      const { archives, problems } = await DIRECT_SOURCE_ADAPTERS[source.format](text, source);
       for (const problem of problems) {
         console.log(`::warning::${source.id} catalog: ${problem}`);
       }
-      result.set(source.id, archives);
+      result.set(
+        source.id,
+        source.format === 'html-links'
+          ? await addServerDates(source, archives, published, delayMs)
+          : archives
+      );
     } catch (err) {
       console.log(`::warning::Could not read the ${source.id} catalog: ${message(err)}`);
       result.set(source.id, null);
     }
   }
   return result;
+}
+
+/**
+ * A page link carries no date, and a file replaced in place keeps its URL,
+ * so each linked archive's version also takes the server's date for it
+ * from a HEAD request, one at a time with a pause between. When that
+ * request fails the archive keeps its published version, so a passing
+ * network error cannot make it look changed.
+ */
+async function addServerDates(
+  source: EncDirectSource,
+  archives: readonly DirectArchive[],
+  published: PublishedEncIndex | null,
+  delayMs: number
+): Promise<DirectArchive[]> {
+  const dated: DirectArchive[] = [];
+  for (const [i, archive] of archives.entries()) {
+    if (i > 0) {
+      await sleep(delayMs);
+    }
+    try {
+      const response = await fetch(archive.url, {
+        method: 'HEAD',
+        headers: { 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(30000)
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${String(response.status)}`);
+      }
+      const headers = {
+        lastModified: response.headers.get('last-modified'),
+        etag: response.headers.get('etag')
+      };
+      dated.push({ ...archive, version: withServerDate(archive.version, headers) });
+    } catch (err) {
+      const before = published?.archives.get(jobKey({ source: source.id, url: archive.url }));
+      console.log(
+        `::warning::${source.id}: no server date for ${archive.url} (${message(err)}); ${before ? 'kept its published version' : 'using its link only'}`
+      );
+      dated.push({ ...archive, version: before?.archive.version ?? archive.version });
+    }
+  }
+  return dated;
 }
 
 async function readChartcatalogs(
@@ -677,13 +728,17 @@ async function main(): Promise<void> {
     ccDir,
     sources.flatMap((s) => (s.file ? [s.file] : []))
   );
-  const directArchives = await readDirectCatalogs(direct);
+  const published = await fetchPublished(publishedUrl);
+  const directArchives = await readDirectCatalogs(
+    direct,
+    published,
+    positiveNumber('--delay-ms', values['delay-ms'])
+  );
   const jobs = archiveJobs(
     sources,
     files,
     new Map([...directArchives].flatMap(([id, archives]) => (archives ? [[id, archives]] : [])))
   );
-  const published = await fetchPublished(publishedUrl);
   const noaa = selected(NOAA_SOURCE_ID) ? await readNoaa(values['noaa-url']) : null;
 
   const unread = unreadSources(sources, files, directArchives);

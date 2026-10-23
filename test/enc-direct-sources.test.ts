@@ -9,13 +9,19 @@ import {
   DIRECT_SOURCE_ADAPTERS,
   EncDirectSourcesFileSchema,
   checkDirectSources,
+  linkVersion,
+  parseHtmlLinks,
+  parseInspireAtom,
   parseUsaceIencCatalog,
   usaceDateTime,
+  withServerDate,
+  type EncDirectSource,
   type EncDirectSourcesFile
 } from '../dist/catalog/enc-direct-sources.js';
 import {
   archiveJobs,
   assembleEncIndex,
+  computeEncIndexHash,
   encIndexBlockers,
   encSources,
   jobKey,
@@ -391,5 +397,298 @@ describe('unreadSources', () => {
       new Map([['USACE_IENC_BUOYS', [{ url: OLD.url, version: 'v', title: 't' }]]])
     );
     assert.deepStrictEqual([...read], []);
+  });
+});
+
+// ---- Web pages and INSPIRE feeds ----
+
+const PAGE: EncDirectSource = {
+  id: 'PL_IENC_ODRA',
+  label: 'Poland Inland ENC (Odra)',
+  format: 'html-links',
+  catalog: 'https://example.gov.pl/ris-odra/pobierz-mapy/',
+  links: '/wp-content/uploads/\\d{4}/\\d{2}/[^/]+\\.zip$'
+};
+
+const PAGE_HTML = `<html><body>
+<a href="https://example.gov.pl/wp-content/uploads/2026/04/P17OD725.zip">Pobierz</a>
+<a href='/wp-content/uploads/2026/05/IENC_OD_14052026.zip'>Pobierz</a>
+<a href="https://example.gov.pl/wp-content/uploads/2026/04/P17OD725.zip">again</a>
+<a href="https://example.gov.pl/wp-content/uploads/2026/04/manual.pdf">PDF</a>
+<a href="/files/other.zip?a=1&amp;b=2">elsewhere</a>
+<a href="mailto:ris@example.gov.pl">mail</a>
+</body></html>`;
+
+const FEED: EncDirectSource = {
+  id: 'BE_IENC_WALLONIA',
+  label: 'Belgium Inland ENC (Wallonia)',
+  format: 'inspire-atom',
+  catalog: 'https://example.wallonie.be/atom_dataset.xml',
+  links: '/CARTE_IENC_[A-Z0-9]+_ENC_4326\\.zip$',
+  attribution: 'Source: SPW, CC BY 4.0'
+};
+
+const FEED_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:georss="http://www.georss.org/georss">
+  <title>IENC</title>
+  <entry>
+    <link title="Carte IENC 9W7ES015 - ZIP" rel="enclosure" type="application/zip"
+      href="https://example.wallonie.be/CARTE_IENC_9W7ES015_ENC_4326.zip"/>
+    <link rel="describedby" href="https://example.wallonie.be/metadata.xml"/>
+    <updated>2025-01-29T23:28:39Z</updated>
+  </entry>
+  <entry>
+    <link title="Bundle - ZIP" rel="enclosure" href="https://example.wallonie.be/CARTES_IENC.zip"/>
+    <updated>2018-05-07T15:49:43Z</updated>
+  </entry>
+  <entry>
+    <link title="Carte IENC 9W7ME020 - ZIP" rel="enclosure"
+      href="https://example.wallonie.be/CARTE_IENC_9W7ME020_ENC_4326.zip"/>
+    <updated>sometime</updated>
+  </entry>
+</feed>`;
+
+describe('direct-source config rules for the new formats', () => {
+  it('needs a links pattern for html-links, and a valid one wherever it is given', () => {
+    const { links: _links, ...noLinks } = PAGE;
+    assert.deepStrictEqual(
+      checkDirectSources({ sources: [noLinks, { ...FEED, id: 'X', links: '(' }] }, []),
+      [
+        'PL_IENC_ODRA: "html-links" needs a links pattern',
+        'X: links is not a valid regular expression'
+      ]
+    );
+  });
+
+  it('publishes a source\u2019s attribution with it', () => {
+    const source = encSources({}, [FEED]).find((s) => s.id === FEED.id);
+    assert.strictEqual(source?.attribution, 'Source: SPW, CC BY 4.0');
+  });
+});
+
+describe('html-links', () => {
+  it('versions a WordPress upload by its month, anything else by its URL', () => {
+    assert.strictEqual(linkVersion('https://x.pl/wp-content/uploads/2026/04/A.zip'), '2026-04');
+    assert.strictEqual(linkVersion('https://x.ch/files/A.zip'), 'https://x.ch/files/A.zip');
+  });
+
+  it('keeps the matching links once each, resolved against the page and sorted', async () => {
+    assert.deepStrictEqual((await parseHtmlLinks(PAGE_HTML, PAGE)).archives, [
+      {
+        url: 'https://example.gov.pl/wp-content/uploads/2026/04/P17OD725.zip',
+        version: '2026-04',
+        title: 'P17OD725'
+      },
+      {
+        url: 'https://example.gov.pl/wp-content/uploads/2026/05/IENC_OD_14052026.zip',
+        version: '2026-05',
+        title: 'IENC_OD_14052026'
+      }
+    ]);
+  });
+
+  it('finds nothing on a page whose layout changed, so the source counts as unread', async () => {
+    const { archives } = await parseHtmlLinks('<html><body>Moved</body></html>', PAGE);
+    assert.deepStrictEqual(archives, []);
+    const sources = encSources({}, [PAGE]);
+    assert.ok(unreadSources(sources, [], new Map([[PAGE.id, archives]])).has(PAGE.id));
+  });
+});
+
+describe('inspire-atom', () => {
+  it('lists the matching enclosures, versioned by their entry and titled by their link', async () => {
+    const { archives, problems } = await parseInspireAtom(FEED_XML, FEED);
+    assert.deepStrictEqual(archives, [
+      {
+        url: 'https://example.wallonie.be/CARTE_IENC_9W7ES015_ENC_4326.zip',
+        version: '2025-01-29T23:28:39Z',
+        title: 'Carte IENC 9W7ES015'
+      },
+      {
+        url: 'https://example.wallonie.be/CARTE_IENC_9W7ME020_ENC_4326.zip',
+        version: 'raw:sometime',
+        title: 'Carte IENC 9W7ME020'
+      }
+    ]);
+    assert.deepStrictEqual(problems, [
+      'https://example.wallonie.be/CARTE_IENC_9W7ME020_ENC_4326.zip: cannot read the entry date "sometime"'
+    ]);
+  });
+
+  it('refuses a document that is not an ATOM feed', async () => {
+    await assert.rejects(parseInspireAtom('<rss/>', FEED), /not an ATOM feed/);
+  });
+});
+
+describe('a scraped source whose page changes layout', () => {
+  const page = encSources({}, [PAGE]);
+  const cell: ArchiveJob = {
+    source: PAGE.id,
+    url: 'https://example.gov.pl/wp-content/uploads/2026/04/P17OD725.zip',
+    version: '2026-04',
+    title: 'P17OD725'
+  };
+  const read = (job: ArchiveJob, name: string, edition: number, cells = 1): ArchiveResult =>
+    unitsForArchive(
+      job,
+      'zip',
+      Array.from({ length: cells }, (_, i) => ({
+        path: i === 0 ? `${name}.000` : `${name.slice(0, -1)}${String(i)}.000`,
+        scale: null,
+        edition,
+        update: 0,
+        coverage: [SQUARE]
+      }))
+    );
+  const published = assembleEncIndex({
+    sources: page,
+    jobs: [cell],
+    built: new Map([[jobKey(cell), read(cell, 'P17OD725', 6)]]),
+    failed: new Map(),
+    noaa: null,
+    previous: null,
+    now: new Date('2026-10-23T00:00:00Z')
+  }).index;
+
+  it('keeps every published cell, with a warning, instead of dropping them', () => {
+    const unread = unreadSources(page, [], new Map([[PAGE.id, []]]));
+    const result = assembleEncIndex({
+      sources: page,
+      jobs: [],
+      built: new Map(),
+      failed: new Map(),
+      noaa: null,
+      unreadSources: unread,
+      previous: readPublishedEncIndex(JSON.parse(JSON.stringify(published)), null),
+      now: new Date('2026-10-24T00:00:00Z')
+    });
+    assert.deepStrictEqual(result.carriedForward, ['PL_IENC_ODRA: its catalog could not be read']);
+    assert.deepStrictEqual(result.removedUpstream, []);
+    assert.strictEqual(result.index.units.filter((u) => u.source === PAGE.id).length, 1);
+  });
+
+  it('takes a cell from its own small archive over a bundle with the same edition, but a newer bundle wins', () => {
+    const bundle: ArchiveJob = {
+      ...cell,
+      url: 'https://example.gov.pl/wp-content/uploads/2026/05/IENC_OD_14052026.zip',
+      version: '2026-05',
+      title: 'IENC_OD_14052026'
+    };
+    const pick = (bundleEdition: number) =>
+      assembleEncIndex({
+        sources: page,
+        jobs: [cell, bundle],
+        built: new Map([
+          [jobKey(cell), read(cell, 'P17OD725', 6)],
+          [jobKey(bundle), read(bundle, 'P17OD725', bundleEdition, 3)]
+        ]),
+        failed: new Map(),
+        noaa: null,
+        previous: null,
+        now: new Date('2026-10-23T00:00:00Z')
+      }).index.units.find((u) => u.id === 'P17OD725')?.cells[0].archive;
+    assert.strictEqual(pick(6), cell.url);
+    assert.strictEqual(pick(7), bundle.url);
+  });
+});
+
+describe('reading web pages safely', () => {
+  it('adds the server\u2019s date to a page link\u2019s version', () => {
+    const base = '2026-04';
+    assert.strictEqual(
+      withServerDate(base, { lastModified: 'Tue, 14 Apr 2026 10:21:49 GMT', etag: '"30df3"' }),
+      '2026-04 Tue, 14 Apr 2026 10:21:49 GMT'
+    );
+    assert.strictEqual(
+      withServerDate(base, { lastModified: null, etag: '"30df3"' }),
+      '2026-04 "30df3"'
+    );
+    assert.strictEqual(withServerDate(base, { lastModified: null, etag: null }), base);
+  });
+
+  it('ignores links in HTML comments, and gets past links it cannot read', async () => {
+    const html = `
+      <!-- <a href="https://example.gov.pl/wp-content/uploads/2020/01/OLD.zip">old</a> -->
+      <a href="https://example.gov.pl/wp-content/uploads/2026/04/%E9.zip">odd name</a>
+      <a href="https://example.gov.pl/wp-content/uploads/2026/04/A&#99999999;.zip">odd entity</a>
+      <a href="http://[bad">broken</a>
+      <a href="https://example.gov.pl/wp-content/uploads/2026/04/P17OD725.zip">fine</a>`;
+    const { archives, problems } = await parseHtmlLinks(html, PAGE);
+    // Neither odd link throws: the stray "%" keeps its raw name, and the
+    // entity naming no character is left as written.
+    assert.deepStrictEqual(
+      archives.map((a) => a.title),
+      ['%E9', 'A&', 'P17OD725']
+    );
+    assert.deepStrictEqual(problems, ['cannot read the link "http://[bad"']);
+  });
+});
+
+describe('the fewer-cells tie-break over several builds', () => {
+  const page = encSources({}, [PAGE]);
+  const job = (name: string): ArchiveJob => ({
+    source: PAGE.id,
+    url: `https://example.gov.pl/wp-content/uploads/2026/04/${name}.zip`,
+    version: '2026-04',
+    title: name
+  });
+  const archive = (j: ArchiveJob, cells: string[]): ArchiveResult =>
+    unitsForArchive(
+      j,
+      'zip',
+      cells.map((cell) => ({
+        path: `${cell}.000`,
+        scale: null,
+        edition: 6,
+        update: 0,
+        coverage: [SQUARE]
+      }))
+    );
+  const bundleA = job('BUNDLE_A');
+  const cellX = job('X');
+  const cellZ = job('Z');
+  const bundleC = job('BUNDLE_C');
+  const run = (
+    jobs: ArchiveJob[],
+    built: [ArchiveJob, string[]][],
+    previous: EncIndex | null
+  ): EncIndex =>
+    assembleEncIndex({
+      sources: page,
+      jobs,
+      built: new Map(built.map(([j, cells]) => [jobKey(j), archive(j, cells)])),
+      failed: new Map(),
+      noaa: null,
+      previous: previous ? readPublishedEncIndex(JSON.parse(JSON.stringify(previous)), null) : null,
+      now: new Date('2026-10-23T00:00:00Z')
+    }).index;
+
+  it('picks the same copy whether the bundle was read this run or reused', () => {
+    const first = run(
+      [bundleA, cellX, cellZ],
+      [
+        [bundleA, ['Y', 'X', 'Z']],
+        [cellX, ['X']],
+        [cellZ, ['Z']]
+      ],
+      null
+    );
+    // Bundle A keeps Y and gives X and Z to their own archives.
+    assert.deepStrictEqual(first.archives.find((a) => a.url === bundleA.url)?.shadowed, ['X', 'Z']);
+    const incremental = run([bundleA, cellX, cellZ, bundleC], [[bundleC, ['Y', 'Q']]], first);
+    const fresh = run(
+      [bundleA, cellX, cellZ, bundleC],
+      [
+        [bundleA, ['Y', 'X', 'Z']],
+        [cellX, ['X']],
+        [cellZ, ['Z']],
+        [bundleC, ['Y', 'Q']]
+      ],
+      null
+    );
+    const owner = (index: EncIndex) => index.units.find((u) => u.id === 'Y')?.cells[0].archive;
+    assert.strictEqual(owner(incremental), bundleC.url);
+    assert.strictEqual(owner(incremental), owner(fresh));
+    assert.strictEqual(computeEncIndexHash(incremental), computeEncIndexHash(fresh));
   });
 });

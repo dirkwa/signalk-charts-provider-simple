@@ -11,6 +11,28 @@
       "label": "US Inland Rivers Buoy Overlay (USACE)",
       "format": "usace-ienc-product-catalog",
       "catalog": "https://ienccloud.us/ienc/products/catalog/IENCBuoyProductsCatalog.xml"
+    },
+    {
+      "id": "PL_IENC_ODRA",
+      "label": "Poland Inland ENC (Odra, Szczecin IWA)",
+      "format": "html-links",
+      "catalog": "https://www.szczecin.uzs.gov.pl/ris-odra/elektroniczne-mapy-nawigacyjne/pobierz-mapy/",
+      "links": "^https://www\\.szczecin\\.uzs\\.gov\\.pl/wp-content/uploads/\\d{4}/\\d{2}/[^/]+\\.zip$"
+    },
+    {
+      "id": "CH_IENC_HOCHRHEIN",
+      "label": "Switzerland Inland ENC (Hochrhein)",
+      "format": "html-links",
+      "catalog": "https://port-of-switzerland.ch/hafenservice/schifffahrtsservice/inland-enc-hochrhein/",
+      "links": "^https://port-of-switzerland\\.ch/wp-content/uploads/\\d{4}/\\d{2}/ENC_Hochrhein[^/]*\\.zip$"
+    },
+    {
+      "id": "BE_IENC_WALLONIA",
+      "label": "Belgium Inland ENC (Wallonia)",
+      "format": "inspire-atom",
+      "catalog": "https://geoservices.wallonie.be/geotraitement/spwdatadownload/results/3d57a714-7786-4da0-a144-2813fcc8a0b1/atom_dataset.xml",
+      "links": "^https://geoservices\\.wallonie\\.be/geotraitement/spwdatadownload/results/3d57a714-7786-4da0-a144-2813fcc8a0b1/CARTE_IENC_[A-Z0-9]+_ENC_4326\\.zip$",
+      "attribution": "Source: Service public de Wallonie (SPW), Cartes de navigation électroniques (IENC), CC BY 4.0"
     }
   ]
 }

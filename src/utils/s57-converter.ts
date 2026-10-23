@@ -3,6 +3,7 @@ import https from 'https';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import unzipper from 'unzipper';
+import zlib from 'zlib';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -74,6 +75,11 @@ export function getAllConversionProgress(): ConversionProgressMap {
 
 export function setConversionFailed(chartNumber: string, message: string): void {
   setConversionResult(conversionProgress, chartNumber, 'failed', message);
+}
+
+/** Forget a conversion's progress and log, once its caller has kept what it needs. */
+export function clearConversionProgress(chartNumber: string): void {
+  delete conversionProgress[chartNumber];
 }
 
 export function setConversionCompleted(chartNumber: string, message: string): void {
@@ -274,7 +280,15 @@ interface ExportScriptOptions {
   inputPrefix?: string;
   /** Container path the GeoJSON output dir is reachable at. */
   outputPrefix?: string;
+  /** Write `${COMPLETE_MARKER_PREFIX}<cell>` for each cell exported without an error. */
+  markComplete?: boolean;
 }
+
+/**
+ * Prefix of the empty file the export writes for each cell it exported
+ * without an error, when asked to (`markComplete`).
+ */
+export const COMPLETE_MARKER_PREFIX = '.complete-';
 
 // Path inside the container where per-file ogr2ogr stderr is captured.
 // Without this, ogr2ogr failures get swallowed (they used to redirect to
@@ -282,7 +296,7 @@ interface ExportScriptOptions {
 // indistinguishable from "every chart failed for the same reason".
 // Surfaced into the user-visible conversion log when zero output files
 // land in /output.
-const EXPORT_ERROR_FILE_BASENAME = '.export-errors.log';
+export const EXPORT_ERROR_FILE_BASENAME = '.export-errors.log';
 /**
  * Container path the export script writes per-file ogr2ogr stderr to,
  * for the default `/output` mount.  The script computes the actual
@@ -308,6 +322,12 @@ export function buildExportScript(opts: ExportScriptOptions): string {
   const inDir = opts.inputPrefix ?? '/input';
   const outDir = opts.outputPrefix ?? '/output';
   const errLog = `${outDir}/${EXPORT_ERROR_FILE_BASENAME}`;
+  // With markComplete, a cell whose ogrinfo and every ogr2ogr succeeded gets
+  // an empty `${COMPLETE_MARKER_PREFIX}<cell>` file beside its output, so a
+  // caller keeping the output can tell a complete export from a partial one.
+  const markComplete = opts.markComplete
+    ? `  if [ "$failed" = 0 ]; then : > "${outDir}/${COMPLETE_MARKER_PREFIX}$name"; fi\n`
+    : '';
 
   if (parallel === 1) {
     return `
@@ -319,25 +339,29 @@ find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
-  layers=$(ogrinfo -so "$enc" 2>>${errLog} | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  failed=0
+  info=$(ogrinfo -so "$enc" 2>>${errLog}) || failed=1
+  layers=$(printf '%s\\n' "$info" | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
   for layer in $layers; do
     case "$layer" in ${skipPattern}) continue ;; esac
     outname="${multiBranch}"
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
+        "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || failed=1
     else
-      ogr2ogr -f GeoJSON "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
+      ogr2ogr -f GeoJSON "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || failed=1
     fi
   done
-done
+${markComplete}done
 echo "PROGRESS: Export complete"
 `;
   }
 
   // Parallel branch: fan out per-layer ogr2ogr via xargs -P.
   // The inner sh -c receives layer / enc / name / multi as positional args
-  // so we don't smuggle untrusted strings through shell quoting.
+  // so we don't smuggle untrusted strings through shell quoting. A failed
+  // ogr2ogr exits its inner shell with 1 (never 255, which would stop xargs
+  // early), so xargs fails and marks the cell; it never stops the export.
   const multiArg = opts.multiFile ? '1' : '0';
   return `
 set -e
@@ -348,7 +372,9 @@ find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
-  layers=$(ogrinfo -so "$enc" 2>>${errLog} | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  failed=0
+  info=$(ogrinfo -so "$enc" 2>>${errLog}) || failed=1
+  layers=$(printf '%s\\n' "$info" | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
   printf '%s\\n' $layers | xargs -P ${parallel} -I '{}' sh -c '
     layer="$1"
     enc="$2"
@@ -358,25 +384,29 @@ find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -
     if [ "$multi" = "1" ]; then outname="\${layer}_\${name}"; else outname="$layer"; fi
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
+        "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || exit 1
     else
-      ogr2ogr -f GeoJSON "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
+      ogr2ogr -f GeoJSON "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || exit 1
     fi
-  ' _ '{}' "$enc" "$name" "${multiArg}"
-done
+  ' _ '{}' "$enc" "$name" "${multiArg}" || failed=1
+${markComplete}done
 echo "PROGRESS: Export complete"
 `;
 }
 
 async function exportAllLayersToGeoJSON(
   encDir: string,
-  encFiles: string[],
+  encFiles: readonly string[],
   geojsonDir: string,
   chartNumber: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  // For the chart-set cache, which keeps output per cell: name every output
+  // `<LAYER>_<cell>.geojson`, even for one cell, and mark each cell exported
+  // without an error, so a partial export is never kept as complete.
+  perCell = false
 ): Promise<void> {
   const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
-  const multiFile = encFiles.length > 1;
+  const multiFile = perCell || encFiles.length > 1;
   const parallelism = getCpuBudget().gdalExportParallelism;
 
   // Translate the absolute host paths into (source, subPath) pairs the
@@ -410,7 +440,8 @@ async function exportAllLayersToGeoJSON(
     parallelism,
     skipLayers,
     inputPrefix,
-    outputPrefix
+    outputPrefix,
+    markComplete: perCell
   });
 
   const result = await runContainerJob({
@@ -538,7 +569,14 @@ type ConsolidatedLayer = { file: string; sourceFiles: string[] };
 // charts that don't follow the IHO Annex E filename convention (IENC,
 // hand-named) get no extension property and fall back to the global `-Z`.
 function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): ConsolidatedLayer[] {
-  const files = fs.readdirSync(geojsonDir).filter((f) => f.endsWith('.geojson'));
+  // `.geojson.gz` is what the chart-set cache keeps; it reads the same.
+  const files = fs
+    .readdirSync(geojsonDir)
+    .filter((f) => f.endsWith('.geojson') || f.endsWith('.geojson.gz'));
+  const readSource = (file: string): string => {
+    const bytes = fs.readFileSync(path.join(geojsonDir, file));
+    return (file.endsWith('.gz') ? zlib.gunzipSync(bytes) : bytes).toString('utf8');
+  };
 
   // Group by layer name. The export script writes 'LAYER_CHART.geojson' for
   // multi-chart bundles and 'LAYER.geojson' for single-chart. Many S-57 layer
@@ -550,10 +588,14 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
   const layerGroups = new Map<string, string[]>();
   for (const file of files) {
     const fullPath = path.join(geojsonDir, file);
-    if (fs.statSync(fullPath).size <= 100) {
+    // An empty FeatureCollection. A gzip file records its uncompressed size
+    // (modulo 2^32) in its last four bytes, which is enough to tell.
+    if (
+      (file.endsWith('.gz') ? gzipUncompressedSize(fullPath) : fs.statSync(fullPath).size) <= 100
+    ) {
       continue;
     }
-    const base = path.basename(file, '.geojson');
+    const base = path.basename(file.replace(/\.gz$/, ''), '.geojson');
     const underscore = base.lastIndexOf('_');
     const tailLooksLikeChartId = underscore !== -1 && /\d/.test(base.slice(underscore + 1));
     const layer = tailLooksLikeChartId ? base.slice(0, underscore) : base;
@@ -575,13 +617,13 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
       // Per-source-chart band → per-feature minzoom. Files in this source
       // share a band because they all come from the same chart cell, so the
       // band lookup is one-shot per source file.
-      const band = highestBandForFiles([source]);
+      const band = highestBandForFiles([source.replace(/\.gz$/, '')]);
       const bandFloor = band !== null ? BAND_MIN_ZOOM[band] : null;
       const featureMinzoom = bandFloor !== null ? Math.max(userMinzoom, bandFloor) : null;
 
       let parsed: { features?: unknown[] };
       try {
-        parsed = JSON.parse(fs.readFileSync(path.join(geojsonDir, source), 'utf8')) as {
+        parsed = JSON.parse(readSource(source)) as {
           features?: unknown[];
         };
       } catch {
@@ -605,6 +647,21 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
   }
 
   return consolidated;
+}
+
+function gzipUncompressedSize(file: string): number {
+  const handle = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(handle).size;
+    if (size < 4) {
+      return 0;
+    }
+    const tail = Buffer.alloc(4);
+    fs.readSync(handle, tail, 0, 4, size - 4);
+    return tail.readUInt32LE(0);
+  } finally {
+    fs.closeSync(handle);
+  }
 }
 
 // MVT properties must be scalar (string|number|bool). GDAL emits S-57 list
@@ -1070,6 +1127,81 @@ async function runTileJoin(
 }
 
 /**
+ * Fill one bucket's GeoJSON dir: from the caller's `geojsonFor` when it has
+ * the output already, otherwise by running GDAL on the bucket's cells.
+ *
+ * GDAL gets hardlinks of the cells in a bucket-scoped dir, so the export
+ * script (which walks `find <inDir> -name '*.000'`) only sees this bucket.
+ * Hardlinks keep IO cheap (no data copy) and — unlike symlinks — survive
+ * being bind-mounted into a container: a symlink target pointing at an
+ * absolute host path doesn't exist inside the container's filesystem
+ * namespace, so `find` would silently miss every cell. Copy is the
+ * fallback for the rare case where the scratch dir spans filesystems.
+ */
+async function geojsonForBucket(
+  encDir: string,
+  cells: readonly string[],
+  bucketEncDir: string,
+  bucketGeojsonDir: string,
+  chartNumber: string,
+  options: S57ConversionOptions
+): Promise<void> {
+  if (options.geojsonFor) {
+    await options.geojsonFor(cells, bucketGeojsonDir);
+    return;
+  }
+  fs.mkdirSync(bucketEncDir, { recursive: true });
+  for (const cellPath of cells) {
+    const cellRel = path.relative(encDir, cellPath);
+    const linkPath = path.join(bucketEncDir, cellRel);
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    try {
+      fs.linkSync(cellPath, linkPath);
+    } catch {
+      fs.copyFileSync(cellPath, linkPath);
+    }
+  }
+  await exportAllLayersToGeoJSON(
+    bucketEncDir,
+    cells,
+    bucketGeojsonDir,
+    chartNumber,
+    options.signal
+  );
+}
+
+/**
+ * Run GDAL on every cell under `encDir`, writing one `<LAYER>_<cell>.geojson`
+ * per layer and cell into `geojsonDir`, without making tiles. The chart-set
+ * cache keeps this output per cell, so an update runs GDAL only on the cells
+ * that changed. Progress and errors go to `chartNumber`'s conversion log.
+ */
+export async function exportS57CellsToGeoJSON(
+  encDir: string,
+  geojsonDir: string,
+  chartNumber: string,
+  signal?: AbortSignal
+): Promise<void> {
+  if (!getContainerManager()) {
+    throw new Error(
+      'signalk-container plugin is required for S-57 conversion. ' +
+        'Install it from the App Store and restart Signal K.'
+    );
+  }
+  await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
+  const encFiles = findEncFiles(encDir);
+  if (encFiles.length === 0) {
+    throw new Error('No S-57 ENC files (.000) found in the chart data');
+  }
+  fs.mkdirSync(geojsonDir, { recursive: true });
+  makeContainerWritable(geojsonDir);
+  // A fresh log, so it holds only what this export reports.
+  conversionProgress[chartNumber] = { status: 'converting', message: '', log: [] };
+  appendLog(chartNumber, `Exporting ${encFiles.length} changed cell(s) to GeoJSON...`);
+  await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber, signal, true);
+}
+
+/**
  * Per-band orchestrator: bucket the cells, run a separate
  * export → consolidate → tippecanoe pipeline for each band into its
  * own intermediate `.mbtiles`, then `tile-join` them into the final
@@ -1172,29 +1304,8 @@ async function runPerBandPipeline(
 
     const bandEncDir = path.join(tmpDir, `enc-band-${band}`);
     const bandGeojsonDir = path.join(tmpDir, `geojson-band-${band}`);
-    fs.mkdirSync(bandEncDir, { recursive: true });
     fs.mkdirSync(bandGeojsonDir, { recursive: true });
     makeContainerWritable(bandGeojsonDir);
-
-    // Hardlink each cell into the band-scoped dir so the export
-    // script (which walks `find <inDir> -name '*.000'`) only sees
-    // this band's cells.  Hardlinks keep IO cheap (no data copy)
-    // and — unlike symlinks — survive being bind-mounted into a
-    // container: a symlink target pointing at an absolute host
-    // path doesn't exist inside the container's filesystem
-    // namespace, so `find` would silently miss every cell.  Copy
-    // is the fallback for the rare case where tmpDir spans
-    // filesystems (e.g. /tmp on tmpfs but the encDir on disk).
-    for (const cellPath of cells) {
-      const cellRel = path.relative(encDir, cellPath);
-      const linkPath = path.join(bandEncDir, cellRel);
-      fs.mkdirSync(path.dirname(linkPath), { recursive: true });
-      try {
-        fs.linkSync(cellPath, linkPath);
-      } catch {
-        fs.copyFileSync(cellPath, linkPath);
-      }
-    }
 
     const bucketProgressPrefix = `[band ${band} ${bandIndex}/${totalBuckets}]`;
     const bucketLabel = `Band ${band}`;
@@ -1205,10 +1316,12 @@ async function runPerBandPipeline(
     );
     appendLog(
       chartNumber,
-      `${bucketProgressPrefix} Exporting ${cells.length} cell(s) to GeoJSON...`
+      options.geojsonFor
+        ? `${bucketProgressPrefix} Using the kept GeoJSON of ${cells.length} cell(s)`
+        : `${bucketProgressPrefix} Exporting ${cells.length} cell(s) to GeoJSON...`
     );
     emitBucket('export', bucketLabel, -1);
-    await exportAllLayersToGeoJSON(bandEncDir, cells, bandGeojsonDir, chartNumber, options.signal);
+    await geojsonForBucket(encDir, cells, bandEncDir, bandGeojsonDir, chartNumber, options);
 
     setProgress(
       chartNumber,
@@ -1233,23 +1346,8 @@ async function runPerBandPipeline(
     abortIfRequested();
     const unbandedEncDir = path.join(tmpDir, 'enc-unbanded');
     const unbandedGeojsonDir = path.join(tmpDir, 'geojson-unbanded');
-    fs.mkdirSync(unbandedEncDir, { recursive: true });
     fs.mkdirSync(unbandedGeojsonDir, { recursive: true });
     makeContainerWritable(unbandedGeojsonDir);
-
-    // Hardlink (not symlink) — see the band-loop above for the
-    // why: bind-mounted absolute symlink targets don't resolve
-    // inside the helper container.
-    for (const cellPath of grouping.unbanded) {
-      const cellRel = path.relative(encDir, cellPath);
-      const linkPath = path.join(unbandedEncDir, cellRel);
-      fs.mkdirSync(path.dirname(linkPath), { recursive: true });
-      try {
-        fs.linkSync(cellPath, linkPath);
-      } catch {
-        fs.copyFileSync(cellPath, linkPath);
-      }
-    }
 
     const bucketProgressPrefix = `[unbanded ${bandIndex}/${totalBuckets}]`;
     const bucketLabel = 'Other charts';
@@ -1260,15 +1358,18 @@ async function runPerBandPipeline(
     );
     appendLog(
       chartNumber,
-      `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s) to GeoJSON...`
+      options.geojsonFor
+        ? `${bucketProgressPrefix} Using the kept GeoJSON of ${grouping.unbanded.length} cell(s)`
+        : `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s) to GeoJSON...`
     );
     emitBucket('export', bucketLabel, -1);
-    await exportAllLayersToGeoJSON(
-      unbandedEncDir,
+    await geojsonForBucket(
+      encDir,
       grouping.unbanded,
+      unbandedEncDir,
       unbandedGeojsonDir,
       chartNumber,
-      options.signal
+      options
     );
 
     setProgress(
@@ -1427,7 +1528,11 @@ export async function processS57Directory(
         bucketLabel: 'Charts',
         bucketPercent: -1
       });
-      await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber, options.signal);
+      if (options.geojsonFor) {
+        await options.geojsonFor(encFiles, geojsonDir);
+      } else {
+        await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber, options.signal);
+      }
 
       statusFn('converting', 'Generating vector tiles...');
       setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');
