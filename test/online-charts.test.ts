@@ -186,6 +186,32 @@ describe('online charts', () => {
       assert.deepStrictEqual(provider?.bounds, [140, 9, -60, 72]);
     });
 
+    it('serves a kept 512 px tile layer through the plugin at its own tile size', () => {
+      const wmts = entry({
+        id: 'bluetopo-relief',
+        chart: {
+          type: 'tilelayer',
+          url: 'https://x.test/wmts?TILEMATRIX=EPSG:3857:{z}&TILEROW={y}&TILECOL={x}',
+          tileSize: 512,
+          defaultOpacity: 0.5
+        },
+        offline: {}
+      });
+      const provider = onlineChartProvider(
+        path.join(dir, 'bluetopo-relief.onlinechart.json'),
+        { catalogId: 'bluetopo-relief', name: 'BlueTopo Relief' },
+        () => wmts
+      );
+      assert.ok(provider);
+      assert.strictEqual(provider.tileSize, 512);
+      assert.strictEqual(provider._keepTiles, true);
+      assert.deepStrictEqual(provider.v2, {
+        url: '~tilePath~/bluetopo-relief/{z}/{x}/{y}',
+        layers: [],
+        tileSize: 512
+      });
+    });
+
     it('serves nothing when the catalog lacks the entry', () => {
       const provider = onlineChartProvider(
         path.join(dir, 'x.onlinechart.json'),
