@@ -16,7 +16,7 @@ const STRICT = { additionalProperties: false } as const;
 
 export const DirectSourceFormatSchema = Type.Union([Type.Literal('usace-ienc-product-catalog')], {
   description:
-    'The catalog format, which picks the adapter. "usace-ienc-product-catalog": the US Army Corps of Engineers’ IENC product catalog XML.'
+    'The catalog format, which picks the adapter. "usace-ienc-product-catalog": the US Army Corps of Engineers’ IENC product catalog XML (their river cells and their buoy overlay each have one).'
 });
 
 export const EncDirectSourceSchema = Type.Object(
@@ -91,31 +91,41 @@ function child(node: XmlNode | undefined, name: string): XmlNode | undefined {
 }
 
 /**
- * The catalog's MM/DD/YYYY date and HH:MM time as an ISO timestamp, so
- * versions sort and compare like chartcatalogs dates. The catalog gives no
- * time zone; the value is only ever compared with itself. '' when the date
- * cannot be read.
+ * The catalog's MM/DD/YYYY date and HH:MM[:SS] time as an ISO timestamp,
+ * so versions sort and compare like chartcatalogs dates. The catalog gives
+ * no time zone; the value is only ever compared with itself. '' when the
+ * date cannot be read.
  */
 export function usaceDateTime(date: string, time: string): string {
   const d = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(date);
   if (!d) {
     return '';
   }
-  const t = /^(\d{1,2}):(\d{2})$/.exec(time);
+  const t = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(time);
   const pad = (s: string): string => s.padStart(2, '0');
-  const clock = t ? `${pad(t[1])}:${t[2]}:00` : '00:00:00';
+  const clock = t ? `${pad(t[1])}:${t[2]}:${t[3] ?? '00'}` : '00:00:00';
   return `${d[3]}-${pad(d[1])}-${pad(d[2])}T${clock}Z`;
 }
+
+// USACE publishes one catalog per product, all in the same layout: the
+// river cells (IENCU37ProductCatalog), the buoy overlay
+// (IENCBuoyProductCatalog), and so on.
+const USACE_ROOT = /^IENC\w*ProductCatalog$/;
 
 /**
  * The S-57 archives a USACE IENC product catalog lists: each `<Cell>`'s
  * `<s57_file>`, versioned by its posting date and titled by its river and
- * stretch. Cells without an http(s) S-57 download are left out. Throws when
- * the document is not such a catalog.
+ * stretch. Cells without an http(s) S-57 download are left out.
+ *
+ * Throws when the document is not such a catalog, or when a cell's posting
+ * date cannot be read: an archive without a version would never be read
+ * again, so the whole source is left as published (with a warning) until
+ * the adapter learns the new form.
  */
 export async function parseUsaceIencCatalog(xml: string): Promise<DirectArchive[]> {
-  const parsed: unknown = await parseStringPromise(xml);
-  const root = (parsed as XmlNode | null)?.IENCU37ProductCatalog;
+  const parsed = (await parseStringPromise(xml)) as XmlNode | null;
+  const rootName = Object.keys(parsed ?? {}).find((key) => USACE_ROOT.test(key));
+  const root = rootName ? parsed?.[rootName] : undefined;
   if (root === null || typeof root !== 'object') {
     throw new Error('not a USACE IENC product catalog');
   }
@@ -133,11 +143,12 @@ export async function parseUsaceIencCatalog(xml: string): Promise<DirectArchive[
     const from = text(where, 'from');
     const to = text(where, 'to');
     const stretch = from && to ? `${from} to ${to}` : from || to;
-    archives.push({
-      url,
-      version: usaceDateTime(text(s57, 'date_posted'), text(s57, 'time_posted')),
-      title: [river, stretch].filter(Boolean).join(': ') || name
-    });
+    const posted = text(s57, 'date_posted');
+    const version = usaceDateTime(posted, text(s57, 'time_posted'));
+    if (!version) {
+      throw new Error(`${name || url}: cannot read the posting date "${posted}"`);
+    }
+    archives.push({ url, version, title: [river, stretch].filter(Boolean).join(': ') || name });
   }
   return archives;
 }

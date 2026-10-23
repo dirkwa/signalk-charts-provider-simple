@@ -5,6 +5,12 @@
       "label": "US Inland Rivers ENC (USACE)",
       "format": "usace-ienc-product-catalog",
       "catalog": "https://ienccloud.us/ienc/products/catalog/IENCU37ProductsCatalog.xml"
+    },
+    {
+      "id": "USACE_IENC_BUOYS",
+      "label": "US Inland Rivers Buoy Overlay (USACE)",
+      "format": "usace-ienc-product-catalog",
+      "catalog": "https://ienccloud.us/ienc/products/catalog/IENCBuoyProductsCatalog.xml"
     }
   ]
 }

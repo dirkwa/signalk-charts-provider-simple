@@ -49,7 +49,10 @@ function compareStrings(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** One chartcatalogs download: an archive (or bare cell) and the version it is listed at. */
+/**
+ * One download: an archive (or bare cell) listed by a chartcatalogs file or
+ * a direct source's catalog, and the version it is listed at.
+ */
 export interface ArchiveJob {
   source: string;
   url: string;
@@ -124,6 +127,29 @@ export function archiveJobs(
     }
   }
   return [...jobs.values()].sort((a, b) => compareStrings(jobKey(a), jobKey(b)));
+}
+
+/**
+ * The sources whose catalog could not be read this run, or listed nothing:
+ * a chartcatalogs file that failed to parse or is empty, or a direct
+ * source whose catalog could not be fetched or read (null) or is empty.
+ * Their published archives are kept rather than treated as withdrawn.
+ */
+export function unreadSources(
+  sources: readonly EncIndexSource[],
+  files: readonly { file: string; parsed: ParsedChartcatalogsXml | null }[],
+  direct: ReadonlyMap<string, readonly DirectArchive[] | null>
+): Set<string> {
+  const unread = new Set<string>();
+  for (const source of sources) {
+    if (source.file && !files.find((f) => f.file === source.file)?.parsed?.charts.length) {
+      unread.add(source.id);
+    }
+    if (source.kind === 'direct' && !direct.get(source.id)?.length) {
+      unread.add(source.id);
+    }
+  }
+  return unread;
 }
 
 // ---- Reading GDAL's report on an archive's cells ----
@@ -639,7 +665,7 @@ export function jobsToBuild(
 
 export interface EncIndexInputs {
   sources: readonly EncIndexSource[];
-  /** Every chartcatalogs archive the sources list today. */
+  /** Every archive the chartcatalogs and direct sources list today. */
   jobs: readonly ArchiveJob[];
   /** Archives read this run, by `jobKey`. */
   built: ReadonlyMap<string, ArchiveResult>;
@@ -648,7 +674,8 @@ export interface EncIndexInputs {
   /** NOAA's units, an error, or null when NOAA was not read this run. */
   noaa: NoaaResult | { error: string } | null;
   /**
-   * chartcatalogs sources whose catalog file could not be read, or listed
+   * Sources whose catalog (a chartcatalogs file or a direct source's own
+   * catalog) could not be read, or listed
    * nothing, this run. Their published archives are kept rather than
    * treated as withdrawn: a broken upstream file is far more likely than a
    * withdrawn source.
@@ -659,10 +686,12 @@ export interface EncIndexInputs {
 }
 
 /**
- * The source whose copy of a cell wins when several publish it. EuRIS
- * republishes most European national producers' cells, one cell per
- * download and usually newer than the national catalogs, so a national
- * source only contributes the cells EuRIS lacks.
+ * The chartcatalogs source whose copy of a cell wins over other
+ * chartcatalogs sources. EuRIS republishes most European national
+ * producers' cells, one cell per download and usually newer than the
+ * national catalogs, so a national source only contributes the cells EuRIS
+ * lacks. A direct source's copy wins over both: it comes from the
+ * producer's own catalog, whose dates track the producer's reissues.
  */
 export const PREFERRED_SOURCE = 'EURIS_IENC_Catalog';
 
@@ -832,6 +861,12 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
   const versionOf = new Map(archives.map((a) => [jobKey(a), a.version]));
   const archiveVersion = (u: EncIndexUnit): string =>
     versionOf.get(jobKey({ source: u.source, url: u.cells[0].archive })) ?? '';
+  // Which copy of a cell wins: a direct source's, then EuRIS's, then the
+  // newest. Decided by source, not by version, because a chartcatalogs
+  // copy's version can be years stale.
+  const directIds = new Set(inputs.sources.filter((s) => s.kind === 'direct').map((s) => s.id));
+  const precedence = (u: EncIndexUnit): number =>
+    directIds.has(u.source) ? 2 : u.source === PREFERRED_SOURCE ? 1 : 0;
   const kept = new Map<string, EncIndexUnit>();
   for (const unit of units) {
     const key = unit.source === NOAA_SOURCE_ID ? `${NOAA_SOURCE_ID} ${unit.id}` : unit.id;
@@ -841,7 +876,7 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
       continue;
     }
     const order =
-      Number(unit.source === PREFERRED_SOURCE) - Number(other.source === PREFERRED_SOURCE) ||
+      precedence(unit) - precedence(other) ||
       compareStrings(unit.cells[0].version ?? '', other.cells[0].version ?? '') ||
       compareStrings(archiveVersion(unit), archiveVersion(other)) ||
       compareStrings(other.cells[0].archive, unit.cells[0].archive);

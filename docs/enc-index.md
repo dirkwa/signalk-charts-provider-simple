@@ -43,11 +43,13 @@ each cell is, is to download every archive and read each cell's `M_COVR`
   grid squares its features fall in. The USACE buoy overlay, one cell covering
   the US inland rivers, then outlines the rivers rather than a box from the
   Gulf of Mexico to the Great Lakes.
-- **One unit per cell.** EuRIS republishes most European national producers'
-  cells, one cell per download and usually newer than the national catalogs.
-  A cell several sources publish appears once, from EuRIS when it has it, so
-  a national source contributes only the cells EuRIS lacks. Among the
-  others, the newest edition wins. An archive records the cells it leaves to
+- **One unit per cell.** A cell several sources publish appears once. A
+  direct source's copy wins (see below), then EuRIS's: EuRIS republishes most
+  European national producers' cells, one cell per download and usually newer
+  than the national catalogs, so a national source contributes only the cells
+  EuRIS lacks. Among the others, the newest edition wins. The order is by
+  source, not by version, because a chartcatalogs copy's date can be years
+  stale. An archive records the cells it leaves to
   another source in `shadowed`; if that source stops publishing one, the
   archive is read again and its own copy comes back.
 - **Updates published separately.** A few sources publish update files
@@ -82,17 +84,27 @@ outline on the river while keeping the file small.
 
 ## Direct sources
 
-Some producers publish a machine-readable catalog of their own ENCs that
-chartcatalogs does not carry. The US Army Corps of Engineers' inland river
-cells are one: chartcatalogs lists only their buoy overlay. The builder reads
-such catalogs itself, so a new source does not wait on chartcatalogs.
+Some producers publish a machine-readable catalog of their own ENCs. The
+builder reads such catalogs itself, so a new source does not wait on
+chartcatalogs, and its versions follow the producer's reissues.
+
+- The US Army Corps of Engineers' inland river cells are one; chartcatalogs
+  does not carry them.
+- USACE's buoy overlay is another. chartcatalogs lists it too, but with a
+  date that has not moved in years while USACE reissues the overlay as buoys
+  move.
+- A direct source's copy of a cell wins over a chartcatalogs copy. The
+  chartcatalogs archive records the cell as shadowed, so its copy returns if
+  the direct source ever stops publishing it.
 
 - `catalog/enc-direct-sources.json` lists them by hand, checked against a
   strict schema (`src/catalog/enc-direct-sources.ts`): an id, a label, the
   catalog's format and its URL.
 - Each format has one adapter in that module, which turns the producer's
   catalog into the list of archives the source offers, each with the
-  catalog's own date for it. From there a direct source is built like any
+  catalog's own date for it. A catalog that cannot be fetched or read, or
+  whose dates the adapter cannot read, leaves the source as published, with
+  a warning. From there a direct source is built like any
   other: coverage from `M_COVR`, a version per cell, reuse while the date is
   unchanged, carry-forward when the catalog or an archive cannot be read,
   the drop guard and one unit per cell.
@@ -111,8 +123,8 @@ merged catalog, because a Pages deployment replaces the whole site.
 `src/catalog/enc-index-cli.ts` is the I/O around it.
 
 - **The published index is the build's state.** `archives` records the version
-  each archive was read at: NOAA's `enc_ed_up`, or the chartcatalogs
-  `zipfile_datetime_iso8601`. A run downloads only archives whose version
+  each archive was read at: NOAA's `enc_ed_up`, the chartcatalogs
+  `zipfile_datetime_iso8601`, or a direct source's catalog date. A run downloads only archives whose version
   changed, so after the first build a run costs a few downloads.
 - **Rules have a revision.** Each archive also records `ARCHIVE_REVISION`. When
   a change to the outline rules would give different units for the same
