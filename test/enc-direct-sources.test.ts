@@ -170,6 +170,14 @@ describe('USACE IENC product catalog', () => {
     assert.deepStrictEqual(problems, ['U37AG001: cannot read the posting date "2026-06-30 9:40"']);
   });
 
+  it('refuses dates and times that are well formed but not real', () => {
+    assert.strictEqual(usaceDateTime('02/30/2026', ''), '');
+    assert.strictEqual(usaceDateTime('13/01/2026', ''), '');
+    assert.strictEqual(usaceDateTime('01/02/2026', '25:00'), '');
+    assert.strictEqual(usaceDateTime('01/02/2026', '12:60'), '');
+    assert.strictEqual(usaceDateTime('02/29/2028', '23:59:59'), '2028-02-29T23:59:59Z');
+  });
+
   it('does not take a time it cannot read for midnight', () => {
     assert.strictEqual(usaceDateTime('10/21/2026', '2:28 PM'), '');
     assert.strictEqual(usaceDateTime('10/21/2026', ''), '2026-10-21T00:00:00Z');

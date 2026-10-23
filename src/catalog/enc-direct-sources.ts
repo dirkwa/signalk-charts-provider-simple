@@ -101,12 +101,24 @@ function child(node: XmlNode | undefined, name: string): XmlNode | undefined {
  * The catalog's MM/DD/YYYY date and HH:MM[:SS] time as an ISO timestamp,
  * so versions sort and compare like chartcatalogs dates. The catalog gives
  * no time zone; the value is only ever compared with itself. An empty time
- * is midnight. '' when the date, or a time that is given, cannot be read.
+ * is midnight. '' when the date, or a time that is given, cannot be read or
+ * is not a real calendar date or clock time.
  */
 export function usaceDateTime(date: string, time: string): string {
   const d = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(date);
   const t = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(time);
   if (!d || (time !== '' && !t)) {
+    return '';
+  }
+  // The shape is not enough: 02/30 or 25:00 must not pass for a real time.
+  const [year, month, day] = [Number(d[3]), Number(d[1]), Number(d[2])];
+  const [hours, minutes, seconds] = t ? [Number(t[1]), Number(t[2]), Number(t[3] ?? 0)] : [0, 0, 0];
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  const realDate =
+    calendar.getUTCFullYear() === year &&
+    calendar.getUTCMonth() === month - 1 &&
+    calendar.getUTCDate() === day;
+  if (!realDate || hours > 23 || minutes > 59 || seconds > 59) {
     return '';
   }
   const pad = (s: string): string => s.padStart(2, '0');
