@@ -155,6 +155,12 @@ the user picked.
   reissued base (update 40, with no `.001` to `.040` beside it) gets `.041`
   as `.001`. The set records the cell's version with the update number it
   reached.
+- **Entries it cannot read.** Following the compatibility policy, the plugin
+  skips an entry it cannot interpret, such as an archive kind its downloader
+  does not know, and the units that need it. A chart set that selected such
+  a unit says it needs a newer plugin and will not rebuild without it. A
+  non-NOAA unit with a NOAA unit's id is also left out: it is a copy of
+  NOAA's own cell, which the NOAA box brings in.
 - **Update status.** A set is out of date when any of its cells' versions in
   the index differs from the version recorded at download, or its units
   bring in different cells. The same rule applies to every source.

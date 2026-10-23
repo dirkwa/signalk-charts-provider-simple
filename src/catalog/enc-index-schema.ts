@@ -158,12 +158,47 @@ export const EncIndexSchema = Type.Object({
   units: Type.Array(EncIndexUnitSchema)
 });
 
+/**
+ * What a consumer such as this plugin needs from each entry, and nothing
+ * more. The schemas above close some value lists (a source's `kind`, the
+ * scale as an integer) that the compatibility policy lets grow, so reading
+ * a published file against them would drop entries over a change the
+ * consumer never reads. Only what the plugin acts on is strict: an archive
+ * `kind` the downloader cannot handle, or an outline it cannot draw.
+ */
+export const EncIndexSourceReadSchema = Type.Object({
+  id: Type.String({ minLength: 1 }),
+  label: Type.String({ minLength: 1 })
+});
+
+export const EncIndexArchiveReadSchema = Type.Object({
+  url: HttpOrHttpsUrl,
+  source: Type.String({ minLength: 1 }),
+  version: Type.String(),
+  kind: Type.Union([Type.Literal('zip'), Type.Literal('cell')]),
+  updates: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
+});
+
+export const EncIndexUnitReadSchema = Type.Object({
+  source: Type.String({ minLength: 1 }),
+  id: Type.String({ minLength: 1 }),
+  title: Type.String(),
+  scale: Type.Optional(Type.Number()),
+  bbox: BboxSchema,
+  outline: EncOutlineSchema,
+  cells: Type.Array(EncIndexCellSchema, { minItems: 1 }),
+  statusCells: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })
+});
+
 export type EncOutline = Static<typeof EncOutlineSchema>;
 export type EncIndexSource = Static<typeof EncIndexSourceSchema>;
 export type EncIndexArchive = Static<typeof EncIndexArchiveSchema>;
 export type EncIndexCell = Static<typeof EncIndexCellSchema>;
 export type EncIndexUnit = Static<typeof EncIndexUnitSchema>;
 export type EncIndex = Static<typeof EncIndexSchema>;
+export type EncIndexSourceRead = Static<typeof EncIndexSourceReadSchema>;
+export type EncIndexArchiveRead = Static<typeof EncIndexArchiveReadSchema>;
+export type EncIndexUnitRead = Static<typeof EncIndexUnitReadSchema>;
 
 /** The schema as published next to the index, with its own `$id`. */
 export function publishedEncIndexJsonSchema(id: string): Record<string, unknown> {

@@ -4610,6 +4610,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     updateReasons: string[];
     boxStates: Record<string, string>;
     missingUnitIds: string[];
+    unreadableUnitIds: string[];
   } {
     const chartPath = props.chartPath || defaultChartsPath;
     const index = getEncIndex();
@@ -4620,7 +4621,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         includedCount: catalog.includedChartIds.length,
         updateReasons: [],
         boxStates: {},
-        missingUnitIds: []
+        missingUnitIds: [],
+        unreadableUnitIds: []
       };
     }
     const resolution = resolveChartSet(index, catalog);
@@ -4641,7 +4643,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       boxStates: boxStatesForCatalog(catalog, resolution, mbtilesPresent),
       // Selected units the index no longer lists have nothing on the map to
       // click, so the UI offers to remove them.
-      missingUnitIds: resolution.missingSelected
+      missingUnitIds: resolution.missingSelected,
+      // Selected units listed in a form this version cannot read: the user
+      // updates the plugin, and must not be offered to remove them.
+      unreadableUnitIds: resolution.unreadableSelected
     };
   }
 
@@ -4688,6 +4693,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           );
         }
         const resolution = resolveChartSet(index, catalog);
+        // Building without units this version cannot read would replace the
+        // chart with one missing their cells; keep the old one instead.
+        if (resolution.unreadableSelected.length > 0) {
+          throw new Error(
+            `${String(resolution.unreadableSelected.length)} selected area(s) need a newer ` +
+              `version of this plugin (${resolution.unreadableSelected.join(', ')}). ` +
+              'Update it from the App Store, then download again.'
+          );
+        }
         if (resolution.cells.length === 0) {
           throw new Error('No ENC charts match the selected chart areas');
         }

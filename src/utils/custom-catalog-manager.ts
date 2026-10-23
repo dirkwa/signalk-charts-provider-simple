@@ -371,6 +371,9 @@ export function evaluateFreshness(
   if (resolution.missingSelected.length > 0) {
     reasons.push(`No longer published: ${resolution.missingSelected.join(', ')}`);
   }
+  if (resolution.unreadableSelected.length > 0) {
+    reasons.push(`Needs a newer plugin version: ${resolution.unreadableSelected.join(', ')}`);
+  }
 
   // Coverage set changed (a NOAA box overlap brought in or dropped a cell, or
   // the selection changed). A set never downloaded has nothing to compare.

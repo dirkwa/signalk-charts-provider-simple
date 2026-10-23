@@ -11,16 +11,16 @@
 
 import fs from 'fs';
 import path from 'path';
-import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import {
   ENC_INDEX_SCHEMA_VERSION,
-  EncIndexCellSchema,
-  EncOutlineSchema,
-  type EncIndexArchive,
-  type EncIndexUnit
+  EncIndexArchiveReadSchema,
+  EncIndexSourceReadSchema,
+  EncIndexUnitReadSchema,
+  type EncIndexArchiveRead,
+  type EncIndexSourceRead,
+  type EncIndexUnitRead
 } from '../catalog/enc-index-schema.js';
-import { BboxSchema } from '../catalog/merged-catalog-schema.js';
 import type { CatalogStatus, DebugFunction } from '../types.js';
 import { buildEncIndexLookup, type EncIndexLookup } from './enc-chart-set.js';
 
@@ -35,40 +35,8 @@ const FETCH_TIMEOUT_MS = 120000;
 // The index is republished at most every few hours, like the catalog.
 const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
-/**
- * What this plugin needs from each entry, and nothing more. The published
- * schema closes some value lists (a source's `kind`, the scale as an
- * integer) that the compatibility policy lets grow, so checking against it
- * would drop entries over a change this version never reads. Only what the
- * plugin acts on is strict: an archive `kind` the downloader cannot handle,
- * or an outline it cannot draw, makes the entry unreadable.
- */
-const SourceReadSchema = Type.Object({
-  id: Type.String({ minLength: 1 }),
-  label: Type.String({ minLength: 1 })
-});
-
-const ArchiveReadSchema = Type.Object({
-  url: Type.String({ pattern: '^https?://' }),
-  source: Type.String({ minLength: 1 }),
-  version: Type.String(),
-  kind: Type.Union([Type.Literal('zip'), Type.Literal('cell')]),
-  updates: Type.Optional(Type.Array(Type.String({ minLength: 1 })))
-});
-
-const UnitReadSchema = Type.Object({
-  source: Type.String({ minLength: 1 }),
-  id: Type.String({ minLength: 1 }),
-  title: Type.String(),
-  scale: Type.Optional(Type.Number()),
-  bbox: BboxSchema,
-  outline: EncOutlineSchema,
-  cells: Type.Array(EncIndexCellSchema, { minItems: 1 }),
-  statusCells: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })
-});
-
 /** A source as the tab shows it. */
-export type EncIndexSourceInfo = Static<typeof SourceReadSchema>;
+export type EncIndexSourceInfo = EncIndexSourceRead;
 
 /** The downloaded index, reduced to the entries this plugin can read. */
 export interface LoadedEncIndex extends EncIndexLookup {
@@ -77,7 +45,7 @@ export interface LoadedEncIndex extends EncIndexLookup {
   generatedAt: string;
   contentHash: string;
   sources: EncIndexSourceInfo[];
-  units: EncIndexUnit[];
+  units: EncIndexUnitRead[];
 }
 
 interface CacheMeta {
@@ -157,20 +125,26 @@ export function interpretEncIndex(raw: unknown): InterpretedEncIndex {
     }
     return out;
   };
-  const sources = keep(obj.sources as unknown[], (x): x is EncIndexSourceInfo =>
-    Value.Check(SourceReadSchema, x)
+  const sources = keep(obj.sources as unknown[], (x): x is EncIndexSourceRead =>
+    Value.Check(EncIndexSourceReadSchema, x)
   ).map((s) => ({ id: s.id, label: s.label }));
-  const archives = keep(obj.archives as unknown[], (x): x is EncIndexArchive =>
-    Value.Check(ArchiveReadSchema, x)
+  const archives = keep(obj.archives as unknown[], (x): x is EncIndexArchiveRead =>
+    Value.Check(EncIndexArchiveReadSchema, x)
   );
   // A unit whose cells name an archive that was skipped could be selected
-  // but not downloaded, so it goes too.
+  // but not downloaded, so it goes too. Its id is kept: a set that selected
+  // it needs a newer plugin, which is not the same as the unit being gone.
   const archiveUrls = new Set(archives.map((a) => a.url));
-  const units = keep(
-    obj.units as unknown[],
-    (x): x is EncIndexUnit =>
-      Value.Check(UnitReadSchema, x) && x.cells.every((c) => archiveUrls.has(c.archive))
-  );
+  const unreadableUnitIds = new Set<string>();
+  const units = keep(obj.units as unknown[], (x): x is EncIndexUnitRead => {
+    const readable =
+      Value.Check(EncIndexUnitReadSchema, x) && x.cells.every((c) => archiveUrls.has(c.archive));
+    const id = (x as { id?: unknown } | null)?.id;
+    if (!readable && typeof id === 'string') {
+      unreadableUnitIds.add(id);
+    }
+    return readable;
+  });
   return {
     ok: true,
     index: {
@@ -178,7 +152,7 @@ export function interpretEncIndex(raw: unknown): InterpretedEncIndex {
       contentHash: obj.contentHash,
       sources,
       units,
-      ...buildEncIndexLookup(units, archives)
+      ...buildEncIndexLookup(units, archives, unreadableUnitIds)
     },
     skipped
   };

@@ -21,6 +21,7 @@ import {
   interpretEncIndex,
   refreshEncIndex
 } from '../dist/utils/enc-index-manager.js';
+import { resolveChartSet } from '../dist/utils/enc-chart-set.js';
 
 function sampleIndex(extraUnits: unknown[] = []) {
   return {
@@ -127,6 +128,13 @@ describe('interpretEncIndex', () => {
     assert.ok(result.ok);
     assert.strictEqual(result.index.units.length, 0);
     assert.strictEqual(result.skipped, 2);
+    // A set that picked the unit needs a newer plugin; the unit is not gone.
+    const r = resolveChartSet(result.index, {
+      selectedBand4ChartIds: [],
+      selectedUnitIds: ['1H7D1430', 'XX7GONE0']
+    });
+    assert.deepStrictEqual(r.unreadableSelected, ['1H7D1430']);
+    assert.deepStrictEqual(r.missingSelected, ['XX7GONE0']);
   });
 
   it('refuses a newer format, and a file that is not an index', () => {
@@ -186,6 +194,18 @@ describe('downloading the index', () => {
     await refreshEncIndex();
     assert.deepStrictEqual(requests, [{ etag: undefined }, { etag: '"v1"' }]);
     assert.strictEqual(getEncIndex()?.units.length, 1);
+  });
+
+  it('revalidates the saved copy after a restart, and a 304 keeps the map', async () => {
+    initEncIndexManager(dataDir, () => {});
+    requests = [];
+    await refreshEncIndex();
+    assert.deepStrictEqual(requests, [{ etag: '"v1"' }]);
+    assert.strictEqual(getEncIndexStatus().status, 'ok');
+    const before = getEncMapPayload();
+    assert.ok(before !== null);
+    await refreshEncIndex();
+    assert.strictEqual(getEncMapPayload(), before);
   });
 
   it('keeps working from the saved copy when the server is unreachable', async () => {

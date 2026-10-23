@@ -74,6 +74,8 @@ interface CustomCatalog {
   boxStates: Record<string, string>;
   // Selected units the index no longer lists (nothing to click on the map).
   missingUnitIds: string[];
+  // Selected units the index lists in a form this version cannot read.
+  unreadableUnitIds: string[];
 }
 
 interface CatalogProgress {
@@ -1044,6 +1046,10 @@ function renderDetail(): void {
     detail.innerHTML = `<div class="cc-detail-empty">Select or create a chart set, then click chart areas on the map.</div>`;
     return;
   }
+  // The banners below say these already.
+  const shownReasons = cat.updateReasons.filter(
+    (r) => !r.startsWith('No longer published:') && !r.startsWith('Needs a newer plugin version:')
+  );
   detail.innerHTML = `
     <div class="cc-detail-name">${ccEscHtml(cat.name)}</div>
     <div class="cc-detail-status cc-status-${ccStatusClass(cat)}">${ccEscHtml(ccStatusLabel(cat))}</div>
@@ -1055,10 +1061,13 @@ function renderDetail(): void {
         : ''
     }
     ${
-      cat.updateReasons.length > 0
-        ? `<ul class="cc-reasons">${cat.updateReasons
-            .map((r) => `<li>${ccEscHtml(r)}</li>`)
-            .join('')}</ul>`
+      cat.unreadableUnitIds.length > 0
+        ? `<div class="cc-missing">${cat.unreadableUnitIds.length} selected area(s) need a newer version of this plugin. Update it from the App Store.</div>`
+        : ''
+    }
+    ${
+      shownReasons.length > 0
+        ? `<ul class="cc-reasons">${shownReasons.map((r) => `<li>${ccEscHtml(r)}</li>`).join('')}</ul>`
         : ''
     }
     ${

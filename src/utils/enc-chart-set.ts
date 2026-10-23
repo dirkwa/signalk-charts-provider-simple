@@ -14,8 +14,8 @@
 
 import {
   NOAA_SOURCE_ID,
-  type EncIndexArchive,
-  type EncIndexUnit
+  type EncIndexArchiveRead,
+  type EncIndexUnitRead
 } from '../catalog/enc-index-schema.js';
 
 /** An update file published in another archive than its cell's (see `archives[].updates`). */
@@ -30,11 +30,17 @@ export interface SeparateUpdate {
 
 /** The ENC index reduced to the lookups a chart set needs. */
 export interface EncIndexLookup {
-  noaaUnits: ReadonlyMap<string, EncIndexUnit>;
-  otherUnits: ReadonlyMap<string, EncIndexUnit>;
-  archives: ReadonlyMap<string, EncIndexArchive>;
+  noaaUnits: ReadonlyMap<string, EncIndexUnitRead>;
+  otherUnits: ReadonlyMap<string, EncIndexUnitRead>;
+  archives: ReadonlyMap<string, EncIndexArchiveRead>;
   /** Keyed by `separateUpdateKey(source, cell)`, in no particular order. */
   separateUpdates: ReadonlyMap<string, SeparateUpdate[]>;
+  /**
+   * Ids of unit entries the index has but this version could not read (an
+   * archive kind or outline it does not know). A set that selected one needs
+   * a newer plugin; the unit is not gone.
+   */
+  unreadableUnitIds: ReadonlySet<string>;
 }
 
 export interface ChartSetSelection {
@@ -68,6 +74,8 @@ export interface ChartSetResolution {
   chartVersions: Record<string, string>;
   /** Selected unit ids the index no longer lists. */
   missingSelected: string[];
+  /** Selected unit ids the index lists in a form this version cannot read. */
+  unreadableSelected: string[];
   /** Selected unit id → the cells whose state is shown as the unit's own. */
   coverageByUnit: Record<string, string[]>;
 }
@@ -89,11 +97,12 @@ const UPDATE_FILE = /^([^/]+)\.(\d{3})$/;
  * which the NOAA box already brings in.
  */
 export function buildEncIndexLookup(
-  units: readonly EncIndexUnit[],
-  archives: readonly EncIndexArchive[]
+  units: readonly EncIndexUnitRead[],
+  archives: readonly EncIndexArchiveRead[],
+  unreadableUnitIds: ReadonlySet<string> = new Set()
 ): EncIndexLookup {
-  const noaaUnits = new Map<string, EncIndexUnit>();
-  const otherUnits = new Map<string, EncIndexUnit>();
+  const noaaUnits = new Map<string, EncIndexUnitRead>();
+  const otherUnits = new Map<string, EncIndexUnitRead>();
   for (const unit of units) {
     if (unit.source === NOAA_SOURCE_ID && !noaaUnits.has(unit.id)) {
       noaaUnits.set(unit.id, unit);
@@ -104,7 +113,7 @@ export function buildEncIndexLookup(
       otherUnits.set(unit.id, unit);
     }
   }
-  const archiveByUrl = new Map<string, EncIndexArchive>();
+  const archiveByUrl = new Map<string, EncIndexArchiveRead>();
   const separateUpdates = new Map<string, SeparateUpdate[]>();
   for (const archive of archives) {
     archiveByUrl.set(archive.url, archive);
@@ -120,7 +129,7 @@ export function buildEncIndexLookup(
       separateUpdates.set(key, list);
     }
   }
-  return { noaaUnits, otherUnits, archives: archiveByUrl, separateUpdates };
+  return { noaaUnits, otherUnits, archives: archiveByUrl, separateUpdates, unreadableUnitIds };
 }
 
 /** Edition and update number of a version token such as `US4FL1EP_ED003_UP012`. */
@@ -139,7 +148,7 @@ export function formatCellVersion(name: string, edition: number, update: number)
   return `${name}_ED${String(edition).padStart(3, '0')}_UP${String(update).padStart(3, '0')}`;
 }
 
-function archiveTime(archive: EncIndexArchive | undefined): number {
+function archiveTime(archive: EncIndexArchiveRead | undefined): number {
   const t = archive ? Date.parse(archive.version) : NaN;
   return Number.isFinite(t) ? t : NaN;
 }
@@ -193,14 +202,17 @@ export function separateUpdatesFor(
 function selectedUnits(
   lookup: EncIndexLookup,
   selection: ChartSetSelection
-): { units: EncIndexUnit[]; missing: string[] } {
-  const units: EncIndexUnit[] = [];
+): { units: EncIndexUnitRead[]; missing: string[]; unreadable: string[] } {
+  const units: EncIndexUnitRead[] = [];
   const missing: string[] = [];
-  const pick = (ids: readonly string[], from: ReadonlyMap<string, EncIndexUnit>): void => {
+  const unreadable: string[] = [];
+  const pick = (ids: readonly string[], from: ReadonlyMap<string, EncIndexUnitRead>): void => {
     for (const id of ids) {
       const unit = from.get(id);
       if (unit) {
         units.push(unit);
+      } else if (lookup.unreadableUnitIds.has(id)) {
+        unreadable.push(id);
       } else {
         missing.push(id);
       }
@@ -208,7 +220,7 @@ function selectedUnits(
   };
   pick(selection.selectedBand4ChartIds, lookup.noaaUnits);
   pick(selection.selectedUnitIds, lookup.otherUnits);
-  return { units, missing };
+  return { units, missing, unreadable };
 }
 
 /**
@@ -219,7 +231,7 @@ export function resolveChartSet(
   lookup: EncIndexLookup,
   selection: ChartSetSelection
 ): ChartSetResolution {
-  const { units, missing } = selectedUnits(lookup, selection);
+  const { units, missing, unreadable } = selectedUnits(lookup, selection);
   const byName = new Map<string, PlannedCell>();
   const coverageByUnit: Record<string, string[]> = {};
   for (const unit of units) {
@@ -256,6 +268,7 @@ export function resolveChartSet(
     includedChartIds: cells.map((c) => c.name),
     chartVersions,
     missingSelected: missing,
+    unreadableSelected: unreadable,
     coverageByUnit
   };
 }
