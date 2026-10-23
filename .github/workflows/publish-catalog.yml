@@ -88,6 +88,7 @@ jobs:
           node dist/catalog/enc-index-cli.js \
             --chartcatalogs "$RUNNER_TEMP/chartcatalogs" \
             --index catalog/chartcatalogs-index.json \
+            --direct-sources catalog/enc-direct-sources.json \
             --out "$RUNNER_TEMP/site" \
             --published-url "https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/enc-index.json" \
             --max-minutes 240 \

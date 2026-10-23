@@ -3,8 +3,9 @@
 The ENC index lists every free ENC (Electronic Navigational Chart) as a map of
 **selectable units**. Each unit has an outline to draw and click, and the S-57
 cells that picking it brings in. Each cell has the archive it downloads from
-and its path inside that archive. One index covers NOAA and every chartcatalogs
-source whose format is `enc` in `catalog/chartcatalogs-index.json`.
+and its path inside that archive. One index covers NOAA, every chartcatalogs
+source whose format is `enc` in `catalog/chartcatalogs-index.json`, and the
+direct sources in `catalog/enc-direct-sources.json` (see below).
 
 It is published next to the merged chart catalog (`docs/chart-catalog.md`) as
 `enc-index.json`, with its JSON Schema as `enc-index.schema.json`. It follows
@@ -42,11 +43,13 @@ each cell is, is to download every archive and read each cell's `M_COVR`
   grid squares its features fall in. The USACE buoy overlay, one cell covering
   the US inland rivers, then outlines the rivers rather than a box from the
   Gulf of Mexico to the Great Lakes.
-- **One unit per cell.** EuRIS republishes most European national producers'
-  cells, one cell per download and usually newer than the national catalogs.
-  A cell several sources publish appears once, from EuRIS when it has it, so
-  a national source contributes only the cells EuRIS lacks. Among the
-  others, the newest edition wins. An archive records the cells it leaves to
+- **One unit per cell.** A cell several sources publish appears once. A
+  direct source's copy wins (see below), then EuRIS's: EuRIS republishes most
+  European national producers' cells, one cell per download and usually newer
+  than the national catalogs, so a national source contributes only the cells
+  EuRIS lacks. Among the others, the newest edition wins. The order is by
+  source, not by version, because a chartcatalogs copy's date can be years
+  stale. An archive records the cells it leaves to
   another source in `shadowed`; if that source stops publishing one, the
   archive is read again and its own copy comes back.
 - **Updates published separately.** A few sources publish update files
@@ -79,6 +82,44 @@ Outlines keep exterior rings only and are simplified with one fixed tolerance
 and rounding (`src/catalog/enc-outline.ts`), fine enough to keep a river's
 outline on the river while keeping the file small.
 
+## Direct sources
+
+Some producers publish a machine-readable catalog of their own ENCs. The
+builder reads such catalogs itself, so a new source does not wait on
+chartcatalogs, and its versions follow the producer's reissues.
+
+- The US Army Corps of Engineers' inland river cells are one; chartcatalogs
+  does not carry them.
+- USACE's buoy overlay is another. chartcatalogs lists it too, but with a
+  date that has not moved in years while USACE reissues the overlay as buoys
+  move.
+- A direct source's copy of a cell wins over a chartcatalogs copy. The
+  chartcatalogs archive records the cell as shadowed. Its copy returns when
+  the cell leaves a direct catalog that still lists others, or when the
+  source is removed from the list. A direct catalog that lists nothing at all
+  counts as unreadable, so it keeps what is published.
+
+How they are configured and read:
+
+- `catalog/enc-direct-sources.json` lists them by hand, checked against a
+  strict schema (`src/catalog/enc-direct-sources.ts`): an id, a label, the
+  catalog's format and its URL.
+- Each format has one adapter in that module, which turns the producer's
+  catalog into the list of archives the source offers, each with the
+  catalog's own date for it. A catalog that cannot be fetched or read leaves
+  the source as published, with a warning; an entry whose date cannot be read
+  is versioned by its raw text, with a warning, so the rest of the source
+  keeps updating. From there a direct source is built like any other:
+  coverage from `M_COVR`, a version per cell, reuse while the date is
+  unchanged, carry-forward when the catalog or an archive cannot be read, the
+  drop guard and one unit per cell.
+- Adding a catalog in a format the builder already reads is a config entry.
+  A new format also needs an adapter, a format name in the schema, and a
+  test with a sample of the catalog.
+
+Direct sources appear only in the ENC index, with `kind` "direct" and their
+catalog URL; the merged catalog and the Chart Catalog tab are unaffected.
+
 ## How it is built
 
 `.github/workflows/publish-catalog.yml` builds the index in the same job as the
@@ -87,9 +128,10 @@ merged catalog, because a Pages deployment replaces the whole site.
 `src/catalog/enc-index-cli.ts` is the I/O around it.
 
 - **The published index is the build's state.** `archives` records the version
-  each archive was read at: NOAA's `enc_ed_up`, or the chartcatalogs
-  `zipfile_datetime_iso8601`. A run downloads only archives whose version
-  changed, so after the first build a run costs a few downloads.
+  each archive was read at: NOAA's `enc_ed_up`, the chartcatalogs
+  `zipfile_datetime_iso8601`, or a direct source's catalog date. A run
+  downloads only archives whose version changed, so after the first build a
+  run costs a few downloads.
 - **Rules have a revision.** Each archive also records `ARCHIVE_REVISION`. When
   a change to the outline rules would give different units for the same
   archive, bumping it makes the next runs read every archive again instead of

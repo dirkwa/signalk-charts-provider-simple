@@ -61,12 +61,18 @@ export const EncIndexSourceSchema = Type.Object({
   id: Type.String({
     minLength: 1,
     description:
-      '"noaa", or the chartcatalogs catalog file name without ".xml" (the merged catalog’s entry id for that file).'
+      '"noaa"; the chartcatalogs catalog file name without ".xml" (the merged catalog’s entry id for that file); or a direct source’s own id.'
   }),
   label: Type.String({ minLength: 1, description: 'Display name of the source.' }),
-  kind: Type.Union([Type.Literal('noaa'), Type.Literal('chartcatalogs')]),
+  kind: Type.Union([Type.Literal('noaa'), Type.Literal('chartcatalogs'), Type.Literal('direct')], {
+    description:
+      '"noaa": NOAA’s ENC footprints. "chartcatalogs": a chartcatalogs.github.io catalog file. "direct": a producer’s own catalog, read directly.'
+  }),
   file: Type.Optional(
     Type.String({ description: 'The chartcatalogs catalog file the source comes from.' })
+  ),
+  catalog: Type.Optional(
+    Type.String({ description: 'For a direct source: the producer’s catalog URL.' })
   )
 });
 
@@ -75,7 +81,7 @@ export const EncIndexArchiveSchema = Type.Object({
   source: Type.String({ minLength: 1 }),
   version: Type.String({
     description:
-      'What the archive was read at: NOAA’s edition/update token, or the chartcatalogs zipfile_datetime_iso8601. A build downloads the archive again only when its source reports a different version.'
+      'What the archive was read at: NOAA’s edition/update token, the chartcatalogs zipfile_datetime_iso8601, or a direct source’s catalog date for it. A build downloads the archive again only when its source reports a different version.'
   }),
   kind: Type.Union([Type.Literal('zip'), Type.Literal('cell')], {
     description: '"zip": a ZIP archive. "cell": the download is a bare S-57 cell file.'
