@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -70,6 +71,33 @@ describe('consolidateGeoJSONByLayer', () => {
       const fc = JSON.parse(fs.readFileSync(file, 'utf8')) as FeatureCollection;
       assert.strictEqual(fc.features.length, 1, `${file} should hold one feature`);
     }
+  });
+
+  it('reads gzipped GeoJSON beside plain files, with the band from the name', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'gz-'));
+    writeFC(path.join(dir, 'BUAARE_US3CO100.geojson'), [point({ name: 'plain' })]);
+    fs.writeFileSync(
+      path.join(dir, 'BUAARE_US5CO200.geojson.gz'),
+      zlib.gzipSync(
+        JSON.stringify({ type: 'FeatureCollection', features: [point({ name: 'gz' })] })
+      )
+    );
+    // An empty collection, gzipped: no layer of its own.
+    fs.writeFileSync(
+      path.join(dir, 'LNDARE_US5CO200.geojson.gz'),
+      zlib.gzipSync(JSON.stringify({ type: 'FeatureCollection', features: [] }))
+    );
+
+    const merged = consolidateGeoJSONByLayer(dir, 9);
+    assert.deepStrictEqual(
+      merged.map((m) => path.basename(m.file, '.geojson')),
+      ['BUAARE']
+    );
+    const fc = JSON.parse(fs.readFileSync(merged[0]!.file, 'utf8')) as FeatureCollection;
+    const byName = new Map(fc.features.map((f) => [f.properties.name as string, f]));
+    assert.deepStrictEqual([...byName.keys()].sort(), ['gz', 'plain']);
+    // Band 5 (from US5CO200 in the gzipped file's name) starts at z12.
+    assert.strictEqual(byName.get('gz')?.tippecanoe?.minzoom, 12);
   });
 
   it('merges multi-source layers across charts', () => {

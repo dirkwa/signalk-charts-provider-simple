@@ -3,6 +3,7 @@ import https from 'https';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import unzipper from 'unzipper';
+import zlib from 'zlib';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -370,13 +371,16 @@ echo "PROGRESS: Export complete"
 
 async function exportAllLayersToGeoJSON(
   encDir: string,
-  encFiles: string[],
+  encFiles: readonly string[],
   geojsonDir: string,
   chartNumber: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  // Name every output `<LAYER>_<cell>.geojson`, even for one cell, so the
+  // files can be told apart by cell (the chart-set cache splits them).
+  forceMultiFile = false
 ): Promise<void> {
   const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
-  const multiFile = encFiles.length > 1;
+  const multiFile = forceMultiFile || encFiles.length > 1;
   const parallelism = getCpuBudget().gdalExportParallelism;
 
   // Translate the absolute host paths into (source, subPath) pairs the
@@ -538,7 +542,14 @@ type ConsolidatedLayer = { file: string; sourceFiles: string[] };
 // charts that don't follow the IHO Annex E filename convention (IENC,
 // hand-named) get no extension property and fall back to the global `-Z`.
 function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): ConsolidatedLayer[] {
-  const files = fs.readdirSync(geojsonDir).filter((f) => f.endsWith('.geojson'));
+  // `.geojson.gz` is what the chart-set cache keeps; it reads the same.
+  const files = fs
+    .readdirSync(geojsonDir)
+    .filter((f) => f.endsWith('.geojson') || f.endsWith('.geojson.gz'));
+  const readSource = (file: string): string => {
+    const bytes = fs.readFileSync(path.join(geojsonDir, file));
+    return (file.endsWith('.gz') ? zlib.gunzipSync(bytes) : bytes).toString('utf8');
+  };
 
   // Group by layer name. The export script writes 'LAYER_CHART.geojson' for
   // multi-chart bundles and 'LAYER.geojson' for single-chart. Many S-57 layer
@@ -550,10 +561,14 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
   const layerGroups = new Map<string, string[]>();
   for (const file of files) {
     const fullPath = path.join(geojsonDir, file);
-    if (fs.statSync(fullPath).size <= 100) {
+    // An empty FeatureCollection. A gzip file records its uncompressed size
+    // (modulo 2^32) in its last four bytes, which is enough to tell.
+    if (
+      (file.endsWith('.gz') ? gzipUncompressedSize(fullPath) : fs.statSync(fullPath).size) <= 100
+    ) {
       continue;
     }
-    const base = path.basename(file, '.geojson');
+    const base = path.basename(file.replace(/\.gz$/, ''), '.geojson');
     const underscore = base.lastIndexOf('_');
     const tailLooksLikeChartId = underscore !== -1 && /\d/.test(base.slice(underscore + 1));
     const layer = tailLooksLikeChartId ? base.slice(0, underscore) : base;
@@ -575,13 +590,13 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
       // Per-source-chart band → per-feature minzoom. Files in this source
       // share a band because they all come from the same chart cell, so the
       // band lookup is one-shot per source file.
-      const band = highestBandForFiles([source]);
+      const band = highestBandForFiles([source.replace(/\.gz$/, '')]);
       const bandFloor = band !== null ? BAND_MIN_ZOOM[band] : null;
       const featureMinzoom = bandFloor !== null ? Math.max(userMinzoom, bandFloor) : null;
 
       let parsed: { features?: unknown[] };
       try {
-        parsed = JSON.parse(fs.readFileSync(path.join(geojsonDir, source), 'utf8')) as {
+        parsed = JSON.parse(readSource(source)) as {
           features?: unknown[];
         };
       } catch {
@@ -605,6 +620,21 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
   }
 
   return consolidated;
+}
+
+function gzipUncompressedSize(file: string): number {
+  const handle = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(handle).size;
+    if (size < 4) {
+      return 0;
+    }
+    const tail = Buffer.alloc(4);
+    fs.readSync(handle, tail, 0, 4, size - 4);
+    return tail.readUInt32LE(0);
+  } finally {
+    fs.closeSync(handle);
+  }
 }
 
 // MVT properties must be scalar (string|number|bool). GDAL emits S-57 list
@@ -1070,6 +1100,79 @@ async function runTileJoin(
 }
 
 /**
+ * Fill one bucket's GeoJSON dir: from the caller's `geojsonFor` when it has
+ * the output already, otherwise by running GDAL on the bucket's cells.
+ *
+ * GDAL gets hardlinks of the cells in a bucket-scoped dir, so the export
+ * script (which walks `find <inDir> -name '*.000'`) only sees this bucket.
+ * Hardlinks keep IO cheap (no data copy) and — unlike symlinks — survive
+ * being bind-mounted into a container: a symlink target pointing at an
+ * absolute host path doesn't exist inside the container's filesystem
+ * namespace, so `find` would silently miss every cell. Copy is the
+ * fallback for the rare case where the scratch dir spans filesystems.
+ */
+async function geojsonForBucket(
+  encDir: string,
+  cells: readonly string[],
+  bucketEncDir: string,
+  bucketGeojsonDir: string,
+  chartNumber: string,
+  options: S57ConversionOptions
+): Promise<void> {
+  if (options.geojsonFor) {
+    await options.geojsonFor(cells, bucketGeojsonDir);
+    return;
+  }
+  fs.mkdirSync(bucketEncDir, { recursive: true });
+  for (const cellPath of cells) {
+    const cellRel = path.relative(encDir, cellPath);
+    const linkPath = path.join(bucketEncDir, cellRel);
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    try {
+      fs.linkSync(cellPath, linkPath);
+    } catch {
+      fs.copyFileSync(cellPath, linkPath);
+    }
+  }
+  await exportAllLayersToGeoJSON(
+    bucketEncDir,
+    cells,
+    bucketGeojsonDir,
+    chartNumber,
+    options.signal
+  );
+}
+
+/**
+ * Run GDAL on every cell under `encDir`, writing one `<LAYER>_<cell>.geojson`
+ * per layer and cell into `geojsonDir`, without making tiles. The chart-set
+ * cache keeps this output per cell, so an update runs GDAL only on the cells
+ * that changed. Progress and errors go to `chartNumber`'s conversion log.
+ */
+export async function exportS57CellsToGeoJSON(
+  encDir: string,
+  geojsonDir: string,
+  chartNumber: string,
+  signal?: AbortSignal
+): Promise<void> {
+  if (!getContainerManager()) {
+    throw new Error(
+      'signalk-container plugin is required for S-57 conversion. ' +
+        'Install it from the App Store and restart Signal K.'
+    );
+  }
+  await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
+  const encFiles = findEncFiles(encDir);
+  if (encFiles.length === 0) {
+    throw new Error('No S-57 ENC files (.000) found in the chart data');
+  }
+  fs.mkdirSync(geojsonDir, { recursive: true });
+  makeContainerWritable(geojsonDir);
+  appendLog(chartNumber, `Exporting ${encFiles.length} changed cell(s) to GeoJSON...`);
+  await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber, signal, true);
+}
+
+/**
  * Per-band orchestrator: bucket the cells, run a separate
  * export → consolidate → tippecanoe pipeline for each band into its
  * own intermediate `.mbtiles`, then `tile-join` them into the final
@@ -1172,29 +1275,8 @@ async function runPerBandPipeline(
 
     const bandEncDir = path.join(tmpDir, `enc-band-${band}`);
     const bandGeojsonDir = path.join(tmpDir, `geojson-band-${band}`);
-    fs.mkdirSync(bandEncDir, { recursive: true });
     fs.mkdirSync(bandGeojsonDir, { recursive: true });
     makeContainerWritable(bandGeojsonDir);
-
-    // Hardlink each cell into the band-scoped dir so the export
-    // script (which walks `find <inDir> -name '*.000'`) only sees
-    // this band's cells.  Hardlinks keep IO cheap (no data copy)
-    // and — unlike symlinks — survive being bind-mounted into a
-    // container: a symlink target pointing at an absolute host
-    // path doesn't exist inside the container's filesystem
-    // namespace, so `find` would silently miss every cell.  Copy
-    // is the fallback for the rare case where tmpDir spans
-    // filesystems (e.g. /tmp on tmpfs but the encDir on disk).
-    for (const cellPath of cells) {
-      const cellRel = path.relative(encDir, cellPath);
-      const linkPath = path.join(bandEncDir, cellRel);
-      fs.mkdirSync(path.dirname(linkPath), { recursive: true });
-      try {
-        fs.linkSync(cellPath, linkPath);
-      } catch {
-        fs.copyFileSync(cellPath, linkPath);
-      }
-    }
 
     const bucketProgressPrefix = `[band ${band} ${bandIndex}/${totalBuckets}]`;
     const bucketLabel = `Band ${band}`;
@@ -1208,7 +1290,7 @@ async function runPerBandPipeline(
       `${bucketProgressPrefix} Exporting ${cells.length} cell(s) to GeoJSON...`
     );
     emitBucket('export', bucketLabel, -1);
-    await exportAllLayersToGeoJSON(bandEncDir, cells, bandGeojsonDir, chartNumber, options.signal);
+    await geojsonForBucket(encDir, cells, bandEncDir, bandGeojsonDir, chartNumber, options);
 
     setProgress(
       chartNumber,
@@ -1233,23 +1315,8 @@ async function runPerBandPipeline(
     abortIfRequested();
     const unbandedEncDir = path.join(tmpDir, 'enc-unbanded');
     const unbandedGeojsonDir = path.join(tmpDir, 'geojson-unbanded');
-    fs.mkdirSync(unbandedEncDir, { recursive: true });
     fs.mkdirSync(unbandedGeojsonDir, { recursive: true });
     makeContainerWritable(unbandedGeojsonDir);
-
-    // Hardlink (not symlink) — see the band-loop above for the
-    // why: bind-mounted absolute symlink targets don't resolve
-    // inside the helper container.
-    for (const cellPath of grouping.unbanded) {
-      const cellRel = path.relative(encDir, cellPath);
-      const linkPath = path.join(unbandedEncDir, cellRel);
-      fs.mkdirSync(path.dirname(linkPath), { recursive: true });
-      try {
-        fs.linkSync(cellPath, linkPath);
-      } catch {
-        fs.copyFileSync(cellPath, linkPath);
-      }
-    }
 
     const bucketProgressPrefix = `[unbanded ${bandIndex}/${totalBuckets}]`;
     const bucketLabel = 'Other charts';
@@ -1263,12 +1330,13 @@ async function runPerBandPipeline(
       `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s) to GeoJSON...`
     );
     emitBucket('export', bucketLabel, -1);
-    await exportAllLayersToGeoJSON(
-      unbandedEncDir,
+    await geojsonForBucket(
+      encDir,
       grouping.unbanded,
+      unbandedEncDir,
       unbandedGeojsonDir,
       chartNumber,
-      options.signal
+      options
     );
 
     setProgress(
@@ -1427,7 +1495,11 @@ export async function processS57Directory(
         bucketLabel: 'Charts',
         bucketPercent: -1
       });
-      await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber, options.signal);
+      if (options.geojsonFor) {
+        await options.geojsonFor(encFiles, geojsonDir);
+      } else {
+        await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber, options.signal);
+      }
 
       statusFn('converting', 'Generating vector tiles...');
       setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');

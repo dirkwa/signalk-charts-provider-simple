@@ -116,6 +116,7 @@ import {
   setConversionFailed as setRncFailed
 } from './utils/rnc-converter.js';
 import {
+  exportS57CellsToGeoJSON,
   getAllConversionProgress as getAllS57Progress,
   getConversionProgress as getS57Progress,
   initS57Converter,
@@ -134,6 +135,25 @@ import {
   refreshEncIndexIfStale
 } from './utils/enc-index-manager.js';
 import { resolveChartSet } from './utils/enc-chart-set.js';
+import {
+  cachedGeojsonFor,
+  cachedRawDir,
+  cellsDir,
+  commitCells,
+  createStagingDir,
+  formatMegabytes,
+  freeDiskBytes,
+  initChartSetCache,
+  linkCellFiles,
+  MIN_FREE_BYTES_FOR_CHART_SET,
+  planCellCache,
+  pruneSetCache,
+  readSetCache,
+  removeSetCache,
+  setCacheBytes,
+  sweepChartSetCache,
+  type CellToCommit
+} from './utils/chart-set-cache.js';
 import {
   appendCatalogLog,
   boxStatesForCatalog,
@@ -664,6 +684,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     initCatalogManager(dataDir, app.debug.bind(app));
     initEncIndexManager(dataDir, app.debug.bind(app));
     initCustomCatalogManager(dataDir, app.debug.bind(app));
+    initChartSetCache(dataDir, app.debug.bind(app));
+    // A start never has a chart set in flight in this lifecycle's state,
+    // but a config save restarts the plugin while module-level runs survive,
+    // so only sweep when nothing is building.
+    if (listCustomCatalogs().every((c) => !isCatalogBusy(c.id))) {
+      sweepChartSetCache();
+    }
     // Saved chart sets need a current index for their update status; a
     // device without any waits until the ENC Charts tab is opened.
     if (listCustomCatalogs().length > 0) {
@@ -3986,6 +4013,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         res.status(404).json({ error: 'Custom catalog not found' });
         return;
       }
+      // The set's downloaded cells and their GDAL output go with it.
+      removeSetCache(id);
       // The produced .mbtiles (if any) is intentionally left in the chart
       // library — deleting the catalog definition is non-destructive. The user
       // can remove the chart itself from the Manage Charts tab.
@@ -4599,6 +4628,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
   }
 
+  // A set's cache size, walked at most once a minute and not while a run is
+  // changing it: the status route asks every two seconds during a run.
+  const cacheSizes = new Map<string, { bytes: number; at: number }>();
+  function chartSetCacheBytes(setId: string): number {
+    const known = cacheSizes.get(setId);
+    if (known && (isCatalogBusy(setId) || Date.now() - known.at < 60000)) {
+      return known.bytes;
+    }
+    const bytes = setCacheBytes(setId);
+    cacheSizes.set(setId, { bytes, at: Date.now() });
+    return bytes;
+  }
+
   // Augment a persisted chart set with derived, non-persisted fields the UI
   // needs: the freshness-aware effective status, the live included-cell
   // count, and any reasons it's out of date. Freshness needs the ENC index
@@ -4611,8 +4653,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     boxStates: Record<string, string>;
     missingUnitIds: string[];
     unreadableUnitIds: string[];
+    cacheBytes: number;
   } {
     const chartPath = props.chartPath || defaultChartsPath;
+    const cacheBytes = chartSetCacheBytes(catalog.id);
     const index = getEncIndex();
     if (!index) {
       return {
@@ -4622,7 +4666,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         updateReasons: [],
         boxStates: {},
         missingUnitIds: [],
-        unreadableUnitIds: []
+        unreadableUnitIds: [],
+        cacheBytes
       };
     }
     const resolution = resolveChartSet(index, catalog);
@@ -4646,7 +4691,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       missingUnitIds: resolution.missingSelected,
       // Selected units listed in a form this version cannot read: the user
       // updates the plugin, and must not be offered to remove them.
-      unreadableUnitIds: resolution.unreadableSelected
+      unreadableUnitIds: resolution.unreadableSelected,
+      cacheBytes
     };
   }
 
@@ -4675,14 +4721,23 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const abortController = new AbortController();
     registerCatalogAbort(id, abortController);
 
-    const stagingRoot = path.join(app.getDataDirPath(), `custom-catalog-${Date.now()}`);
-    const encDir = path.join(stagingRoot, 'enc');
-    const zipsDir = path.join(stagingRoot, 'zips');
-
     void (async () => {
       let quarantineDir: string | null = null;
       let convertingFlagged = false;
+      // Inside the set's cache dir, so finished cells move into the cache by
+      // a rename; removed however the run ends.
+      let stagingRoot: string | null = null;
       try {
+        stagingRoot = createStagingDir(id);
+        const encDir = path.join(stagingRoot, 'enc');
+        const zipsDir = path.join(stagingRoot, 'zips');
+        const freeBytes = freeDiskBytes(stagingRoot);
+        if (freeBytes !== null && freeBytes < MIN_FREE_BYTES_FOR_CHART_SET) {
+          throw new Error(
+            `Only ${formatMegabytes(freeBytes)} free on the plugin's data disk; a chart set ` +
+              `needs at least ${formatMegabytes(MIN_FREE_BYTES_FOR_CHART_SET)}. Free some space, then try again.`
+          );
+        }
         // Refresh the index so we download the current versions; a failed
         // refresh falls back to the copy already loaded.
         await refreshEncIndex();
@@ -4728,83 +4783,80 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         // its status cells downloaded.
         setCatalogDetail(id, { coverageByBox: resolution.coverageByUnit });
 
-        // 1. Download + extract every cell into one combined input tree.
-        const result = await downloadAndExtractEncs(resolution.cells, encDir, zipsDir, {
-          onProgress: (done, total, label) => {
-            setCatalogProgress(id, 'downloading', `Downloading ${done}/${total}: ${label}`);
-            setCatalogDetail(id, {
-              phase: 'downloading',
-              overallPercent: 0,
-              sectionLabel: `Downloading ${done}/${total}`,
-              sectionPercent: total > 0 ? Math.round((done / total) * 100) : -1
-            });
-          },
-          // Flip the map area as each cell lands, rather than all at once.
-          onStaged: (chartId) => {
-            stagedSoFar.push(chartId);
-            setCatalogDetail(id, { downloadedChartIds: [...stagedSoFar] });
-          },
-          onLog: (line) => appendCatalogLog(id, line),
-          isAborted: () => isCatalogCancelRequested(id),
-          signal: abortController.signal
-        });
+        // 1. Sort the cells by what the cache already holds: unchanged cells
+        //    are neither downloaded nor run through GDAL again.
+        const cached = readSetCache(id);
+        const plan = planCellCache(resolution.cells, cached);
+        appendCatalogLog(
+          id,
+          `${String(plan.reuse.length)} cell(s) unchanged since the last download, ` +
+            `${String(plan.download.length)} to download` +
+            (plan.reexport.length > 0 ? `, ${String(plan.reexport.length)} to read again` : '')
+        );
+        const changed = plan.download.filter((c) => cached.has(c.name)).map((c) => c.name);
+        if (changed.length > 0) {
+          appendCatalogLog(id, `Changed since the last download: ${changed.join(', ')}`);
+        }
+        // Cached cells count as landed for the map's per-unit fill.
+        stagedSoFar.push(...plan.reuse.map((c) => c.name), ...plan.reexport.map((c) => c.name));
+        setCatalogDetail(id, { downloadedChartIds: [...stagedSoFar] });
+
+        // 2. Download + extract the cells that are new or changed.
+        const result =
+          plan.download.length === 0
+            ? { staged: [], failed: [], versions: {} }
+            : await downloadAndExtractEncs(plan.download, encDir, zipsDir, {
+                onProgress: (done, total, label) => {
+                  setCatalogProgress(id, 'downloading', `Downloading ${done}/${total}: ${label}`);
+                  setCatalogDetail(id, {
+                    phase: 'downloading',
+                    overallPercent: 0,
+                    sectionLabel: `Downloading ${done}/${total}`,
+                    sectionPercent: total > 0 ? Math.round((done / total) * 100) : -1
+                  });
+                },
+                // Flip the map area as each cell lands, rather than all at once.
+                onStaged: (chartId) => {
+                  stagedSoFar.push(chartId);
+                  setCatalogDetail(id, { downloadedChartIds: [...stagedSoFar] });
+                },
+                onLog: (line) => appendCatalogLog(id, line),
+                isAborted: () => isCatalogCancelRequested(id),
+                signal: abortController.signal
+              });
         // Cancel during download → stop before converting.
         if (isCatalogCancelRequested(id)) {
           throw new Error('Cancelled by user');
         }
-        if (result.staged.length === 0) {
-          throw new Error('All ENC downloads failed — check network connectivity');
+        if (plan.download.length > 0) {
+          appendCatalogLog(
+            id,
+            `Downloaded ${result.staged.length}/${plan.download.length} ENC cell(s)` +
+              (result.failed.length > 0 ? `, ${result.failed.length} failed` : '')
+          );
         }
-        appendCatalogLog(
-          id,
-          `Downloaded ${result.staged.length}/${resolution.cells.length} ENC cell(s)` +
-            (result.failed.length > 0 ? `, ${result.failed.length} failed` : '')
-        );
-        // A partial download yields an MBTiles that omits the failed cells, so
-        // it must not be marked up-to-date (see the status decision after
-        // conversion below).
+        // A cell that failed to download keeps its older cached copy, if it
+        // has one, and stays flagged for an update. Without one the built
+        // chart omits it, so it must not be marked up-to-date (see the status
+        // decision after conversion below).
         const partialDownload = result.failed.length > 0;
         if (partialDownload) {
+          const kept = result.failed.filter((f) => cached.has(f.chartId)).map((f) => f.chartId);
           appendCatalogLog(
             id,
             `WARNING: ${result.failed.length} cell(s) failed to download: ` +
-              `${result.failed.map((f) => f.chartId).join(', ')} — the built chart will be ` +
-              `incomplete and stay flagged for rebuild.`
+              result.failed.map((f) => f.chartId).join(', ') +
+              (kept.length > 0 ? ` (using the earlier copy of ${kept.join(', ')})` : '') +
+              ' — the set stays flagged for an update.'
           );
         }
 
-        // Persist the snapshot of what actually baked into the MBTiles — the
-        // STAGED charts and their editions, not the full requested set. On a
-        // partial download this records only the cells that made it in, so
-        // freshness (recomputed full vs stored staged) flags the missing cells
-        // and per-box edition state shows the affected boxes as needing a
-        // refresh. On a complete download staged == the full set, so nothing
-        // changes for the common case.
-        // `versions` holds what was actually staged: a cell whose separate
-        // updates did not all download records fewer, so it shows as needing
-        // an update.
-        const staged = new Set(result.staged);
-        catalog.includedChartIds = resolution.includedChartIds.filter((cid) => staged.has(cid));
-        catalog.chartVersions = result.versions;
-        catalog.downloadedChartIds = result.staged;
-        catalog.lastDownloadedAt = new Date().toISOString();
-        catalog.status = 'downloaded';
-        saveCustomCatalog(catalog);
-
-        // 2. Convert the combined tree once → one MBTiles in the quarantine.
-        //    Flag converting so the global CPU-budget gate accounts for it.
-        setCatalogProgress(id, 'converting', 'Converting combined ENC set…');
-        setCatalogDetail(id, {
-          phase: 'converting',
-          overallPercent: 0,
-          sectionLabel: 'Starting conversion…',
-          sectionPercent: -1
-        });
-        // Re-check the conversion budget right before claiming a slot. The
-        // admission check at request time ran before the (long) download, so
-        // several catalogs could have passed it and now be ready to convert
-        // together. This synchronous check + setConvertingState pair is atomic
-        // in the event loop, so it can't over-subscribe maxConcurrentConversions.
+        // Re-check the conversion budget right before claiming a slot: GDAL
+        // and tippecanoe are the CPU-heavy part. The admission check at
+        // request time ran before the (long) download, so several sets could
+        // have passed it and now be ready to convert together. This
+        // synchronous check + setConvertingState pair is atomic in the event
+        // loop, so it can't over-subscribe maxConcurrentConversions.
         const convertBudgetMax = getCpuBudget().maxConcurrentConversions;
         if (getConvertingCount() >= convertBudgetMax) {
           throw new Error(
@@ -4813,9 +4865,83 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
         setConvertingState(id, true);
         convertingFlagged = true;
+
+        // 3. Run GDAL on the downloaded cells (and cached ones an older
+        //    export revision read), then move them into the cache.
+        const toCommit: CellToCommit[] = [
+          ...result.staged.map((name) => ({
+            name,
+            rawDir: path.join(encDir, name),
+            version: result.versions[name]
+          })),
+          ...plan.reexport.map((c) => ({
+            name: c.name,
+            rawDir: cachedRawDir(id, c.name),
+            version: cached.get(c.name)?.version
+          }))
+        ];
+        if (toCommit.length > 0) {
+          setCatalogProgress(
+            id,
+            'converting',
+            `Reading ${String(toCommit.length)} changed cell(s)…`
+          );
+          setCatalogDetail(id, {
+            phase: 'converting',
+            overallPercent: 0,
+            sectionLabel: `Reading ${String(toCommit.length)} changed cell(s)`,
+            sectionPercent: -1
+          });
+          const exportIn = path.join(stagingRoot, 'export-in');
+          const exportOut = path.join(stagingRoot, 'export-out');
+          for (const cell of toCommit) {
+            linkCellFiles(cell.rawDir, path.join(exportIn, cell.name));
+          }
+          await exportS57CellsToGeoJSON(exportIn, exportOut, id, abortController.signal);
+          if (isCatalogCancelRequested(id)) {
+            throw new Error('Cancelled by user');
+          }
+          await commitCells(id, stagingRoot, exportOut, toCommit);
+        }
+        const removed = pruneSetCache(id, new Set(resolution.includedChartIds));
+        if (removed.length > 0) {
+          appendCatalogLog(id, `Removed ${String(removed.length)} cell(s) the set no longer has`);
+        }
+
+        // Persist the snapshot of what bakes into the MBTiles: the cached
+        // cells and their versions, not the full requested set. A cell that
+        // failed to download without an earlier copy is left out, so
+        // freshness (recomputed full vs stored) flags it and per-unit state
+        // shows the affected units as needing a refresh. A cell kept at an
+        // earlier version records that version, with the same effect.
+        const inCache = readSetCache(id);
+        const used = resolution.includedChartIds.filter((cid) => inCache.has(cid));
+        if (used.length === 0) {
+          throw new Error('All ENC downloads failed — check network connectivity');
+        }
+        catalog.includedChartIds = used;
+        catalog.chartVersions = Object.fromEntries(
+          used.flatMap((cid) => {
+            const version = inCache.get(cid)?.version;
+            return version === undefined ? [] : [[cid, version]];
+          })
+        );
+        catalog.downloadedChartIds = used;
+        catalog.lastDownloadedAt = new Date().toISOString();
+        catalog.status = 'downloaded';
+        saveCustomCatalog(catalog);
+
+        // 4. Convert every cached cell once → one MBTiles in the quarantine.
+        setCatalogProgress(id, 'converting', 'Converting combined ENC set…');
+        setCatalogDetail(id, {
+          phase: 'converting',
+          overallPercent: 0,
+          sectionLabel: 'Starting conversion…',
+          sectionPercent: -1
+        });
         quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), id);
         const conv = await processS57Directory(
-          encDir,
+          cellsDir(id),
           quarantineDir,
           id,
           (status, message) => setCatalogProgress(id, status, message),
@@ -4823,6 +4949,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             displayName: catalog.name,
             displayDescription: `Chart set: ${catalog.name}`,
             isAborted: () => isCatalogCancelRequested(id),
+            // GDAL already ran on every cell; build from its cached output.
+            geojsonFor: cachedGeojsonFor(id),
             // Overall (convert-only) bar treats the per-band tippecanoe passes
             // plus the final combine as equal slices, so it rises monotonically
             // through the whole conversion. The combine now reports its own %
@@ -4939,7 +5067,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         if (quarantineDir !== null) {
           cleanupQuarantineDir(quarantineDir);
         }
-        cleanupDir(stagingRoot);
+        if (stagingRoot !== null) {
+          cleanupDir(stagingRoot);
+        }
+        cacheSizes.delete(id);
         clearCatalogCancel(id);
         setCatalogBusy(id, false);
       }

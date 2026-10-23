@@ -76,6 +76,8 @@ interface CustomCatalog {
   missingUnitIds: string[];
   // Selected units the index lists in a form this version cannot read.
   unreadableUnitIds: string[];
+  // Disk the set's kept cells take (raw cells and their GDAL output).
+  cacheBytes: number;
 }
 
 interface CatalogProgress {
@@ -1077,6 +1079,11 @@ function renderDetail(): void {
           )}</div>`
         : ''
     }
+    ${
+      cat.cacheBytes > 0
+        ? `<div class="cc-detail-date" title="Kept so an update downloads and reads only the charts that changed">Kept cells: ${ccFormatSize(cat.cacheBytes)}</div>`
+        : ''
+    }
   `;
 }
 
@@ -1609,6 +1616,11 @@ function wireCustomCatalogHandlers(): void {
   });
 
   output.dataset['ccWired'] = '1';
+}
+
+function ccFormatSize(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
 }
 
 function ccEscHtml(s: string): string {
