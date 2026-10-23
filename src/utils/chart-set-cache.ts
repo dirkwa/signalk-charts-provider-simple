@@ -469,7 +469,8 @@ export class CacheUpdateCancelled extends Error {
  * Bring a set's cache up to date with its cells: download the new and
  * changed cells, run GDAL on them (and on cached cells an older export read),
  * keep the ones read completely, and remove cells the set no longer has. A
- * cell that fails to download or to read keeps its earlier copy, if any.
+ * cell that fails to download or to read keeps its earlier copy, if any, as
+ * long as this export revision wrote it.
  */
 export async function updateSetCache(
   setId: string,
@@ -522,16 +523,27 @@ export async function updateSetCache(
     throw new Error('All ENC downloads failed — check network connectivity');
   }
 
+  // A cell that failed to download keeps its earlier copy, read again from
+  // its kept raw cell when an older export or GDAL image wrote it.
+  const failedStale = downloaded.failed
+    .map((f) => f.chartId)
+    .filter((name) => {
+      const entry = cached.get(name);
+      return (
+        entry !== undefined &&
+        (entry.exportRevision !== CELL_EXPORT_REVISION || entry.image !== image)
+      );
+    });
   const toCommit: CellToCommit[] = [
     ...downloaded.staged.map((name) => ({
       name,
       rawDir: path.join(encDir, name),
       version: downloaded.versions[name]
     })),
-    ...plan.reexport.map((c) => ({
-      name: c.name,
-      rawDir: cachedRawDir(setId, c.name),
-      version: cached.get(c.name)?.version
+    ...[...plan.reexport.map((c) => c.name), ...failedStale].map((name) => ({
+      name,
+      rawDir: cachedRawDir(setId, name),
+      version: cached.get(name)?.version
     }))
   ];
   // GDAL runs on a batch of cells at a time, each committed when done, so a
@@ -577,7 +589,28 @@ export async function updateSetCache(
         'kept as before and read again on the next update.'
     );
   }
-  const removed = pruneSetCache(setId, new Set(cells.map((c) => c.name)));
+  // Output an older export revision wrote is named in a way this one does
+  // not read, so a cell GDAL could not read again goes, unlike one only an
+  // older GDAL image read. It is downloaded again on the next update.
+  const afterCommit = readSetCache(setId);
+  const outdated = new Set(
+    cells
+      .map((c) => c.name)
+      .filter((name) => {
+        const entry = afterCommit.get(name);
+        return entry !== undefined && entry.exportRevision !== CELL_EXPORT_REVISION;
+      })
+  );
+  if (outdated.size > 0) {
+    steps.log(
+      `WARNING: removed ${[...outdated].join(', ')}, which an older version read and ` +
+        'GDAL could not read again; downloaded again on the next update.'
+    );
+  }
+  const removed = pruneSetCache(
+    setId,
+    new Set(cells.map((c) => c.name).filter((name) => !outdated.has(name)))
+  ).filter((name) => !outdated.has(name));
   if (removed.length > 0) {
     steps.log(`Removed ${String(removed.length)} cell(s) the set no longer has`);
   }
@@ -601,6 +634,6 @@ export async function updateSetCache(
     used,
     versions,
     partial: !current || commit.incomplete.length > 0,
-    changed: commit.committed.length > 0 || removed.length > 0
+    changed: commit.committed.length > 0 || removed.length > 0 || outdated.size > 0
   };
 }

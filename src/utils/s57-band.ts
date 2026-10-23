@@ -81,7 +81,8 @@ export const BAND_MIN_ZOOM: Record<number, number> = {
 /**
  * Separator between the layer and the cell in a GDAL export file name:
  * `<LAYER>__<cell>.geojson`. S-57 layer names (DEPARE, M_COVR, …) never hold
- * two underscores in a row, so the first `__` always ends the layer, however
+ * two underscores in a row or end in one, so the first `__` always ends the
+ * layer, however
  * the cell is named: cell names may contain `_` themselves (the Dutch
  * `IENC_Haven_Waspik_7_`), so splitting at the last `_` cannot work.
  */

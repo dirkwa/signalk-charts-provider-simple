@@ -38,7 +38,7 @@ describe('detectEncBand (IHO Annex E filename convention)', () => {
     assert.strictEqual(detectEncBand('weird-name.000'), null);
     assert.strictEqual(detectEncBand('ENC_AREA1.000'), null);
     assert.strictEqual(detectEncBand('123ABC.000'), null); // pure-digit producer code
-    assert.strictEqual(detectEncBand('001.000'), null); // pure-digit producer code (extractChartId artifact)
+    assert.strictEqual(detectEncBand('001.000'), null); // pure-digit producer code
   });
 
   it('parses IENC inland bands 7..9', () => {
@@ -296,9 +296,9 @@ describe('exportFileParts', () => {
       layer: 'DEPARE',
       cell: 'IENC_Haven_Waspik_7_'
     });
-    assert.deepStrictEqual(exportFileParts('/tmp/x/SOUNDG__NL_1R7WAD01.geojson'), {
+    assert.deepStrictEqual(exportFileParts('/tmp/x/SOUNDG__AB_CELL_01.geojson'), {
       layer: 'SOUNDG',
-      cell: 'NL_1R7WAD01'
+      cell: 'AB_CELL_01'
     });
     assert.deepStrictEqual(exportFileParts('LIGHTS___LEADING.geojson'), {
       layer: 'LIGHTS',
@@ -312,7 +312,7 @@ describe('exportFileParts', () => {
   });
 
   it('gives the band of an underscore cell from its own name', () => {
-    assert.strictEqual(highestBandForFiles(['DEPARE__NL_1R7WAD01.geojson']), null);
+    assert.strictEqual(highestBandForFiles(['DEPARE__AB_CELL_01.geojson']), null);
     assert.strictEqual(highestBandForFiles(['DEPARE__US5MA1SK.geojson.gz']), 5);
     assert.strictEqual(highestBandForFiles(['IENC_Haven_Waspik_7_.000']), null);
   });

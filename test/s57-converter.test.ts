@@ -12,6 +12,7 @@ import {
   EXPORT_ERRORS_LOG,
   getConversionProgress
 } from '../dist/utils/s57-converter.js';
+import { exportFileParts } from '../dist/utils/s57-band.js';
 
 const {
   consolidateGeoJSONByLayer,
@@ -106,7 +107,7 @@ describe('consolidateGeoJSONByLayer', () => {
     // whose name ends like a layer.
     writeFC(path.join(dir, 'DEPARE__IENC_Haven_Waspik_7_.geojson'), [point({ c: 'waspik' })]);
     writeFC(path.join(dir, 'LIGHTS__IENC_Haven_Waspik_7_.geojson'), [point({ c: 'waspik' })]);
-    writeFC(path.join(dir, 'DEPARE__NL_1R7WAD01.geojson'), [point({ c: 'nl' })]);
+    writeFC(path.join(dir, 'DEPARE__AB_CELL_01.geojson'), [point({ c: 'nl' })]);
     writeFC(path.join(dir, 'M_COVR__AB_M_COVR.geojson'), [point({ c: 'ab' })]);
     writeFC(path.join(dir, 'DEPARE__US5MA1SK.geojson'), [point({ c: 'us5' })]);
 
@@ -290,12 +291,72 @@ describe('buildExportScript', () => {
     assert.doesNotMatch(s, /xargs/);
   });
 
-  it('multi-file=true emits LAYER_<chart> output names; multi-file=false emits LAYER', () => {
+  it('multi-file=true emits LAYER__<chart> output names; multi-file=false emits LAYER', () => {
     const multi = buildExportScript({ multiFile: true, parallelism: 1, skipLayers });
-    assert.match(multi, /\$\{layer\}__\$\{name\}/);
+    assert.match(multi, /outname="\$\{layer\}__\$\{name\}"/);
     const single = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
     // Single-file path keeps just $layer in the outname assignment.
     assert.match(single, /outname="\$\{layer\}"/);
+    // The parallel inner shell picks the name from its `multi` argument.
+    const parallel = buildExportScript({ multiFile: true, parallelism: 4, skipLayers });
+    assert.match(
+      parallel,
+      /if \[ "\$multi" = "1" \]; then outname="\$\{layer\}__\$\{name\}"; else outname="\$layer"; fi/
+    );
+  });
+
+  it('writes files the merge parses back into layer and cell, in both branches', () => {
+    if (spawnSync('bash', ['--version']).status !== 0) {
+      return;
+    }
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 's57-export-run-'));
+    try {
+      // Stand-ins for GDAL: two layers per cell, and an empty output file.
+      const bin = path.join(root, 'bin');
+      fs.mkdirSync(bin);
+      fs.writeFileSync(
+        path.join(bin, 'ogrinfo'),
+        '#!/bin/bash\necho "1: DEPARE (Polygon)"\necho "2: M_COVR (Polygon)"\n',
+        { mode: 0o755 }
+      );
+      fs.writeFileSync(
+        path.join(bin, 'ogr2ogr'),
+        '#!/bin/bash\nfor a in "$@"; do case "$a" in *.geojson) : > "$a";; esac; done\n',
+        { mode: 0o755 }
+      );
+      const cells = ['IENC_Haven_Waspik_7_', 'US5MA1SK', '_LEADING'];
+      for (const parallelism of [1, 4]) {
+        const input = path.join(root, `in-${String(parallelism)}`);
+        const output = path.join(root, `out-${String(parallelism)}`);
+        fs.mkdirSync(path.join(input, 'ENC_ROOT'), { recursive: true });
+        fs.mkdirSync(output);
+        for (const cell of cells) {
+          fs.writeFileSync(path.join(input, 'ENC_ROOT', `${cell}.000`), '');
+        }
+        const script = buildExportScript({
+          multiFile: true,
+          parallelism,
+          skipLayers,
+          inputPrefix: input,
+          outputPrefix: output
+        });
+        const result = spawnSync('bash', ['-c', script], {
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` }
+        });
+        assert.strictEqual(result.status, 0, result.stderr.toString());
+        const parsed = fs
+          .readdirSync(output)
+          .filter((f) => f.endsWith('.geojson'))
+          .map((f) => exportFileParts(f))
+          .sort((a, b) => `${a.cell ?? ''}${a.layer}`.localeCompare(`${b.cell ?? ''}${b.layer}`));
+        const expected = cells
+          .flatMap((cell) => ['DEPARE', 'M_COVR'].map((layer) => ({ layer, cell })))
+          .sort((a, b) => `${a.cell}${a.layer}`.localeCompare(`${b.cell}${b.layer}`));
+        assert.deepStrictEqual(parsed, expected, `parallelism ${String(parallelism)}`);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('passes enc / name / multi to the parallel inner shell as positional args, not interpolated', () => {
