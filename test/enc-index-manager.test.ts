@@ -16,6 +16,7 @@ import {
   getEncIndex,
   getEncIndexStatus,
   getEncMapPayload,
+  encMapPayload,
   initEncIndexManager,
   interpretEncIndex,
   refreshEncIndex
@@ -79,6 +80,53 @@ describe('interpretEncIndex', () => {
       ['1H7D1430']
     );
     assert.ok(result.index.otherUnits.has('1H7D1430'));
+  });
+
+  it('reads a source of a kind it does not know, and units it cannot list', () => {
+    const base = sampleIndex();
+    const first = base.units[0] as { cells: object[] };
+    const direct = {
+      ...first,
+      source: 'USACE_IENC',
+      id: 'U37AG001',
+      scale: 12500.5,
+      cells: [{ ...first.cells[0], name: 'U37AG001' }],
+      statusCells: ['U37AG001']
+    };
+    const unlisted = { ...direct, source: 'NOT_IN_SOURCES', id: 'U37AG002' };
+    const result = interpretEncIndex({
+      ...base,
+      sources: [
+        ...base.sources,
+        { id: 'USACE_IENC', label: 'USACE Inland ENC', kind: 'direct', catalog: 'x.xml' }
+      ],
+      units: [...base.units, direct, unlisted]
+    });
+    assert.ok(result.ok);
+    assert.strictEqual(result.skipped, 0);
+    assert.deepStrictEqual(
+      result.index.units.map((u) => u.id),
+      ['1H7D1430', 'U37AG001', 'U37AG002']
+    );
+    const payload = JSON.parse(encMapPayload(result.index)) as {
+      sources: { id: string; label: string; units: number }[];
+    };
+    assert.deepStrictEqual(payload.sources, [
+      { id: 'EURIS_IENC_Catalog', label: 'EuRIS', units: 1 },
+      { id: 'USACE_IENC', label: 'USACE Inland ENC', units: 1 },
+      { id: 'NOT_IN_SOURCES', label: 'NOT_IN_SOURCES', units: 1 }
+    ]);
+  });
+
+  it('skips an archive kind it cannot download, and the units that need it', () => {
+    const base = sampleIndex();
+    const result = interpretEncIndex({
+      ...base,
+      archives: [{ ...base.archives[0], kind: 'torrent' }]
+    });
+    assert.ok(result.ok);
+    assert.strictEqual(result.index.units.length, 0);
+    assert.strictEqual(result.skipped, 2);
   });
 
   it('refuses a newer format, and a file that is not an index', () => {
