@@ -433,6 +433,23 @@ describe('updateSetCache', () => {
     assert.strictEqual(result.changed, true);
   });
 
+  it('flags a cached cell GDAL could not read again, without counting it as changed', async () => {
+    const fakes = fresh();
+    const cells = [planned('CELLAAA1', v('CELLAAA1', 2)), planned('CELLBBB1', v('CELLBBB1', 1))];
+    const result = await run('Upd', cells, fakes, { bad: new Set(['CELLAAA1']) }, 'toolbox:3');
+    assert.deepStrictEqual(fakes.downloaded, []);
+    assert.strictEqual(readSetCache('Upd').get('CELLAAA1')?.image, 'toolbox:2', 'kept as before');
+    assert.strictEqual(readSetCache('Upd').get('CELLBBB1')?.image, 'toolbox:3');
+    assert.strictEqual(result.partial, true);
+    assert.strictEqual(result.changed, true, 'CELLBBB1 was read again');
+
+    const again = fresh();
+    const second = await run('Upd', cells, again, { bad: new Set(['CELLAAA1']) }, 'toolbox:3');
+    assert.deepStrictEqual(again.exported, [['CELLAAA1']]);
+    assert.strictEqual(second.partial, true);
+    assert.strictEqual(second.changed, false);
+  });
+
   it('removes cells the set no longer has', async () => {
     const fakes = fresh();
     const result = await run(

@@ -4910,12 +4910,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           sameVersions(catalog.chartVersions, update.versions)
         ) {
           const label = update.partial
-            ? 'No new cells could be read; the chart is unchanged'
+            ? 'Some cells could not be read; the chart is unchanged'
             : 'Nothing changed';
           appendCatalogLog(
             id,
             update.partial
-              ? 'No new cells could be read, so the chart is unchanged and the set stays flagged for an update.'
+              ? 'Some cells could not be downloaded or read again (see above), so the chart is unchanged; the next update tries them again.'
               : 'Nothing changed since the chart was built; it is current.'
           );
           setCatalogProgress(id, 'completed', label);

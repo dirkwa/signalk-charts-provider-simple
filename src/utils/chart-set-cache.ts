@@ -450,9 +450,15 @@ export interface CacheUpdateResult {
   used: string[];
   /** Cell → the version cached, for each used cell that has one. */
   versions: Record<string, string>;
-  /** Some cell is missing, or cached at an older version than the index has. */
+  /**
+   * Some cell is missing, cached at an older version than the index has, or
+   * could not be read again (it keeps its earlier GDAL output).
+   */
   partial: boolean;
-  /** A cell was added, replaced or removed, so the chart has to be built again. */
+  /**
+   * A cell was added, replaced or removed, so the chart has to be built
+   * again. A cell GDAL could not read keeps its entry, so it changes nothing.
+   */
   changed: boolean;
 }
 
@@ -599,7 +605,7 @@ export async function updateSetCache(
   return {
     used,
     versions,
-    partial: !current,
+    partial: !current || commit.incomplete.length > 0,
     changed: commit.committed.length > 0 || removed.length > 0
   };
 }
