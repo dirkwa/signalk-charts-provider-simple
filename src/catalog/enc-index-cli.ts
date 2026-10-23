@@ -203,7 +203,11 @@ async function readDirectCatalogs(
       if (text === null) {
         throw new Error(`HTTP 404 fetching ${source.catalog}`);
       }
-      result.set(source.id, await DIRECT_SOURCE_ADAPTERS[source.format](text));
+      const { archives, problems } = await DIRECT_SOURCE_ADAPTERS[source.format](text);
+      for (const problem of problems) {
+        console.log(`::warning::${source.id} catalog: ${problem}`);
+      }
+      result.set(source.id, archives);
     } catch (err) {
       console.log(`::warning::Could not read the ${source.id} catalog: ${message(err)}`);
       result.set(source.id, null);

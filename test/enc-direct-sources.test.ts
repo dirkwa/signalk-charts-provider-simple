@@ -125,7 +125,7 @@ describe('USACE IENC product catalog', () => {
   });
 
   it('lists each cell with an S-57 download, titled by its river and stretch', async () => {
-    assert.deepStrictEqual(await parseUsaceIencCatalog(USACE_XML), [
+    assert.deepStrictEqual((await parseUsaceIencCatalog(USACE_XML)).archives, [
       {
         url: 'https://ienccloud.us/ienc/products/files/u37/ienc_s57/U37AG001.zip',
         version: '2026-06-30T09:40:00Z',
@@ -153,7 +153,7 @@ describe('USACE IENC product catalog', () => {
     </s57_file>
   </Cell>
 </IENCBuoyProductCatalog>`;
-    assert.deepStrictEqual(await parseUsaceIencCatalog(buoys), [
+    assert.deepStrictEqual((await parseUsaceIencCatalog(buoys)).archives, [
       {
         url: 'https://ienccloud.us/ienc/products/files/buoys/3UABUOYS.zip',
         version: '2026-10-21T14:28:00Z',
@@ -162,9 +162,17 @@ describe('USACE IENC product catalog', () => {
     ]);
   });
 
-  it('refuses a catalog whose posting dates it cannot read', async () => {
+  it('versions an entry with an unreadable date by its raw text, and reads the rest', async () => {
     const odd = USACE_XML.replace('06/30/2026', '2026-06-30');
-    await assert.rejects(parseUsaceIencCatalog(odd), /U37AG001: cannot read the posting date/);
+    const { archives, problems } = await parseUsaceIencCatalog(odd);
+    assert.strictEqual(archives[0].version, 'raw:2026-06-30 9:40');
+    assert.strictEqual(archives[1].version, '2026-01-02T00:00:00Z');
+    assert.deepStrictEqual(problems, ['U37AG001: cannot read the posting date "2026-06-30 9:40"']);
+  });
+
+  it('does not take a time it cannot read for midnight', () => {
+    assert.strictEqual(usaceDateTime('10/21/2026', '2:28 PM'), '');
+    assert.strictEqual(usaceDateTime('10/21/2026', ''), '2026-10-21T00:00:00Z');
   });
 
   it('refuses a document that is not such a catalog', async () => {
@@ -193,7 +201,7 @@ describe('direct sources in the index build', () => {
   });
 
   it('makes jobs from the archives its catalog lists', async () => {
-    const archives = await parseUsaceIencCatalog(USACE_XML);
+    const { archives } = await parseUsaceIencCatalog(USACE_XML);
     const jobs = archiveJobs(
       encSources({}, direct),
       [],
@@ -326,7 +334,7 @@ describe('a direct source publishing a cell chartcatalogs also lists', () => {
     );
   });
 
-  it('drops a cell its catalog stops listing, and the chartcatalogs copy comes back', () => {
+  it('gives the cell back to chartcatalogs when the source is removed from the list', () => {
     const state = readPublishedEncIndex(JSON.parse(JSON.stringify(after.index)), null);
     assert.deepStrictEqual(jobsToBuild([OLD], state), [OLD]);
     const result = build([OLD], [[OLD, buoys(OLD, 96)]], after.index);
@@ -335,6 +343,13 @@ describe('a direct source publishing a cell chartcatalogs also lists', () => {
       result.index.units.find((u) => u.id === '3UABUOYS')?.source,
       'ACE_BUOY_Catalog'
     );
+  });
+});
+
+describe('a direct catalog that lists nothing', () => {
+  it('counts as unreadable, so the source keeps what is published', () => {
+    const unread = unreadSources(SOURCES, [], new Map([['USACE_IENC_BUOYS', []]]));
+    assert.ok(unread.has('USACE_IENC_BUOYS'));
   });
 });
 

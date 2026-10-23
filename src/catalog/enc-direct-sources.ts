@@ -53,6 +53,13 @@ export interface DirectArchive {
   title: string;
 }
 
+/** What an adapter makes of a catalog: its archives, and anything odd in it. */
+export interface DirectCatalog {
+  archives: DirectArchive[];
+  /** Entries the adapter could only partly read, for the build's warnings. */
+  problems: string[];
+}
+
 /**
  * Rules the schema cannot express: ids unique, and none taken by NOAA or a
  * chartcatalogs source. Returns one message per problem.
@@ -93,15 +100,15 @@ function child(node: XmlNode | undefined, name: string): XmlNode | undefined {
 /**
  * The catalog's MM/DD/YYYY date and HH:MM[:SS] time as an ISO timestamp,
  * so versions sort and compare like chartcatalogs dates. The catalog gives
- * no time zone; the value is only ever compared with itself. '' when the
- * date cannot be read.
+ * no time zone; the value is only ever compared with itself. An empty time
+ * is midnight. '' when the date, or a time that is given, cannot be read.
  */
 export function usaceDateTime(date: string, time: string): string {
   const d = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(date);
-  if (!d) {
+  const t = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(time);
+  if (!d || (time !== '' && !t)) {
     return '';
   }
-  const t = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(time);
   const pad = (s: string): string => s.padStart(2, '0');
   const clock = t ? `${pad(t[1])}:${t[2]}:${t[3] ?? '00'}` : '00:00:00';
   return `${d[3]}-${pad(d[1])}-${pad(d[2])}T${clock}Z`;
@@ -115,14 +122,15 @@ const USACE_ROOT = /^IENC\w*ProductCatalog$/;
 /**
  * The S-57 archives a USACE IENC product catalog lists: each `<Cell>`'s
  * `<s57_file>`, versioned by its posting date and titled by its river and
- * stretch. Cells without an http(s) S-57 download are left out.
+ * stretch. Cells without an http(s) S-57 download are left out. Throws when
+ * the document is not such a catalog.
  *
- * Throws when the document is not such a catalog, or when a cell's posting
- * date cannot be read: an archive without a version would never be read
- * again, so the whole source is left as published (with a warning) until
- * the adapter learns the new form.
+ * A cell whose posting date or time cannot be read is still listed, with
+ * the raw text as its version and a problem reported. The version stays
+ * deterministic and still changes on a reissue, and one odd entry does not
+ * hold up the rest of the source.
  */
-export async function parseUsaceIencCatalog(xml: string): Promise<DirectArchive[]> {
+export async function parseUsaceIencCatalog(xml: string): Promise<DirectCatalog> {
   const parsed = (await parseStringPromise(xml)) as XmlNode | null;
   const rootName = Object.keys(parsed ?? {}).find((key) => USACE_ROOT.test(key));
   const root = rootName ? parsed?.[rootName] : undefined;
@@ -131,6 +139,7 @@ export async function parseUsaceIencCatalog(xml: string): Promise<DirectArchive[
   }
   const cells = ((root as XmlNode).Cell ?? []) as XmlNode[];
   const archives: DirectArchive[] = [];
+  const problems: string[] = [];
   for (const cell of cells) {
     const s57 = child(cell, 's57_file');
     const url = text(s57, 'location');
@@ -144,19 +153,21 @@ export async function parseUsaceIencCatalog(xml: string): Promise<DirectArchive[
     const to = text(where, 'to');
     const stretch = from && to ? `${from} to ${to}` : from || to;
     const posted = text(s57, 'date_posted');
-    const version = usaceDateTime(posted, text(s57, 'time_posted'));
+    const time = text(s57, 'time_posted');
+    let version = usaceDateTime(posted, time);
     if (!version) {
-      throw new Error(`${name || url}: cannot read the posting date "${posted}"`);
+      version = `raw:${posted} ${time}`;
+      problems.push(`${name || url}: cannot read the posting date "${posted} ${time}"`);
     }
     archives.push({ url, version, title: [river, stretch].filter(Boolean).join(': ') || name });
   }
-  return archives;
+  return { archives, problems };
 }
 
 /** Each format's adapter: catalog text in, the archives it lists out. */
 export const DIRECT_SOURCE_ADAPTERS: Record<
   DirectSourceFormat,
-  (catalog: string) => Promise<DirectArchive[]>
+  (catalog: string) => Promise<DirectCatalog>
 > = {
   'usace-ienc-product-catalog': parseUsaceIencCatalog
 };

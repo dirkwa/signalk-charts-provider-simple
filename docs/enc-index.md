@@ -94,20 +94,25 @@ chartcatalogs, and its versions follow the producer's reissues.
   date that has not moved in years while USACE reissues the overlay as buoys
   move.
 - A direct source's copy of a cell wins over a chartcatalogs copy. The
-  chartcatalogs archive records the cell as shadowed, so its copy returns if
-  the direct source ever stops publishing it.
+  chartcatalogs archive records the cell as shadowed. Its copy returns when
+  the cell leaves a direct catalog that still lists others, or when the
+  source is removed from the list. A direct catalog that lists nothing at all
+  counts as unreadable, so it keeps what is published.
+
+How they are configured and read:
 
 - `catalog/enc-direct-sources.json` lists them by hand, checked against a
   strict schema (`src/catalog/enc-direct-sources.ts`): an id, a label, the
   catalog's format and its URL.
 - Each format has one adapter in that module, which turns the producer's
   catalog into the list of archives the source offers, each with the
-  catalog's own date for it. A catalog that cannot be fetched or read, or
-  whose dates the adapter cannot read, leaves the source as published, with
-  a warning. From there a direct source is built like any
-  other: coverage from `M_COVR`, a version per cell, reuse while the date is
-  unchanged, carry-forward when the catalog or an archive cannot be read,
-  the drop guard and one unit per cell.
+  catalog's own date for it. A catalog that cannot be fetched or read leaves
+  the source as published, with a warning; an entry whose date cannot be read
+  is versioned by its raw text, with a warning, so the rest of the source
+  keeps updating. From there a direct source is built like any other:
+  coverage from `M_COVR`, a version per cell, reuse while the date is
+  unchanged, carry-forward when the catalog or an archive cannot be read, the
+  drop guard and one unit per cell.
 - Adding a catalog in a format the builder already reads is a config entry.
   A new format also needs an adapter, a format name in the schema, and a
   test with a sample of the catalog.
@@ -124,8 +129,9 @@ merged catalog, because a Pages deployment replaces the whole site.
 
 - **The published index is the build's state.** `archives` records the version
   each archive was read at: NOAA's `enc_ed_up`, the chartcatalogs
-  `zipfile_datetime_iso8601`, or a direct source's catalog date. A run downloads only archives whose version
-  changed, so after the first build a run costs a few downloads.
+  `zipfile_datetime_iso8601`, or a direct source's catalog date. A run
+  downloads only archives whose version changed, so after the first build a
+  run costs a few downloads.
 - **Rules have a revision.** Each archive also records `ARCHIVE_REVISION`. When
   a change to the outline rules would give different units for the same
   archive, bumping it makes the next runs read every archive again instead of
