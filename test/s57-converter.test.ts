@@ -276,6 +276,21 @@ describe('buildExportScript', () => {
     assert.match(s, /sh -c [\s\S]*' _ '\{\}' "\$enc" "\$name" "1"/);
   });
 
+  it('marks a cell complete only when asked, and only when nothing failed', () => {
+    for (const parallelism of [1, 4]) {
+      const marked = buildExportScript({
+        multiFile: true,
+        parallelism,
+        skipLayers: ['DSID'],
+        markComplete: true
+      });
+      assert.match(marked, /if \[ "\$failed" = 0 \]; then : > "\/output\/\.complete-\$name"; fi/);
+      assert.match(marked, /\|\| failed=1/);
+      const plain = buildExportScript({ multiFile: true, parallelism, skipLayers: ['DSID'] });
+      assert.doesNotMatch(plain, /\.complete-/);
+    }
+  });
+
   it('keeps the skip-layer pattern in both branches', () => {
     const seq = buildExportScript({ multiFile: false, parallelism: 1, skipLayers });
     const par = buildExportScript({ multiFile: false, parallelism: 4, skipLayers });

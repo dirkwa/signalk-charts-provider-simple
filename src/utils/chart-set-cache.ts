@@ -19,8 +19,10 @@ import path from 'path';
 import { pipeline } from 'stream/promises';
 import zlib from 'zlib';
 import type { DebugFunction } from '../types.js';
+import type { EncDownloadResult } from './custom-catalog-download.js';
 import type { PlannedCell } from './enc-chart-set.js';
 import { isWithinBase } from './path-safety.js';
+import { COMPLETE_MARKER_PREFIX } from './s57-converter.js';
 
 /**
  * Bump when the GDAL export changes what it writes for the same cell, so
@@ -29,6 +31,8 @@ import { isWithinBase } from './path-safety.js';
 export const CELL_EXPORT_REVISION = 1;
 
 const CACHE_DIR_NAME = 'chart-set-cache';
+/** Cells per GDAL run; each batch is kept as soon as it is read. */
+export const CELLS_PER_EXPORT = 20;
 const CELLS = 'cells';
 const STAGING_PREFIX = '.staging-';
 const CELL_FILE = 'cell.json';
@@ -39,13 +43,17 @@ const SAFE_CELL = /^[A-Za-z0-9_-]{1,64}$/;
 export interface CachedCellInfo {
   version: string | undefined;
   exportRevision: number;
+  /** The GDAL image that exported it; its output depends on GDAL's version. */
+  image: string | undefined;
+  /** Bytes the cell's entry takes on disk. */
+  bytes: number;
 }
 
 /** What a run does with each of a set's cells. */
 export interface CachePlan {
   /** Cached at the planned version: neither downloaded nor exported. */
   reuse: PlannedCell[];
-  /** Cached at the planned version, but exported by an older revision. */
+  /** Cached at the planned version, but exported by an older revision or GDAL. */
   reexport: PlannedCell[];
   /** Not cached, or cached at another version. */
   download: PlannedCell[];
@@ -58,14 +66,15 @@ export interface CachePlan {
  */
 export function planCellCache(
   cells: readonly PlannedCell[],
-  cached: ReadonlyMap<string, CachedCellInfo>
+  cached: ReadonlyMap<string, CachedCellInfo>,
+  image: string
 ): CachePlan {
   const plan: CachePlan = { reuse: [], reexport: [], download: [] };
   for (const cell of cells) {
     const entry = cached.get(cell.name);
     if (!entry || cell.version === undefined || entry.version !== cell.version) {
       plan.download.push(cell);
-    } else if (entry.exportRevision !== CELL_EXPORT_REVISION) {
+    } else if (entry.exportRevision !== CELL_EXPORT_REVISION || entry.image !== image) {
       plan.reexport.push(cell);
     } else {
       plan.reuse.push(cell);
@@ -103,13 +112,17 @@ function readInfo(cellDir: string): CachedCellInfo | null {
     const raw = JSON.parse(fs.readFileSync(path.join(cellDir, CELL_FILE), 'utf8')) as {
       version?: unknown;
       exportRevision?: unknown;
+      image?: unknown;
+      bytes?: unknown;
     };
     if (typeof raw.exportRevision !== 'number') {
       return null;
     }
     return {
       version: typeof raw.version === 'string' ? raw.version : undefined,
-      exportRevision: raw.exportRevision
+      exportRevision: raw.exportRevision,
+      image: typeof raw.image === 'string' ? raw.image : undefined,
+      bytes: typeof raw.bytes === 'number' ? raw.bytes : 0
     };
   } catch {
     return null;
@@ -188,43 +201,81 @@ export interface CellToCommit {
   version: string | undefined;
 }
 
+/** Bytes of every file under `dir`. */
+function bytesUnder(dir: string): number {
+  let total = 0;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    total += entry.isDirectory() ? bytesUnder(full) : entry.isFile() ? fs.statSync(full).size : 0;
+  }
+  return total;
+}
+
+export interface CommitResult {
+  committed: string[];
+  /** Cells GDAL did not read completely; not cached, so they are read again. */
+  incomplete: string[];
+}
+
 /**
  * Move freshly exported cells into the cache: each cell's raw files and its
  * share of the GDAL output in `exportDir` (the files named `_<cell>.geojson`,
- * gzipped). A cell replaces its older cached copy only once complete.
- * Returns the names committed.
+ * gzipped). Only a cell the export marked complete is kept: one that GDAL
+ * could not read, or read in part, would otherwise be reused as it is until
+ * its edition changes. A cell replaces its older cached copy only once
+ * complete.
  */
 export async function commitCells(
   setId: string,
   stagingDir: string,
   exportDir: string,
-  cells: readonly CellToCommit[]
-): Promise<string[]> {
+  cells: readonly CellToCommit[],
+  image: string
+): Promise<CommitResult> {
   const exported = fs.existsSync(exportDir) ? fs.readdirSync(exportDir) : [];
-  const committed: string[] = [];
+  const complete = new Set(
+    exported
+      .filter((f) => f.startsWith(COMPLETE_MARKER_PREFIX))
+      .map((f) => f.slice(COMPLETE_MARKER_PREFIX.length))
+  );
+  // Output files by the cell they came from: `<LAYER>_<cell>.geojson`.
+  const byStem = new Map<string, string[]>();
+  for (const file of exported) {
+    const match = /_([^_]+)\.geojson$/.exec(file);
+    if (match) {
+      byStem.set(match[1], [...(byStem.get(match[1]) ?? []), file]);
+    }
+  }
+  const result: CommitResult = { committed: [], incomplete: [] };
   fs.mkdirSync(cellsDir(setId), { recursive: true });
   for (const cell of cells) {
     if (!SAFE_CELL.test(cell.name)) {
       continue;
     }
     const base = baseFileIn(cell.rawDir);
-    if (base === null) {
+    const stem = base?.replace(/\.000$/i, '');
+    if (stem === undefined || !complete.has(stem)) {
+      result.incomplete.push(cell.name);
       continue;
     }
-    const stem = base.replace(/\.000$/i, '');
     const build = path.join(stagingDir, 'commit', cell.name);
     fs.rmSync(build, { recursive: true, force: true });
     linkCellFiles(cell.rawDir, path.join(build, 'raw'));
     const geojsonDir = path.join(build, 'geojson');
     fs.mkdirSync(geojsonDir, { recursive: true });
-    for (const file of exported.filter((f) => f.endsWith(`_${stem}.geojson`))) {
+    for (const file of byStem.get(stem) ?? []) {
       await pipeline(
         fs.createReadStream(path.join(exportDir, file)),
         zlib.createGzip({ level: 6 }),
         fs.createWriteStream(path.join(geojsonDir, `${file}.gz`))
       );
     }
-    const info: CachedCellInfo = { version: cell.version, exportRevision: CELL_EXPORT_REVISION };
+    const info: CachedCellInfo = {
+      version: cell.version,
+      exportRevision: CELL_EXPORT_REVISION,
+      image,
+      bytes: bytesUnder(build)
+    };
     fs.writeFileSync(path.join(build, CELL_FILE), JSON.stringify(info));
 
     const target = path.join(cellsDir(setId), cell.name);
@@ -235,9 +286,9 @@ export async function commitCells(
     }
     fs.renameSync(build, target);
     fs.rmSync(old, { recursive: true, force: true });
-    committed.push(cell.name);
+    result.committed.push(cell.name);
   }
-  return committed;
+  return result;
 }
 
 /** Remove cached cells the set no longer brings in. */
@@ -271,9 +322,11 @@ export function removeSetCache(setId: string): void {
 
 /**
  * Remove what a run killed mid-way left behind: staging dirs, and cell dirs
- * without `cell.json`. Run at start, when no chart set is being built.
+ * without `cell.json`; and the caches of sets that no longer exist (deleted
+ * by hand, or by an older plugin version). Run at start, when no chart set
+ * is being built.
  */
-export function sweepChartSetCache(): void {
+export function sweepChartSetCache(knownSets: ReadonlySet<string>): void {
   let sets: string[];
   try {
     sets = fs.readdirSync(rootDir);
@@ -282,6 +335,10 @@ export function sweepChartSetCache(): void {
   }
   for (const set of sets) {
     const dir = path.join(rootDir, set);
+    if (!knownSets.has(set)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      continue;
+    }
     try {
       for (const name of fs.readdirSync(dir)) {
         if (name.startsWith(STAGING_PREFIX)) {
@@ -322,29 +379,11 @@ export function freeDiskBytes(dir: string): number | null {
   }
 }
 
-/** Bytes a set's cache takes on disk. */
+/** Bytes a set's cached cells take on disk, as recorded when each was cached. */
 export function setCacheBytes(setId: string): number {
   let total = 0;
-  const walk = (dir: string): void => {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else if (entry.isFile()) {
-        total += fs.statSync(full).size;
-      }
-    }
-  };
-  try {
-    walk(setDir(setId));
-  } catch {
-    return 0;
+  for (const info of readSetCache(setId).values()) {
+    total += info.bytes;
   }
   return total;
 }
@@ -368,5 +407,171 @@ export function cachedGeojsonFor(
       }
     }
     return Promise.resolve();
+  };
+}
+
+/** The steps of a cache update that touch the network or the container. */
+export interface CacheUpdateSteps {
+  /** Download and stage cells, each into `<encDir>/<cell>/`. */
+  download: (cells: PlannedCell[], encDir: string) => Promise<EncDownloadResult>;
+  /** Called once GDAL is about to run; may throw to stop the run (CPU budget). */
+  beforeExport: (cellCount: number) => void;
+  /** Run GDAL on every cell under `inDir`, writing per-cell output to `outDir`. */
+  exportCells: (inDir: string, outDir: string) => Promise<void>;
+  isCancelled: () => boolean;
+  log: (line: string) => void;
+  /** The plan, once known: cells reused or read again count as landed. */
+  onPlan?: (plan: CachePlan) => void;
+}
+
+export interface CacheUpdateResult {
+  /** The set's cells now cached, in the order of `cells`: what the chart is built from. */
+  used: string[];
+  /** Cell → the version cached, for each used cell that has one. */
+  versions: Record<string, string>;
+  /** Some cell is missing, or cached at an older version than the index has. */
+  partial: boolean;
+  /** A cell was added, replaced or removed, so the chart has to be built again. */
+  changed: boolean;
+}
+
+/** Thrown when the user cancelled the run. */
+export class CacheUpdateCancelled extends Error {
+  constructor() {
+    super('Cancelled by user');
+    this.name = 'CacheUpdateCancelled';
+  }
+}
+
+/**
+ * Bring a set's cache up to date with its cells: download the new and
+ * changed cells, run GDAL on them (and on cached cells an older export read),
+ * keep the ones read completely, and remove cells the set no longer has. A
+ * cell that fails to download or to read keeps its earlier copy, if any.
+ */
+export async function updateSetCache(
+  setId: string,
+  cells: readonly PlannedCell[],
+  stagingDir: string,
+  image: string,
+  steps: CacheUpdateSteps
+): Promise<CacheUpdateResult> {
+  const cached = readSetCache(setId);
+  const plan = planCellCache(cells, cached, image);
+  steps.log(
+    `${String(plan.reuse.length)} cell(s) unchanged since the last download, ` +
+      `${String(plan.download.length)} to download` +
+      (plan.reexport.length > 0 ? `, ${String(plan.reexport.length)} to read again` : '')
+  );
+  const changedNames = plan.download
+    .filter((c) => c.version !== undefined && cached.has(c.name))
+    .map((c) => c.name);
+  if (changedNames.length > 0) {
+    steps.log(`Changed since the last download: ${changedNames.join(', ')}`);
+  }
+  steps.onPlan?.(plan);
+
+  const encDir = path.join(stagingDir, 'enc');
+  const downloaded: EncDownloadResult =
+    plan.download.length === 0
+      ? { staged: [], failed: [], versions: {} }
+      : await steps.download(plan.download, encDir);
+  if (steps.isCancelled()) {
+    throw new CacheUpdateCancelled();
+  }
+  if (plan.download.length > 0) {
+    steps.log(
+      `Downloaded ${String(downloaded.staged.length)}/${String(plan.download.length)} ENC cell(s)` +
+        (downloaded.failed.length > 0 ? `, ${String(downloaded.failed.length)} failed` : '')
+    );
+  }
+  if (downloaded.failed.length > 0) {
+    const kept = downloaded.failed.filter((f) => cached.has(f.chartId)).map((f) => f.chartId);
+    steps.log(
+      `WARNING: ${String(downloaded.failed.length)} cell(s) failed to download: ` +
+        downloaded.failed.map((f) => f.chartId).join(', ') +
+        (kept.length > 0 ? ` (using the earlier copy of ${kept.join(', ')})` : '') +
+        ' — the set stays flagged for an update.'
+    );
+  }
+  const usable = cells.filter((c) => cached.has(c.name) || downloaded.staged.includes(c.name));
+  if (usable.length === 0) {
+    throw new Error('All ENC downloads failed — check network connectivity');
+  }
+
+  const toCommit: CellToCommit[] = [
+    ...downloaded.staged.map((name) => ({
+      name,
+      rawDir: path.join(encDir, name),
+      version: downloaded.versions[name]
+    })),
+    ...plan.reexport.map((c) => ({
+      name: c.name,
+      rawDir: cachedRawDir(setId, c.name),
+      version: cached.get(c.name)?.version
+    }))
+  ];
+  // GDAL runs on a batch of cells at a time, each committed when done, so a
+  // run that fails part-way through a large first build keeps what it read.
+  const commit: CommitResult = { committed: [], incomplete: [] };
+  if (toCommit.length > 0) {
+    steps.beforeExport(toCommit.length);
+  }
+  for (let start = 0; start < toCommit.length; start += CELLS_PER_EXPORT) {
+    if (steps.isCancelled()) {
+      throw new CacheUpdateCancelled();
+    }
+    const batch = toCommit.slice(start, start + CELLS_PER_EXPORT);
+    const exportIn = path.join(stagingDir, `export-in-${String(start)}`);
+    const exportOut = path.join(stagingDir, `export-out-${String(start)}`);
+    for (const cell of batch) {
+      linkCellFiles(cell.rawDir, path.join(exportIn, cell.name));
+    }
+    await steps.exportCells(exportIn, exportOut);
+    if (steps.isCancelled()) {
+      throw new CacheUpdateCancelled();
+    }
+    const done = await commitCells(setId, stagingDir, exportOut, batch, image);
+    commit.committed.push(...done.committed);
+    commit.incomplete.push(...done.incomplete);
+    fs.rmSync(exportIn, { recursive: true, force: true });
+    fs.rmSync(exportOut, { recursive: true, force: true });
+  }
+  if (commit.committed.length > 0) {
+    steps.log(
+      `Read ${String(commit.committed.length)} changed cell(s) with GDAL: ${commit.committed.join(', ')}`
+    );
+  }
+  if (commit.incomplete.length > 0) {
+    steps.log(
+      `WARNING: GDAL could not read all of ${commit.incomplete.join(', ')}; ` +
+        'kept as before and read again on the next update.'
+    );
+  }
+  const removed = pruneSetCache(setId, new Set(cells.map((c) => c.name)));
+  if (removed.length > 0) {
+    steps.log(`Removed ${String(removed.length)} cell(s) the set no longer has`);
+  }
+
+  const inCache = readSetCache(setId);
+  const used = cells.map((c) => c.name).filter((name) => inCache.has(name));
+  if (used.length === 0) {
+    throw new Error('No cell of this set could be read — see the log');
+  }
+  const versions: Record<string, string> = {};
+  for (const name of used) {
+    const version = inCache.get(name)?.version;
+    if (version !== undefined) {
+      versions[name] = version;
+    }
+  }
+  const current = cells.every(
+    (c) => inCache.has(c.name) && inCache.get(c.name)?.version === c.version
+  );
+  return {
+    used,
+    versions,
+    partial: !current,
+    changed: commit.committed.length > 0 || removed.length > 0
   };
 }

@@ -275,7 +275,15 @@ interface ExportScriptOptions {
   inputPrefix?: string;
   /** Container path the GeoJSON output dir is reachable at. */
   outputPrefix?: string;
+  /** Write `${COMPLETE_MARKER_PREFIX}<cell>` for each cell exported without an error. */
+  markComplete?: boolean;
 }
+
+/**
+ * Prefix of the empty file the export writes for each cell it exported
+ * without an error, when asked to (`markComplete`).
+ */
+export const COMPLETE_MARKER_PREFIX = '.complete-';
 
 // Path inside the container where per-file ogr2ogr stderr is captured.
 // Without this, ogr2ogr failures get swallowed (they used to redirect to
@@ -309,6 +317,12 @@ export function buildExportScript(opts: ExportScriptOptions): string {
   const inDir = opts.inputPrefix ?? '/input';
   const outDir = opts.outputPrefix ?? '/output';
   const errLog = `${outDir}/${EXPORT_ERROR_FILE_BASENAME}`;
+  // With markComplete, a cell whose ogrinfo and every ogr2ogr succeeded gets
+  // an empty `${COMPLETE_MARKER_PREFIX}<cell>` file beside its output, so a
+  // caller keeping the output can tell a complete export from a partial one.
+  const markComplete = opts.markComplete
+    ? `  if [ "$failed" = 0 ]; then : > "${outDir}/${COMPLETE_MARKER_PREFIX}$name"; fi\n`
+    : '';
 
   if (parallel === 1) {
     return `
@@ -320,25 +334,29 @@ find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
-  layers=$(ogrinfo -so "$enc" 2>>${errLog} | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  failed=0
+  info=$(ogrinfo -so "$enc" 2>>${errLog}) || failed=1
+  layers=$(printf '%s\\n' "$info" | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
   for layer in $layers; do
     case "$layer" in ${skipPattern}) continue ;; esac
     outname="${multiBranch}"
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
+        "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || failed=1
     else
-      ogr2ogr -f GeoJSON "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || true
+      ogr2ogr -f GeoJSON "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || failed=1
     fi
   done
-done
+${markComplete}done
 echo "PROGRESS: Export complete"
 `;
   }
 
   // Parallel branch: fan out per-layer ogr2ogr via xargs -P.
   // The inner sh -c receives layer / enc / name / multi as positional args
-  // so we don't smuggle untrusted strings through shell quoting.
+  // so we don't smuggle untrusted strings through shell quoting. A failed
+  // ogr2ogr exits its inner shell with 1 (never 255, which would stop xargs
+  // early), so xargs fails and marks the cell; it never stops the export.
   const multiArg = opts.multiFile ? '1' : '0';
   return `
 set -e
@@ -349,7 +367,9 @@ find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -
   i=$((i + 1))
   name=$(basename "$enc" .000)
   echo "PROGRESS: Processing $name ($i/$count)"
-  layers=$(ogrinfo -so "$enc" 2>>${errLog} | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
+  failed=0
+  info=$(ogrinfo -so "$enc" 2>>${errLog}) || failed=1
+  layers=$(printf '%s\\n' "$info" | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
   printf '%s\\n' $layers | xargs -P ${parallel} -I '{}' sh -c '
     layer="$1"
     enc="$2"
@@ -359,12 +379,12 @@ find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -
     if [ "$multi" = "1" ]; then outname="\${layer}_\${name}"; else outname="$layer"; fi
     if [ "$layer" = "SOUNDG" ]; then
       ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
+        "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || exit 1
     else
-      ogr2ogr -f GeoJSON "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || true
+      ogr2ogr -f GeoJSON "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || exit 1
     fi
-  ' _ '{}' "$enc" "$name" "${multiArg}"
-done
+  ' _ '{}' "$enc" "$name" "${multiArg}" || failed=1
+${markComplete}done
 echo "PROGRESS: Export complete"
 `;
 }
@@ -375,12 +395,13 @@ async function exportAllLayersToGeoJSON(
   geojsonDir: string,
   chartNumber: string,
   signal?: AbortSignal,
-  // Name every output `<LAYER>_<cell>.geojson`, even for one cell, so the
-  // files can be told apart by cell (the chart-set cache splits them).
-  forceMultiFile = false
+  // For the chart-set cache, which keeps output per cell: name every output
+  // `<LAYER>_<cell>.geojson`, even for one cell, and mark each cell exported
+  // without an error, so a partial export is never kept as complete.
+  perCell = false
 ): Promise<void> {
   const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
-  const multiFile = forceMultiFile || encFiles.length > 1;
+  const multiFile = perCell || encFiles.length > 1;
   const parallelism = getCpuBudget().gdalExportParallelism;
 
   // Translate the absolute host paths into (source, subPath) pairs the
@@ -414,7 +435,8 @@ async function exportAllLayersToGeoJSON(
     parallelism,
     skipLayers,
     inputPrefix,
-    outputPrefix
+    outputPrefix,
+    markComplete: perCell
   });
 
   const result = await runContainerJob({
