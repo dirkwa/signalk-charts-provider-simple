@@ -2574,7 +2574,9 @@ async function saveChartMetadata(): Promise<void> {
   const opacityInput = document.getElementById('editChartOpacity') as HTMLInputElement | null;
   const opacityText = opacityInput?.value.trim() ?? '';
   const opacityPercent = Number(opacityText);
-  if (opacityText !== '' && !(opacityPercent >= 0 && opacityPercent <= 100)) {
+  // A half-typed number reads as empty; it must not clear a saved opacity.
+  const badInput = opacityInput?.validity.badInput === true;
+  if (badInput || (opacityText !== '' && !(opacityPercent >= 0 && opacityPercent <= 100))) {
     showErrorNotification('Opacity must be between 0 and 100');
     return;
   }
