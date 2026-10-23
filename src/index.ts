@@ -434,7 +434,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           type: 'integer',
           title: 'Space for masked chart tiles (MB)',
           description:
-            'Masked chart versions ("Water only") keep each tile once it has been masked, so it is not masked again. ' +
+            'Masked chart versions ("Water only", "Land only") keep each tile once it has been masked, so it is not masked again. ' +
             'Above this size the versions used longest ago lose their masked tiles first; they are made again when needed. ' +
             'A version that alone fills this space keeps what it has and masks newer tiles each time they are shown. ' +
             'The online chart tiles they are made from are not affected. 0 keeps nothing.',
@@ -1325,7 +1325,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const MaskedVersionBody = Type.Object({
     chartPath: Type.String({ minLength: 1 }),
     mask: ChartMaskSchema,
-    enabled: Type.Boolean()
+    enabled: Type.Boolean(),
+    // The user read and accepted the "Land only" warning.
+    acknowledged: Type.Optional(Type.Boolean())
   });
 
   const AddCustomOnlineChartBody = Type.Object({
@@ -3389,7 +3391,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         .map((f) => f.relativePath);
     };
 
-    // Add or remove the "Water only" version of a kept online chart: its own
+    // Add or remove a masked version of a kept online chart: its own
     // chart file beside the chart's, sharing its kept tiles. It is served once
     // the land index is built, which this never starts: the user agrees to
     // that download separately (POST /land-index/download).
@@ -3416,6 +3418,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             return;
           }
           const existing = await maskedVersionFiles(file.catalogId, body.mask);
+          if (
+            body.enabled &&
+            existing.length === 0 &&
+            body.mask === 'land-only' &&
+            !body.acknowledged
+          ) {
+            res.status(400).json({
+              success: false,
+              error: 'A Land only version is added only once its warning is acknowledged'
+            });
+            return;
+          }
           if (body.enabled) {
             const relativePath =
               existing[0] ??

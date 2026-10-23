@@ -228,6 +228,15 @@ describe('online charts', () => {
       assert.match(provider.description, /OpenStreetMap contributors \(ODbL\)/);
       assert.strictEqual(provider.v2.url, '~tilePath~/kept-depths-water-only/{z}/{x}/{y}');
 
+      const landOnly = onlineChartProvider(
+        path.join(dir, 'kept-depths-land-only.onlinechart.json'),
+        { catalogId: 'kept-depths', name: 'Depths (Land only)', mask: 'land-only' },
+        lookup,
+        true
+      );
+      assert.strictEqual(landOnly?.defaultOpacity, 0.7, 'starts at 0.7 whatever its chart');
+      assert.match(landOnly?.description ?? '', /Not for navigation/);
+
       const streamed = { catalogId: 'nws-radar-conus', name: 'Radar', mask: 'water-only' as const };
       assert.strictEqual(onlineChartProvider(file, streamed, lookup, true), null);
       assert.ok(isMaskable({ catalogId: 'kept-depths', name: 'Depths' }, kept));

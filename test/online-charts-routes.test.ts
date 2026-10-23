@@ -670,7 +670,7 @@ describe('online chart routes', () => {
     assert.strictEqual(before.status, 'absent');
     assert.strictEqual(before.requested, false);
     assert.ok(before.approxDownloadBytes > before.approxDiskBytes);
-    assert.deepStrictEqual(await masks(), { 'water-only': false });
+    assert.deepStrictEqual(await masks(), { 'water-only': false, 'land-only': false });
 
     const on = await setVersion(true);
     assert.strictEqual(on.statusCode, 200);
@@ -679,7 +679,7 @@ describe('online chart routes', () => {
       (JSON.parse(fs.readFileSync(path.join(chartPath, masked), 'utf-8')) as { mask: string }).mask,
       'water-only'
     );
-    assert.deepStrictEqual(await masks(), { 'water-only': true });
+    assert.deepStrictEqual(await masks(), { 'water-only': true, 'land-only': false });
     await setVersion(true);
     assert.strictEqual(fs.readdirSync(path.join(chartPath, 'Masks')).length, 2, 'added once');
 
@@ -706,8 +706,29 @@ describe('online chart routes', () => {
     const off = await setVersion(false);
     assert.strictEqual(off.statusCode, 200);
     assert.ok(!fs.existsSync(path.join(chartPath, masked)));
-    assert.deepStrictEqual(await masks(), { 'water-only': false });
+    assert.deepStrictEqual(await masks(), { 'water-only': false, 'land-only': false });
     assert.strictEqual((await call(handlers.get('delete /land-index'), {})).statusCode, 200);
+  });
+
+  it('adds a Land only version only once its warning is acknowledged', async () => {
+    const added = await add({ catalogId: 'test-imagery', folder: 'Land only' });
+    const chartPathParam = (added.body as { relativePath: string }).relativePath;
+    const setLandOnly = (body: Record<string, unknown>) =>
+      call(handlers.get('post /online-charts/masked-version'), {
+        body: { chartPath: chartPathParam, mask: 'land-only', enabled: true, ...body }
+      });
+    assert.strictEqual((await setLandOnly({})).statusCode, 400);
+    assert.strictEqual((await setLandOnly({ acknowledged: false })).statusCode, 400);
+    const ok = await setLandOnly({ acknowledged: true });
+    assert.strictEqual(ok.statusCode, 200);
+    assert.strictEqual(
+      (ok.body as { relativePath: string }).relativePath,
+      path.join('Land only', 'test-imagery-land-only.onlinechart.json')
+    );
+    const off = await call(handlers.get('post /online-charts/masked-version'), {
+      body: { chartPath: chartPathParam, mask: 'land-only', enabled: false }
+    });
+    assert.strictEqual(off.statusCode, 200);
   });
 
   it('refuses a masked version of a chart whose tiles are not kept', async () => {

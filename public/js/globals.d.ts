@@ -114,7 +114,7 @@ declare global {
     showManageError(message: string): void;
 
     // chart-masks.ts
-    maskOptionChanged(input: HTMLInputElement): Promise<void>;
+    maskOptionChanged(input: HTMLInputElement, mask: string): Promise<void>;
     shorelineChoice(agreed: boolean): void;
     askShorelineDownload(): Promise<void>;
     startShorelineDownload(): Promise<void>;

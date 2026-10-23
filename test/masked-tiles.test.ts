@@ -189,6 +189,59 @@ describe('masked chart tiles', () => {
     assert.strictEqual(a, b);
   });
 
+  it('cuts the water away for Land only', async () => {
+    const tile = (await tiles.getTile('chart', source, 'land-only', 2, 0, 0))?.data;
+    assert.ok(tile);
+    assert.strictEqual(alphaAt(tile, 10, 128), 255, 'land is kept');
+    assert.strictEqual(alphaAt(tile, 240, 128), 0, 'water is cut away');
+  });
+
+  it('fails closed for Land only: a transparent tile plotters do not keep, never the raw one', async () => {
+    const transparent = (png: Buffer | undefined): boolean => {
+      assert.ok(png);
+      const img = PNG.sync.read(png);
+      return img.data.every((v, i) => i % 4 !== 3 || v === 0);
+    };
+    const noIndex = await new MaskedTiles(proxy, cache, () => null).getTile(
+      'chart',
+      source,
+      'land-only',
+      2,
+      0,
+      0
+    );
+    assert.ok(transparent(noIndex?.data));
+    assert.strictEqual(noIndex?.provisional, true);
+
+    upstream = 'absent';
+    try {
+      const none = await tiles.getTile('nothing-here', source, 'land-only', 2, 0, 0);
+      assert.ok(transparent(none?.data));
+      assert.strictEqual(none?.provisional, true);
+    } finally {
+      upstream = solidJpeg();
+    }
+
+    upstream = Buffer.from('not an image the plugin can decode');
+    try {
+      const broken = await tiles.getTile('broken-land', source, 'land-only', 2, 0, 0);
+      assert.ok(transparent(broken?.data), 'the raw bytes never reach the plotter');
+      await cache.flush();
+      const again = await tiles.getTile('broken-land', source, 'land-only', 2, 0, 0);
+      assert.ok(transparent(again?.data), 'nor from the cache');
+    } finally {
+      upstream = solidJpeg();
+    }
+
+    // No land at all: nothing to show, remembered as such.
+    assert.strictEqual(await tiles.getTile('chart', source, 'land-only', 2, 3, 3), null);
+    await cache.flush();
+    const key = cache.key(maskedCacheText('chart', 'land-only', index.version)) ?? '';
+    const kept = store.get('chart', 2, 3, 3);
+    assert.ok(kept);
+    assert.deepStrictEqual([...(cache.readStamped(key, 2, 3, 3, kept.fetchedAt) ?? [])], [0]);
+  });
+
   it('serves the plain tile without a land index', async () => {
     const plain = new MaskedTiles(proxy, cache, () => null);
     const tile = await plain.getTile('chart', source, 'water-only', 2, 0, 0);

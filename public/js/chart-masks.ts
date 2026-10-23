@@ -1,6 +1,7 @@
-// Masked chart versions in Manage Charts: the "+Water only" checkbox in a
-// kept online chart's Edit dialog, the one-time shoreline data download
-// masked versions need, and the status of versions still waiting for it.
+// Masked chart versions in Manage Charts: the "+Water only" and "+Land only"
+// checkboxes in a kept online chart's Edit dialog, the warning a Land only
+// version needs, the one-time shoreline data download masked versions need,
+// and the status of versions still waiting for it.
 
 const MASKS_API_BASE = '/plugins/signalk-charts-provider-simple';
 
@@ -28,6 +29,11 @@ const MASK_OPTIONS: MaskOption[] = [
     mask: 'water-only',
     label: 'Water only',
     hint: 'Adds this chart again with the land cut away, so satellite imagery or another chart underneath shows on land. Lights, landmarks and labels the chart draws ashore go with it.'
+  },
+  {
+    mask: 'land-only',
+    label: 'Land only',
+    hint: 'Adds this chart again with the water cut away, so it can lie on top of your other charts and show the land over them. It starts at 70% opacity.'
   }
 ];
 
@@ -35,6 +41,8 @@ let landIndexInfo: LandIndexInfo | null = null;
 let landIndexPoll: ReturnType<typeof setInterval> | null = null;
 /** The user agreed to the shoreline download while editing; it starts when they save. */
 let shorelineDownloadAgreed = false;
+/** The user acknowledged the Land only warning while editing. */
+let landOnlyAcknowledged = false;
 let pendingShorelineChoice: ((agreed: boolean) => void) | null = null;
 
 /** Safe in element text and in quoted attributes alike. */
@@ -149,7 +157,7 @@ function renderMaskRows(masks: Record<string, boolean> | undefined, editing: boo
     ? MASK_OPTIONS.map(
         (o) => `
           <label class="mask-option">
-            <input type="checkbox" id="maskOption-${o.mask}" ${masks[o.mask] ? 'checked' : ''} onchange="maskOptionChanged(this)" />
+            <input type="checkbox" id="maskOption-${o.mask}" ${masks[o.mask] ? 'checked' : ''} onchange="maskOptionChanged(this, '${o.mask}')" />
             +${masksEscape(o.label)}
           </label>
           <div class="mask-option-hint">${masksEscape(o.hint)}</div>`
@@ -190,8 +198,31 @@ function renderMaskRows(masks: Record<string, boolean> | undefined, editing: boo
  * Ticking a version for the first time while the shoreline data is not on
  * disk asks before anything is downloaded; cancelling unticks it.
  */
-async function maskOptionChanged(input: HTMLInputElement): Promise<void> {
-  if (!input.checked || shorelineDownloadAgreed) {
+async function maskOptionChanged(input: HTMLInputElement, mask: string): Promise<void> {
+  if (!input.checked) {
+    return;
+  }
+  if (mask === 'land-only' && !landOnlyAcknowledged) {
+    landOnlyAcknowledged = await askShoreline({
+      icon: 'warning',
+      title: 'Land only is not for navigation',
+      body: `
+          <p>A Land only version cuts the water away using OpenStreetMap's land polygons, so it can lie on top of your other charts. Those polygons:</p>
+          <ul>
+            <li>count lakes, the Great Lakes included, and most rivers as land, so there it covers the charts underneath;</li>
+            <li>do not match a chart's coastline exactly: the land is pulled back 2 pixels from the shore, but near the shore it can still cover rocks, buoys and other features a chart draws.</li>
+          </ul>
+          <p>It starts at 70% opacity, so the charts underneath stay visible. Never rely on it to see hazards.</p>`,
+      confirm: 'Add Land only',
+      danger: true,
+      acknowledge: 'I understand that a Land only layer can hide charted hazards.'
+    });
+    if (!landOnlyAcknowledged) {
+      input.checked = false;
+      return;
+    }
+  }
+  if (shorelineDownloadAgreed) {
     return;
   }
   const info = await fetchLandIndexInfo();
@@ -213,8 +244,11 @@ function askShoreline(options: {
   body: string;
   confirm: string;
   danger?: boolean;
+  /** A statement the user must tick before the confirm button works. */
+  acknowledge?: string;
 }): Promise<boolean> {
-  document.getElementById('shorelineModal')?.remove();
+  // A question still open (reached by keyboard behind this one) is answered no.
+  shorelineChoice(false);
   const modalHTML = `
     <div class="delete-modal-overlay" id="shorelineModal">
       <div class="delete-modal" onclick="event.stopPropagation()">
@@ -222,10 +256,14 @@ function askShoreline(options: {
           <div class="delete-modal-icon"${options.danger ? '' : ' style="color: var(--accent-primary);"'}>${window.getIcon(options.icon)}</div>
           <h3>${options.title}</h3>
         </div>
-        <div class="delete-modal-body">${options.body}</div>
+        <div class="delete-modal-body">${options.body}${
+          options.acknowledge
+            ? `<label class="mask-option"><input type="checkbox" onchange="document.getElementById('shorelineConfirm').disabled = !this.checked" /> ${options.acknowledge}</label>`
+            : ''
+        }</div>
         <div class="delete-modal-actions">
           <button class="btn btn-secondary" onclick="shorelineChoice(false)">Cancel</button>
-          <button class="btn ${options.danger ? 'btn-danger' : 'btn-primary'}" onclick="shorelineChoice(true)">${options.confirm}</button>
+          <button class="btn ${options.danger ? 'btn-danger' : 'btn-primary'}" id="shorelineConfirm" onclick="shorelineChoice(true)"${options.acknowledge ? ' disabled' : ''}>${options.confirm}</button>
         </div>
       </div>
     </div>`;
@@ -241,7 +279,7 @@ function confirmShorelineDownload(info: LandIndexInfo, whenSaved: boolean): Prom
     icon: 'download',
     title: 'Download shoreline data?',
     body: `
-          <p>A Water only version cuts the land away using OpenStreetMap's land polygons. This needs a one-time download of the shoreline data:</p>
+          <p>Masked chart versions cut the land or the water away using OpenStreetMap's land polygons. This needs a one-time download of the shoreline data:</p>
           <div class="delete-modal-item shoreline-sizes">
             <div>Download: about ${approxSize(info.approxDownloadBytes)}</div>
             <div>Disk space once built: about ${approxSize(info.approxDiskBytes)}</div>
@@ -261,6 +299,7 @@ function shorelineChoice(agreed: boolean): void {
 /** Start editing a chart's masked versions afresh. */
 function resetMaskEdit(): void {
   shorelineDownloadAgreed = false;
+  landOnlyAcknowledged = false;
   void fetchLandIndexInfo();
 }
 
@@ -282,7 +321,12 @@ async function saveMaskOptions(
     const response = await fetch(`${MASKS_API_BASE}/online-charts/masked-version`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chartPath, mask: change.mask, enabled: change.enabled })
+      body: JSON.stringify({
+        chartPath,
+        mask: change.mask,
+        enabled: change.enabled,
+        ...(change.mask === 'land-only' ? { acknowledged: landOnlyAcknowledged } : {})
+      })
     });
     if (!response.ok) {
       return null;
