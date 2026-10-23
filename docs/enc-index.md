@@ -188,7 +188,11 @@ the user picked.
 - **Downloading a set.** Each archive is downloaded once, however many of the
   set's cells it holds, and only those cells' files are extracted. Requests
   go to one host at a time, with a pause between them, and use the same TLS
-  and header fallbacks as the build.
+  and header fallbacks as the build. The archive URLs come from third
+  parties, so the plugin downloads only from public internet addresses: a
+  URL, or any redirect, whose host is or resolves to a loopback, private,
+  link-local or unique-local address, or a local network name such as
+  `.local`, fails that archive.
 - **Separately published updates.** For a cell with
   `updatesPublishedSeparately`, the plugin applies the updates numbered after
   the cell's own update, from archives of its source dated no earlier than

@@ -218,7 +218,7 @@ describe('downloadAndExtractEncs', () => {
       encDir,
       path.join(tmp, 'run1', 'zips'),
       { onStaged: (c) => staged.push(c) },
-      { delayMs: 0 }
+      { delayMs: 0, allowPrivateHosts: true }
     );
 
     assert.deepStrictEqual([...result.staged].sort(), [
@@ -262,6 +262,23 @@ describe('downloadAndExtractEncs', () => {
     });
   });
 
+  it('refuses an archive on the local network unless allowed', async () => {
+    hits.clear();
+    const result = await downloadAndExtractEncs(
+      plan(['3T5RHO01']),
+      path.join(tmp, 'private', 'enc'),
+      path.join(tmp, 'private', 'zips'),
+      {},
+      { delayMs: 0 }
+    );
+    assert.deepStrictEqual(result.staged, []);
+    assert.match(
+      result.failed[0]?.error ?? '',
+      /refused .*127\.0\.0\.1 is a private network address/
+    );
+    assert.strictEqual(hits.size, 0, 'no request was made');
+  });
+
   it('pauses between requests to the same host', async () => {
     hits.clear();
     const result = await downloadAndExtractEncs(
@@ -269,7 +286,7 @@ describe('downloadAndExtractEncs', () => {
       path.join(tmp, 'run2', 'enc'),
       path.join(tmp, 'run2', 'zips'),
       {},
-      { delayMs: 150 }
+      { delayMs: 150, allowPrivateHosts: true }
     );
     assert.strictEqual(result.staged.length, 2);
     const times = [...hits.values()].flat().sort((x, y) => x - y);
@@ -291,7 +308,7 @@ describe('downloadAndExtractEncs', () => {
           return abort;
         }
       },
-      { delayMs: 0 }
+      { delayMs: 0, allowPrivateHosts: true }
     );
     assert.strictEqual(result.staged.length, 1);
     assert.strictEqual([...hits.values()].flat().length, 1);
@@ -344,7 +361,7 @@ describe('a server whose headers Node refuses', () => {
       encDir,
       path.join(tmp, 'folded', 'zips'),
       {},
-      { delayMs: 0 }
+      { delayMs: 0, allowPrivateHosts: true }
     );
     assert.deepStrictEqual(result.staged, ['BR7FOLD1']);
     assert.strictEqual(
@@ -367,7 +384,7 @@ describe('a server whose headers Node refuses', () => {
       path.join(tmp, 'unsafe', 'enc'),
       path.join(tmp, 'unsafe', 'zips'),
       {},
-      { delayMs: 0 }
+      { delayMs: 0, allowPrivateHosts: true }
     );
     assert.deepStrictEqual(result.staged, []);
     assert.match(result.failed[0]?.error ?? '', /unexpected file name/);

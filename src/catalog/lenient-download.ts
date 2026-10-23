@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import type { LookupFunction } from 'node:net';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -66,6 +67,24 @@ export interface LenientDownloadOptions {
   ca?: string[];
   /** Fail when the connection is silent this long. */
   timeoutMs?: number;
+  /**
+   * Refuse a URL, the first or any redirect hop, by returning why; null
+   * lets it through. The download fails with `RefusedUrlError`.
+   */
+  checkUrl?: (url: URL) => string | null;
+  /** Resolves host names in place of `dns.lookup`, for every hop. */
+  lookup?: LookupFunction;
+}
+
+/** A URL `checkUrl` refused. */
+export class RefusedUrlError extends Error {
+  constructor(
+    readonly url: string,
+    readonly reason: string
+  ) {
+    super(`refused ${url}: ${reason}`);
+    this.name = 'RefusedUrlError';
+  }
 }
 
 /** Download `url` to `target`, following redirects, with header parsing relaxed. */
@@ -77,6 +96,11 @@ export function downloadLenient(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
+    const refusal = options.checkUrl?.(parsed) ?? null;
+    if (refusal !== null) {
+      reject(new RefusedUrlError(parsed.href, refusal));
+      return;
+    }
     const get = parsed.protocol === 'https:' ? https.get : http.get;
     // Once a response has arrived, its own handling settles the promise: a
     // body cut short (such as by the size limit) also makes the request
@@ -89,7 +113,8 @@ export function downloadLenient(
         insecureHTTPParser: options.insecureHTTPParser ?? true,
         signal: options.signal,
         ...(options.ca ? { ca: options.ca } : {}),
-        ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {})
+        ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+        ...(options.lookup ? { lookup: options.lookup } : {})
       },
       (response) => {
         responded = true;

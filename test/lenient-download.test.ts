@@ -7,9 +7,11 @@ import path from 'node:path';
 
 import {
   HttpStatusError,
+  RefusedUrlError,
   downloadLenient,
   isMalformedResponse
 } from '../dist/catalog/lenient-download.js';
+import { PrivateAddressError, publicOnlyLookup } from '../dist/utils/public-host.js';
 
 const BODY = 'S-57 cell bytes';
 
@@ -112,6 +114,34 @@ describe('lenient download fallback', () => {
     const target = path.join(dir, 'cell.zip');
     await downloadLenient(`${base}/moved`, target, { headers: {}, maxBytes: 1000 });
     assert.strictEqual(fs.readFileSync(target, 'utf8'), BODY);
+  });
+
+  it('checks every redirect hop, not only the first URL', async () => {
+    const target = path.join(dir, 'refused.zip');
+    const err = await downloadLenient(`${base}/moved`, target, {
+      headers: {},
+      maxBytes: 1000,
+      checkUrl: (url) => (url.pathname === '/cell.zip' ? 'not this one' : null)
+    }).then(
+      () => null,
+      (e: unknown) => e
+    );
+    assert.ok(err instanceof RefusedUrlError);
+    assert.match(err.message, /\/cell\.zip: not this one/);
+    assert.ok(!fs.existsSync(target));
+  });
+
+  it('resolves host names through the given lookup', async () => {
+    const local = base.replace('127.0.0.1', 'localhost');
+    const err = await downloadLenient(`${local}/cell.zip`, path.join(dir, 'looked-up.zip'), {
+      headers: {},
+      maxBytes: 1000,
+      lookup: publicOnlyLookup
+    }).then(
+      () => null,
+      (e: unknown) => e
+    );
+    assert.ok(err instanceof PrivateAddressError, String(err));
   });
 
   it('reports a status other than 200', async () => {

@@ -24,6 +24,9 @@
  *   TLS handshake, is retried with header parsing relaxed or with the
  *   intermediates in `catalog/extra-ca-certificates.pem` trusted, as the
  *   index build does (`docs/enc-index.md`). TLS is still verified.
+ * - **Public hosts only.** The URLs come from third-party catalog data, so
+ *   a download, and every redirect it follows, must stay off the boat's own
+ *   network (`public-host.ts`).
  *
  * A cell that fails to download or extract is logged and skipped rather
  * than failing the whole set — a region of dozens of cells shouldn't be
@@ -37,6 +40,7 @@ import { setTimeout as delay } from 'timers/promises';
 import { extraCertificateProblem, pemCertificates } from '../catalog/extra-ca.js';
 import { downloadLenient } from '../catalog/lenient-download.js';
 import { formatCellVersion, parseCellVersion, type PlannedCell } from './enc-chart-set.js';
+import { privateHostReason, publicOnlyLookup } from './public-host.js';
 import { extractZipEntries } from './zip-extract.js';
 
 export interface EncDownloadHooks {
@@ -54,6 +58,11 @@ export interface EncDownloadHooks {
 export interface EncDownloadOptions {
   /** Pause between two requests to the same host. */
   delayMs?: number;
+  /**
+   * Let downloads reach private-network addresses. Only tests set this, to
+   * use a local server; see `public-host.ts` for why it is otherwise off.
+   */
+  allowPrivateHosts?: boolean;
 }
 
 export interface EncDownloadResult {
@@ -214,7 +223,8 @@ async function downloadArchive(
   url: string,
   target: string,
   signal: AbortSignal | undefined,
-  log: (line: string) => void
+  log: (line: string) => void,
+  allowPrivateHosts: boolean
 ): Promise<void> {
   let lenient = false;
   let ca: string[] | undefined;
@@ -226,7 +236,10 @@ async function downloadArchive(
         signal,
         insecureHTTPParser: lenient,
         ...(ca ? { ca } : {}),
-        timeoutMs: REQUEST_TIMEOUT_MS
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        // The URL comes from third-party catalog data: keep it, and every
+        // redirect, off this boat's own network.
+        ...(allowPrivateHosts ? {} : { checkUrl: privateHostReason, lookup: publicOnlyLookup })
       });
       return;
     } catch (err) {
@@ -295,7 +308,13 @@ export async function downloadAndExtractEncs(
     const cellsHere = [...new Set([...job.bases, ...job.updates].map((x) => x.cell))];
     hooks.onProgress?.(++done, jobs.length, cellsHere.slice(0, 3).join(', '));
     try {
-      await downloadArchive(job.url, download, hooks.signal, log);
+      await downloadArchive(
+        job.url,
+        download,
+        hooks.signal,
+        log,
+        options.allowPrivateHosts ?? false
+      );
       if (job.kind === 'cell') {
         for (const base of job.bases) {
           // The name comes from third-party data via the index: only a plain
