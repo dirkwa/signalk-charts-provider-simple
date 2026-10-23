@@ -2459,9 +2459,7 @@ function renderMetadataModal(metadata: ChartMetadata): void {
     .filter(
       (row) =>
         metadata[row.key] !== undefined ||
-        (row.key === 'defaultOpacity' &&
-          metadata.catalogId !== undefined &&
-          (isEditMode || metadata.catalogOpacity !== undefined))
+        (row.key === 'defaultOpacity' && metadata.catalogId !== undefined)
     )
     .map(
       (row) => `
@@ -2547,10 +2545,13 @@ async function saveChartMetadata(): Promise<void> {
     showErrorNotification('Opacity must be between 0 and 100');
     return;
   }
-  // Only online charts have the field; empty goes back to the catalog's opacity.
-  const newOpacity = opacityInput
-    ? { defaultOpacity: opacityText === '' ? null : opacityPercent / 100 }
-    : {};
+  // Only online charts have the field; empty goes back to the catalog's
+  // opacity. An untouched field is not sent, so a hand-set value finer than
+  // a whole percent survives a rename.
+  const newOpacity =
+    opacityInput && opacityText !== opacityInput.defaultValue
+      ? { defaultOpacity: opacityText === '' ? null : opacityPercent / 100 }
+      : {};
 
   if (!currentChartPath) {
     return;
