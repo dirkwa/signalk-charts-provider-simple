@@ -47,7 +47,8 @@ each cell is, is to download every archive and read each cell's `M_COVR`
   direct source's copy wins (see below), then EuRIS's: EuRIS republishes most
   European national producers' cells, one cell per download and usually newer
   than the national catalogs, so a national source contributes only the cells
-  EuRIS lacks. Among the others, the newest edition wins. The order is by
+  EuRIS lacks. Among the others, the newest edition wins, and between equal
+  editions the archive with fewer cells, the smaller download. The order is by
   source, not by version, because a chartcatalogs copy's date can be years
   stale. An archive records the cells it leaves to
   another source in `shadowed`; if that source stops publishing one, the
@@ -84,8 +85,9 @@ outline on the river while keeping the file small.
 
 ## Direct sources
 
-Some producers publish a machine-readable catalog of their own ENCs. The
-builder reads such catalogs itself, so a new source does not wait on
+Some producers publish their ENCs with a catalog of their own: a
+machine-readable catalog, an INSPIRE download feed, or a web page that links
+the archives. The builder reads them itself, so a new source does not wait on
 chartcatalogs, and its versions follow the producer's reissues.
 
 - The US Army Corps of Engineers' inland river cells are one; chartcatalogs
@@ -103,7 +105,18 @@ How they are configured and read:
 
 - `catalog/enc-direct-sources.json` lists them by hand, checked against a
   strict schema (`src/catalog/enc-direct-sources.ts`): an id, a label, the
-  catalog's format and its URL.
+  catalog's format and its URL. A `links` pattern picks the archives out of a
+  web page or feed, and an `attribution` carries the credit a licence such as
+  CC BY asks for into the index's source entry.
+- The formats read today are USACE's product catalog XML, an INSPIRE ATOM
+  dataset feed (each entry's enclosure, versioned by the entry's date), and
+  the archive links on a web page. A page link has no date of its own: a
+  WordPress upload is versioned by its upload month, since WordPress never
+  overwrites a file and a reissue gets a new URL; any other link is versioned
+  by its URL.
+- A page or feed is scraped, so its layout can change. When nothing on it
+  matches any more, the source counts as unreadable and keeps what is
+  published, with a warning, rather than losing its cells.
 - Each format has one adapter in that module, which turns the producer's
   catalog into the list of archives the source offers, each with the
   catalog's own date for it. A catalog that cannot be fetched or read leaves

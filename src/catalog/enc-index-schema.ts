@@ -73,6 +73,12 @@ export const EncIndexSourceSchema = Type.Object({
   ),
   catalog: Type.Optional(
     Type.String({ description: 'For a direct source: the producer’s catalog URL.' })
+  ),
+  attribution: Type.Optional(
+    Type.String({
+      description:
+        'Credit the producer’s licence asks for (e.g. CC BY). Show it wherever the source’s charts are shown.'
+    })
   )
 });
 

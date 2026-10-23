@@ -14,10 +14,17 @@ import { NOAA_SOURCE_ID } from './enc-index-schema.js';
 
 const STRICT = { additionalProperties: false } as const;
 
-export const DirectSourceFormatSchema = Type.Union([Type.Literal('usace-ienc-product-catalog')], {
-  description:
-    'The catalog format, which picks the adapter. "usace-ienc-product-catalog": the US Army Corps of Engineers’ IENC product catalog XML (their river cells and their buoy overlay each have one).'
-});
+export const DirectSourceFormatSchema = Type.Union(
+  [
+    Type.Literal('usace-ienc-product-catalog'),
+    Type.Literal('html-links'),
+    Type.Literal('inspire-atom')
+  ],
+  {
+    description:
+      'The catalog format, which picks the adapter. "usace-ienc-product-catalog": the US Army Corps of Engineers’ IENC product catalog XML (their river cells and their buoy overlay each have one). "html-links": the archive links on a publisher’s web page, chosen by `links`. "inspire-atom": the enclosures of an INSPIRE ATOM dataset feed.'
+  }
+);
 
 export const EncDirectSourceSchema = Type.Object(
   {
@@ -29,8 +36,23 @@ export const EncDirectSourceSchema = Type.Object(
     format: DirectSourceFormatSchema,
     catalog: Type.String({
       pattern: '^https://',
-      description: 'URL of the producer’s machine-readable catalog.'
-    })
+      description:
+        'URL of the producer’s catalog: a machine-readable catalog, or for "html-links" the web page that links the archives.'
+    }),
+    links: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          'A regular expression the archive URLs must match. Required for "html-links", where it picks the archives out of every link on the page; optional for "inspire-atom".'
+      })
+    ),
+    attribution: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          'Credit the producer’s licence asks for, e.g. for CC BY data. Published with the source in the ENC index.'
+      })
+    )
   },
   STRICT
 );
@@ -62,7 +84,8 @@ export interface DirectCatalog {
 
 /**
  * Rules the schema cannot express: ids unique, and none taken by NOAA or a
- * chartcatalogs source. Returns one message per problem.
+ * chartcatalogs source; `links` a valid regular expression, and present for
+ * "html-links". Returns one message per problem.
  */
 export function checkDirectSources(
   file: EncDirectSourcesFile,
@@ -78,6 +101,16 @@ export function checkDirectSources(
       problems.push(`${source.id}: id already used by another ENC source`);
     }
     seen.add(source.id);
+    if (source.format === 'html-links' && !source.links) {
+      problems.push(`${source.id}: "html-links" needs a links pattern`);
+    }
+    if (source.links) {
+      try {
+        new RegExp(source.links);
+      } catch {
+        problems.push(`${source.id}: links is not a valid regular expression`);
+      }
+    }
   }
   return problems;
 }
@@ -176,10 +209,119 @@ export async function parseUsaceIencCatalog(xml: string): Promise<DirectCatalog>
   return { archives, problems };
 }
 
+// ---- Archive links on a web page ----
+
+/** The entities that turn up in HTML attribute values. */
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number(dec)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+/** The file name a URL ends in, without its extension, for a title. */
+function fileStem(url: string): string {
+  const name = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '');
+  return name.replace(/\.[^.]+$/, '') || url;
+}
+
+/**
+ * The version of an archive known only by its link. A WordPress upload sits
+ * under `/wp-content/uploads/YYYY/MM/`, and WordPress never overwrites a
+ * file: a reissue gets a new URL (a new month, or a `-1` suffix). So the
+ * upload month is a stable version, and a reissue arrives as a new archive.
+ * Elsewhere the URL itself is the version.
+ */
+export function linkVersion(url: string): string {
+  const upload = /\/wp-content\/uploads\/(\d{4})\/(\d{2})\//.exec(url);
+  return upload ? `${upload[1]}-${upload[2]}` : url;
+}
+
+/**
+ * The archives a publisher's web page links: every `href` on the page,
+ * resolved against it, kept when it matches the source's `links` pattern.
+ * Titled by file name. A page whose layout changed so that nothing matches
+ * yields no archives, which leaves the source as published.
+ */
+export function parseHtmlLinks(html: string, source: EncDirectSource): Promise<DirectCatalog> {
+  const pattern = new RegExp(source.links ?? '(?!)');
+  const urls = new Set<string>();
+  for (const match of html.matchAll(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+    const href = decodeEntities((match[1] ?? match[2] ?? '').trim());
+    let url: string;
+    try {
+      url = new URL(href, source.catalog).href;
+    } catch {
+      continue;
+    }
+    if (/^https?:\/\//.test(url) && pattern.test(url)) {
+      urls.add(url);
+    }
+  }
+  const archives = [...urls]
+    .sort()
+    .map((url): DirectArchive => ({ url, version: linkVersion(url), title: fileStem(url) }));
+  return Promise.resolve({ archives, problems: [] });
+}
+
+// ---- INSPIRE ATOM dataset feed ----
+
+/**
+ * The archives an INSPIRE ATOM dataset feed offers: each entry's enclosure
+ * links, kept when they match the source's `links` pattern (if any),
+ * versioned by the entry's `updated` and titled by the link's title. An
+ * entry without a readable `updated` is versioned by its raw text, with a
+ * problem reported. Throws when the document is not an ATOM feed.
+ */
+export async function parseInspireAtom(
+  xml: string,
+  source: EncDirectSource
+): Promise<DirectCatalog> {
+  const parsed = (await parseStringPromise(xml)) as XmlNode | null;
+  const feed = parsed?.feed;
+  if (feed === null || typeof feed !== 'object') {
+    throw new Error('not an ATOM feed');
+  }
+  const pattern = source.links ? new RegExp(source.links) : null;
+  const entries = ((feed as XmlNode).entry ?? []) as XmlNode[];
+  const archives: DirectArchive[] = [];
+  const problems: string[] = [];
+  for (const entry of entries) {
+    const updated = text(entry, 'updated');
+    const links = (entry.link ?? []) as { $?: Record<string, string> }[];
+    for (const link of links) {
+      const attrs = link.$ ?? {};
+      const url = (attrs.href ?? '').trim();
+      if (
+        attrs.rel !== 'enclosure' ||
+        !/^https?:\/\//.test(url) ||
+        (pattern && !pattern.test(url))
+      ) {
+        continue;
+      }
+      let version = updated;
+      if (Number.isNaN(Date.parse(updated))) {
+        version = `raw:${updated}`;
+        problems.push(`${url}: cannot read the entry date "${updated}"`);
+      }
+      const title = (attrs.title ?? '').replace(/\s+-\s+[A-Za-z0-9]+$/, '').trim();
+      archives.push({ url, version, title: title || fileStem(url) });
+    }
+  }
+  archives.sort((a, b) => (a.url < b.url ? -1 : a.url > b.url ? 1 : 0));
+  return { archives, problems };
+}
+
 /** Each format's adapter: catalog text in, the archives it lists out. */
 export const DIRECT_SOURCE_ADAPTERS: Record<
   DirectSourceFormat,
-  (catalog: string) => Promise<DirectCatalog>
+  (catalog: string, source: EncDirectSource) => Promise<DirectCatalog>
 > = {
-  'usace-ienc-product-catalog': parseUsaceIencCatalog
+  'usace-ienc-product-catalog': parseUsaceIencCatalog,
+  'html-links': parseHtmlLinks,
+  'inspire-atom': parseInspireAtom
 };

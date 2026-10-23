@@ -85,7 +85,8 @@ export function encSources(
     id: source.id,
     label: source.label,
     kind: 'direct',
-    catalog: source.catalog
+    catalog: source.catalog,
+    ...(source.attribution ? { attribution: source.attribution } : {})
   }));
   const noaa: EncIndexSource = { id: NOAA_SOURCE_ID, label: NOAA_SOURCE_LABEL, kind: 'noaa' };
   return [noaa, ...chartcatalogs, ...directSources].sort((a, b) => compareStrings(a.id, b.id));
@@ -865,6 +866,15 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
   // newest. Decided by source, not by version, because a chartcatalogs
   // copy's version can be years stale.
   const directIds = new Set(inputs.sources.filter((s) => s.kind === 'direct').map((s) => s.id));
+  // With equal versions, the archive holding fewer cells is the smaller
+  // download: a per-cell ZIP rather than a bundle of the whole river.
+  const cellsIn = new Map<string, number>();
+  for (const unit of units) {
+    const key = jobKey({ source: unit.source, url: unit.cells[0].archive });
+    cellsIn.set(key, (cellsIn.get(key) ?? 0) + 1);
+  }
+  const archiveCells = (u: EncIndexUnit): number =>
+    cellsIn.get(jobKey({ source: u.source, url: u.cells[0].archive })) ?? 0;
   const precedence = (u: EncIndexUnit): number =>
     directIds.has(u.source) ? 2 : u.source === PREFERRED_SOURCE ? 1 : 0;
   const kept = new Map<string, EncIndexUnit>();
@@ -878,6 +888,7 @@ export function assembleEncIndex(inputs: EncIndexInputs): EncIndexBuildResult {
     const order =
       precedence(unit) - precedence(other) ||
       compareStrings(unit.cells[0].version ?? '', other.cells[0].version ?? '') ||
+      archiveCells(other) - archiveCells(unit) ||
       compareStrings(archiveVersion(unit), archiveVersion(other)) ||
       compareStrings(other.cells[0].archive, unit.cells[0].archive);
     const [winner, loser] = order > 0 ? [unit, other] : [other, unit];
