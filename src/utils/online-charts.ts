@@ -45,10 +45,14 @@ export const CustomOnlineChartSchema = Type.Object({
 
 export type CustomOnlineChart = Static<typeof CustomOnlineChartSchema>;
 
+const OpacitySchema = Type.Number({ minimum: 0, maximum: 1 });
+
 export const OnlineChartFileSchema = Type.Object({
   catalogId: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1 }),
-  custom: Type.Optional(CustomOnlineChartSchema)
+  custom: Type.Optional(CustomOnlineChartSchema),
+  // Overrides the catalog entry's defaultOpacity for this file only.
+  defaultOpacity: Type.Optional(OpacitySchema)
 });
 
 export type OnlineChartFile = Static<typeof OnlineChartFileSchema>;
@@ -222,24 +226,45 @@ export function chartFileNamesBeside(
 export function readOnlineChartFile(filePath: string): OnlineChartFile | null {
   try {
     const raw: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (raw !== null && typeof raw === 'object' && 'defaultOpacity' in raw) {
+      // A hand-edited opacity out of range falls back to the catalog's,
+      // rather than dropping the chart.
+      const { defaultOpacity, ...rest } = raw as Record<string, unknown>;
+      const file = Value.Check(OpacitySchema, defaultOpacity) ? { ...rest, defaultOpacity } : rest;
+      return Value.Check(OnlineChartFileSchema, file) ? file : null;
+    }
     return Value.Check(OnlineChartFileSchema, raw) ? raw : null;
   } catch {
     return null;
   }
 }
 
+/** What the Edit dialog changes in a chart file; a null opacity goes back to the catalog's. */
+export interface OnlineChartFileChanges {
+  name?: string;
+  defaultOpacity?: number | null;
+}
+
 /**
- * Rewrite a chart file's display name, keeping any other fields. Written to
- * a temporary file and renamed into place, so a power cut or a concurrent
- * scan never sees a half-written file (which would drop the chart).
+ * Rewrite a chart file's display name or opacity, keeping any other fields.
+ * Written to a temporary file and renamed into place, so a power cut or a
+ * concurrent scan never sees a half-written file (which would drop the chart).
  */
-export function renameOnlineChartFile(filePath: string, name: string): boolean {
+export function updateOnlineChartFile(filePath: string, changes: OnlineChartFileChanges): boolean {
   if (!readOnlineChartFile(filePath)) {
     return false;
   }
   const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+  if (changes.name !== undefined) {
+    raw.name = changes.name;
+  }
+  if (changes.defaultOpacity === null) {
+    delete raw.defaultOpacity;
+  } else if (changes.defaultOpacity !== undefined) {
+    raw.defaultOpacity = changes.defaultOpacity;
+  }
   const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify({ ...raw, name }, null, 2)}\n`, 'utf-8');
+  fs.writeFileSync(tmpPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf-8');
   fs.renameSync(tmpPath, filePath);
   return true;
 }
@@ -310,6 +335,7 @@ export function onlineChartProvider(
   }
   const { chart } = entry;
   const identifier = chartIdFromFilename(path.basename(filePath));
+  const defaultOpacity = file.defaultOpacity ?? chart.defaultOpacity;
   const offlineSource = offlineTileSource(entry);
   // A template only the plugin can fill in goes through it even when its
   // tiles may not be kept.
@@ -340,7 +366,7 @@ export function onlineChartProvider(
       type: 'tilelayer',
       scale: 250000,
       ...(tileSize !== undefined ? { tileSize } : {}),
-      ...(chart.defaultOpacity !== undefined ? { defaultOpacity: chart.defaultOpacity } : {}),
+      ...(defaultOpacity !== undefined ? { defaultOpacity } : {}),
       _catalogId: entry.id,
       _offlineSource: proxiedSource,
       _keepTiles: offlineSource !== null,
@@ -367,7 +393,7 @@ export function onlineChartProvider(
     type: chart.type,
     scale: 250000,
     ...(tileSize !== undefined ? { tileSize } : {}),
-    ...(chart.defaultOpacity !== undefined ? { defaultOpacity: chart.defaultOpacity } : {}),
+    ...(defaultOpacity !== undefined ? { defaultOpacity } : {}),
     ...(entry.temporal ? { refreshInterval: entry.temporal.refreshInterval } : {}),
     _catalogId: entry.id,
     v1: { tilemapUrl: chart.url, chartLayers: layers },

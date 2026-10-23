@@ -44,7 +44,7 @@ import {
   collectChartIds,
   findOnlineChartFiles,
   isOnlineChartFile,
-  renameOnlineChartFile,
+  updateOnlineChartFile,
   readOnlineChartFile,
   writeOnlineChartFile,
   onlineChartEntry,
@@ -1267,7 +1267,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   });
 
   const ChartMetadataBody = Type.Object({
-    name: Type.String({ minLength: 1 })
+    name: Type.String({ minLength: 1 }),
+    // Online charts only; null goes back to the catalog entry's opacity.
+    defaultOpacity: Type.Optional(
+      Type.Union([Type.Number({ minimum: 0, maximum: 1 }), Type.Null()])
+    )
   });
 
   const RepairChartBody = Type.Object({
@@ -2273,7 +2277,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       if (!body) {
         return;
       }
-      const { name } = body;
+      const { name, defaultOpacity } = body;
 
       try {
         const basePath = props.chartPath || defaultChartsPath;
@@ -2290,8 +2294,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
 
         if (isOnlineChartFile(fullPath)) {
-          // An online chart's name lives in its .onlinechart.json file.
-          if (!renameOnlineChartFile(fullPath, name)) {
+          // An online chart's name and opacity live in its .onlinechart.json file.
+          if (!updateOnlineChartFile(fullPath, { name, defaultOpacity })) {
             res.status(400).send('Unreadable online chart file');
             return;
           }
@@ -2300,12 +2304,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           if (chartProviders[onlineId]) {
             emitChartDelta(onlineId, sanitizeProvider(chartProviders[onlineId], 2));
           }
-          res.json({ success: true, message: 'Chart name updated' });
+          res.json({ success: true, message: 'Chart updated' });
           return;
         }
 
         if (!fullPath.endsWith('.mbtiles')) {
           res.status(400).send('Metadata editing only available for MBTiles charts');
+          return;
+        }
+        if (defaultOpacity !== undefined) {
+          res.status(400).send('A default opacity can only be set on online charts');
           return;
         }
 
@@ -2365,6 +2373,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             name: file?.name,
             catalogId: file?.catalogId,
             available: entry !== undefined,
+            // The file's own opacity, and the catalog's it falls back to.
+            defaultOpacity: file?.defaultOpacity,
+            catalogOpacity: entry?.chart.defaultOpacity,
             ...(entry
               ? {
                   description: entry.description,

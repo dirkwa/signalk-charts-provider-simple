@@ -18,7 +18,7 @@ import {
   findOnlineChartFiles,
   onlineChartProvider,
   readOnlineChartFile,
-  renameOnlineChartFile,
+  updateOnlineChartFile,
   writeOnlineChartFile,
   type OnlineChartResolver
 } from '../dist/utils/online-charts.js';
@@ -133,7 +133,7 @@ describe('online charts', () => {
     });
   });
 
-  describe('readOnlineChartFile / renameOnlineChartFile', () => {
+  describe('readOnlineChartFile / updateOnlineChartFile', () => {
     it('rejects unreadable or incomplete files', () => {
       fs.writeFileSync(path.join(dir, 'bad.onlinechart.json'), '{not json');
       fs.writeFileSync(path.join(dir, 'empty.onlinechart.json'), '{"name": "x"}');
@@ -147,12 +147,43 @@ describe('online charts', () => {
         file,
         JSON.stringify({ catalogId: 'nws-radar-conus', name: 'Old', extra: 1 })
       );
-      assert.ok(renameOnlineChartFile(file, 'New'));
+      assert.ok(updateOnlineChartFile(file, { name: 'New' }));
       assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf-8')), {
         catalogId: 'nws-radar-conus',
         name: 'New',
         extra: 1
       });
+    });
+
+    it('sets and clears the opacity, keeping the name', () => {
+      const file = path.join(dir, 'x.onlinechart.json');
+      fs.writeFileSync(file, JSON.stringify({ catalogId: 'nws-radar-conus', name: 'Radar' }));
+      assert.ok(updateOnlineChartFile(file, { defaultOpacity: 0.25 }));
+      assert.deepStrictEqual(readOnlineChartFile(file), {
+        catalogId: 'nws-radar-conus',
+        name: 'Radar',
+        defaultOpacity: 0.25
+      });
+      assert.ok(updateOnlineChartFile(file, { defaultOpacity: null }));
+      assert.deepStrictEqual(readOnlineChartFile(file), {
+        catalogId: 'nws-radar-conus',
+        name: 'Radar'
+      });
+    });
+
+    it('ignores an opacity out of range instead of dropping the chart', () => {
+      const file = path.join(dir, 'x.onlinechart.json');
+      for (const defaultOpacity of [2, -1, 'half', null]) {
+        fs.writeFileSync(
+          file,
+          JSON.stringify({ catalogId: 'nws-radar-conus', name: 'Radar', defaultOpacity })
+        );
+        assert.deepStrictEqual(
+          readOnlineChartFile(file),
+          { catalogId: 'nws-radar-conus', name: 'Radar' },
+          String(defaultOpacity)
+        );
+      }
     });
   });
 
@@ -175,6 +206,28 @@ describe('online charts', () => {
         layers: ['conus_bref_qcd']
       });
       assert.deepStrictEqual(provider.bounds, [-130, 20, -60, 55]);
+    });
+
+    it("starts at the file's opacity when it sets one, else the catalog's", () => {
+      const file = path.join(dir, 'nws-radar-conus.onlinechart.json');
+      const own = onlineChartProvider(
+        file,
+        { catalogId: 'nws-radar-conus', name: 'Radar', defaultOpacity: 0 },
+        resolve
+      );
+      assert.strictEqual(own?.defaultOpacity, 0);
+      const fallback = onlineChartProvider(
+        file,
+        { catalogId: 'nws-radar-conus', name: 'Radar' },
+        resolve
+      );
+      assert.strictEqual(fallback?.defaultOpacity, 0.7);
+      const none = onlineChartProvider(
+        path.join(dir, 'w.onlinechart.json'),
+        { catalogId: 'nws-warnings', name: 'Warnings' },
+        resolve
+      );
+      assert.strictEqual(none?.defaultOpacity, undefined);
     });
 
     it('publishes an antimeridian-crossing box as west > east', () => {
