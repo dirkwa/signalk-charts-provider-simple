@@ -159,6 +159,20 @@ describe('resolveChartSet', () => {
   });
 });
 
+describe('buildEncIndexLookup', () => {
+  it('leaves out a non-NOAA copy of a NOAA unit, so one id names one unit', () => {
+    const l = buildEncIndexLookup(
+      [
+        unit('X_Catalog', 'US4AAAAA', [cell('US4AAAAA', ODRA, 'US4AAAAA_ED001_UP000')]),
+        unit('noaa', 'US4AAAAA', [cell('US4AAAAA', NOAA_A, 'US4AAAAA_ED002_UP003')])
+      ],
+      []
+    );
+    assert.strictEqual(l.noaaUnits.get('US4AAAAA')?.source, 'noaa');
+    assert.strictEqual(l.otherUnits.has('US4AAAAA'), false);
+  });
+});
+
 describe('cell versions', () => {
   it('parses and formats the index’s token form', () => {
     assert.deepStrictEqual(parseCellVersion('1R7WAD01_ED005_UP002'), {

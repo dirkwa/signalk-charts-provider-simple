@@ -241,7 +241,8 @@ function stringRecord(value: unknown): Record<string, string> {
 // Coerce a parsed JSON object into a fully-populated CustomCatalog, filling
 // any field a hand-edited / older file might be missing. The on-disk id
 // (filename) wins over any `id` inside the file. A file from a newer
-// version keeps its version number, so it is never rewritten as an older one.
+// version keeps its version number, so it is not migrated; saving it from
+// this version still drops the fields this version does not know.
 function normalizeCatalog(parsed: Partial<CustomCatalog>, id: string): CustomCatalog {
   const now = new Date().toISOString();
   return {

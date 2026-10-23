@@ -82,6 +82,11 @@ const UPDATE_FILE = /^([^/]+)\.(\d{3})$/;
  * Build the lookups from the units and archives an index lists. A non-NOAA
  * id names one cell across the whole index, so `otherUnits` is keyed by id
  * alone; a NOAA id is unique among NOAA units.
+ *
+ * The map and a set's per-unit status share one id space, so a non-NOAA
+ * unit with a NOAA unit's id is left out. S-57 cell names start with their
+ * producer's code, so such a unit can only be a copy of NOAA's own cell,
+ * which the NOAA box already brings in.
  */
 export function buildEncIndexLookup(
   units: readonly EncIndexUnit[],
@@ -90,9 +95,13 @@ export function buildEncIndexLookup(
   const noaaUnits = new Map<string, EncIndexUnit>();
   const otherUnits = new Map<string, EncIndexUnit>();
   for (const unit of units) {
-    const target = unit.source === NOAA_SOURCE_ID ? noaaUnits : otherUnits;
-    if (!target.has(unit.id)) {
-      target.set(unit.id, unit);
+    if (unit.source === NOAA_SOURCE_ID && !noaaUnits.has(unit.id)) {
+      noaaUnits.set(unit.id, unit);
+    }
+  }
+  for (const unit of units) {
+    if (unit.source !== NOAA_SOURCE_ID && !noaaUnits.has(unit.id) && !otherUnits.has(unit.id)) {
+      otherUnits.set(unit.id, unit);
     }
   }
   const archiveByUrl = new Map<string, EncIndexArchive>();

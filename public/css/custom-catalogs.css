@@ -273,6 +273,12 @@
   margin-bottom: 8px;
 }
 
+.cc-missing {
+  margin: 6px 0;
+  font-size: 0.85rem;
+  color: var(--md-sys-color-error, #ba1a1a);
+}
+
 .cc-link-btn {
   border: none;
   background: none;

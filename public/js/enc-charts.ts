@@ -46,9 +46,10 @@ interface CcIndexStatus {
 
 interface EncIndexResponse {
   status: CcIndexStatus;
+  /** When this server last downloaded or revalidated the index. */
+  fetchedAt: string | null;
   index: {
     generatedAt: string;
-    fetchedAt: string;
     sources: CcSource[];
     units: CcUnit[];
   } | null;
@@ -71,6 +72,8 @@ interface CustomCatalog {
   updateReasons: string[];
   // Per-unit freshness by cell version: unit id -> 'up_to_date' | 'needs_refresh'.
   boxStates: Record<string, string>;
+  // Selected units the index no longer lists (nothing to click on the map).
+  missingUnitIds: string[];
 }
 
 interface CatalogProgress {
@@ -391,7 +394,7 @@ function renderMapNote(data: EncIndexResponse): void {
   const sourceCount = data.index.sources.filter((s) => s.units > 0).length;
   const stale =
     data.status.status === 'error' || data.status.status === 'incompatible'
-      ? ` (saved copy from ${new Date(data.index.fetchedAt).toLocaleDateString()}; ${data.status.message ?? 'refresh failed'})`
+      ? ` (saved copy from ${data.fetchedAt ? new Date(data.fetchedAt).toLocaleDateString() : 'an earlier start'}; ${data.status.message ?? 'refresh failed'})`
       : '';
   note.textContent = `${ccUnits.length} chart areas from ${sourceCount} sources${stale}.`;
   note.title = data.index.sources
@@ -1046,6 +1049,12 @@ function renderDetail(): void {
     <div class="cc-detail-status cc-status-${ccStatusClass(cat)}">${ccEscHtml(ccStatusLabel(cat))}</div>
     <div class="cc-detail-meta">${count} selected area(s) &rarr; ${cat.includedCount} ENC cell(s)</div>
     ${
+      cat.missingUnitIds.length > 0
+        ? `<div class="cc-missing">${cat.missingUnitIds.length} selected area(s) no longer published.
+            <button class="cc-link-btn" data-cc-action="drop-missing" ${ccBusy ? 'disabled' : ''}>Remove from set</button></div>`
+        : ''
+    }
+    ${
       cat.updateReasons.length > 0
         ? `<ul class="cc-reasons">${cat.updateReasons
             .map((r) => `<li>${ccEscHtml(r)}</li>`)
@@ -1213,6 +1222,17 @@ async function putSelection(cat: CustomCatalog): Promise<void> {
     // Resync from the server on failure.
     await loadCatalogs();
   }
+}
+
+async function dropMissingUnits(): Promise<void> {
+  const cat = ccActiveCatalog();
+  if (!cat || ccBusy || cat.missingUnitIds.length === 0) {
+    return;
+  }
+  const missing = new Set(cat.missingUnitIds);
+  cat.selectedBand4ChartIds = cat.selectedBand4ChartIds.filter((id) => !missing.has(id));
+  cat.selectedUnitIds = cat.selectedUnitIds.filter((id) => !missing.has(id));
+  await putSelection(cat);
 }
 
 function selectCatalog(id: string): void {
@@ -1559,6 +1579,9 @@ function wireCustomCatalogHandlers(): void {
         break;
       case 'box-mode':
         setBoxMode(!ccBoxMode);
+        break;
+      case 'drop-missing':
+        void dropMissingUnits();
         break;
       case 'refresh-index':
         void loadEncIndex(true);

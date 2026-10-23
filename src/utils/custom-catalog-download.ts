@@ -33,6 +33,7 @@
 import fs from 'fs';
 import path from 'path';
 import tls from 'tls';
+import { setTimeout as delay } from 'timers/promises';
 import { extraCertificateProblem, pemCertificates } from '../catalog/extra-ca.js';
 import { downloadLenient } from '../catalog/lenient-download.js';
 import { formatCellVersion, parseCellVersion, type PlannedCell } from './enc-chart-set.js';
@@ -86,6 +87,8 @@ const REQUEST_TIMEOUT_MS = 60000;
 const MAX_DOWNLOAD_BYTES = 4 * 1024 * 1024 * 1024;
 
 const SAFE_CELL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+/** The file name a bare `.000` download is saved under, from the index's `path`. */
+const SAFE_BASE_FILE = /^[A-Za-z0-9_-]{1,64}\.000$/i;
 
 /**
  * Group the cells' downloads by archive, so each archive is fetched once,
@@ -243,18 +246,13 @@ async function downloadArchive(
   }
 }
 
-function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true }
-    );
-  });
+/** Wait `ms`, or less if the run is aborted meanwhile; never rejects. */
+async function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  try {
+    await delay(ms, undefined, { signal });
+  } catch {
+    // Aborted: the caller checks the signal next.
+  }
 }
 
 function message(err: unknown): string {
@@ -300,7 +298,14 @@ export async function downloadAndExtractEncs(
       await downloadArchive(job.url, download, hooks.signal, log);
       if (job.kind === 'cell') {
         for (const base of job.bases) {
+          // The name comes from third-party data via the index: only a plain
+          // `<cell>.000` file name is written, never a path.
           const name = baseName(base.path);
+          if (!SAFE_BASE_FILE.test(name)) {
+            failedByCell.set(base.cell, `unexpected file name ${base.path}`);
+            log(`WARN: ${base.cell} skipped (unexpected file name ${base.path})`);
+            continue;
+          }
           fs.mkdirSync(cellDir(base.cell), { recursive: true });
           fs.copyFileSync(download, path.join(cellDir(base.cell), name));
           stagedBase.set(base.cell, name);
@@ -372,7 +377,7 @@ export async function downloadAndExtractEncs(
           return;
         }
         if (i > 0 && delayMs > 0) {
-          await sleep(delayMs, hooks.signal);
+          await pause(delayMs, hooks.signal);
           if (hooks.isAborted?.() || hooks.signal?.aborted) {
             return;
           }

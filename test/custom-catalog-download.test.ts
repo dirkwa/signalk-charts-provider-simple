@@ -9,7 +9,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import http from 'node:http';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
@@ -295,5 +295,81 @@ describe('downloadAndExtractEncs', () => {
     );
     assert.strictEqual(result.staged.length, 1);
     assert.strictEqual([...hits.values()].flat().length, 1);
+  });
+});
+
+describe('a server whose headers Node refuses', () => {
+  // Answers like the Brazilian Navy's server: a long header folded onto a
+  // second line, on the redirect and on the file.
+  const folded = "Content-Security-Policy: default-src 'self';\r\n       img-src 'self';\r\n";
+  const body = 'folded-cell';
+  let folding: net.Server;
+  let url = '';
+
+  before(async () => {
+    folding = net.createServer((socket) => {
+      socket.once('data', (data: Buffer) => {
+        const line = data.toString('latin1').split('\r\n')[0];
+        if (line.startsWith('GET /start ')) {
+          socket.end(
+            `HTTP/1.1 302 Found\r\nLocation: /BR7FOLD1.000\r\n${folded}Content-Length: 0\r\nConnection: close\r\n\r\n`
+          );
+        } else {
+          socket.end(
+            `HTTP/1.1 200 OK\r\n${folded}Content-Length: ${String(body.length)}\r\nConnection: close\r\n\r\n${body}`
+          );
+        }
+      });
+    });
+    await new Promise<void>((resolve) => folding.listen(0, '127.0.0.1', resolve));
+    url = `http://127.0.0.1:${String((folding.address() as AddressInfo).port)}/start`;
+  });
+
+  after(() => {
+    folding.close();
+  });
+
+  it('retries with header parsing relaxed, following the redirect', async () => {
+    const lookup = buildEncIndexLookup(
+      [unit('BR', 'BR7FOLD1', url, 'BR7FOLD1.000', 'BR7FOLD1_ED001_UP000')],
+      [{ url, source: 'BR', version: '2024-01-01T00:00:00Z', kind: 'cell' }]
+    );
+    const cells = resolveChartSet(lookup, {
+      selectedBand4ChartIds: [],
+      selectedUnitIds: ['BR7FOLD1']
+    }).cells;
+    const encDir = path.join(tmp, 'folded', 'enc');
+    const result = await downloadAndExtractEncs(
+      cells,
+      encDir,
+      path.join(tmp, 'folded', 'zips'),
+      {},
+      { delayMs: 0 }
+    );
+    assert.deepStrictEqual(result.staged, ['BR7FOLD1']);
+    assert.strictEqual(
+      fs.readFileSync(path.join(encDir, 'BR7FOLD1', 'BR7FOLD1.000'), 'utf8'),
+      body
+    );
+  });
+
+  it('refuses a bare cell whose file name is a path', async () => {
+    const lookup = buildEncIndexLookup(
+      [unit('BR', 'BR7FOLD2', url, '..\\BR7FOLD2.000', 'BR7FOLD2_ED001_UP000')],
+      [{ url, source: 'BR', version: '2024-01-01T00:00:00Z', kind: 'cell' }]
+    );
+    const cells = resolveChartSet(lookup, {
+      selectedBand4ChartIds: [],
+      selectedUnitIds: ['BR7FOLD2']
+    }).cells;
+    const result = await downloadAndExtractEncs(
+      cells,
+      path.join(tmp, 'unsafe', 'enc'),
+      path.join(tmp, 'unsafe', 'zips'),
+      {},
+      { delayMs: 0 }
+    );
+    assert.deepStrictEqual(result.staged, []);
+    assert.match(result.failed[0]?.error ?? '', /unexpected file name/);
   });
 });

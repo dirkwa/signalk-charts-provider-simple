@@ -3902,9 +3902,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           refreshEncIndexIfStale();
         }
         const payload = getEncMapPayload();
+        const fetchedAt = getEncIndex()?.fetchedAt ?? null;
         res
           .type('application/json')
-          .send(`{"status":${JSON.stringify(getEncIndexStatus())},"index":${payload ?? 'null'}}`);
+          .send(
+            `{"status":${JSON.stringify(getEncIndexStatus())},"fetchedAt":${JSON.stringify(fetchedAt)},"index":${payload ?? 'null'}}`
+          );
       })();
     });
 
@@ -4606,6 +4609,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     includedCount: number;
     updateReasons: string[];
     boxStates: Record<string, string>;
+    missingUnitIds: string[];
   } {
     const chartPath = props.chartPath || defaultChartsPath;
     const index = getEncIndex();
@@ -4615,7 +4619,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         effectiveStatus: selectedUnitCount(catalog) === 0 ? 'empty' : catalog.status,
         includedCount: catalog.includedChartIds.length,
         updateReasons: [],
-        boxStates: {}
+        boxStates: {},
+        missingUnitIds: []
       };
     }
     const resolution = resolveChartSet(index, catalog);
@@ -4633,7 +4638,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // Per-unit freshness by cell version. A unit is green only when the set
       // is cleanly converted and its MBTiles exists — a cancelled/failed build
       // or a deleted output shows red, matching the set-level status.
-      boxStates: boxStatesForCatalog(catalog, resolution, mbtilesPresent)
+      boxStates: boxStatesForCatalog(catalog, resolution, mbtilesPresent),
+      // Selected units the index no longer lists have nothing on the map to
+      // click, so the UI offers to remove them.
+      missingUnitIds: resolution.missingSelected
     };
   }
 

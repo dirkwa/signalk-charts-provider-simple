@@ -64,6 +64,9 @@ let indexUrl = DEFAULT_ENC_INDEX_URL;
 let cacheDir = '';
 let debug: DebugFunction = () => {};
 let loaded: LoadedEncIndex | null = null;
+// The disk copy is read on first use, not at start: a start happens on every
+// config save, and a device without chart sets may never need the index.
+let cacheRead = false;
 let mapPayload: string | null = null;
 let inFlightRefresh: Promise<void> | null = null;
 const status: CatalogStatus = {
@@ -142,23 +145,24 @@ export function interpretEncIndex(raw: unknown): InterpretedEncIndex {
 }
 
 /**
- * What the ENC Charts map draws: each unit's outline and labels, without
- * the cell lists, which only the server needs.
+ * What the ENC Charts map draws: each selectable unit's outline and labels,
+ * without the cell lists, which only the server needs. It changes only with
+ * the index's content, so it is built once per download.
  */
-export function encMapPayload(index: Omit<LoadedEncIndex, 'etag'>): string {
+export function encMapPayload(index: Omit<LoadedEncIndex, 'etag' | 'fetchedAt'>): string {
+  const selectable = [...index.noaaUnits.values(), ...index.otherUnits.values()];
   const counts = new Map<string, number>();
-  for (const unit of index.units) {
+  for (const unit of selectable) {
     counts.set(unit.source, (counts.get(unit.source) ?? 0) + 1);
   }
   return JSON.stringify({
     generatedAt: index.generatedAt,
-    fetchedAt: index.fetchedAt,
     sources: index.sources.map((s) => ({
       id: s.id,
       label: s.label,
       units: counts.get(s.id) ?? 0
     })),
-    units: index.units.map((u) => ({
+    units: selectable.map((u) => ({
       source: u.source,
       id: u.id,
       title: u.title,
@@ -211,6 +215,10 @@ function saveCache(text: string | null, meta: CacheMeta): void {
 }
 
 function loadCache(): void {
+  if (cacheRead) {
+    return;
+  }
+  cacheRead = true;
   try {
     if (!fs.existsSync(cachePath(CACHE_FILE))) {
       return;
@@ -235,10 +243,10 @@ export function initEncIndexManager(dataDirPath: string, debugFn: DebugFunction)
   indexUrl = process.env.ENC_INDEX_URL || DEFAULT_ENC_INDEX_URL;
   loaded = null;
   mapPayload = null;
+  cacheRead = false;
   status.status = 'never';
   status.lastSuccessAt = null;
   status.message = null;
-  loadCache();
   // The NOAA Charts tab cached NOAA's footprint file here; the index
   // replaces it.
   try {
@@ -271,6 +279,8 @@ export function refreshEncIndexIfStale(): void {
 }
 
 async function doRefresh(): Promise<void> {
+  // The cached copy's ETag lets an unchanged index answer 304.
+  loadCache();
   status.lastAttemptAt = Date.now();
   let response: Response;
   try {
@@ -291,7 +301,6 @@ async function doRefresh(): Promise<void> {
   const now = new Date().toISOString();
   if (response.status === 304 && loaded) {
     loaded.fetchedAt = now;
-    mapPayload = null;
     saveCache(null, { fetchedAt: now, etag: loaded.etag });
   } else if (response.ok) {
     let text: string;
@@ -332,6 +341,7 @@ function fetchIndexFile(etag: string | null): Promise<Response> {
 
 /** The index loaded now (downloaded this start, or the cached copy), if any. */
 export function getEncIndex(): LoadedEncIndex | null {
+  loadCache();
   return loaded;
 }
 
@@ -341,6 +351,7 @@ export function getEncIndexStatus(): CatalogStatus {
 
 /** The map's JSON, built once per loaded index. */
 export function getEncMapPayload(): string | null {
+  loadCache();
   if (!loaded) {
     return null;
   }
