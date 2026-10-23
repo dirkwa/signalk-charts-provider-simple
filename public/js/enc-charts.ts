@@ -115,11 +115,15 @@ interface CcDrawnUnit {
   rings: CcPosition[][];
   /** Rough size, for picking the smallest of overlapping units. */
   area: number;
+  /** Whole turns (degrees) the layer is drawn shifted by; see ccFollowWorld. */
+  shift: number;
 }
 
 let ccInitialized = false;
 let ccMap: L.Map | null = null;
 let ccFootprintLayer: L.LayerGroup | null = null;
+// Markers for selected units too small to see at the current zoom.
+let ccSmallLayer: L.LayerGroup | null = null;
 let ccRenderer: L.Renderer | null = null;
 const ccDrawnById = new Map<string, CcDrawnUnit>();
 // Per-box bottom-to-top "fill" overlays on NOAA rectangles, shown during download.
@@ -247,6 +251,11 @@ function initCustomCatalogMap(): void {
     attribution: 'Seamarks &copy; OpenSeaMap'
   }).addTo(ccMap);
   ccFootprintLayer = L.layerGroup().addTo(ccMap);
+  ccSmallLayer = L.layerGroup().addTo(ccMap);
+  ccMap.on('moveend', () => {
+    ccFollowWorld();
+    updateSmallMarkers();
+  });
   ccHoverTip = L.tooltip({ direction: 'top', offset: [0, -6] });
 
   // Units are not interactive themselves: overlapping outlines are resolved
@@ -428,7 +437,7 @@ function drawUnits(): void {
     }
     layer.addTo(ccFootprintLayer);
     const area = (east - west) * (n - s) * Math.cos((((n + s) / 2) * Math.PI) / 180);
-    ccDrawnById.set(unit.id, { unit, layer, west, east, rings, area });
+    ccDrawnById.set(unit.id, { unit, layer, west, east, rings, area, shift: 0 });
   }
   // Note: the map view is framed by init / selectCatalog (fitMapToActiveCatalog
   // or fitMapToAllUnits), not here — a fit during draw competed with the
@@ -806,6 +815,92 @@ function refreshAreaColors(): void {
   }
   const downloading = ccBusy && ccDetail?.phase === 'downloading';
   updateFillOverlays(downloading, selected);
+  updateSmallMarkers();
+}
+
+/** The whole-turn shift that puts a unit nearest the map's center. */
+function ccShiftToView(drawn: CcDrawnUnit): number {
+  const centerLon = ccMap ? ccMap.getCenter().lng : 0;
+  return Math.round((centerLon - (drawn.west + drawn.east) / 2) / 360) * 360;
+}
+
+/**
+ * Leaflet draws a vector layer in one copy of the world only, so a selection
+ * framed across the antimeridian (Guam and American Samoa, or the Keys and
+ * Micronesia) would be partly drawn out of view. Selected units are moved to
+ * the copy being looked at; the rest stay where they are.
+ */
+function ccFollowWorld(): void {
+  for (const id of ccSelectedIds(ccActiveCatalog())) {
+    const drawn = ccDrawnById.get(id);
+    if (!drawn) {
+      continue;
+    }
+    const shift = ccShiftToView(drawn);
+    if (shift === drawn.shift) {
+      continue;
+    }
+    drawn.shift = shift;
+    const [, s, , n] = drawn.unit.bbox;
+    if (drawn.layer instanceof L.Rectangle) {
+      drawn.layer.setBounds([
+        [s, drawn.west + shift],
+        [n, drawn.east + shift]
+      ]);
+    } else if (drawn.layer instanceof L.Polygon) {
+      drawn.layer.setLatLngs(
+        drawn.rings.map((ring) => ring.map(([lon, lat]) => L.latLng(lat, lon + shift)))
+      );
+    }
+  }
+}
+
+// Below this size on screen a selected unit gets a marker, or it could not
+// be seen, found or removed (an atoll box at world zoom is a speck).
+const CC_SMALL_UNIT_PX = 10;
+
+function updateSmallMarkers(): void {
+  if (!ccMap || !ccSmallLayer) {
+    return;
+  }
+  const map = ccMap;
+  ccSmallLayer.clearLayers();
+  const active = ccActiveCatalog();
+  if (!active) {
+    return;
+  }
+  for (const id of ccSelectedIds(active)) {
+    const drawn = ccDrawnById.get(id);
+    if (!drawn) {
+      continue;
+    }
+    const [, s, , n] = drawn.unit.bbox;
+    const sw = map.latLngToContainerPoint([s, drawn.west]);
+    const ne = map.latLngToContainerPoint([n, drawn.east]);
+    if (Math.max(Math.abs(ne.x - sw.x), Math.abs(ne.y - sw.y)) >= CC_SMALL_UNIT_PX) {
+      continue;
+    }
+    const center = L.latLng((s + n) / 2, (drawn.west + drawn.east) / 2 + drawn.shift);
+    const color = unitColor(id, active);
+    const marker = L.circleMarker(center, {
+      radius: 7,
+      color,
+      weight: 2,
+      fillColor: color,
+      fillOpacity: 0.5,
+      renderer: ccRenderer ?? undefined
+    });
+    // The marker sits where the unit is too small to click, so it toggles
+    // the unit itself; the map must not see the same click.
+    marker.on('click', (ev: L.LeafletMouseEvent) => {
+      L.DomEvent.stopPropagation(ev);
+      void onAreaClick(drawn.unit);
+    });
+    marker.on('mouseover', (ev: L.LeafletMouseEvent) => {
+      onHover(drawn, ev.latlng);
+    });
+    marker.addTo(ccSmallLayer);
+  }
 }
 
 // Fill fraction = (status cells downloaded) / (that unit's status cells), 0..1.
@@ -839,8 +934,8 @@ function updateFillOverlays(downloading: boolean, selected: Set<string>): void {
     const [, minLat, , maxLat] = drawn.unit.bbox;
     const topLat = minLat + frac * (maxLat - minLat);
     const bounds = L.latLngBounds([
-      [minLat, drawn.west],
-      [topLat, drawn.east]
+      [minLat, drawn.west + drawn.shift],
+      [topLat, drawn.east + drawn.shift]
     ]);
     const existing = ccFillRects.get(id);
     if (existing) {
@@ -1136,12 +1231,53 @@ function selectCatalog(id: string): void {
   void maybeStartStatusPoll();
 }
 
-function ccBoundsOf(drawn: CcDrawnUnit): L.LatLngExpression[] {
-  const [, s, , n] = drawn.unit.bbox;
-  return [
-    [s, drawn.west],
-    [n, drawn.east]
-  ];
+/**
+ * Bounds that frame the units the short way round: the view starts after
+ * the widest stretch of longitude no unit covers, so a set in the Keys and
+ * Micronesia is framed across the Pacific, not across Europe and Africa.
+ */
+function ccFrameBounds(units: Iterable<CcDrawnUnit>): L.LatLngBounds | null {
+  const spans: { west: number; east: number; south: number; north: number }[] = [];
+  for (const drawn of units) {
+    const shift = Math.floor((drawn.west + 180) / 360) * 360;
+    spans.push({
+      west: drawn.west - shift,
+      east: drawn.east - shift,
+      south: drawn.unit.bbox[1],
+      north: drawn.unit.bbox[3]
+    });
+  }
+  if (spans.length === 0) {
+    return null;
+  }
+  spans.sort((x, y) => x.west - y.west);
+  // Walk the covered stretches in order; the gap after the last one wraps
+  // round to the first.
+  let start = spans[0].west;
+  let reach = spans[0].east;
+  let widestGap = -1;
+  for (const span of spans.slice(1)) {
+    if (span.west > reach && span.west - reach > widestGap) {
+      widestGap = span.west - reach;
+      start = span.west;
+    }
+    reach = Math.max(reach, span.east);
+  }
+  if (spans[0].west + 360 - reach > widestGap) {
+    start = spans[0].west;
+  }
+  let west = Infinity;
+  let east = -Infinity;
+  let south = Infinity;
+  let north = -Infinity;
+  for (const span of spans) {
+    const k = span.west < start ? 360 : 0;
+    west = Math.min(west, span.west + k);
+    east = Math.max(east, span.east + k);
+    south = Math.min(south, span.south);
+    north = Math.max(north, span.north);
+  }
+  return L.latLngBounds([south, west], [north, east]);
 }
 
 // Center + zoom the map to the active set's selected units. No-op if the
@@ -1151,22 +1287,24 @@ function fitMapToActiveCatalog(opts: { animate?: boolean } = {}): void {
   if (!ccMap) {
     return;
   }
-  const points: L.LatLngExpression[] = [];
+  const selected: CcDrawnUnit[] = [];
   for (const id of ccSelectedIds(ccActiveCatalog())) {
     const drawn = ccDrawnById.get(id);
     if (drawn) {
-      points.push(...ccBoundsOf(drawn));
+      selected.push(drawn);
     }
   }
-  if (points.length === 0) {
+  const bounds = ccFrameBounds(selected);
+  if (!bounds) {
     return;
   }
   // maxZoom keeps a single small unit from zooming in uncomfortably far.
-  ccMap.fitBounds(L.latLngBounds(points), {
-    padding: [30, 30],
-    maxZoom: 11,
-    animate: opts.animate ?? true
-  });
+  const zoom = Math.min(ccMap.getBoundsZoom(bounds, false, L.point(60, 60)), 11);
+  // Frame the same view from the main copy of the world, where Leaflet draws
+  // the unselected units; the selected ones follow (ccFollowWorld).
+  const center = bounds.getCenter();
+  const lng = ((((center.lng + 180) % 360) + 360) % 360) - 180;
+  ccMap.setView([center.lat, lng], zoom, { animate: opts.animate ?? true });
 }
 
 // Fit to every unit — the fallback view when no set is selected (e.g. a
@@ -1177,7 +1315,8 @@ function fitMapToAllUnits(opts: { animate?: boolean } = {}): void {
   }
   const points: L.LatLngExpression[] = [];
   for (const drawn of ccDrawnById.values()) {
-    points.push(...ccBoundsOf(drawn));
+    const [, s, , n] = drawn.unit.bbox;
+    points.push([s, drawn.west], [n, drawn.east]);
   }
   ccMap.fitBounds(L.latLngBounds(points), { padding: [20, 20], animate: opts.animate ?? true });
 }
