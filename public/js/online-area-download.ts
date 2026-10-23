@@ -350,7 +350,9 @@ async function showOfflineArea(
   minzoom: number | null,
   maxzoom: number | null,
   areaDownload: boolean,
-  limits: AreaDownloadLimits
+  limits: AreaDownloadLimits,
+  /** Other versions of the chart (such as Water only) share its kept tiles. */
+  versions = false
 ): Promise<void> {
   closeAreaDialog();
   const lowest = minzoom ?? 0;
@@ -368,7 +370,7 @@ async function showOfflineArea(
           <h3>Offline area: ${areaEscape(name)}</h3>
         </div>
         <div class="delete-modal-body">
-          <p class="area-help">Move and zoom the map to the area you want to have without internet. Everything you see is downloaded and kept on the server, and stays there until you delete it here or delete the chart: only tiles kept while browsing make room when the server's space for online charts is full.</p>
+          <p class="area-help">Move and zoom the map to the area you want to have without internet. Everything you see is downloaded and kept on the server, and stays there until you delete it here or delete the chart: only tiles kept while browsing make room when the server's space for online charts is full.${versions ? ' The versions of this chart (such as Water only) share these tiles, so an area downloaded for one works for all of them.' : ''}</p>
           <div id="areaMap" class="area-map"></div>
           <div class="area-zooms">
             <label>From zoom <select id="areaZoomFrom">${zoomOptions(lowest, highest, lowest)}</select></label>

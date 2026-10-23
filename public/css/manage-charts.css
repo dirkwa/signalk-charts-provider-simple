@@ -1654,6 +1654,25 @@
     word-break: break-word;
 }
 
+/* Masked chart versions in the metadata dialog */
+.shoreline-sizes {
+    border-left-color: var(--accent-primary);
+}
+
+.mask-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.mask-option-hint {
+    color: var(--text-secondary);
+    font-size: 0.85em;
+    margin: 4px 0 8px 26px;
+}
+
 /* Responsive adjustments for mobile */
 @media (max-width: 768px) {
     .chart-info-modal {

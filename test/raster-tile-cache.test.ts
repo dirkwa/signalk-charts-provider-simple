@@ -19,13 +19,7 @@ import { PNG } from 'pngjs';
 
 import { MBTilesReader } from '../dist/utils/mbtiles-reader.js';
 import { getRasterOverzoomedTile } from '../dist/utils/raster-overzoom.js';
-import {
-  chartCacheKey,
-  flushRasterTileCache,
-  initRasterTileCache,
-  pruneRasterTileCache,
-  writeCachedTile
-} from '../dist/utils/raster-tile-cache.js';
+import { overzoomTileCache, RasterTileCache } from '../dist/utils/raster-tile-cache.js';
 
 const SIZE = 16;
 type Rgb = [number, number, number];
@@ -140,13 +134,13 @@ describe('raster tile disk cache', () => {
   });
 
   it('serves a synthesized tile from disk on the next run instead of synthesizing it', async () => {
-    await initRasterTileCache(cacheDir);
+    await overzoomTileCache.init(cacheDir);
     const first = await getRasterOverzoomedTile(freshReader(), 1, 0, 0);
     assert.ok(first);
     assertColor(centre(first.data), BLUE, 'synthesized');
-    await flushRasterTileCache();
+    await overzoomTileCache.flush();
 
-    const key = chartCacheKey(chartFile);
+    const key = overzoomTileCache.fileKey(chartFile);
     assert.ok(key);
     assert.ok(fs.existsSync(cachedTilePath(key)), 'tile written to the cache');
     assert.deepStrictEqual(
@@ -163,25 +157,25 @@ describe('raster tile disk cache', () => {
   });
 
   it('does not serve tiles cached for an earlier version of the chart file', async () => {
-    await initRasterTileCache(cacheDir);
-    const oldKey = chartCacheKey(chartFile);
+    await overzoomTileCache.init(cacheDir);
+    const oldKey = overzoomTileCache.fileKey(chartFile);
     assert.ok(oldKey);
     assert.ok(fs.existsSync(cachedTilePath(oldKey)), 'planted tile from the previous test');
 
     const later = new Date(Date.now() + 60_000);
     fs.utimesSync(chartFile, later, later);
-    const newKey = chartCacheKey(chartFile);
+    const newKey = overzoomTileCache.fileKey(chartFile);
     assert.ok(newKey);
     assert.notStrictEqual(newKey, oldKey);
 
     const tile = await getRasterOverzoomedTile(freshReader(), 1, 0, 0);
     assert.ok(tile);
     assertColor(centre(tile.data), BLUE, 'synthesized afresh');
-    await flushRasterTileCache();
+    await overzoomTileCache.flush();
     assert.ok(fs.existsSync(cachedTilePath(newKey)));
 
-    await pruneRasterTileCache([chartFile]);
-    await flushRasterTileCache();
+    await overzoomTileCache.prune([overzoomTileCache.fileKey(chartFile) ?? '']);
+    await overzoomTileCache.flush();
     assert.ok(!fs.existsSync(path.join(cacheDir, oldKey)), 'stale chart directory pruned');
     assert.ok(fs.existsSync(cachedTilePath(newKey)), 'current chart directory kept');
   });
@@ -189,25 +183,25 @@ describe('raster tile disk cache', () => {
   it('evicts the least recently used chart to stay under the size cap', async () => {
     const otherFile = path.join(tempDir, 'other.mbtiles');
     createChart(otherFile);
-    await initRasterTileCache(cacheDir);
-    const key = chartCacheKey(chartFile);
+    await overzoomTileCache.init(cacheDir);
+    const key = overzoomTileCache.fileKey(chartFile);
     assert.ok(key);
     const tileBytes = fs.statSync(cachedTilePath(key)).size;
 
     // Room for one tile and a bit: the second chart's tile pushes the first out.
-    await initRasterTileCache(cacheDir, { maxBytes: tileBytes * 1.5 });
+    await overzoomTileCache.init(cacheDir, { maxBytes: tileBytes * 1.5 });
     const tile = await getRasterOverzoomedTile(freshReader(otherFile), 1, 0, 0);
     assert.ok(tile);
-    await flushRasterTileCache();
+    await overzoomTileCache.flush();
 
-    const otherKey = chartCacheKey(otherFile);
+    const otherKey = overzoomTileCache.fileKey(otherFile);
     assert.ok(otherKey);
     assert.ok(fs.existsSync(cachedTilePath(otherKey)), 'new tile stored');
     assert.ok(!fs.existsSync(path.join(cacheDir, key)), 'older chart evicted');
   });
 
   it('keeps serving synthesized tiles when the cache cannot be written', async () => {
-    await initRasterTileCache(cacheDir);
+    await overzoomTileCache.init(cacheDir);
     // Replace the cache directory with a file, so every write fails.
     fs.rmSync(cacheDir, { recursive: true, force: true });
     fs.writeFileSync(cacheDir, 'not a directory');
@@ -215,11 +209,11 @@ describe('raster tile disk cache', () => {
     const tile = await getRasterOverzoomedTile(freshReader(), 1, 0, 0);
     assert.ok(tile);
     assertColor(centre(tile.data), BLUE, 'synthesized despite the failed write');
-    await flushRasterTileCache();
+    await overzoomTileCache.flush();
 
     // Set up over the file fails too; the cache stays off.
-    await initRasterTileCache(cacheDir);
-    assert.strictEqual(chartCacheKey(chartFile), null);
+    await overzoomTileCache.init(cacheDir);
+    assert.strictEqual(overzoomTileCache.fileKey(chartFile), null);
     const again = await getRasterOverzoomedTile(freshReader(), 1, 0, 0);
     assert.ok(again);
     assertColor(centre(again.data), BLUE, 'synthesized with the cache off');
@@ -251,43 +245,80 @@ describe('raster tile disk cache accounting', () => {
   const cap = { maxBytes: S * 2.5 };
 
   it('counts a tile written by two requests at once only once', async () => {
-    await initRasterTileCache(cacheDir, cap);
-    writeCachedTile(A, 1, 0, 0, tile);
-    writeCachedTile(A, 1, 0, 0, tile);
-    await flushRasterTileCache();
-    writeCachedTile(A, 1, 0, 0, tile);
-    await flushRasterTileCache();
+    await overzoomTileCache.init(cacheDir, cap);
+    overzoomTileCache.write(A, 1, 0, 0, tile);
+    overzoomTileCache.write(A, 1, 0, 0, tile);
+    await overzoomTileCache.flush();
+    overzoomTileCache.write(A, 1, 0, 0, tile);
+    await overzoomTileCache.flush();
 
-    writeCachedTile(B, 1, 0, 0, tile);
-    await flushRasterTileCache();
+    overzoomTileCache.write(B, 1, 0, 0, tile);
+    await overzoomTileCache.flush();
     assert.ok(stored(A), 'first chart kept');
     assert.ok(stored(B), 'second chart stored');
   });
 
   it('keeps the count from one scan when the cache is set up twice at once', async () => {
     fs.rmSync(path.join(cacheDir, B), { recursive: true, force: true });
-    const first = initRasterTileCache(cacheDir, cap);
-    await initRasterTileCache(cacheDir, cap);
+    const first = overzoomTileCache.init(cacheDir, cap);
+    await overzoomTileCache.init(cacheDir, cap);
     await first;
 
-    writeCachedTile(B, 1, 0, 0, tile);
-    await flushRasterTileCache();
+    overzoomTileCache.write(B, 1, 0, 0, tile);
+    await overzoomTileCache.flush();
     assert.ok(stored(A), 'first chart kept');
     assert.ok(stored(B), 'second chart stored');
   });
 
   it('stores a tile written while its chart directory is being removed', async () => {
-    await initRasterTileCache(cacheDir, cap);
+    await overzoomTileCache.init(cacheDir, cap);
     assert.ok(stored(A));
     // Prune starts removing A and B; a new tile for A arrives meanwhile.
-    await pruneRasterTileCache([]);
-    writeCachedTile(A, 1, 1, 0, tile);
-    await flushRasterTileCache();
+    await overzoomTileCache.prune([]);
+    overzoomTileCache.write(A, 1, 1, 0, tile);
+    await overzoomTileCache.flush();
     assert.ok(stored(A, 1), 'new tile survives the removal');
     assert.ok(!stored(A), 'old tile removed');
 
-    writeCachedTile(C, 1, 0, 0, tile);
-    await flushRasterTileCache();
+    overzoomTileCache.write(C, 1, 0, 0, tile);
+    await overzoomTileCache.flush();
     assert.ok(stored(A, 1) && stored(C), 'counted as one tile, not evicted');
+  });
+});
+
+describe('stamped tile cache entries', () => {
+  let tempDir!: string;
+  const cache = new RasterTileCache('Stamped test cache');
+
+  before(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'raster-tile-cache-stamped-'));
+  });
+
+  after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('reads back only with the stamp it was written with', async () => {
+    await cache.init(tempDir);
+    const key = cache.key('chart\0water-only\0v1');
+    assert.ok(key);
+    cache.writeStamped(key, 3, 1, 2, 1234, Buffer.from('first'));
+    await cache.flush();
+    assert.strictEqual(cache.readStamped(key, 3, 1, 2, 1234)?.toString(), 'first');
+    assert.strictEqual(cache.readStamped(key, 3, 1, 2, 5678), null, 'source tile changed');
+    assert.strictEqual(cache.read(key, 3, 1, 2), null, 'never served as a plain tile');
+
+    cache.writeStamped(key, 3, 1, 2, 5678, Buffer.from('second'));
+    await cache.flush();
+    assert.strictEqual(cache.readStamped(key, 3, 1, 2, 5678)?.toString(), 'second');
+  });
+
+  it('stores nothing when its space is set to zero', async () => {
+    await cache.init(tempDir, { maxBytes: 0 });
+    const key = cache.key('other');
+    assert.ok(key);
+    cache.writeStamped(key, 1, 0, 0, 1, Buffer.from('x'));
+    await cache.flush();
+    assert.strictEqual(cache.readStamped(key, 1, 0, 0, 1), null);
   });
 });

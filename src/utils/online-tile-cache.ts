@@ -676,7 +676,7 @@ export type EnsureOutcome = 'kept' | 'fetched' | 'failed' | 'none';
  * is when the provider cannot be reached, which is the whole point offshore.
  */
 export class OnlineTileProxy {
-  private readonly inFlight = new Map<string, Promise<Buffer | 'absent' | null>>();
+  private readonly inFlight = new Map<string, Promise<CachedTile | 'absent' | null>>();
   private readonly generation = new Map<string, number>();
   private readonly streaming = new Map<string, Promise<Uint8Array | 'absent' | null>>();
 
@@ -693,6 +693,17 @@ export class OnlineTileProxy {
     x: number,
     y: number
   ): Promise<Buffer | null> {
+    return (await this.getKeptTile(catalogId, source, z, x, y))?.data ?? null;
+  }
+
+  /** getTile, with when the tile served was fetched, which masked versions stamp their copies with. */
+  async getKeptTile(
+    catalogId: string,
+    source: OnlineTileSource,
+    z: number,
+    x: number,
+    y: number
+  ): Promise<CachedTile | null> {
     if (z > 24 || x >= 2 ** z || y >= 2 ** z) {
       return null;
     }
@@ -703,14 +714,14 @@ export class OnlineTileProxy {
       // A damaged tile file must not stop the chart showing while online.
     }
     if (cached && this.now() - cached.fetchedAt < TILE_REFRESH_MS) {
-      return cached.data;
+      return cached;
     }
-    const fetching = this.fetchAndKeep(catalogId, source, z, x, y).then((data) =>
-      data === 'absent' ? null : data
+    const fetching = this.fetchAndKeep(catalogId, source, z, x, y).then((tile) =>
+      tile === 'absent' ? null : tile
     );
     // An old tile is shown at once and refreshed behind it, so a link that
     // hangs rather than fails never leaves the chart blank while it times out.
-    return cached ? cached.data : fetching;
+    return cached ?? fetching;
   }
 
   /** The provider's tile, passed through without keeping it, for charts whose terms forbid copies. */
@@ -793,7 +804,7 @@ export class OnlineTileProxy {
     x: number,
     y: number,
     pinned = false
-  ): Promise<Buffer | 'absent' | null> {
+  ): Promise<CachedTile | 'absent' | null> {
     const url = upstreamTileUrl(source, z, x, y);
     if (!url) {
       return Promise.resolve(null);
@@ -804,20 +815,21 @@ export class OnlineTileProxy {
       return existing;
     }
     const generation = this.generation.get(catalogId) ?? 0;
-    const pending: Promise<Buffer | 'absent' | null> = this.fetchTile(url)
+    const pending: Promise<CachedTile | 'absent' | null> = this.fetchTile(url)
       .catch(() => null)
       .then((data) => {
         if (!data || data === 'absent') {
           return data;
         }
+        const fetchedAt = this.now();
         if ((this.generation.get(catalogId) ?? 0) === generation) {
           try {
-            this.store.put(catalogId, z, x, y, data, this.now(), pinned);
+            this.store.put(catalogId, z, x, y, data, fetchedAt, pinned);
           } catch {
             // A full disk must not stop the chart showing while online.
           }
         }
-        return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+        return { data: Buffer.from(data.buffer, data.byteOffset, data.byteLength), fetchedAt };
       })
       .finally(() => {
         if (this.inFlight.get(key) === pending) {

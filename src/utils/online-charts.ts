@@ -45,13 +45,30 @@ export const CustomOnlineChartSchema = Type.Object({
 
 export type CustomOnlineChart = Static<typeof CustomOnlineChartSchema>;
 
+/**
+ * A masked version of a chart. "Water only" (`water-only`) cuts the land
+ * away, so imagery underneath shows on land.
+ */
+export const ChartMaskSchema = Type.Literal('water-only');
+
+export type ChartMask = Static<typeof ChartMaskSchema>;
+
 export const OnlineChartFileSchema = Type.Object({
   catalogId: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1 }),
-  custom: Type.Optional(CustomOnlineChartSchema)
+  custom: Type.Optional(CustomOnlineChartSchema),
+  mask: Type.Optional(ChartMaskSchema)
 });
 
 export type OnlineChartFile = Static<typeof OnlineChartFileSchema>;
+
+/** What a masked version's name and description say it is. */
+export const MASK_LABELS: Record<ChartMask, string> = {
+  'water-only': 'Water only'
+};
+
+/** Credit the OSM land polygons' licence asks for, on every masked version. */
+export const LAND_ATTRIBUTION = 'Land polygons © OpenStreetMap contributors (ODbL)';
 
 /** Looks up a catalog entry by id; undefined when the catalog lacks it. */
 export type OnlineChartResolver = (catalogId: string) => OnlineCatalogChart | undefined;
@@ -271,11 +288,14 @@ export function writeOnlineChartFile(
   catalogId: string,
   name: string,
   takenIds: ReadonlySet<string> = new Set(),
-  custom?: CustomOnlineChart
+  custom?: CustomOnlineChart,
+  mask?: ChartMask
 ): string {
   fs.mkdirSync(dir, { recursive: true });
-  const stem = safeStem(custom ? name.toLowerCase() : catalogId);
-  const content = `${JSON.stringify({ catalogId, name, ...(custom ? { custom } : {}) }, null, 2)}\n`;
+  const base = safeStem(custom ? name.toLowerCase() : catalogId);
+  // A masked version of a chart added by URL is named after the chart already.
+  const stem = mask && !custom ? `${base}-${mask}` : base;
+  const content = `${JSON.stringify({ catalogId, name, ...(custom ? { custom } : {}), ...(mask ? { mask } : {}) }, null, 2)}\n`;
   for (let n = 1; ; n++) {
     const id = n === 1 ? stem : `${stem}-${String(n)}`;
     if (takenIds.has(id)) {
@@ -296,13 +316,24 @@ export function writeOnlineChartFile(
 }
 
 /**
+ * Whether masked versions can be made of a chart: only of one whose tiles
+ * are kept, since a masked tile is a copy too, and never of a masked version.
+ */
+export function isMaskable(file: OnlineChartFile, entry: OnlineCatalogChart): boolean {
+  return file.mask === undefined && offlineTileSource(entry) !== null;
+}
+
+/**
  * The served chart for an online chart file, or null when its catalog entry
- * is unknown (the catalog hasn't loaded yet, or the entry was removed).
+ * is unknown (the catalog hasn't loaded yet, or the entry was removed). A
+ * masked version is served only once `masksReady`, meaning the land index is
+ * built, and only of a chart whose tiles are kept.
  */
 export function onlineChartProvider(
   filePath: string,
   file: OnlineChartFile,
-  resolve: OnlineChartResolver
+  resolve: OnlineChartResolver,
+  masksReady = false
 ): ChartProvider | null {
   const entry = onlineChartEntry(file, resolve);
   if (!entry) {
@@ -310,6 +341,9 @@ export function onlineChartProvider(
   }
   const { chart } = entry;
   const identifier = chartIdFromFilename(path.basename(filePath));
+  if (file.mask) {
+    return masksReady ? maskedChartProvider(filePath, file, file.mask, entry, identifier) : null;
+  }
   const offlineSource = offlineTileSource(entry);
   // A template only the plugin can fill in goes through it even when its
   // tiles may not be kept.
@@ -379,9 +413,53 @@ export function onlineChartProvider(
   };
 }
 
+function maskedChartProvider(
+  filePath: string,
+  file: OnlineChartFile,
+  mask: ChartMask,
+  entry: OnlineCatalogChart,
+  identifier: string
+): ChartProvider | null {
+  const source = offlineTileSource(entry);
+  if (!source) {
+    return null;
+  }
+  const { chart } = entry;
+  const tileSize =
+    source.kind === 'xyz' && (chart.tileSize === 256 || chart.tileSize === 512)
+      ? chart.tileSize
+      : undefined;
+  const url = `~tilePath~/${identifier}/{z}/{x}/{y}`;
+  return {
+    _fileFormat: 'online',
+    _filePath: filePath,
+    _flipY: false,
+    identifier,
+    name: file.name,
+    description: `${entry.description} ${MASK_LABELS[mask]}: the land is cut away, so a chart or imagery underneath shows there. ${LAND_ATTRIBUTION}.`,
+    bounds: [...entry.bbox],
+    minzoom: chart.minzoom,
+    maxzoom: chart.maxzoom,
+    format: 'png',
+    type: 'tilelayer',
+    scale: 250000,
+    ...(tileSize !== undefined ? { tileSize } : {}),
+    ...(chart.defaultOpacity !== undefined ? { defaultOpacity: chart.defaultOpacity } : {}),
+    _catalogId: entry.id,
+    _offlineSource: source,
+    _keepTiles: true,
+    _mask: mask,
+    _areaDownload: allowsAreaDownload(entry),
+    _areaDownloadLimits: areaDownloadLimits(entry),
+    v1: { tilemapUrl: url, chartLayers: [] },
+    v2: { url, layers: [], ...(tileSize !== undefined ? { tileSize } : {}) }
+  };
+}
+
 export interface OnlineChartFileRef {
   relativePath: string;
   catalogId: string;
+  mask?: ChartMask;
 }
 
 /** Every online chart file under `basePath`, for the catalog's "Added" state. */
@@ -419,7 +497,11 @@ export async function findOnlineChartFiles(
     } else if (entry.isFile() && isOnlineChartFile(entry.name)) {
       const file = readOnlineChartFile(fullPath);
       if (file) {
-        found.push({ relativePath: path.relative(basePath, fullPath), catalogId: file.catalogId });
+        found.push({
+          relativePath: path.relative(basePath, fullPath),
+          catalogId: file.catalogId,
+          ...(file.mask ? { mask: file.mask } : {})
+        });
       } else if (strict) {
         throw new Error(`Cannot read the online chart file ${fullPath}`);
       }

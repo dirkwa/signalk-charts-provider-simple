@@ -5,7 +5,7 @@ import type { PMTilesReader } from './utils/pmtiles-reader.js';
 import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
 import type { ChartTimeBlock } from './utils/time-dimension.js';
 import type { AreaDownloadLimits, OnlineTileSource } from './utils/online-tile-cache.js';
-import type { CustomOnlineChart } from './utils/online-charts.js';
+import type { ChartMask, CustomOnlineChart } from './utils/online-charts.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -82,6 +82,8 @@ export interface ChartProvider {
   _offlineSource?: OnlineTileSource;
   /** Whether the plugin keeps the tiles it fetches for `_offlineSource`. */
   _keepTiles?: boolean;
+  /** A masked version of a kept online chart: what its tiles have cut away. */
+  _mask?: ChartMask;
   /** Whether areas of a chart kept offline may be downloaded in advance. */
   _areaDownload?: boolean;
   /** What its provider allows an area download to fetch, and how fast. */
@@ -388,7 +390,12 @@ export interface ScannedChart {
   type?: string;
   isDirectory?: boolean;
   /** Set for `.onlinechart.json` files: the catalog entry they stand for. */
-  online?: { catalogId: string; custom?: CustomOnlineChart; unreadable?: boolean };
+  online?: {
+    catalogId: string;
+    custom?: CustomOnlineChart;
+    mask?: ChartMask;
+    unreadable?: boolean;
+  };
 }
 
 // ---- Chart State ----

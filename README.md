@@ -76,6 +76,7 @@ The interface provides seven tabs:
      roughly twice the archive size free on disk while it runs.
    - S-57 charts shown with ENC badge
    - Converting charts shown with progress indicator
+   - **Water only** versions: in **Meta → Edit** of an online chart kept offline, tick **+Water only** to add a copy of the chart with the land cut away, so satellite imagery or another chart underneath shows on land (for example NOAA charts over satellite imagery). It is its own chart layer, named after the chart, and shares the chart's kept tiles and offline areas; untick it to remove it. Masking uses OpenStreetMap's land polygons, which need a one-time download (about 1 GB, about 390 MB on disk once built) that you are asked to confirm the first time; the version appears in chart plotters once it is ready. The land polygons count lakes and most rivers as land, so on inland water the chart is cut away too, and what the chart draws ashore (lights, landmarks, labels) goes with the land
 
 2. **Download from URL**:
    - Download charts directly from any URL
@@ -196,6 +197,8 @@ This plugin includes a feature to edit chart metadata (chart names) in MBTiles f
 ## Acknowledgments
 
 Inspired by [Signal K Charts Plugin](https://github.com/SignalK/charts-plugin) by Mikko Vesikkala.
+
+Masked chart versions use land polygons © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, available under the Open Database License, from [osmdata.openstreetmap.de](https://osmdata.openstreetmap.de/data/land-polygons.html). The land-masking approach comes from [signalk-noaa-sonar-charts](https://github.com/joelkoz/signalk-noaa-sonar-charts) (Apache License 2.0).
 
 ## Contributing
 

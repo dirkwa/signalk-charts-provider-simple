@@ -1,7 +1,7 @@
 /**
  * Pixel work for filling missing raster tiles: decode the stored neighbours,
  * resample them into the requested tile and encode the result. Runs in the
- * raster worker (raster-overzoom-worker.ts) so the CPU time stays off the
+ * raster worker pool (raster-worker-pool.ts) so the CPU time stays off the
  * server's event loop.
  */
 
@@ -24,7 +24,7 @@ export interface RasterJob {
   children: { raw: Uint8Array; dx: number; dy: number }[];
 }
 
-interface RasterImage {
+export interface RasterImage {
   width: number;
   height: number;
   // RGBA, 4 bytes per pixel
@@ -33,7 +33,7 @@ interface RasterImage {
 
 // Sniffed rather than taken from the metadata format: exports labelled jpg
 // commonly store PNG tiles where they need transparency.
-function decodeRaster(raw: Uint8Array): RasterImage | null {
+export function decodeRaster(raw: Uint8Array): RasterImage | null {
   if (raw[0] === 0xff && raw[1] === 0xd8) {
     const img = jpeg.decode(raw, { useTArray: true, formatAsRGBA: true });
     return { width: img.width, height: img.height, data: img.data };

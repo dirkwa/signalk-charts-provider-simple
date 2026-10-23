@@ -45,6 +45,10 @@ interface ManageChart {
     chartId?: string;
     minzoom?: number | null;
     maxzoom?: number | null;
+    /** A masked version ("Water only") of a kept chart. */
+    mask?: string;
+    /** False until the shoreline data it needs is built; until then it is not served. */
+    maskReady?: boolean;
   };
 }
 
@@ -116,6 +120,8 @@ interface ChartMetadata {
   legend?: string;
   /** Set for PMTiles charts, whose metadata can't be edited in place. */
   readOnly?: boolean;
+  /** Online charts that can have masked versions: which of them exist. */
+  masks?: Record<string, boolean>;
   [key: string]: unknown;
 }
 
@@ -185,9 +191,13 @@ async function loadCharts(silent = false): Promise<void> {
     // repaired. Tolerant of failure — a problem here must not break the
     // normal listing.
     repairableData = await fetchRepairableCharts();
+    if (chartsData.some((c) => c.online?.mask)) {
+      await window.fetchLandIndexInfo();
+    }
 
     renderChartsUI();
     setupAutoRefresh();
+    window.watchLandIndex(chartsData);
   } catch (error) {
     console.error('Error fetching local charts:', error);
     if (!silent) {
@@ -548,6 +558,11 @@ function renderChartCard(chart: ManageChart): string {
   } else if (online && !online.available) {
     onlineState = `<span class="folder-off-badge" title="The chart catalog no longer lists this chart, so it is not served">No longer available</span>`;
   }
+  const maskWaiting =
+    online?.mask && !online.maskReady && online.available ? window.maskWaitingState() : null;
+  if (maskWaiting) {
+    onlineState += maskWaiting.badge;
+  }
   const onlineBadges = online
     ? `${online.keptOffline ? MANAGE_KEPT_OFFLINE_BADGE : MANAGE_NEEDS_INTERNET_BADGE}${onlineState}`
     : '';
@@ -555,8 +570,14 @@ function renderChartCard(chart: ManageChart): string {
     ? `renameOnlineChart('${attrPath}')`
     : `showRenameDialog('${attrPath}', '${attrName}', '${attrFolder}')`;
   const servedOffline =
-    online?.keptOffline && online.available && chart.enabled && chart.folderEnabled !== false;
-  const offlineAreaButton = !servedOffline
+    online?.keptOffline &&
+    online.available &&
+    !maskWaiting &&
+    chart.enabled &&
+    chart.folderEnabled !== false;
+  const offlineAreaButton = maskWaiting
+    ? maskWaiting.action
+    : !servedOffline
     ? ''
     : online.areaDownload
       ? `<button class="btn btn-sm btn-primary" onclick="openOfflineArea('${attrPath}')" title="Download an area to use without internet">
@@ -1783,7 +1804,13 @@ function openOfflineArea(chartPath: string): void {
     online.minzoom ?? null,
     online.maxzoom ?? null,
     online.areaDownload === true,
-    online.areaDownloadLimits ?? {}
+    online.areaDownloadLimits ?? {},
+    chartsData.some(
+      (c) =>
+        c !== chart &&
+        c.online?.catalogId === online.catalogId &&
+        (c.online.mask !== undefined || online.mask !== undefined)
+    )
   );
 }
 
@@ -2341,6 +2368,9 @@ async function showChartInfo(chartPath: string): Promise<void> {
 
     const metadata = (await response.json()) as ChartMetadata;
     currentMetadata = metadata;
+    if (metadata.masks) {
+      await window.fetchLandIndexInfo();
+    }
 
     renderMetadataModal(metadata);
   } catch (error) {
@@ -2425,6 +2455,7 @@ function renderMetadataModal(metadata: ChartMetadata): void {
     { label: 'Legend', key: 'legend' }
   ];
 
+  const maskRows = window.renderMaskRows(metadata.masks, isEditMode);
   const metadataHTML = metadataRows
     .filter((row) => metadata[row.key] !== undefined)
     .map(
@@ -2461,6 +2492,7 @@ function renderMetadataModal(metadata: ChartMetadata): void {
           ${warningHTML}
           <div class="chart-info-container">
             ${metadataHTML}
+            ${maskRows}
           </div>
         </div>
         <div class="delete-modal-actions">
@@ -2483,6 +2515,7 @@ function editChartMetadata(): void {
   if (!currentMetadata) {
     return;
   }
+  window.resetMaskEdit();
   isEditMode = true;
   renderMetadataModal(currentMetadata);
 }
@@ -2522,6 +2555,15 @@ async function saveChartMetadata(): Promise<void> {
       const errorText = await response.text();
       showErrorNotification(`Failed to save metadata: ${errorText}`);
       return;
+    }
+
+    if (currentMetadata?.masks) {
+      const masks = await window.saveMaskOptions(currentChartPath, currentMetadata.masks);
+      if (masks) {
+        currentMetadata.masks = masks;
+      } else {
+        showErrorNotification('The name was saved, but a masked version could not be changed');
+      }
     }
 
     if (currentMetadata) {
@@ -2611,6 +2653,11 @@ window.confirmDelete = confirmDelete;
 window.closeDuplicateModal = closeDuplicateModal;
 window.confirmDuplicate = confirmDuplicate;
 window.showChartInfo = showChartInfo;
+window.reloadManageCharts = () => {
+  void loadCharts(true);
+};
+window.renderManageCharts = renderChartsUI;
+window.showManageError = showErrorNotification;
 window.renameOnlineChart = renameOnlineChart;
 window.openOfflineArea = openOfflineArea;
 window.editChartMetadata = editChartMetadata;

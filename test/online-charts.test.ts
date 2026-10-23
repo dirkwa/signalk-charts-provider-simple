@@ -18,6 +18,7 @@ import {
   findOnlineChartFiles,
   onlineChartProvider,
   readOnlineChartFile,
+  isMaskable,
   renameOnlineChartFile,
   writeOnlineChartFile,
   type OnlineChartResolver
@@ -126,6 +127,23 @@ describe('online charts', () => {
       assert.ok(fs.existsSync(path.join(dir, file)));
     });
 
+    it("names a masked version after its chart's catalog id and the mask", () => {
+      const name = writeOnlineChartFile(
+        dir,
+        'kept-depths',
+        'Depths (Water only)',
+        new Set(),
+        undefined,
+        'water-only'
+      );
+      assert.strictEqual(name, 'kept-depths-water-only.onlinechart.json');
+      assert.deepStrictEqual(readOnlineChartFile(path.join(dir, name)), {
+        catalogId: 'kept-depths',
+        name: 'Depths (Water only)',
+        mask: 'water-only'
+      });
+    });
+
     it('creates the target folder', () => {
       const sub = path.join(dir, 'Online Charts');
       writeOnlineChartFile(sub, 'nws-radar-conus', 'x');
@@ -184,6 +202,37 @@ describe('online charts', () => {
         resolve
       );
       assert.deepStrictEqual(provider?.bounds, [140, 9, -60, 72]);
+    });
+
+    it('serves a masked version only once the land index is built, and only of a kept chart', () => {
+      const kept = entry({
+        id: 'kept-depths',
+        chart: { type: 'tilelayer', url: 'https://x.test/{z}/{x}/{y}.png', tileSize: 512 },
+        offline: {}
+      });
+      const lookup: OnlineChartResolver = (id) => (id === 'kept-depths' ? kept : catalog.get(id));
+      const file = path.join(dir, 'kept-depths-water-only.onlinechart.json');
+      const masked = {
+        catalogId: 'kept-depths',
+        name: 'Depths (Water only)',
+        mask: 'water-only' as const
+      };
+      assert.strictEqual(onlineChartProvider(file, masked, lookup, false), null);
+      const provider = onlineChartProvider(file, masked, lookup, true);
+      assert.ok(provider);
+      assert.strictEqual(provider.identifier, 'kept-depths-water-only');
+      assert.strictEqual(provider._mask, 'water-only');
+      assert.strictEqual(provider.format, 'png');
+      assert.strictEqual(provider.tileSize, 512);
+      assert.strictEqual(provider._keepTiles, true);
+      assert.match(provider.description, /OpenStreetMap contributors \(ODbL\)/);
+      assert.strictEqual(provider.v2.url, '~tilePath~/kept-depths-water-only/{z}/{x}/{y}');
+
+      const streamed = { catalogId: 'nws-radar-conus', name: 'Radar', mask: 'water-only' as const };
+      assert.strictEqual(onlineChartProvider(file, streamed, lookup, true), null);
+      assert.ok(isMaskable({ catalogId: 'kept-depths', name: 'Depths' }, kept));
+      assert.ok(!isMaskable(masked, kept), 'a masked version is not masked again');
+      assert.ok(!isMaskable({ catalogId: 'nws-radar-conus', name: 'Radar' }, entry()));
     });
 
     it('serves nothing when the catalog lacks the entry', () => {

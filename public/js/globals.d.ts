@@ -109,6 +109,27 @@ declare global {
     cancelEditMetadata(): void;
     saveChartMetadata(): Promise<void>;
 
+    reloadManageCharts(): void;
+    renderManageCharts(): void;
+    showManageError(message: string): void;
+
+    // chart-masks.ts
+    maskOptionChanged(input: HTMLInputElement): Promise<void>;
+    shorelineChoice(agreed: boolean): void;
+    askShorelineDownload(): Promise<void>;
+    startShorelineDownload(): Promise<void>;
+    deleteShorelineData(): Promise<void>;
+    cancelShorelineDownload(): Promise<void>;
+    renderMaskRows(masks: Record<string, boolean> | undefined, editing: boolean): string;
+    resetMaskEdit(): void;
+    saveMaskOptions(
+      chartPath: string,
+      masks: Record<string, boolean>
+    ): Promise<Record<string, boolean> | null>;
+    maskWaitingState(): { badge: string; action: string };
+    watchLandIndex(charts: { online?: { mask?: string; maskReady?: boolean } }[]): void;
+    fetchLandIndexInfo(): Promise<unknown>;
+
     // online-area-download.ts
     showOfflineArea(
       chartId: string,
@@ -116,7 +137,8 @@ declare global {
       minzoom: number | null,
       maxzoom: number | null,
       areaDownload: boolean,
-      limits: AreaDownloadLimits
+      limits: AreaDownloadLimits,
+      versions?: boolean
     ): Promise<void>;
     closeAreaDialog(event?: Event): void;
     startAreaDownload(): Promise<void>;
