@@ -17,6 +17,12 @@ const CC_NOAA_SOURCE = 'noaa';
 const CC_HIT_TOLERANCE_PX = 6;
 // Ask before a dragged box changes more units than this.
 const CC_BOX_CONFIRM_ABOVE = 50;
+// A press that moves less than this is a click on one area, not a box.
+const CC_DRAG_THRESHOLD_PX = 6;
+const CC_WORLD_CENTER: L.LatLngExpression = [20, 0];
+const CC_WORLD_ZOOM = 2;
+// How long the "create a chart set first" hint stays up.
+const CC_SET_HINT_MS = 5000;
 
 type CcPosition = [number, number];
 type CcOutline =
@@ -143,7 +149,9 @@ let ccDetail: CatalogProgressDetail | null = null;
 let ccStatusPoll: ReturnType<typeof setInterval> | null = null;
 let ccHoverId: string | null = null;
 let ccHoverTip: L.Tooltip | null = null;
-let ccBoxMode = false;
+// Dragging picks chart areas while a set is open; this turns it back into panning.
+let ccPanMode = false;
+let ccSetHintTimer: ReturnType<typeof setTimeout> | null = null;
 // A box drag ends with a click the map must not treat as a unit toggle.
 let ccSuppressClick = false;
 // Source id → display name, from the index.
@@ -195,8 +203,8 @@ async function initCustomCatalogsTab(): Promise<void> {
         </div>
         <div class="cc-map-tools">
           <span class="cc-map-hint" id="ccMapHint"></span>
-          <button class="cc-btn" id="ccBoxBtn" data-cc-action="box-mode" aria-pressed="false"
-            title="Drag a box on the map to add or remove every chart area it touches (or Shift+drag)">Select by box</button>
+          <button class="cc-btn" id="ccPanBtn" data-cc-action="pan-mode" aria-pressed="false"
+            title="Drag to move the map instead of picking chart areas">Move map</button>
         </div>
         <div id="ccMap" class="cc-map"></div>
         <div class="cc-legend">
@@ -211,7 +219,7 @@ async function initCustomCatalogsTab(): Promise<void> {
 
   wireCustomCatalogHandlers();
   initCustomCatalogMap();
-  setBoxMode(false);
+  updateMapMode();
   await Promise.all([loadCatalogs(), loadEncIndex()]);
   // Both the chart-set list (auto-selects the first) and the units are now
   // loaded. The map was created the instant this tab became visible, so Leaflet
@@ -224,7 +232,7 @@ async function initCustomCatalogsTab(): Promise<void> {
     if (cat && ccSelectedIds(cat).size > 0) {
       fitMapToActiveCatalog({ animate: false });
     } else {
-      fitMapToAllUnits({ animate: false });
+      showWholeWorld({ animate: false });
     }
   }, 0);
 }
@@ -237,9 +245,12 @@ function initCustomCatalogMap(): void {
   if (!el) {
     return;
   }
-  // Shift+drag selects units by box here, so Leaflet's own Shift+drag zoom
-  // is turned off. A canvas renderer keeps thousands of outlines responsive.
-  ccMap = L.map(el, { worldCopyJump: true, minZoom: 2, boxZoom: false }).setView([37.8, -96], 4);
+  // A drag picks units by box here, so Leaflet's own Shift+drag zoom is
+  // turned off. A canvas renderer keeps thousands of outlines responsive.
+  ccMap = L.map(el, { worldCopyJump: true, minZoom: CC_WORLD_ZOOM, boxZoom: false }).setView(
+    CC_WORLD_CENTER,
+    CC_WORLD_ZOOM
+  );
   ccRenderer = L.canvas({ padding: 0.5 });
   // OpenSeaMap = OSM base + a seamark overlay. Tiles need internet; if they
   // fail the units stay fully usable, so selection still works offline.
@@ -268,7 +279,7 @@ function initCustomCatalogMap(): void {
   // Units are not interactive themselves: overlapping outlines are resolved
   // here, so a click picks the unit the user means (see ccUnitAt).
   ccMap.on('click', (ev: L.LeafletMouseEvent) => {
-    if (ccBoxMode || ccSuppressClick) {
+    if (ccSuppressClick) {
       ccSuppressClick = false;
       return;
     }
@@ -278,12 +289,12 @@ function initCustomCatalogMap(): void {
     }
   });
   ccMap.on('mousemove', (ev: L.LeafletMouseEvent) => {
-    onHover(ccBoxMode ? null : ccUnitAt(ev.latlng), ev.latlng);
+    onHover(ccUnitAt(ev.latlng), ev.latlng);
   });
   ccMap.on('mouseout', () => {
     onHover(null, null);
   });
-  wireBoxSelect(el);
+  wireDragSelect(el);
 }
 
 function ccClearStyle(): L.PathOptions {
@@ -447,7 +458,7 @@ function drawUnits(): void {
     ccDrawnById.set(unit.id, { unit, layer, west, east, rings, area, shift: 0 });
   }
   // Note: the map view is framed by init / selectCatalog (fitMapToActiveCatalog
-  // or fitMapToAllUnits), not here — a fit during draw competed with the
+  // or showWholeWorld), not here — a fit during draw competed with the
   // initial set fit and won the race, leaving the wide view.
   refreshAreaColors();
 }
@@ -612,7 +623,7 @@ function onHover(drawn: CcDrawnUnit | null, latlng: L.LatLng | null): void {
     } else if (ccMap.hasLayer(ccHoverTip)) {
       ccMap.removeLayer(ccHoverTip);
     }
-    ccMap.getContainer().style.cursor = ccBoxMode ? 'crosshair' : drawn ? 'pointer' : '';
+    ccMap.getContainer().style.cursor = drawn ? 'pointer' : ccDragSelects() ? 'crosshair' : '';
   }
   if (id === ccHoverId) {
     return;
@@ -629,63 +640,137 @@ function onHover(drawn: CcDrawnUnit | null, latlng: L.LatLng | null): void {
 
 // ---- Box selection ----
 
-function setBoxMode(on: boolean): void {
-  ccBoxMode = on;
-  const btn = document.getElementById('ccBoxBtn');
+/** Whether the open set takes changes now; a set being built does not. */
+function ccCanSelect(): boolean {
+  return ccActiveCatalog() !== null && !ccBusy;
+}
+
+function ccDragSelects(): boolean {
+  return ccCanSelect() && !ccPanMode;
+}
+
+function setPanMode(on: boolean): void {
+  ccPanMode = on;
+  updateMapMode();
+}
+
+/** Brings the Move map button, cursor and instructions in line with the state. */
+function updateMapMode(): void {
+  const canSelect = ccCanSelect();
+  const selecting = ccDragSelects();
+  const btn = document.getElementById('ccPanBtn') as HTMLButtonElement | null;
   if (btn) {
-    btn.classList.toggle('cc-btn-active', on);
-    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.style.display = canSelect ? '' : 'none';
+    btn.classList.toggle('cc-btn-active', canSelect && ccPanMode);
+    btn.setAttribute('aria-pressed', canSelect && ccPanMode ? 'true' : 'false');
   }
   const el = ccMap?.getContainer();
   if (el) {
-    el.classList.toggle('cc-selecting', on);
-    el.style.cursor = on ? 'crosshair' : '';
-  }
-  if (on) {
-    onHover(null, null);
+    el.classList.toggle('cc-selecting', selecting);
+    el.style.cursor = selecting ? 'crosshair' : '';
   }
   const hint = document.getElementById('ccMapHint');
-  if (hint) {
-    hint.textContent = on
-      ? 'Click and drag to select areas to add or remove.'
-      : 'Click a chart area to add or remove it. To select with a click/drag, use Shift+click and drag or';
+  if (!hint || ccSetHintTimer !== null) {
+    return;
+  }
+  if (!ccActiveCatalog()) {
+    hint.textContent = 'Click New to start a chart set, then pick its chart areas on the map.';
+  } else if (ccBusy) {
+    hint.textContent = 'Chart areas can be changed again once this chart set is done.';
+  } else if (ccPanMode) {
+    hint.textContent = 'Drag to move the map. Turn off Move map to pick chart areas again.';
+  } else {
+    hint.textContent =
+      'Drag across chart areas to add them, or tap one to add or remove it. To pan, use two fingers or';
   }
 }
 
-// Drag a box to toggle every unit it touches: unselected ones are added and
-// selected ones removed. Works with the "Select by box" toggle (mouse or
-// touch) or with Shift+drag.
-function wireBoxSelect(el: HTMLElement): void {
+/** Points at New when areas are picked before any chart set is open. */
+function showSetHint(): void {
+  const hint = document.getElementById('ccMapHint');
+  const newBtn = document.querySelector<HTMLElement>('[data-cc-action="new"]');
+  if (ccSetHintTimer !== null) {
+    clearTimeout(ccSetHintTimer);
+  }
+  if (hint) {
+    hint.textContent =
+      'Create a chart set first: click New and give it a name. Then click or drag over chart areas to add them.';
+    hint.classList.add('cc-map-hint-warn');
+  }
+  newBtn?.classList.add('cc-btn-pulse');
+  ccSetHintTimer = setTimeout(() => {
+    ccSetHintTimer = null;
+    hint?.classList.remove('cc-map-hint-warn');
+    newBtn?.classList.remove('cc-btn-pulse');
+    updateMapMode();
+  }, CC_SET_HINT_MS);
+}
+
+// While a set is open, a drag draws a box and adds every unit it touches;
+// a click still toggles one unit. Leaflet's own one-finger panning is turned
+// off for the gesture only, so a two-finger pinch keeps moving and zooming
+// the map. With Move map on, a drag pans and Shift+drag draws the box.
+function wireDragSelect(el: HTMLElement): void {
+  const touches = new Set<number>();
+  let pointerId: number | null = null;
+  let startPoint: L.Point | null = null;
   let start: L.LatLng | null = null;
   let box: L.Rectangle | null = null;
-  let pointerId: number | null = null;
+
+  const reset = (): void => {
+    if (box && ccMap) {
+      ccMap.removeLayer(box);
+    }
+    box = null;
+    start = null;
+    startPoint = null;
+    pointerId = null;
+  };
 
   el.addEventListener(
     'pointerdown',
     (ev: PointerEvent) => {
-      if (!ccMap || ev.button !== 0 || !(ccBoxMode || ev.shiftKey)) {
+      if (!ccMap) {
+        return;
+      }
+      if (ev.pointerType === 'touch') {
+        touches.add(ev.pointerId);
+        if (touches.size > 1) {
+          // A second finger: Leaflet pinches, and no box is drawn.
+          reset();
+          return;
+        }
+      }
+      if (ev.button !== 0 || !ccCanSelect() || (ccPanMode && !ev.shiftKey)) {
         return;
       }
       if ((ev.target as HTMLElement | null)?.closest('.leaflet-control')) {
         return;
       }
-      ev.preventDefault();
-      ev.stopPropagation();
+      if (ev.pointerType === 'mouse') {
+        // No text selection while the box is drawn.
+        ev.preventDefault();
+      }
       ccMap.dragging.disable();
-      start = ccMap.mouseEventToLatLng(ev);
       pointerId = ev.pointerId;
-      el.setPointerCapture(ev.pointerId);
+      startPoint = ccMap.mouseEventToContainerPoint(ev);
+      start = ccMap.containerPointToLatLng(startPoint);
     },
     true
   );
   el.addEventListener('pointermove', (ev: PointerEvent) => {
-    if (!ccMap || !start || ev.pointerId !== pointerId) {
+    if (!ccMap || !start || !startPoint || ev.pointerId !== pointerId) {
       return;
     }
-    const bounds = L.latLngBounds(start, ccMap.mouseEventToLatLng(ev));
+    const point = ccMap.mouseEventToContainerPoint(ev);
+    if (!box && point.distanceTo(startPoint) < CC_DRAG_THRESHOLD_PX) {
+      return;
+    }
+    const bounds = L.latLngBounds(start, ccMap.containerPointToLatLng(point));
     if (box) {
       box.setBounds(bounds);
     } else {
+      onHover(null, null);
       box = L.rectangle(bounds, {
         color: '#1565c0',
         weight: 1,
@@ -696,38 +781,38 @@ function wireBoxSelect(el: HTMLElement): void {
     }
   });
   const finish = (ev: PointerEvent): void => {
-    if (!ccMap || !start || ev.pointerId !== pointerId) {
+    touches.delete(ev.pointerId);
+    if (!ccMap) {
       return;
     }
-    const bounds = box?.getBounds() ?? null;
-    if (box) {
-      ccMap.removeLayer(box);
-    }
-    box = null;
-    start = null;
-    pointerId = null;
-    ccMap.dragging.enable();
-    if (bounds) {
-      ccSuppressClick = true;
-      window.setTimeout(() => {
-        ccSuppressClick = false;
-      }, 0);
-      if (ev.type === 'pointerup') {
-        void toggleUnitsInBox(bounds);
+    if (ev.pointerId === pointerId) {
+      const bounds = box?.getBounds() ?? null;
+      reset();
+      if (bounds) {
+        ccSuppressClick = true;
+        window.setTimeout(() => {
+          ccSuppressClick = false;
+        }, 0);
+        if (ev.type === 'pointerup') {
+          void addUnitsInBox(bounds);
+        }
       }
     }
+    if (touches.size === 0) {
+      ccMap.dragging.enable();
+    }
   };
-  el.addEventListener('pointerup', finish);
-  el.addEventListener('pointercancel', finish);
+  // On the window: a drag can end outside the map.
+  window.addEventListener('pointerup', finish, true);
+  window.addEventListener('pointercancel', finish, true);
 }
 
-async function toggleUnitsInBox(bounds: L.LatLngBounds): Promise<void> {
+// Adds every unit the box touches. A box over units that are all in the set
+// already takes them out again, so a mistaken box can be undone the same way.
+async function addUnitsInBox(bounds: L.LatLngBounds): Promise<void> {
   const cat = ccActiveCatalog();
-  const note = document.getElementById('ccMapNote');
   if (!cat) {
-    if (note) {
-      note.textContent = 'Create or select a chart set first, then pick chart areas.';
-    }
+    showSetHint();
     return;
   }
   if (ccBusy) {
@@ -747,21 +832,25 @@ async function toggleUnitsInBox(bounds: L.LatLngBounds): Promise<void> {
   if (touched.length === 0) {
     return;
   }
-  const removing = touched.filter((u) => selected.has(u.id)).length;
-  const adding = touched.length - removing;
+  const unselected = touched.filter((u) => !selected.has(u.id));
+  const removing = unselected.length === 0;
+  const changing = removing ? touched : unselected;
   if (
-    touched.length > CC_BOX_CONFIRM_ABOVE &&
+    changing.length > CC_BOX_CONFIRM_ABOVE &&
     !confirm(
-      `Change ${touched.length} chart areas in “${cat.name}”: add ${adding}, remove ${removing}?`
+      removing
+        ? `Remove ${changing.length} chart areas from “${cat.name}”?`
+        : `Add ${changing.length} chart areas to “${cat.name}”?`
     )
   ) {
     return;
   }
-  for (const unit of touched) {
-    const key = unit.source === CC_NOAA_SOURCE ? 'selectedBand4ChartIds' : 'selectedUnitIds';
-    cat[key] = selected.has(unit.id)
-      ? cat[key].filter((id) => id !== unit.id)
-      : [...cat[key], unit.id];
+  const changingIds = new Set(changing.map((u) => u.id));
+  for (const key of ['selectedBand4ChartIds', 'selectedUnitIds'] as const) {
+    const ids = changing
+      .filter((u) => (u.source === CC_NOAA_SOURCE) === (key === 'selectedBand4ChartIds'))
+      .map((u) => u.id);
+    cat[key] = removing ? cat[key].filter((id) => !changingIds.has(id)) : [...cat[key], ...ids];
   }
   refreshAreaColors();
   await putSelection(cat);
@@ -1041,6 +1130,7 @@ function renderDetail(): void {
     delBtn.disabled = !cat || ccBusy;
   }
 
+  updateMapMode();
   if (!detail) {
     return;
   }
@@ -1198,10 +1288,7 @@ function replaceCatalog(updated: CustomCatalog): void {
 async function onAreaClick(unit: CcUnit): Promise<void> {
   const cat = ccActiveCatalog();
   if (!cat) {
-    const note = document.getElementById('ccMapNote');
-    if (note) {
-      note.textContent = 'Create or select a chart set first, then click chart areas.';
-    }
+    showSetHint();
     return;
   }
   if (ccBusy) {
@@ -1343,18 +1430,11 @@ function fitMapToActiveCatalog(opts: { animate?: boolean } = {}): void {
   ccMap.setView([center.lat, lng], zoom, { animate: opts.animate ?? true });
 }
 
-// Fit to every unit — the fallback view when no set is selected (e.g. a
-// fresh install with no chart sets yet).
-function fitMapToAllUnits(opts: { animate?: boolean } = {}): void {
-  if (!ccMap || ccDrawnById.size === 0) {
-    return;
-  }
-  const points: L.LatLngExpression[] = [];
-  for (const drawn of ccDrawnById.values()) {
-    const [, s, , n] = drawn.unit.bbox;
-    points.push([s, drawn.west], [n, drawn.east]);
-  }
-  ccMap.fitBounds(L.latLngBounds(points), { padding: [20, 20], animate: opts.animate ?? true });
+// The whole world: the fallback view when no set is selected (e.g. a fresh
+// install with no chart sets yet). The units span every continent, so a fit
+// to their bounds would only crop some of them off.
+function showWholeWorld(opts: { animate?: boolean } = {}): void {
+  ccMap?.setView(CC_WORLD_CENTER, CC_WORLD_ZOOM, { animate: opts.animate ?? true });
 }
 
 function showNewForm(show: boolean): void {
@@ -1392,7 +1472,7 @@ async function createCatalog(): Promise<void> {
     ccActiveId = cat.id;
     replaceCatalog(cat);
     // A new set starts empty: show every area there is to pick from.
-    fitMapToAllUnits();
+    showWholeWorld();
   } catch {
     alert('Could not create chart set. Check your connection.');
   }
@@ -1593,8 +1673,8 @@ function wireCustomCatalogHandlers(): void {
       case 'delete':
         void deleteActiveCatalog();
         break;
-      case 'box-mode':
-        setBoxMode(!ccBoxMode);
+      case 'pan-mode':
+        setPanMode(!ccPanMode);
         break;
       case 'drop-missing':
         void dropMissingUnits();

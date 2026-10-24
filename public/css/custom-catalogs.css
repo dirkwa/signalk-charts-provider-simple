@@ -313,7 +313,22 @@
   border-color: var(--md-sys-color-primary, #1565c0);
 }
 
-/* While picking by box, touch drags draw the box instead of panning. */
+/* Areas picked before a chart set exists: point at New. */
+.cc-map-hint.cc-map-hint-warn {
+  color: var(--md-sys-color-error, #b3261e);
+}
+
+.cc-btn.cc-btn-pulse {
+  animation: cc-pulse 1s ease-in-out 4;
+}
+
+@keyframes cc-pulse {
+  50% {
+    box-shadow: 0 0 0 6px var(--md-sys-color-primary, #1565c0);
+  }
+}
+
+/* While a drag picks areas, one finger draws the box instead of scrolling the page. */
 .cc-map.cc-selecting {
   touch-action: none;
 }
