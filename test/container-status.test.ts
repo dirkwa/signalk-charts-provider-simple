@@ -338,6 +338,41 @@ describe('Plugin status without signalk-container runtime', () => {
     assert.deepStrictEqual(recording.errors, []);
   });
 
+  it('does nothing more for a startup whose orphan cleanup outlasts stop()', async () => {
+    let releaseCleanup: () => void = () => {};
+    let cleanupStarted = false;
+    globalThis[GLOBAL_KEY] = {
+      ...globalThis[GLOBAL_KEY]!,
+      getRuntime: () => ({ runtime: 'podman', version: '5.0.0' }),
+      cleanupOrphanedJobs: () => {
+        cleanupStarted = true;
+        return new Promise((resolve) => {
+          releaseCleanup = () => resolve({ reaped: [] });
+        });
+      }
+    } as ContainerManagerApi;
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'container-status-'));
+    tempDirs.push(tempDir);
+    const chartPath = path.join(tempDir, 'charts');
+    fs.mkdirSync(chartPath, { recursive: true });
+    const recording = createRecordingApp(tempDir);
+    const plugin = pluginFactory(recording.app);
+    activePlugins.push(plugin);
+    const listenersBefore = downloadManager.listenerCount('job-completed');
+
+    plugin.start({ chartPath }, () => {});
+    await waitFor(() => cleanupStarted, 'orphan cleanup to start');
+    plugin.stop?.();
+    releaseCleanup();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.strictEqual(
+      downloadManager.listenerCount('job-completed'),
+      listenersBefore,
+      'a stopped startup must not register a download listener'
+    );
+  });
+
   it('surfaces the plugin error when a conversion operation is attempted', async () => {
     const started = await startPlugin();
     activePlugins.push(started.plugin);

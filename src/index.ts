@@ -952,6 +952,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const cleanup = await containerManager.cleanupOrphanedJobs({
             ownerPluginId: PLUGIN_OWNER_ID
           });
+          // The next start reaps them again.
+          if (lifecycle !== started) {
+            return;
+          }
           // Labels we set on runJob calls have the form
           // `<stage>-<chartNumber>`, where <stage> is one of a fixed
           // set of strings (gdal-export, tippecanoe, gdal-translate,
@@ -1010,6 +1014,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           app.debug(`Orphan cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+    }
+    if (lifecycle !== started) {
+      return;
     }
 
     startCatalogUpdateChecker();
