@@ -38,7 +38,7 @@ import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { capabilitiesUrlFor } from './utils/time-dimension.js';
 import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
-import { InternetGate } from './utils/internet-state.js';
+import { INTERNET_STATE_PATH, InternetGate } from './utils/internet-state.js';
 import {
   chartFileNamesBeside,
   chartIdFromFilename,
@@ -650,7 +650,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     const gate = new InternetGate({
       getSelfPath: (p) => app.getSelfPath(p),
       getPluginsList: app.getPluginsList?.bind(app),
-      allowMeteredCharts: () => props.allowMeteredChartDownloads === true
+      allowMeteredCharts: () => props.allowMeteredChartDownloads === true,
+      subscribeState: (onState) =>
+        app.streambundle.getSelfStream(INTERNET_STATE_PATH as Path).onValue(onState)
     });
     internet = gate;
 
@@ -749,15 +751,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // The startup round waits for signalk-internet's first state, when that
     // plugin is enabled, so a restart on a metered link downloads nothing.
     void gate.firstStateKnown().then(() => {
-      if (internet !== gate || !gate.mayRunBackground()) {
-        return;
-      }
-      void refreshCatalog();
-      // Saved chart sets need a current index for their update status; a
-      // device without any waits until the ENC Charts tab is opened.
-      if (listCustomCatalogs().length > 0) {
-        void refreshEncIndex();
-      }
+      gate.runWhenBackgroundAllowed(() => {
+        void refreshCatalog();
+        // Saved chart sets need a current index for their update status; a
+        // device without any waits until the ENC Charts tab is opened.
+        if (listCustomCatalogs().length > 0) {
+          void refreshEncIndex();
+        }
+      });
     });
     // Synthesized and masked raster tiles; kept in the data dir, never the chart folder.
     void overzoomTileCache.init(path.join(dataDir, 'raster-tile-cache'));
@@ -780,18 +781,26 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     areaDownloader = new AreaDownloader(onlineTileProxy);
     maskedTiles = new MaskedTiles(onlineTileProxy, maskedTileCache, getLandIndex);
     // Masked chart versions appear once the land index is built, and go if it is deleted.
-    initLandIndex(dataDir, {
+    const landIndexOptions: Parameters<typeof initLandIndex>[1] = {
       userAgent: `signalk-charts-provider-simple/${pluginVersion}`,
       onChange: () => {
         reannounceOnlineCharts();
       },
       // A build cut short resumes only while a masked version waits for it.
       needed: async () => (await findOnlineChartFiles(chartPath)).some((f) => f.mask),
+      // On a metered or offline link the build resumes once the link allows it.
       mayResume: async () => {
         await gate.firstStateKnown();
-        return gate.mayRunBackground();
+        if (gate.mayRunBackground()) {
+          return true;
+        }
+        gate.runWhenBackgroundAllowed(() => {
+          initLandIndex(dataDir, landIndexOptions);
+        });
+        return false;
       }
-    });
+    };
+    initLandIndex(dataDir, landIndexOptions);
 
     const tempDirPattern =
       /^(s57-download-|rnc-download-|pilot-download-|shp-download-|gshhg-|convert-upload-|custom-catalog-)\d+$/;

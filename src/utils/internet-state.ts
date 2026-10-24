@@ -36,6 +36,11 @@ export interface InternetGateOptions {
   getPluginsList?: () => Promise<PluginListEntry[]>;
   /** The user's choice to fetch online chart tiles on a metered link. */
   allowMeteredCharts: () => boolean;
+  /**
+   * Calls `onState` with each new value of the state; returns the
+   * unsubscribe. Only used while work is held for a usable link.
+   */
+  subscribeState?: (onState: (value: unknown) => void) => () => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -54,6 +59,9 @@ export class InternetGate {
   private checking: Promise<boolean | undefined> | null = null;
   private firstState: Promise<void> | null = null;
   private stopped = false;
+  private held: (() => void)[] = [];
+  private unsubscribe: (() => void) | null = null;
+  private recheck: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -106,13 +114,71 @@ export class InternetGate {
     return this.firstState;
   }
 
-  /** Ends a wait for the first state; the plugin stopped. */
+  /**
+   * Run `task` now when background work may run, otherwise once a new state
+   * (or signalk-internet being disabled) allows it.
+   */
+  runWhenBackgroundAllowed(task: () => void): void {
+    if (this.stopped) {
+      return;
+    }
+    if (this.mayRunBackground()) {
+      task();
+      return;
+    }
+    this.held.push(task);
+    this.unsubscribe ??=
+      this.options.subscribeState?.((value) => {
+        if (typeof value !== 'string' || !RESTRICTED_STATES.has(value)) {
+          // The server announces a delta before writing it to the data
+          // model, which the held work reads through getSelfPath.
+          queueMicrotask(() => {
+            this.runHeld();
+          });
+        }
+      }) ?? null;
+    // A disabled signalk-internet publishes nothing more, so its state left
+    // behind would hold the work until something happened to ask again.
+    if (!this.recheck && this.options.getPluginsList) {
+      this.recheck = setInterval(() => {
+        this.state();
+      }, PUBLISHER_CHECK_MS);
+      this.recheck.unref();
+    }
+  }
+
+  /** Ends a wait for the first state and drops held work; the plugin stopped. */
   stop(): void {
     this.stopped = true;
+    this.held = [];
+    this.detach();
+  }
+
+  private detach(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    if (this.recheck) {
+      clearInterval(this.recheck);
+      this.recheck = null;
+    }
+  }
+
+  private runHeld(): void {
+    // A usable state may already have been replaced by a restricted one.
+    if (this.stopped || this.held.length === 0 || !this.mayRunBackground()) {
+      return;
+    }
+    const tasks = this.held;
+    this.held = [];
+    this.detach();
+    for (const task of tasks) {
+      task();
+    }
   }
 
   private async waitForFirstState(): Promise<void> {
-    if (this.readValue() !== undefined || (await this.checkPublisher()) !== true) {
+    // The publisher first: a left-over state must not count as published.
+    if ((await this.checkPublisher()) !== true || this.readValue() !== undefined) {
       return;
     }
     const until = this.now() + FIRST_STATE_WAIT_MS;
@@ -150,6 +216,9 @@ export class InternetGate {
       .then((plugins) => {
         const enabled = plugins.some((p) => p.id === SIGNALK_INTERNET_PLUGIN_ID && p.enabled);
         this.publisherEnabled = enabled;
+        if (!enabled) {
+          this.runHeld();
+        }
         return enabled;
       })
       .catch(() => undefined)
