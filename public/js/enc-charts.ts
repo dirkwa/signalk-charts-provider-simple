@@ -543,15 +543,16 @@ function ccPickAt(point: L.Point): CcDrawnUnit | null {
   if (!ccMap) {
     return null;
   }
+  let nearest: CcDrawnUnit | null = null;
+  let nearestDist = Infinity;
   for (const { drawn, marker } of ccSmallMarkers) {
-    if (
-      ccMap.latLngToContainerPoint(marker.getLatLng()).distanceTo(point) <=
-      marker.getRadius() + CC_HIT_TOLERANCE_PX
-    ) {
-      return drawn;
+    const d = ccMap.latLngToContainerPoint(marker.getLatLng()).distanceTo(point);
+    if (d <= marker.getRadius() + CC_HIT_TOLERANCE_PX && d < nearestDist) {
+      nearest = drawn;
+      nearestDist = d;
     }
   }
-  return ccUnitAt(ccMap.containerPointToLatLng(point));
+  return nearest ?? ccUnitAt(ccMap.containerPointToLatLng(point));
 }
 
 function ccSegmentsCross(a: CcPosition, b: CcPosition, c: CcPosition, d: CcPosition): boolean {
