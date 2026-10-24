@@ -125,10 +125,10 @@ async function seedCatalog(catalogFile: string, charts: TestChart[]): Promise<vo
   mock.restoreAll();
 }
 
-// Every initCatalogManager() fire-and-forgets refreshCatalog(), so any call
-// (suite setup AND each restart simulation) must run under a stub or it
-// makes a live network call. The stub fails like an offline boat, so the
-// cached catalog on disk is what the restarted manager serves.
+// The plugin's startup round calls refreshCatalog() after
+// initCatalogManager(); this runs that round under a stub that fails like an
+// offline boat, so the cached catalog on disk is what the restarted manager
+// serves.
 async function initCatalogManagerOffline(): Promise<void> {
   stubFetch({ networkError: true });
   initCatalogManager(TEST_DATA_DIR, () => {});

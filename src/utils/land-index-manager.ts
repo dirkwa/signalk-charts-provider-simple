@@ -93,8 +93,9 @@ function removeBuildFiles(): void {
 /**
  * Point the manager at `<dataDir>/land-index`, open the index if one is
  * built, and resume a build that a restart cut short, if `needed` says a
- * masked version still waits for it. `onChange` runs whenever the index
- * appears, changes or goes, or a build fails.
+ * masked version still waits for it and `mayResume` allows a download now
+ * (otherwise the request stays for a later start). `onChange` runs whenever
+ * the index appears, changes or goes, or a build fails.
  */
 export function initLandIndex(
   dataDir: string,
@@ -102,6 +103,7 @@ export function initLandIndex(
     userAgent: string;
     onChange: () => void;
     needed: () => Promise<boolean>;
+    mayResume?: () => Promise<boolean>;
     sources?: LandSource[];
   }
 ): void {
@@ -127,24 +129,25 @@ export function initLandIndex(
   if (state.requested && state.failed === undefined) {
     const startDir = dir;
     const startListener = listener;
-    void options
-      .needed()
-      .catch(() => false)
-      .then((needed) => {
-        // Unless the plugin stopped, or the user cancelled or asked again, meanwhile.
-        if (dir !== startDir || listener !== startListener || building || index) {
-          return;
-        }
-        if (!readState().requested) {
-          return;
-        }
-        if (needed) {
-          startBuild();
-        } else {
-          // Nothing waits for it: adding a version later asks again.
-          writeState({});
-        }
-      });
+    void (async () => {
+      if (options.mayResume && !(await options.mayResume().catch(() => true))) {
+        return;
+      }
+      const needed = await options.needed().catch(() => false);
+      // Unless the plugin stopped, or the user cancelled or asked again, meanwhile.
+      if (dir !== startDir || listener !== startListener || building || index) {
+        return;
+      }
+      if (!readState().requested) {
+        return;
+      }
+      if (needed) {
+        startBuild();
+      } else {
+        // Nothing waits for it: adding a version later asks again.
+        writeState({});
+      }
+    })();
   }
 }
 

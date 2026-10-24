@@ -78,7 +78,9 @@ export class TimeDimensionPoller {
     private readonly onChange: (catalogId: string, time: ChartTimeBlock | undefined) => void,
     private readonly debug: (msg: string) => void = () => {},
     private readonly fetchText: FetchText = defaultFetchText,
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    /** False while the link is metered or offline: no poll, the last timeline stays. */
+    private readonly mayPoll: () => boolean = () => true
   ) {}
 
   /** The last time block read for an entry, if any. */
@@ -168,7 +170,7 @@ export class TimeDimensionPoller {
    */
   async poll(target: PollTarget): Promise<void> {
     const started = this.polls.get(target.catalogId);
-    if (started?.target !== target) {
+    if (started?.target !== target || !this.mayPoll()) {
       return;
     }
     started.lastPoll = this.now();

@@ -353,6 +353,39 @@ describe('OnlineTileStore and OnlineTileProxy', () => {
     assert.strictEqual(fetched.length, 3);
   });
 
+  it('serves kept tiles however old, and asks the provider nothing, while fetching is not allowed', async () => {
+    let mayFetch = true;
+    const p = new OnlineTileProxy(
+      store,
+      (url) => {
+        fetched.push(url);
+        return Promise.resolve(answer);
+      },
+      () => now,
+      () => mayFetch
+    );
+    await p.getTile('depths', source, 2, 1, 0);
+    mayFetch = false;
+    now += TILE_REFRESH_MS + 1;
+    const old = await p.getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(old && [...old], [...PNG]);
+    assert.strictEqual(await p.getTile('depths', source, 2, 2, 0), null, 'nothing kept: no tile');
+    assert.strictEqual(await p.streamTile(source, 2, 1, 0), null);
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(fetched.length, 1, 'only the fetch made while it was allowed');
+
+    assert.strictEqual(
+      await p.ensureTile('depths', source, 2, 2, 0),
+      'fetched',
+      'area downloads still run'
+    );
+    mayFetch = true;
+    const refreshed = await p.getTile('depths', source, 2, 1, 0);
+    assert.deepStrictEqual(refreshed && [...refreshed], [...PNG]);
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(fetched.length, 3, 'the old tile is refreshed once allowed again');
+  });
+
   it('serves an old tile without waiting for a provider that hangs', async () => {
     await proxy().getTile('depths', source, 2, 1, 0);
     now += TILE_REFRESH_MS + 1;

@@ -6,6 +6,7 @@ import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
 import type { ChartTimeBlock } from './utils/time-dimension.js';
 import type { AreaDownloadLimits, OnlineTileSource } from './utils/online-tile-cache.js';
 import type { ChartMask, CustomOnlineChart } from './utils/online-charts.js';
+import type { PluginListEntry } from './utils/internet-state.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -26,6 +27,8 @@ export interface ServerConfig {
 
 export interface ExtendedServerAPI extends ServerAPI {
   config: ServerConfig;
+  /** Every installed plugin and whether it is enabled; missing on old servers. */
+  getPluginsList?: () => Promise<PluginListEntry[]>;
 }
 
 // ---- Chart Provider (the core data structure) ----

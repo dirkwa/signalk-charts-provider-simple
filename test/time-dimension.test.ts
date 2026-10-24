@@ -323,6 +323,37 @@ describe('TimeDimensionPoller', () => {
     }
   });
 
+  it('does not poll while polling is not allowed, and keeps the last timeline', async () => {
+    let fetches = 0;
+    let allowed = true;
+    let clock = NOW;
+    const changes: string[] = [];
+    const p = new TimeDimensionPoller(
+      (id, time) => changes.push(`${id} ${time?.to ?? 'withdrawn'}`),
+      () => {},
+      () => {
+        fetches++;
+        return Promise.resolve(NCEP_WMS);
+      },
+      () => clock,
+      () => allowed
+    );
+    try {
+      p.sync([target]);
+      await p.poll(target);
+      allowed = false;
+      await p.poll(target);
+      clock += 24 * 60 * 60 * 1000; // past the interval, so touch() would poll
+      p.touch('nws-radar-conus');
+      await new Promise((r) => setImmediate(r));
+      assert.strictEqual(fetches, 1);
+      assert.strictEqual(p.get('nws-radar-conus')?.to, '2026-09-25T04:20:57Z');
+      assert.deepStrictEqual(changes, ['nws-radar-conus 2026-09-25T04:20:57Z']);
+    } finally {
+      p.stop();
+    }
+  });
+
   it('retries an entry with no timeline at most once a minute', async () => {
     let fetches = 0;
     let clock = NOW;
