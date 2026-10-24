@@ -821,7 +821,17 @@ function wireDragSelect(el: HTMLElement): void {
     if (!ccMap) {
       return;
     }
-    const tapped = ev.type === 'pointerup' && ev.pointerId === tapId;
+    // Moves outside the map never reach its listener, so the release itself
+    // must also be where the press was.
+    const release = ccMap.mouseEventToContainerPoint(ev);
+    const tapped =
+      ev.type === 'pointerup' &&
+      ev.pointerId === tapId &&
+      tapStart !== null &&
+      release.distanceTo(tapStart) < CC_DRAG_THRESHOLD_PX &&
+      ccMap.getSize().contains(release) &&
+      release.x >= 0 &&
+      release.y >= 0;
     if (ev.pointerId === tapId) {
       tapId = null;
     }
@@ -833,7 +843,7 @@ function wireDragSelect(el: HTMLElement): void {
       }
     }
     if (tapped) {
-      const hit = ccPickAt(ccMap.mouseEventToContainerPoint(ev));
+      const hit = ccPickAt(release);
       if (hit) {
         void onAreaClick(hit.unit);
       }
