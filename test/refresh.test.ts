@@ -199,7 +199,7 @@ describe('External chart refresh', () => {
 
   // Open files are listed under /proc only on Linux; elsewhere this is skipped.
   it(
-    'closes the charts of a refresh that finishes after stop',
+    'opens no charts for a refresh that finishes or starts after stop',
     { skip: !fs.existsSync('/proc/self/fd') },
     async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-stop-'));
@@ -227,6 +227,10 @@ describe('External chart refresh', () => {
         provider = p;
       };
       const plugin = pluginFactory(app);
+      const { router, handlers } = createRouterStub();
+      plugin.registerWithRouter?.(router);
+      const refreshRoute = handlers.get('post /refresh');
+      assert.ok(refreshRoute, 'POST /refresh route should be registered');
       plugin.start({ chartPath }, () => {});
 
       const deadline = Date.now() + 5000;
@@ -247,6 +251,12 @@ describe('External chart refresh', () => {
 
         assert.deepStrictEqual(openChartFiles(), [], 'no chart file stays open after stop');
         assert.strictEqual(outcome, 'rejected', 'a refresh cut short by stop does not succeed');
+
+        // A refresh that starts while stopped (a download finishing late) opens nothing either.
+        const res = makeRes();
+        await refreshRoute({}, res);
+        assert.strictEqual(res.statusCode, 500, 'a refresh while stopped does not succeed');
+        assert.deepStrictEqual(openChartFiles(), [], 'no chart file is opened while stopped');
       } finally {
         plugin.stop?.();
         fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

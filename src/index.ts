@@ -242,6 +242,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // Bumped by stop(), so a chart scan still running then closes what it
   // opened instead of installing handles nothing will close.
   let lifecycle = 0;
+  // A refresh can also start while stopped (a download finishing after
+  // stop()); its charts are closed too. False before the first start, where
+  // a refresh must still work.
+  let stopped = false;
   const resolveOnlineChart: OnlineChartResolver = (catalogId) => getOnlineCatalogChart(catalogId);
   // catalogId → chart-folder paths of its .onlinechart.json files, for the
   // Chart Catalog's "Added" state. The catalog tab polls often, so this is
@@ -502,6 +506,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     },
     stop: () => {
       lifecycle++;
+      stopped = true;
       setCatalogChangedListener(null);
       internet?.stop();
       internet = null;
@@ -648,6 +653,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   };
 
   const doStartup = async (config: PluginConfig): Promise<void> => {
+    stopped = false;
+    const started = lifecycle;
     app.debug(`** loaded config: ${JSON.stringify(config)}`);
     props = { ...config };
     internet?.stop();
@@ -836,6 +843,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     app.debug(`Start chart provider. Chart path: ${chartPath}`);
     onlineTimeActive = true;
     const loadOk = await loadChartProviders(chartPath);
+    if (lifecycle !== started) {
+      return;
+    }
 
     if (serverMajorVersion === 2) {
       app.debug('** Registering v2 API paths **');
@@ -1155,6 +1165,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       return true;
     } catch (e: unknown) {
       console.error(`Error loading chart providers`, e instanceof Error ? e.message : String(e));
+      if (lifecycle !== started) {
+        return false;
+      }
       chartProviders = {};
       app.setPluginError(`Error loading chart providers`);
       return false;
@@ -5479,7 +5492,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const chartPath = props.chartPath || getDefaultChartsPath();
       const started = lifecycle;
       const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
-      if (lifecycle !== started) {
+      if (stopped || lifecycle !== started) {
         closeProviderHandles(Object.values(charts));
         return false;
       }
