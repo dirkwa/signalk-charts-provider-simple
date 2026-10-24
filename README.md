@@ -109,7 +109,7 @@ The interface provides seven tabs:
 
 7. **ENC Charts**:
    - Build a named **chart set** by clicking chart areas on a map (Leaflet + OpenSeaMap): NOAA's band-4 boxes in US waters, and the cells of every other free ENC source, such as the European inland waterways (EuRIS), the Rhône, Poland, Brazil, the South China Sea and the US inland river buoys, drawn as their real coverage
-   - Click an area to add or remove it. **Select by box** (or Shift+drag) adds or removes every area a box touches: areas not yet in the set are added, and areas already in it are removed. Where areas overlap, a click picks the smallest
+   - Click an area to add or remove it. Dragging across the map adds every area the box touches; a box over areas that are all in the set already removes them. Where areas overlap, a click picks the smallest. Move the map with two fingers, the scroll wheel, or **Move map** (then Shift+drag still selects)
    - One chart set can mix sources, e.g. NOAA charts plus the US inland river buoy overlay
    - Each NOAA box automatically pulls in the overlapping band-3 and band-5 ENCs
    - The chart areas come from the ENC index this project publishes (see [`docs/enc-index.md`](docs/enc-index.md)); the plugin keeps the last copy, so the map works offline once it has been downloaded
