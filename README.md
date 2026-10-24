@@ -141,6 +141,10 @@ The interface provides seven tabs:
 - **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
 - **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
 
+### Recommended for metered connections: `signalk-internet` plugin
+
+The [`signalk-internet`](https://github.com/meri-imperiumi/signalk-internet) plugin tells Signal K whether the boat's connection is online, metered (for example satellite data billed per GB), offline or behind a sign-in page. While it reports metered, offline or a sign-in page, this plugin checks for nothing on its own (no chart catalog or ENC index checks, no resumed shoreline download) and online charts show only the tiles already kept on the server, without asking their provider. To keep fetching online chart tiles on a metered connection, turn on **Download online chart tiles on metered connections** in the plugin settings. Downloads you start yourself (Refresh, chart downloads, offline areas, chart sets) always run. Without `signalk-internet` nothing changes.
+
 ### Recommended for chart conversion: `signalk-container` plugin
 
 Displaying charts (serving tiles from `.mbtiles`) needs nothing extra. The [`signalk-container`](https://github.com/dirkwa/signalk-container) plugin is only needed to **convert** charts (S-57 ENC, BSB raster, Pilot Charts, or basemaps), where this plugin delegates all container work to it. The Signal K App Store lists it as a recommended plugin on the Charts Provider Simple detail page and offers a one-click bulk install; without it the plugin still loads and serves charts — only the Convert tab is disabled.

@@ -387,8 +387,6 @@ export function initCatalogManager(dataDirPath: string, debugFn: DebugFunction):
 
   loadInstalls();
   loadCatalogCache();
-
-  refreshCatalog().catch(() => undefined);
 }
 
 /**

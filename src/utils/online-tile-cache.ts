@@ -682,6 +682,9 @@ export type EnsureOutcome = 'kept' | 'fetched' | 'failed' | 'none';
  * Serves proxied tiles: a kept tile when there is a fresh one, otherwise
  * the provider's, which is then kept. A kept tile is served however old it
  * is when the provider cannot be reached, which is the whole point offshore.
+ * While `mayFetch` says no (a metered or offline link), a plotter gets kept
+ * tiles only and the provider is not asked; area downloads, which the user
+ * starts, still fetch.
  */
 export class OnlineTileProxy {
   private readonly inFlight = new Map<string, Promise<CachedTile | 'absent' | null>>();
@@ -691,7 +694,8 @@ export class OnlineTileProxy {
   constructor(
     private readonly store: OnlineTileStore,
     private readonly fetchTile: TileFetcher,
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    private readonly mayFetch: () => boolean = () => true
   ) {}
 
   async getTile(
@@ -724,6 +728,9 @@ export class OnlineTileProxy {
     if (cached && this.now() - cached.fetchedAt < TILE_REFRESH_MS) {
       return cached;
     }
+    if (!this.mayFetch()) {
+      return cached;
+    }
     const fetching = this.fetchAndKeep(catalogId, source, z, x, y).then((tile) =>
       tile === 'absent' ? null : tile
     );
@@ -740,7 +747,7 @@ export class OnlineTileProxy {
     y: number
   ): Promise<Buffer | null> {
     const url = z > 24 || x >= 2 ** z || y >= 2 ** z ? null : upstreamTileUrl(source, z, x, y);
-    if (!url) {
+    if (!url || !this.mayFetch()) {
       return null;
     }
     // Plotters ask for the same tile more than once; the provider is asked once.

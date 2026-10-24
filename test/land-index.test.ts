@@ -263,4 +263,31 @@ describe('land index', () => {
     assert.strictEqual(landIndexState().status, 'ready');
     await deleteLandIndex();
   });
+
+  it('keeps a cut-short build for a later start while a download is not allowed', async () => {
+    const dataDir = path.join(tempDir, 'plugin-data-metered');
+    fs.mkdirSync(path.join(dataDir, 'land-index'), { recursive: true });
+    fs.writeFileSync(path.join(dataDir, 'land-index', 'state.json'), '{"requested":true}');
+    const withResume = (mayResume: boolean): void => {
+      initLandIndex(dataDir, {
+        userAgent: 'test',
+        sources: sources(),
+        onChange: () => undefined,
+        needed: () => Promise.resolve(true),
+        mayResume: () => Promise.resolve(mayResume)
+      });
+    };
+
+    init(path.join(tempDir, 'elsewhere'));
+    withResume(false);
+    await settle();
+    assert.strictEqual(landIndexState().status, 'absent', 'nothing downloaded on a metered link');
+    assert.strictEqual(landIndexState().requested, true, 'the request waits for a later start');
+
+    init(path.join(tempDir, 'elsewhere'));
+    withResume(true);
+    await settle();
+    assert.strictEqual(landIndexState().status, 'ready');
+    await deleteLandIndex();
+  });
 });

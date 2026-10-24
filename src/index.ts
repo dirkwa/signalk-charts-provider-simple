@@ -38,6 +38,7 @@ import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { capabilitiesUrlFor } from './utils/time-dimension.js';
 import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
+import { InternetGate } from './utils/internet-state.js';
 import {
   chartFileNamesBeside,
   chartIdFromFilename,
@@ -299,7 +300,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
       }
     },
-    (msg) => app.debug(msg)
+    (msg) => app.debug(msg),
+    undefined,
+    undefined,
+    () => internet?.mayFetchCharts() ?? true
   );
   // Off between stop() and the next start, so a late refresh (a finished
   // download, say) can't restart polling for a stopped plugin.
@@ -360,6 +364,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   };
 
   let catalogUpdateInterval: ReturnType<typeof setInterval> | null = null;
+  // signalk-internet's view of the link; null while the plugin is stopped.
+  let internet: InternetGate | null = null;
   let pluginDataDir = '';
   let onlineTileStore: OnlineTileStore | null = null;
   let onlineTileProxy: OnlineTileProxy | null = null;
@@ -453,6 +459,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           description:
             'When enabled, suppresses Signal K warn notifications about available chart catalog updates.',
           default: false
+        },
+        _meteredHeader: {
+          type: 'null',
+          title: 'Metered connections'
+        },
+        allowMeteredChartDownloads: {
+          type: 'boolean',
+          title: 'Download online chart tiles on metered connections',
+          description:
+            'While the signalk-internet plugin reports a metered connection (for example satellite data billed per GB), ' +
+            'online charts show only the tiles already kept on this server, and the plugin checks for nothing on its own. ' +
+            'Turn this on to keep fetching (and keeping) online chart tiles on a metered connection. ' +
+            'Offline or behind a sign-in page nothing is fetched either way; downloads you start yourself always run.',
+          default: false
         }
       }
     }),
@@ -479,6 +499,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     },
     stop: () => {
       setCatalogChangedListener(null);
+      internet?.stop();
+      internet = null;
       onlineTimeActive = false;
       timePoller.stop();
       if (catalogUpdateInterval) {
@@ -624,6 +646,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const doStartup = async (config: PluginConfig): Promise<void> => {
     app.debug(`** loaded config: ${JSON.stringify(config)}`);
     props = { ...config };
+    internet?.stop();
+    const gate = new InternetGate({
+      getSelfPath: (p) => app.getSelfPath(p),
+      getPluginsList: app.getPluginsList?.bind(app),
+      allowMeteredCharts: () => props.allowMeteredChartDownloads === true
+    });
+    internet = gate;
 
     setCpuBudget(props.cpuBudget);
 
@@ -717,11 +746,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     if (savedSetIds !== null && savedSetIds.every((setId) => !isCatalogBusy(setId))) {
       sweepChartSetCache(new Set(savedSetIds));
     }
-    // Saved chart sets need a current index for their update status; a
-    // device without any waits until the ENC Charts tab is opened.
-    if (listCustomCatalogs().length > 0) {
-      void refreshEncIndex();
-    }
+    // The startup round waits for signalk-internet's first state, when that
+    // plugin is enabled, so a restart on a metered link downloads nothing.
+    void gate.firstStateKnown().then(() => {
+      if (internet !== gate || !gate.mayRunBackground()) {
+        return;
+      }
+      void refreshCatalog();
+      // Saved chart sets need a current index for their update status; a
+      // device without any waits until the ENC Charts tab is opened.
+      if (listCustomCatalogs().length > 0) {
+        void refreshEncIndex();
+      }
+    });
     // Synthesized and masked raster tiles; kept in the data dir, never the chart folder.
     void overzoomTileCache.init(path.join(dataDir, 'raster-tile-cache'));
     void maskedTileCache.init(path.join(dataDir, 'masked-tile-cache'), {
@@ -735,7 +772,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     );
     onlineTileProxy = new OnlineTileProxy(
       onlineTileStore,
-      httpTileFetcher(`signalk-charts-provider-simple/${pluginVersion}`)
+      httpTileFetcher(`signalk-charts-provider-simple/${pluginVersion}`),
+      Date.now,
+      () => gate.mayFetchCharts()
     );
     areaDownloader?.cancelAll();
     areaDownloader = new AreaDownloader(onlineTileProxy);
@@ -747,7 +786,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         reannounceOnlineCharts();
       },
       // A build cut short resumes only while a masked version waits for it.
-      needed: async () => (await findOnlineChartFiles(chartPath)).some((f) => f.mask)
+      needed: async () => (await findOnlineChartFiles(chartPath)).some((f) => f.mask),
+      mayResume: async () => {
+        await gate.firstStateKnown();
+        return gate.mayRunBackground();
+      }
     });
 
     const tempDirPattern =
@@ -3268,7 +3311,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           // not re-poll, so wait for the startup download (bounded by its
           // timeout) rather than showing an empty tab.
           if (hasCatalog()) {
-            refreshCatalogIfStale();
+            if (internet?.mayRunBackground() ?? true) {
+              refreshCatalogIfStale();
+            }
           } else {
             await refreshCatalog();
           }
@@ -4195,7 +4240,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       void (async () => {
         if (forceRefresh || !getEncIndex()) {
           await refreshEncIndex();
-        } else {
+        } else if (internet?.mayRunBackground() ?? true) {
           refreshEncIndexIfStale();
         }
         const payload = getEncMapPayload();
@@ -5439,6 +5484,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       try {
         if (getCatalogsWithInstalledCharts().length === 0) {
           return;
+        }
+        const gate = internet;
+        if (gate) {
+          await gate.firstStateKnown();
+          if (internet !== gate || !gate.mayRunBackground()) {
+            app.debug(
+              `Chart catalog check skipped: the internet connection is ${gate.state() ?? 'gone'}`
+            );
+            return;
+          }
         }
 
         app.debug('Checking the chart catalog for chart updates');
