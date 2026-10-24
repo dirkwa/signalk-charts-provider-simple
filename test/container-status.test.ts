@@ -295,6 +295,49 @@ describe('Plugin status without signalk-container runtime', () => {
     );
   });
 
+  it('does nothing more for a startup whose container wait outlasts stop()', async () => {
+    let releaseWait: () => void = () => {};
+    const waitReleased = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+    let waitStarted = false;
+    globalThis[GLOBAL_KEY] = {
+      ...globalThis[GLOBAL_KEY]!,
+      whenReady: () => {
+        waitStarted = true;
+        return waitReleased;
+      }
+    };
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'container-status-'));
+    tempDirs.push(tempDir);
+    const chartPath = path.join(tempDir, 'charts');
+    fs.mkdirSync(chartPath, { recursive: true });
+    const recording = createRecordingApp(tempDir);
+    const plugin = pluginFactory(recording.app);
+    activePlugins.push(plugin);
+
+    const logLines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logLines.push(args.map(String).join(' '));
+    };
+    try {
+      plugin.start({ chartPath }, () => {});
+      await waitFor(() => waitStarted, 'container wait to start');
+      plugin.stop?.();
+      releaseWait();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.ok(
+      !logLines.includes(CONVERSION_DISABLED_LOG),
+      'a stopped startup must not go on past the container wait'
+    );
+    assert.deepStrictEqual(recording.errors, []);
+  });
+
   it('surfaces the plugin error when a conversion operation is attempted', async () => {
     const started = await startPlugin();
     activePlugins.push(started.plugin);

@@ -917,6 +917,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
       }
     });
+    // The wait can outlast this lifecycle; a stopped plugin starts no timers,
+    // listeners or housekeeping.
+    if (lifecycle !== started) {
+      return;
+    }
     if (!containerManager) {
       // Only raise the missing runtime to an ERROR when something actually
       // needs it (see hasContainerDependentCharts). A pure display setup
@@ -1176,20 +1181,23 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
   const cleanupChartDirectory = async (chartPath: string): Promise<void> => {
     // findCharts opens a sqlite handle per chart. This rescan's handles are
-    // never stored in chartProviders, so stop() cannot reach them and they
-    // leak — on Windows keeping every .mbtiles locked, which fails the very
-    // unlink this function performs and any later attempt to delete the
-    // directory. Closed in the finally below, on every path.
+    // never stored in chartProviders, so stop() cannot reach them. On Windows
+    // an open handle locks the .mbtiles, failing the unlinks below and any
+    // delete of the directory, so they are closed as soon as the paths are
+    // read, and in the finally below on every path.
+    const started = lifecycle;
     let scanned: ChartProvider[] = [];
     try {
       const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
       scanned = Object.values(charts);
+      const validPaths = new Set(scanned.map((c) => c._filePath).filter(Boolean));
+      closeProviderHandles(scanned);
+      scanned = [];
+      // A stopped plugin no longer owns the chart folder.
+      if (lifecycle !== started) {
+        return;
+      }
       const allFiles = await scanChartsRecursively(chartPath);
-      const validPaths = new Set(
-        Object.values(charts)
-          .map((c) => c._filePath)
-          .filter(Boolean)
-      );
       // Repairable charts (valid tiles, missing metadata.bounds) are
       // deliberately excluded from findCharts(), so they'd otherwise be
       // unlinked here as "invalid" — destroying the very files the repair
@@ -1197,6 +1205,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const repairable = await findRepairableCharts(chartPath);
       for (const rc of repairable) {
         validPaths.add(rc.filePath);
+      }
+      if (lifecycle !== started) {
+        return;
       }
       for (const file of allFiles) {
         if (file.name.endsWith('.mbtiles') && !validPaths.has(file.path)) {
