@@ -72,7 +72,8 @@
     "appIcon": "assets/charts_logo.png",
     "displayName": "Charts Provider Simple",
     "recommends": [
-      "signalk-container"
+      "signalk-container",
+      "@meri-imperiumi/signalk-internet"
     ],
     "screenshots": [
       "./docs/screenshots/1_charts-provider-simple.png",
