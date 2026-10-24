@@ -152,8 +152,8 @@ let ccHoverTip: L.Tooltip | null = null;
 // Dragging picks chart areas while a set is open; this turns it back into panning.
 let ccPanMode = false;
 let ccSetHintTimer: ReturnType<typeof setTimeout> | null = null;
-// A box drag ends with a click the map must not treat as a unit toggle.
-let ccSuppressClick = false;
+// Selected units too small to see, drawn as markers that stand in for them.
+const ccSmallMarkers: { drawn: CcDrawnUnit; marker: L.CircleMarker }[] = [];
 // Source id → display name, from the index.
 const ccSources = new Map<string, string>();
 
@@ -277,23 +277,8 @@ function initCustomCatalogMap(): void {
   ccHoverTip = L.tooltip({ direction: 'top', offset: [0, -6] });
 
   // Units are not interactive themselves: overlapping outlines are resolved
-  // here, so a click picks the unit the user means (see ccUnitAt).
-  ccMap.on('click', (ev: L.LeafletMouseEvent) => {
-    if (ccSuppressClick) {
-      ccSuppressClick = false;
-      return;
-    }
-    const hit = ccUnitAt(ev.latlng);
-    if (hit) {
-      void onAreaClick(hit.unit);
-    }
-  });
-  ccMap.on('mousemove', (ev: L.LeafletMouseEvent) => {
-    onHover(ccUnitAt(ev.latlng), ev.latlng);
-  });
-  ccMap.on('mouseout', () => {
-    onHover(null, null);
-  });
+  // in ccPickAt, so a tap picks the unit the user means. Taps, drags and
+  // hover all come from pointer events (see wireDragSelect).
   wireDragSelect(el);
 }
 
@@ -553,6 +538,22 @@ function ccUnitAt(latlng: L.LatLng): CcDrawnUnit | null {
   return inside ?? near;
 }
 
+/** The unit at a map point: a small unit's marker first, then the outlines. */
+function ccPickAt(point: L.Point): CcDrawnUnit | null {
+  if (!ccMap) {
+    return null;
+  }
+  for (const { drawn, marker } of ccSmallMarkers) {
+    if (
+      ccMap.latLngToContainerPoint(marker.getLatLng()).distanceTo(point) <=
+      marker.getRadius() + CC_HIT_TOLERANCE_PX
+    ) {
+      return drawn;
+    }
+  }
+  return ccUnitAt(ccMap.containerPointToLatLng(point));
+}
+
 function ccSegmentsCross(a: CcPosition, b: CcPosition, c: CcPosition, d: CcPosition): boolean {
   const cross = (p: CcPosition, q: CcPosition, r: CcPosition): number =>
     (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
@@ -706,12 +707,19 @@ function showSetHint(): void {
   }, CC_SET_HINT_MS);
 }
 
-// While a set is open, a drag draws a box and adds every unit it touches;
-// a click still toggles one unit. Leaflet's own one-finger panning is turned
-// off for the gesture only, so a two-finger pinch keeps moving and zooming
-// the map. With Move map on, a drag pans and Shift+drag draws the box.
+// While a set is open, a drag draws a box and adds every unit it touches,
+// and a tap toggles one unit. Leaflet's own one-finger panning is turned off
+// for the gesture only, so a two-finger pinch keeps moving and zooming the
+// map. With Move map on, a drag pans and Shift+drag draws the box.
+//
+// Taps are read from pointer events rather than the browser's click: iOS
+// Safari drops the click of a tap whose emulated mouse events change the page
+// (the hover tooltip does), and a tap must work there too. For the same
+// reason hover follows the mouse only.
 function wireDragSelect(el: HTMLElement): void {
   const touches = new Set<number>();
+  let tapId: number | null = null;
+  let tapStart: L.Point | null = null;
   let pointerId: number | null = null;
   let startPoint: L.Point | null = null;
   let start: L.LatLng | null = null;
@@ -736,15 +744,19 @@ function wireDragSelect(el: HTMLElement): void {
       if (ev.pointerType === 'touch') {
         touches.add(ev.pointerId);
         if (touches.size > 1) {
-          // A second finger: Leaflet pinches, and no box is drawn.
+          // A second finger: Leaflet pinches, and neither a box nor a tap.
           reset();
+          tapId = null;
           return;
         }
       }
-      if (ev.button !== 0 || !ccCanSelect() || (ccPanMode && !ev.shiftKey)) {
+      if (ev.button !== 0 || (ev.target as HTMLElement | null)?.closest('.leaflet-control')) {
         return;
       }
-      if ((ev.target as HTMLElement | null)?.closest('.leaflet-control')) {
+      const point = ccMap.mouseEventToContainerPoint(ev);
+      tapId = ev.pointerId;
+      tapStart = point;
+      if (!ccCanSelect() || (ccPanMode && !ev.shiftKey)) {
         return;
       }
       if (ev.pointerType === 'mouse') {
@@ -753,16 +765,25 @@ function wireDragSelect(el: HTMLElement): void {
       }
       ccMap.dragging.disable();
       pointerId = ev.pointerId;
-      startPoint = ccMap.mouseEventToContainerPoint(ev);
-      start = ccMap.containerPointToLatLng(startPoint);
+      startPoint = point;
+      start = ccMap.containerPointToLatLng(point);
     },
     true
   );
   el.addEventListener('pointermove', (ev: PointerEvent) => {
-    if (!ccMap || !start || !startPoint || ev.pointerId !== pointerId) {
+    if (!ccMap) {
       return;
     }
     const point = ccMap.mouseEventToContainerPoint(ev);
+    if (ev.pointerId === tapId && tapStart && point.distanceTo(tapStart) >= CC_DRAG_THRESHOLD_PX) {
+      tapId = null;
+    }
+    if (!start || !startPoint || ev.pointerId !== pointerId) {
+      if (ev.pointerType === 'mouse' && !box) {
+        onHover(ccPickAt(point), ccMap.containerPointToLatLng(point));
+      }
+      return;
+    }
     if (!box && point.distanceTo(startPoint) < CC_DRAG_THRESHOLD_PX) {
       return;
     }
@@ -780,22 +801,41 @@ function wireDragSelect(el: HTMLElement): void {
       }).addTo(ccMap);
     }
   });
+  el.addEventListener('pointerleave', (ev: PointerEvent) => {
+    if (ev.pointerType === 'mouse') {
+      onHover(null, null);
+    }
+  });
+  // Where touch-action is not honoured, the page would scroll under the box.
+  el.addEventListener(
+    'touchmove',
+    (ev: TouchEvent) => {
+      if (pointerId !== null && ev.touches.length === 1) {
+        ev.preventDefault();
+      }
+    },
+    { passive: false }
+  );
   const finish = (ev: PointerEvent): void => {
     touches.delete(ev.pointerId);
     if (!ccMap) {
       return;
     }
+    const tapped = ev.type === 'pointerup' && ev.pointerId === tapId;
+    if (ev.pointerId === tapId) {
+      tapId = null;
+    }
     if (ev.pointerId === pointerId) {
       const bounds = box?.getBounds() ?? null;
       reset();
-      if (bounds) {
-        ccSuppressClick = true;
-        window.setTimeout(() => {
-          ccSuppressClick = false;
-        }, 0);
-        if (ev.type === 'pointerup') {
-          void addUnitsInBox(bounds);
-        }
+      if (bounds && ev.type === 'pointerup') {
+        void addUnitsInBox(bounds);
+      }
+    }
+    if (tapped) {
+      const hit = ccPickAt(ccMap.mouseEventToContainerPoint(ev));
+      if (hit) {
+        void onAreaClick(hit.unit);
       }
     }
     if (touches.size === 0) {
@@ -961,6 +1001,7 @@ function updateSmallMarkers(): void {
   }
   const map = ccMap;
   ccSmallLayer.clearLayers();
+  ccSmallMarkers.length = 0;
   const active = ccActiveCatalog();
   if (!active) {
     return;
@@ -984,18 +1025,11 @@ function updateSmallMarkers(): void {
       weight: 2,
       fillColor: color,
       fillOpacity: 0.5,
+      interactive: false,
       renderer: ccRenderer ?? undefined
     });
-    // The marker sits where the unit is too small to click, so it toggles
-    // the unit itself; the map must not see the same click.
-    marker.on('click', (ev: L.LeafletMouseEvent) => {
-      L.DomEvent.stopPropagation(ev);
-      void onAreaClick(drawn.unit);
-    });
-    marker.on('mouseover', (ev: L.LeafletMouseEvent) => {
-      onHover(drawn, ev.latlng);
-    });
     marker.addTo(ccSmallLayer);
+    ccSmallMarkers.push({ drawn, marker });
   }
 }
 
