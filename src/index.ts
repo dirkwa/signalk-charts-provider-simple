@@ -239,6 +239,9 @@ const chartTilesPath = `/signalk/v1/api/resources/charts`;
 
 const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let chartProviders: Record<string, ChartProvider> = {};
+  // Bumped by stop(), so a chart scan still running then closes what it
+  // opened instead of installing handles nothing will close.
+  let lifecycle = 0;
   const resolveOnlineChart: OnlineChartResolver = (catalogId) => getOnlineCatalogChart(catalogId);
   // catalogId → chart-folder paths of its .onlinechart.json files, for the
   // Chart Catalog's "Added" state. The catalog tab polls often, so this is
@@ -498,6 +501,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     },
     stop: () => {
+      lifecycle++;
       setCatalogChangedListener(null);
       internet?.stop();
       internet = null;
@@ -1127,8 +1131,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // provider is registered so `listResources` has charts to return. Returns
   // true on success, false if the chart directory could not be read.
   const loadChartProviders = async (chartPath: string): Promise<boolean> => {
+    const started = lifecycle;
     try {
       const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
+      if (lifecycle !== started) {
+        closeProviderHandles(Object.values(charts));
+        return false;
+      }
       pruneRasterTileCacheFor(charts);
       const enabledCharts = partitionVisibleCharts(chartPath, charts);
 
@@ -5468,7 +5477,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // getDefaultChartsPath() (not the raw field) so a refresh requested
       // before start() has run still resolves the computed default path.
       const chartPath = props.chartPath || getDefaultChartsPath();
+      const started = lifecycle;
       const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
+      if (lifecycle !== started) {
+        closeProviderHandles(Object.values(charts));
+        return false;
+      }
       pruneRasterTileCacheFor(charts);
 
       // Close the handles of the map being replaced — findCharts reopened

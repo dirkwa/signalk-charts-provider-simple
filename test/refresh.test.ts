@@ -197,6 +197,63 @@ describe('External chart refresh', () => {
     }
   });
 
+  // Open files are listed under /proc only on Linux; elsewhere this is skipped.
+  it(
+    'closes the charts of a refresh that finishes after stop',
+    { skip: !fs.existsSync('/proc/self/fd') },
+    async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-stop-'));
+      const chartPath = path.join(tempDir, 'charts');
+      fs.mkdirSync(chartPath, { recursive: true });
+      fs.copyFileSync(
+        path.join(FIXTURES, 'test-chart.mbtiles'),
+        path.join(chartPath, 'test-chart.mbtiles')
+      );
+      const openChartFiles = (): string[] =>
+        fs
+          .readdirSync('/proc/self/fd')
+          .map((fd) => {
+            try {
+              return fs.readlinkSync(path.join('/proc/self/fd', fd));
+            } catch {
+              return '';
+            }
+          })
+          .filter((target) => target.startsWith(fs.realpathSync(chartPath)));
+
+      const app = createMockApp(tempDir);
+      let provider: ResourceProvider | undefined;
+      app.registerResourceProvider = (p) => {
+        provider = p;
+      };
+      const plugin = pluginFactory(app);
+      plugin.start({ chartPath }, () => {});
+
+      const deadline = Date.now() + 5000;
+      while (!provider && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.ok(provider, 'Resource provider should be registered within 5s');
+
+      try {
+        const hook = (globalThis as unknown as ChartsProviderRefreshGlobal)[REFRESH_GLOBAL];
+        assert.strictEqual(typeof hook, 'function', 'refresh hook should be published');
+        const refresh = hook!();
+        plugin.stop?.();
+        const outcome = await refresh.then(
+          () => 'resolved',
+          () => 'rejected'
+        );
+
+        assert.deepStrictEqual(openChartFiles(), [], 'no chart file stays open after stop');
+        assert.strictEqual(outcome, 'rejected', 'a refresh cut short by stop does not succeed');
+      } finally {
+        plugin.stop?.();
+        fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    }
+  );
+
   it('preserves served charts and reports failure when the scan fails', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'refresh-fail-'));
     const chartPath = path.join(tempDir, 'charts');
