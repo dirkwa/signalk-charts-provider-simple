@@ -264,8 +264,12 @@ export class OnlineTileStore {
         if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table'").get()) {
           db.exec('PRAGMA auto_vacuum = INCREMENTAL');
         }
+        // Every tile is its own commit, and a full sync on each would stall
+        // the server on an SD card. With WAL, NORMAL can lose only the last
+        // commits on a power cut, and a lost tile is fetched again.
         db.exec(`
           PRAGMA journal_mode = WAL;
+          PRAGMA synchronous = NORMAL;
           CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value TEXT);
           CREATE TABLE IF NOT EXISTS tiles (
             zoom_level INTEGER NOT NULL,
