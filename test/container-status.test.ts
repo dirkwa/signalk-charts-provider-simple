@@ -358,7 +358,7 @@ describe('Plugin status without signalk-container runtime', () => {
     const recording = createRecordingApp(tempDir);
     const plugin = pluginFactory(recording.app);
     activePlugins.push(plugin);
-    const listenersBefore = downloadManager.listenerCount('job-completed');
+    const listenersBefore = downloadManager.listeners('job-completed');
 
     plugin.start({ chartPath }, () => {});
     await waitFor(() => cleanupStarted, 'orphan cleanup to start');
@@ -366,10 +366,10 @@ describe('Plugin status without signalk-container runtime', () => {
     releaseCleanup();
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    assert.strictEqual(
-      downloadManager.listenerCount('job-completed'),
+    assert.deepStrictEqual(
+      downloadManager.listeners('job-completed'),
       listenersBefore,
-      'a stopped startup must not register a download listener'
+      'a stopped startup must not register or replace a download listener'
     );
   });
 
