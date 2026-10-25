@@ -93,7 +93,7 @@ The interface provides seven tabs:
 4. **Chart Catalog**:
    - Downloadable charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/), sectioned by what the charts show, with **Near me** narrowing each section to where you are
    - One-click download for MBTiles charts (NOAA)
-   - Download & convert for S-57 ENC, BSB raster, Pilot Charts, and basemaps
+   - Download & convert for BSB raster, Pilot Charts, and basemaps; ENC (S-57) charts are built into chart sets in the ENC Charts tab, and an ENC source stays listed here only while a chart installed from it does
    - Automatic update notifications (Signal K delta + tab badge)
    - Filters: what the chart shows (Navigation, Depth & Seabed, Base maps); chart type under "More filters"; and **Near me**, using the boat's position
 
