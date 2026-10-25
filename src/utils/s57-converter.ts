@@ -703,18 +703,25 @@ function flattenListProperties(feature: unknown): unknown {
   return changed ? { ...f, properties: out } : feature;
 }
 
-// Scale denominator of a 256 px web-mercator tile at zoom 0 on the equator,
-// with the OGC standard rendering pixel of 0.28 mm.
+/**
+ * Scale denominator of a 256 px web-mercator tile at zoom 0 on the equator,
+ * with the OGC standard rendering pixel of 0.28 mm.
+ */
 const ZOOM0_SCALE_DENOMINATOR = 559082264.0287178;
 
-// The lowest zoom whose tiles should carry a feature with an S-57 SCAMIN
-// attribute: S-52 hides a feature while the display scale is smaller than
-// 1:SCAMIN, so at zooms below this one no client would draw it, yet every
-// tile would still have to ship and decode it (soundings above all). The
-// web-mercator scale depends on latitude, taken from the feature's first
-// coordinate. Rounded up: OpenLayers draws a fractional zoom from the next
-// higher zoom's tiles by default, so the feature still shows from the
-// integer zoom below. Null when the feature has no usable SCAMIN or position.
+/**
+ * The lowest zoom whose tiles should carry a feature with an S-57 SCAMIN
+ * attribute. S-52 hides a feature while the display scale is smaller than
+ * 1:SCAMIN, so at zooms below this one no client would draw it, yet every
+ * tile would still have to ship and decode it (soundings above all).
+ *
+ * The web-mercator scale grows towards the poles, and tippecanoe applies a
+ * minzoom to the whole feature, so the feature's position farthest from the
+ * equator decides: the part of it that qualifies first must not be missing.
+ * Rounded up, because OpenLayers draws a fractional zoom from the next
+ * higher zoom's tiles by default, so the feature still shows from the
+ * integer zoom below. Null when the feature has no usable SCAMIN or position.
+ */
 function scaminMinzoom(feature: unknown): number | null {
   if (typeof feature !== 'object' || feature === null) {
     return null;
@@ -726,7 +733,7 @@ function scaminMinzoom(feature: unknown): number | null {
     return null;
   }
   const geometry = f.geometry as { coordinates?: unknown } | null | undefined;
-  const latitude = firstLatitude(geometry?.coordinates);
+  const latitude = farthestLatitude(geometry?.coordinates);
   if (latitude === null) {
     return null;
   }
@@ -734,15 +741,28 @@ function scaminMinzoom(feature: unknown): number | null {
   return Math.max(0, Math.ceil(Math.log2(denominatorAtZoom0 / scamin)));
 }
 
-function firstLatitude(coordinates: unknown): number | null {
-  let c = coordinates;
-  while (Array.isArray(c) && Array.isArray(c[0])) {
-    c = c[0];
+/**
+ * The largest absolute latitude among a GeoJSON geometry's positions, at any
+ * nesting depth (point, line, polygon, multi-geometries). Null when there is
+ * no position short of a pole.
+ */
+function farthestLatitude(coordinates: unknown): number | null {
+  if (!Array.isArray(coordinates)) {
+    return null;
   }
-  if (Array.isArray(c) && typeof c[1] === 'number' && Math.abs(c[1]) < 90) {
-    return c[1];
+  const items = coordinates as unknown[];
+  if (typeof items[0] === 'number') {
+    const latitude = items[1];
+    return typeof latitude === 'number' && Math.abs(latitude) < 90 ? Math.abs(latitude) : null;
   }
-  return null;
+  let farthest: number | null = null;
+  for (const child of items) {
+    const latitude = farthestLatitude(child);
+    if (latitude !== null && (farthest === null || latitude > farthest)) {
+      farthest = latitude;
+    }
+  }
+  return farthest;
 }
 
 // Stamp tippecanoe.minzoom on a single feature without mutating the input.

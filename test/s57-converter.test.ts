@@ -313,7 +313,29 @@ describe('scaminMinzoom', () => {
     assert.strictEqual(at(90000, [10, -60]), 12);
   });
 
-  it('reads the first position of lines, polygons and 3D sounding points', () => {
+  it('takes the position farthest from the equator, so no part of the feature is cut', () => {
+    // A line from 0° to 60°: its 60° end qualifies at z12, the equator end only at z13.
+    assert.strictEqual(
+      at(90000, [
+        [10, 0],
+        [10, 60]
+      ]),
+      12
+    );
+    assert.strictEqual(
+      at(90000, [
+        [
+          [10, 0],
+          [10, -60],
+          [11, 0],
+          [10, 0]
+        ]
+      ]),
+      12
+    );
+  });
+
+  it('reads the positions of lines, polygons and 3D sounding points', () => {
     assert.strictEqual(
       at(90000, [
         [
