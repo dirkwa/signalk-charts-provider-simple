@@ -16,6 +16,7 @@ import { exportFileParts } from '../dist/utils/s57-band.js';
 
 const {
   consolidateGeoJSONByLayer,
+  scaminMinzoom,
   buildExportScript,
   bandClampedMaxzoom,
   buildLayerManifest,
@@ -260,6 +261,77 @@ describe('consolidateGeoJSONByLayer', () => {
     assert.strictEqual(fc.features[1]!.properties.COLOUR, '3,1,3');
     assert.strictEqual(fc.features[1]!.properties.COLPAT, '1');
     assert.strictEqual(fc.features[2]!.properties.OBJNAM, 'no-array');
+  });
+
+  it('raises a feature minzoom to where its SCAMIN lets S-52 show it', () => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'scamin-'));
+    // Band 3 (US3…) floors at z8, below the requested z9.
+    writeFC(path.join(dir, 'SOUNDG__US3LA1DC.geojson'), [
+      point({ c: 'coastal', SCAMIN: 90000 }),
+      point({ c: 'overview', SCAMIN: 1e9 }),
+      point({ c: 'berth', SCAMIN: 1000 }),
+      point({ c: 'none' })
+    ]);
+    // No band in the name: no floor of its own.
+    writeFC(path.join(dir, 'LIGHTS__handnamed.geojson'), [
+      point({ c: 'unbanded', SCAMIN: 90000 }),
+      point({ c: 'unbanded-none' })
+    ]);
+
+    const merged = consolidateGeoJSONByLayer(dir, 9, 14);
+    const minzoomOf = new Map(
+      merged.flatMap((m) =>
+        (JSON.parse(fs.readFileSync(m.file, 'utf8')) as FeatureCollection).features.map((f) => [
+          f.properties.c,
+          f.tippecanoe?.minzoom
+        ])
+      )
+    );
+    assert.strictEqual(minzoomOf.get('coastal'), 13);
+    assert.strictEqual(minzoomOf.get('overview'), 9, 'never below the requested minzoom');
+    assert.strictEqual(minzoomOf.get('berth'), 14, 'capped at maxzoom so overzoom still shows it');
+    assert.strictEqual(minzoomOf.get('none'), 9);
+    assert.strictEqual(minzoomOf.get('unbanded'), 13);
+    assert.strictEqual(minzoomOf.get('unbanded-none'), undefined);
+  });
+});
+
+describe('scaminMinzoom', () => {
+  const at = (scamin: unknown, coordinates: unknown): number | null =>
+    scaminMinzoom({ type: 'Feature', properties: { SCAMIN: scamin }, geometry: { coordinates } });
+
+  it('gives the first zoom whose scale reaches 1:SCAMIN', () => {
+    // On the equator z12 is 1:136,495 and z13 is 1:68,247.
+    assert.strictEqual(at(90000, [0, 0]), 13);
+    assert.strictEqual(at(136500, [0, 0]), 12);
+    assert.strictEqual(at(1_000_000, [0, 0]), 10);
+  });
+
+  it('accounts for the mercator scale shrinking with latitude', () => {
+    // At 60° a tile shows half the ground distance, so one zoom earlier.
+    assert.strictEqual(at(90000, [10, 60]), 12);
+    assert.strictEqual(at(90000, [10, -60]), 12);
+  });
+
+  it('reads the first position of lines, polygons and 3D sounding points', () => {
+    assert.strictEqual(
+      at(90000, [
+        [
+          [10, 60],
+          [11, 61]
+        ]
+      ]),
+      12
+    );
+    assert.strictEqual(at(90000, [[10, 60, 4.2]]), 12);
+  });
+
+  it('takes a numeric string, ignores missing, zero or unparseable values', () => {
+    assert.strictEqual(at('90000', [0, 0]), 13);
+    assert.strictEqual(at(undefined, [0, 0]), null);
+    assert.strictEqual(at(0, [0, 0]), null);
+    assert.strictEqual(at('n/a', [0, 0]), null);
+    assert.strictEqual(at(90000, []), null);
   });
 });
 

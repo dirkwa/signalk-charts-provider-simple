@@ -569,8 +569,16 @@ type ConsolidatedLayer = { file: string; sourceFiles: string[] };
 // below that zoom. (Tippecanoe's `-L` JSON form does NOT support per-layer
 // minzoom — silently ignored — so we MUST set it per-feature.) Source
 // charts that don't follow the IHO Annex E filename convention (IENC,
-// hand-named) get no extension property and fall back to the global `-Z`.
-function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): ConsolidatedLayer[] {
+// hand-named) get no band floor and fall back to the global `-Z`.
+//
+// A feature's own SCAMIN can raise its minzoom further (see
+// `scaminMinzoom`), capped at `maxzoom` so the feature still reaches the
+// deepest tiles that clients overzoom.
+function consolidateGeoJSONByLayer(
+  geojsonDir: string,
+  userMinzoom: number,
+  maxzoom = 16
+): ConsolidatedLayer[] {
   // `.geojson.gz` is what the chart-set cache keeps; it reads the same.
   const files = fs
     .readdirSync(geojsonDir)
@@ -629,8 +637,17 @@ function consolidateGeoJSONByLayer(geojsonDir: string, userMinzoom: number): Con
           fs.writeSync(handle, ',\n');
         }
         const flattened = flattenListProperties(feat);
+        const scaminZoom = scaminMinzoom(flattened);
+        const minzoomCandidates = [featureMinzoom, scaminZoom].filter(
+          (z): z is number => z !== null
+        );
         const stamped =
-          featureMinzoom !== null ? withTippecanoeMinzoom(flattened, featureMinzoom) : flattened;
+          minzoomCandidates.length > 0
+            ? withTippecanoeMinzoom(
+                flattened,
+                Math.min(maxzoom, Math.max(userMinzoom, ...minzoomCandidates))
+              )
+            : flattened;
         fs.writeSync(handle, JSON.stringify(stamped));
         first = false;
       }
@@ -684,6 +701,48 @@ function flattenListProperties(feature: unknown): unknown {
     }
   }
   return changed ? { ...f, properties: out } : feature;
+}
+
+// Scale denominator of a 256 px web-mercator tile at zoom 0 on the equator,
+// with the OGC standard rendering pixel of 0.28 mm.
+const ZOOM0_SCALE_DENOMINATOR = 559082264.0287178;
+
+// The lowest zoom whose tiles should carry a feature with an S-57 SCAMIN
+// attribute: S-52 hides a feature while the display scale is smaller than
+// 1:SCAMIN, so at zooms below this one no client would draw it, yet every
+// tile would still have to ship and decode it (soundings above all). The
+// web-mercator scale depends on latitude, taken from the feature's first
+// coordinate. Rounded up: OpenLayers draws a fractional zoom from the next
+// higher zoom's tiles by default, so the feature still shows from the
+// integer zoom below. Null when the feature has no usable SCAMIN or position.
+function scaminMinzoom(feature: unknown): number | null {
+  if (typeof feature !== 'object' || feature === null) {
+    return null;
+  }
+  const f = feature as { properties?: unknown; geometry?: unknown };
+  const props = f.properties as Record<string, unknown> | null | undefined;
+  const scamin = Number(props?.SCAMIN);
+  if (!Number.isFinite(scamin) || scamin <= 0) {
+    return null;
+  }
+  const geometry = f.geometry as { coordinates?: unknown } | null | undefined;
+  const latitude = firstLatitude(geometry?.coordinates);
+  if (latitude === null) {
+    return null;
+  }
+  const denominatorAtZoom0 = ZOOM0_SCALE_DENOMINATOR * Math.cos((latitude * Math.PI) / 180);
+  return Math.max(0, Math.ceil(Math.log2(denominatorAtZoom0 / scamin)));
+}
+
+function firstLatitude(coordinates: unknown): number | null {
+  let c = coordinates;
+  while (Array.isArray(c) && Array.isArray(c[0])) {
+    c = c[0];
+  }
+  if (Array.isArray(c) && typeof c[1] === 'number' && Math.abs(c[1]) < 90) {
+    return c[1];
+  }
+  return null;
 }
 
 // Stamp tippecanoe.minzoom on a single feature without mutating the input.
@@ -768,6 +827,7 @@ function buildTippecanoeCommand(
 
 export const _testInternals = {
   consolidateGeoJSONByLayer,
+  scaminMinzoom,
   buildExportScript,
   bandClampedMaxzoom,
   buildLayerManifest,
@@ -797,7 +857,7 @@ async function runTippecanoe(
   // tippecanoe. A typical NOAA bundle of 4 charts × ~30 layers used to mean
   // 120 -L args; consolidating drops that to ~30 and cuts tippecanoe's I/O
   // setup proportionally.
-  const mergedLayers = consolidateGeoJSONByLayer(geojsonDir, minzoom);
+  const mergedLayers = consolidateGeoJSONByLayer(geojsonDir, minzoom, maxzoom);
   if (mergedLayers.length === 0) {
     throw new Error('No valid GeoJSON layers to process');
   }
