@@ -344,16 +344,20 @@ describe('CatalogManager', () => {
       }
     });
 
-    function settle(chartNumber: string): void {
-      trackInstall(chartNumber, 'Pilot.xml', '2026-01-01T00:00:00Z', 'https://example.com/x.tar');
-      // A record from before filenames were tracked: committed, no filename.
-      setInstallFilename(chartNumber, 'tmp.mbtiles');
+    function settle(...chartNumbers: string[]): void {
+      for (const chartNumber of chartNumbers) {
+        trackInstall(chartNumber, 'Pilot.xml', '2026-01-01T00:00:00Z', 'https://example.com/x.tar');
+        setInstallFilename(chartNumber, 'tmp.mbtiles');
+      }
+      // Records from before filenames were tracked: committed, no filename.
       const installsPath = path.join(TEST_DATA_DIR, 'catalog-installs.json');
       const data = JSON.parse(fs.readFileSync(installsPath, 'utf-8')) as Record<
         string,
         CatalogInstall
       >;
-      delete data[chartNumber].installedFilename;
+      for (const chartNumber of chartNumbers) {
+        delete data[chartNumber].installedFilename;
+      }
       fs.writeFileSync(installsPath, JSON.stringify(data));
     }
 
@@ -362,6 +366,30 @@ describe('CatalogManager', () => {
       await initCatalogManagerOffline();
 
       assert.strictEqual(removeUntrackedInstall('gshhg-basemap-f'), true);
+      assert.deepStrictEqual(getInstalledCatalogCharts(), {});
+    });
+
+    it('matches a chart id to its own record, not to a shorter key it starts with', async () => {
+      settle('2', '20');
+      await initCatalogManagerOffline();
+
+      assert.strictEqual(removeUntrackedInstall('20'), true);
+      assert.deepStrictEqual(Object.keys(getInstalledCatalogCharts()), ['2']);
+    });
+
+    it('does not take a shorter key for a chart id without a separator', async () => {
+      settle('2');
+      await initCatalogManagerOffline();
+
+      assert.strictEqual(removeUntrackedInstall('20'), false);
+      assert.deepStrictEqual(Object.keys(getInstalledCatalogCharts()), ['2']);
+    });
+
+    it('removes the record of a chart whose id is the key and a suffix', async () => {
+      settle('12345');
+      await initCatalogManagerOffline();
+
+      assert.strictEqual(removeUntrackedInstall('12345_1'), true);
       assert.deepStrictEqual(getInstalledCatalogCharts(), {});
     });
 
