@@ -1122,6 +1122,7 @@ function listedRegistry(): CatalogRegistryEntry[] {
   return catalogRegistry.filter((entry) => entry.category !== 'ienc' || installedFrom.has(entry.file));
 }
 
+/** The listed downloads as filter items, which the filter counts are taken from. */
 function allFilterItems(): FilterItem[] {
   return listedRegistry().map(registryFilterItem);
 }
@@ -1257,6 +1258,7 @@ function applyCatalogFilter(group: string, value: string): void {
   renderCatalogList();
 }
 
+/** Draws the listed downloads that pass the active filters, or why there are none. */
 function renderCatalogList(): void {
   const listEl = document.getElementById('catalogList');
   if (!listEl) {
@@ -1893,6 +1895,8 @@ async function pollConversions(): Promise<void> {
       return;
     }
     if (stateChanged) {
+      // A finished install can list an ENC source, which changes the filter counts.
+      renderFilterBar();
       renderCatalogList();
       renderUpdatesSection();
     } else {
