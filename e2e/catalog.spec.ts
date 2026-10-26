@@ -257,6 +257,48 @@ test.describe('Chart Catalog tab', () => {
     await expect(page.locator('.btn-catalog-download')).toHaveCount(0);
   });
 
+  test('an expanded catalog that failed to load is retried and filled in', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'NOAA_MBTiles_Catalog.xml',
+          label: 'NOAA MBTiles',
+          category: 'mbtiles',
+          chartCount: 1,
+          cachedAt: '2026-05-07T10:00:00Z'
+        }
+      ],
+      catalogs: {}
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await page.getByText('NOAA MBTiles').click();
+    await expect(page.locator('.catalog-error')).toBeVisible();
+
+    await patchMockState(page, {
+      catalogs: {
+        'NOAA_MBTiles_Catalog.xml': {
+          fetchedAt: '2026-05-07T10:00:00Z',
+          catalogFile: 'NOAA_MBTiles_Catalog.xml',
+          header: { title: 'NOAA MBTiles' },
+          charts: [
+            {
+              number: 'US5MA1AA',
+              title: 'Boston Harbor',
+              format: 'MBTiles',
+              zipfile_location: 'https://example.com/boston.mbtiles',
+              zipfile_datetime_iso8601: '2026-05-01T00:00:00Z',
+              urlClassification: { supported: true, format: 'mbtiles', label: 'MBTiles' }
+            }
+          ]
+        }
+      }
+    });
+
+    await expect(page.locator('.chart-row-number')).toHaveText('US5MA1AA', { timeout: 10_000 });
+    await expect(page.locator('.catalog-error')).toHaveCount(0);
+  });
+
   test('pollConversions updates the in-flight message without recreating the row (regression for shimmer/scrollbar/progress reset bugs)', async ({
     page
   }) => {

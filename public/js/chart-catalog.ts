@@ -1832,6 +1832,9 @@ async function pollConversions(): Promise<void> {
   // An install recorded before its conversion starts (an S-57 download) or
   // by another client changes which sources are listed with nothing active.
   let installedChanged = false;
+  // Expanded catalogs whose chart data arrived this poll, which their cards
+  // still have to show.
+  let reloadedCatalogs = 0;
 
   try {
     const statusResp = await fetch(`${CATALOG_API_BASE}/catalog-s57-status`);
@@ -1885,7 +1888,11 @@ async function pollConversions(): Promise<void> {
       const affectedCatalogs = new Set<string>();
       for (const catalogFile of staleCatalogs) {
         delete catalogChartData[catalogFile];
-        if (expandedCatalogs.has(catalogFile)) {
+      }
+      // An expanded catalog with no data is retried on every poll, so a
+      // failed fetch does not leave its card empty.
+      for (const catalogFile of expandedCatalogs) {
+        if (!catalogChartData[catalogFile]) {
           affectedCatalogs.add(catalogFile);
         }
       }
@@ -1900,9 +1907,10 @@ async function pollConversions(): Promise<void> {
             );
             if (resp.ok) {
               catalogChartData[catalogFile] = (await resp.json()) as CatalogData;
+              reloadedCatalogs++;
             }
           } catch {
-            // Network blip — the next user expand/collapse will retry.
+            // Network blip — the next poll retries.
           }
         })
       );
@@ -1921,14 +1929,17 @@ async function pollConversions(): Promise<void> {
     // their progress message text differs).
     const activeStateKey = catalogActiveStateKey();
     const stateChanged =
-      activeStateKey !== catalogPrevActiveStateKey || justFinished.length > 0 || installedChanged;
+      activeStateKey !== catalogPrevActiveStateKey ||
+      justFinished.length > 0 ||
+      installedChanged ||
+      reloadedCatalogs > 0;
     catalogPrevActiveStateKey = activeStateKey;
 
     const hasActive =
       Object.keys(catalogConverting).length > 0 ||
       Object.keys(catalogConversionErrors).length > 0 ||
       justFinished.length > 0;
-    if (!hasActive && !installedChanged) {
+    if (!hasActive && !installedChanged && reloadedCatalogs === 0) {
       return;
     }
     if (stateChanged) {
