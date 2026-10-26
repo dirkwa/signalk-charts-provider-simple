@@ -643,21 +643,24 @@ export function rollbackInstall(chartNumber: string): void {
   saveInstalls();
 }
 
+/** The legacy guess at which install key a chart id (or folder name) belongs to. */
+function legacyKeyMatches(key: string, chartNumber: string): boolean {
+  return (
+    chartNumber === `gshhg-basemap-${key.replace('poly-', '')}` ||
+    chartNumber === `osm-basemap-${key.replace('basemap_', '')}` ||
+    chartNumber.toLowerCase().startsWith(key.toLowerCase()) ||
+    chartNumber.includes(key)
+  );
+}
+
 export function removeInstall(chartNumber: string): void {
   if (installs[chartNumber]) {
     delete installs[chartNumber];
     saveInstalls();
     return;
   }
-  const lower = chartNumber.toLowerCase();
   for (const key of Object.keys(installs)) {
-    const keyLower = key.toLowerCase();
-    if (
-      chartNumber === `gshhg-basemap-${key.replace('poly-', '')}` ||
-      chartNumber === `osm-basemap-${key.replace('basemap_', '')}` ||
-      lower.startsWith(keyLower) ||
-      chartNumber.includes(key)
-    ) {
+    if (legacyKeyMatches(key, chartNumber)) {
       delete installs[key];
       saveInstalls();
       return;
@@ -726,6 +729,27 @@ export function removeInstallsUnderFolder(folder: string): number {
     saveInstalls();
   }
   return removed;
+}
+
+/**
+ * Clear the settled install record that `chartNumber` names by the legacy
+ * chart-id guess, but only one with no tracked filename: those predate
+ * setInstallFilename, so a folder delete cannot find them by path. Records
+ * with a filename or still in flight are left to their own lookups.
+ */
+export function removeUntrackedInstall(chartNumber: string): boolean {
+  for (const [key, install] of Object.entries(installs)) {
+    if (
+      !install.installedFilename &&
+      !('previousVersion' in install) &&
+      (key === chartNumber || legacyKeyMatches(key, chartNumber))
+    ) {
+      delete installs[key];
+      saveInstalls();
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

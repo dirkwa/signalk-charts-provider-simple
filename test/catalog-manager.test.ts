@@ -16,6 +16,7 @@ import {
   setInstallFilename,
   removeInstall,
   removeInstallsUnderFolder,
+  removeUntrackedInstall,
   rollbackInstall,
   getInstalledCatalogCharts,
   checkForUpdates,
@@ -333,6 +334,45 @@ describe('CatalogManager', () => {
 
       assert.strictEqual(removeInstallsUnderFolder('Europe\\NL/'), 2);
       assert.deepStrictEqual(getInstalledCatalogCharts(), {});
+    });
+  });
+
+  describe('removeUntrackedInstall()', () => {
+    afterEach(() => {
+      for (const key of Object.keys(getInstalledCatalogCharts())) {
+        removeInstall(key);
+      }
+    });
+
+    function settle(chartNumber: string): void {
+      trackInstall(chartNumber, 'Pilot.xml', '2026-01-01T00:00:00Z', 'https://example.com/x.tar');
+      // A record from before filenames were tracked: committed, no filename.
+      setInstallFilename(chartNumber, 'tmp.mbtiles');
+      const installsPath = path.join(TEST_DATA_DIR, 'catalog-installs.json');
+      const data = JSON.parse(fs.readFileSync(installsPath, 'utf-8')) as Record<
+        string,
+        CatalogInstall
+      >;
+      delete data[chartNumber].installedFilename;
+      fs.writeFileSync(installsPath, JSON.stringify(data));
+    }
+
+    it('removes a settled record without a filename by the legacy id match', async () => {
+      settle('poly-f');
+      await initCatalogManagerOffline();
+
+      assert.strictEqual(removeUntrackedInstall('gshhg-basemap-f'), true);
+      assert.deepStrictEqual(getInstalledCatalogCharts(), {});
+    });
+
+    it('leaves records with a tracked filename and records in flight alone', () => {
+      trackInstall('2', 'NL.xml', '2026-01-01T00:00:00Z', 'https://example.com/2.zip');
+      setInstallFilename('2', 'Port_of_Rotterdam_2.mbtiles');
+      trackInstall('3', 'NL.xml', '2026-01-01T00:00:00Z', 'https://example.com/3.zip');
+
+      assert.strictEqual(removeUntrackedInstall('Port_of_Rotterdam_2'), false);
+      assert.strictEqual(removeUntrackedInstall('3'), false);
+      assert.deepStrictEqual(Object.keys(getInstalledCatalogCharts()).sort(), ['2', '3']);
     });
   });
 
