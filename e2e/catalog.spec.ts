@@ -77,8 +77,10 @@ test.describe('Chart Catalog tab', () => {
 
     await expect(page.locator('.catalog-card-title')).toHaveText(['NL Inland ENC', 'NOAA MBTiles']);
     await expect(
-      page.locator('[data-filter-group="categories"][data-filter-value="navigation"]')
-    ).toContainText('2');
+      page.locator(
+        '[data-filter-group="categories"][data-filter-value="navigation"] .category-count'
+      )
+    ).toHaveText('2');
 
     await page.locator('#catalogSourceNote').getByRole('link', { name: 'ENC Charts' }).click();
     await expect(page.locator('#customCatalogs')).toHaveClass(/active/);
@@ -138,7 +140,7 @@ test.describe('Chart Catalog tab', () => {
       '[data-filter-group="categories"][data-filter-value="navigation"]'
     );
     await expect(page.locator('.catalog-card-title')).toHaveText(['NOAA MBTiles']);
-    await expect(navigation).toContainText('1');
+    await expect(navigation.locator('.category-count')).toHaveText('1');
 
     await patchMockState(page, {
       converting: {},
@@ -157,7 +159,7 @@ test.describe('Chart Catalog tab', () => {
         timeout: 10_000
       }
     );
-    await expect(navigation).toContainText('2');
+    await expect(navigation.locator('.category-count')).toHaveText('2');
   });
 
   test('pollConversions updates the in-flight message without recreating the row (regression for shimmer/scrollbar/progress reset bugs)', async ({

@@ -1258,7 +1258,10 @@ function applyCatalogFilter(group: string, value: string): void {
   renderCatalogList();
 }
 
-/** Draws the listed downloads that pass the active filters, or why there are none. */
+/**
+ * ENC sources nobody installed from are left out, so a catalog of only those
+ * gets a pointer to the ENC Charts tab rather than an empty filter result.
+ */
 function renderCatalogList(): void {
   const listEl = document.getElementById('catalogList');
   if (!listEl) {
