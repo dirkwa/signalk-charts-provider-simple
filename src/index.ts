@@ -4791,6 +4791,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           const relativePath = path.relative(chartPath, path.join(targetDir, mbtilesFile));
           setChartEnabled(relativePath, true);
         }
+        // Commits the install (a record left in flight is rolled back on the
+        // next start) and lets the delete flow find it, as for RNC charts.
+        const firstFile = result.mbtilesFiles[0];
+        if (firstFile) {
+          setInstallFilename(
+            chartNumber,
+            path.relative(chartPath, path.join(targetDir, firstFile))
+          );
+        }
         await refreshChartProviders();
         for (const mbtilesFile of result.mbtilesFiles) {
           const chartId = mbtilesFile.replace(/\.mbtiles$/, '');
@@ -4890,6 +4899,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         const relativePath = path.relative(chartPath, path.join(targetDir, result.mbtilesFile));
         setChartEnabled(relativePath, true);
+        setInstallFilename(chartNumber, relativePath);
         await refreshChartProviders();
 
         const chartId = result.mbtilesFile.replace(/\.mbtiles$/, '');
@@ -4936,7 +4946,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     zipfileDatetime: string | undefined,
     url: string,
     targetDir: string,
-    _chartPath: string
+    chartPath: string
   ): void {
     const resolution = chartNumber.replace('poly-', '');
 
@@ -4964,6 +4974,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
         setConvertingState(chartNumber, false);
         cleanupQuarantineDir(quarantineDir);
+        setInstallFilename(
+          chartNumber,
+          path.relative(chartPath, path.join(targetDir, result.mbtilesFile))
+        );
         await refreshChartProviders();
 
         const chartId = `gshhg-basemap-${resolution}`;
