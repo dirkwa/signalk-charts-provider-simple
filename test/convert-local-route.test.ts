@@ -94,7 +94,8 @@ describe('POST /convert-local', () => {
       // No signalk-container: conversions take the WebAssembly toolchain
       // without waiting for its discovery.
       getPluginsList: () => Promise.resolve([]),
-      getSelfPath: () => undefined
+      getSelfPath: () => undefined,
+      subscriptionmanager: { subscribe: () => {}, unsubscribe: () => {} }
     } as unknown as ExtendedServerAPI;
 
     plugin = pluginFactory(app);

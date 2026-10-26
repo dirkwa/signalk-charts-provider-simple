@@ -43,7 +43,7 @@ import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { capabilitiesUrlFor } from './utils/time-dimension.js';
 import { readVesselPosition } from './utils/vessel-position.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
-import { INTERNET_STATE_PATH, InternetGate } from './utils/internet-state.js';
+import { InternetGate, subscribeInternetState } from './utils/internet-state.js';
 import {
   chartFileNamesBeside,
   chartIdFromFilename,
@@ -798,11 +798,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     props = { ...config };
     internet?.stop();
     const gate = new InternetGate({
-      getSelfPath: (p) => app.getSelfPath(p),
+      subscribeState: subscribeInternetState(app.subscriptionmanager, (error) => {
+        app.debug(`signalk-internet state subscription: ${String(error)}`);
+      }),
       getPluginsList: app.getPluginsList?.bind(app),
-      allowMeteredCharts: () => props.allowMeteredChartDownloads === true,
-      subscribeState: (onState) =>
-        app.streambundle.getSelfStream(INTERNET_STATE_PATH as Path).onValue(onState)
+      allowMeteredCharts: () => props.allowMeteredChartDownloads === true
     });
     internet = gate;
 

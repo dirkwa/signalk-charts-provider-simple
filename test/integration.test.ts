@@ -55,7 +55,8 @@ function createMockApp(configPath: string): ExtendedServerAPI {
     setPluginError: () => {},
     getDataDirPath: () => pluginDataDir,
     registerResourceProvider: () => {},
-    handleMessage: () => {}
+    handleMessage: () => {},
+    subscriptionmanager: { subscribe: () => {}, unsubscribe: () => {} }
   } as unknown as ExtendedServerAPI;
 }
 

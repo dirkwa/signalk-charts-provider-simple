@@ -243,6 +243,7 @@ describe('online chart routes', () => {
         provider = p;
       },
       handleMessage: () => {},
+      subscriptionmanager: { subscribe: () => {}, unsubscribe: () => {} },
       getSelfPath: (p: string) =>
         p === 'navigation.position' ? { value: { latitude: 24.55, longitude: -81.8 } } : undefined
     } as unknown as ExtendedServerAPI;

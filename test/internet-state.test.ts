@@ -1,11 +1,12 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert';
+import type { ServerAPI } from '@signalk/server-api';
 
 import {
   FIRST_STATE_WAIT_MS,
   INTERNET_STATE_PATH,
   InternetGate,
-  PUBLISHER_CHECK_MS,
+  subscribeInternetState,
   type PluginListEntry
 } from '../dist/utils/internet-state.js';
 
@@ -20,16 +21,10 @@ function setup(initial: Setup = {}) {
     state: initial.state,
     plugins: initial.plugins === undefined ? [] : initial.plugins,
     allowMetered: initial.allowMetered ?? false,
-    clock: 0,
     listCalls: 0,
-    sleeps: 0,
     listeners: new Set<(value: unknown) => void>()
   };
   const gate = new InternetGate({
-    getSelfPath: (path) =>
-      path === INTERNET_STATE_PATH && world.state !== undefined
-        ? { value: world.state, $source: 'signalk-internet.internet' }
-        : undefined,
     getPluginsList:
       world.plugins === null
         ? undefined
@@ -38,29 +33,36 @@ function setup(initial: Setup = {}) {
             return Promise.resolve(world.plugins ?? []);
           },
     allowMeteredCharts: () => world.allowMetered,
+    // As the server's subscription manager does: the last value at once, then each new one.
     subscribeState: (onState) => {
       world.listeners.add(onState);
+      if (world.state !== undefined) {
+        onState(world.state);
+      }
       return () => world.listeners.delete(onState);
-    },
-    now: () => world.clock,
-    sleep: (ms) => {
-      world.sleeps++;
-      world.clock += ms;
-      return new Promise((r) => setImmediate(r));
     }
   });
-  // As the server does: listeners hear the value before the data model has it.
-  const publish = (value: string): void => {
+  const publish = (value: unknown): void => {
+    world.state = value;
     for (const listener of [...world.listeners]) {
       listener(value);
     }
-    world.state = value;
   };
   return { world, gate, publish };
 }
 
 const enabled: PluginListEntry[] = [{ id: 'signalk-internet', enabled: true }];
+const disabled: PluginListEntry[] = [{ id: 'signalk-internet', enabled: false }];
 const settle = () => new Promise((r) => setImmediate(r));
+
+async function isSettled(promise: Promise<void>): Promise<boolean> {
+  let done = false;
+  void promise.then(() => (done = true));
+  for (let i = 0; i < 5; i++) {
+    await settle();
+  }
+  return done;
+}
 
 describe('InternetGate', () => {
   it('allows everything without a published state', () => {
@@ -95,76 +97,47 @@ describe('InternetGate', () => {
     assert.strictEqual(gate.mayFetchCharts(), true);
   });
 
-  it('accepts a bare value', () => {
-    const gate = new InternetGate({
-      getSelfPath: () => 'offline',
-      allowMeteredCharts: () => false
-    });
+  it('follows each new state without asking the server', async () => {
+    const { world, gate, publish } = setup({ state: 'online', plugins: enabled });
+    publish('metered');
     assert.strictEqual(gate.mayRunBackground(), false);
-  });
-
-  it('ignores a left-over state once signalk-internet is disabled or removed', async () => {
-    const { world, gate } = setup({ state: 'metered', plugins: enabled });
-    assert.strictEqual(gate.mayRunBackground(), false);
-    await settle();
-    world.plugins = [{ id: 'signalk-internet', enabled: false }];
-    assert.strictEqual(gate.mayRunBackground(), false, 'the last answer holds for a while');
-    world.clock += PUBLISHER_CHECK_MS;
-    gate.state();
-    await settle();
-    assert.strictEqual(gate.state(), undefined);
+    publish('online');
     assert.strictEqual(gate.mayRunBackground(), true);
-    world.plugins = [];
-    world.clock += PUBLISHER_CHECK_MS;
-    gate.state();
-    await settle();
-    assert.strictEqual(gate.mayFetchCharts(), true, 'not installed at all');
-  });
-
-  it('asks the server at most once per check interval', async () => {
-    const { world, gate } = setup({ state: 'metered', plugins: enabled });
-    for (let i = 0; i < 50; i++) {
-      gate.mayFetchCharts();
-    }
-    await settle();
-    gate.mayFetchCharts();
-    assert.strictEqual(world.listCalls, 1);
+    await gate.firstStateKnown();
+    assert.strictEqual(world.listCalls, 0);
   });
 
   it('does not wait at startup when signalk-internet is not installed or disabled', async () => {
-    for (const plugins of [[], [{ id: 'signalk-internet', enabled: false }], null]) {
-      const { world, gate } = setup({ plugins });
-      await gate.firstStateKnown();
-      assert.strictEqual(world.sleeps, 0);
+    for (const plugins of [[], disabled, null]) {
+      const { gate } = setup({ plugins });
+      assert.strictEqual(await isSettled(gate.firstStateKnown()), true);
     }
   });
 
   it('does not wait at startup when a state is already published', async () => {
     const { world, gate } = setup({ state: 'online', plugins: enabled });
-    await gate.firstStateKnown();
-    assert.strictEqual(world.sleeps, 0);
+    assert.strictEqual(await isSettled(gate.firstStateKnown()), true);
+    assert.strictEqual(world.listCalls, 0);
   });
 
-  it('ignores a left-over state at startup once signalk-internet is disabled', async () => {
-    const { gate } = setup({
-      state: 'metered',
-      plugins: [{ id: 'signalk-internet', enabled: false }]
-    });
-    await gate.firstStateKnown();
-    assert.strictEqual(gate.mayRunBackground(), true);
+  it('asks the plugin list when the wait starts, not when the gate is made', async () => {
+    const { world, gate } = setup({ plugins: [] });
+    // signalk-internet registered after this plugin started
+    world.plugins = enabled;
+    assert.strictEqual(await isSettled(gate.firstStateKnown()), false);
+    gate.stop();
   });
 
-  it('runs work at once while background work may run, without subscribing', async () => {
-    const { world, gate } = setup({ state: 'online', plugins: enabled });
+  it('runs work at once while background work may run', async () => {
+    const { gate } = setup({ state: 'online', plugins: enabled });
     await gate.firstStateKnown();
     let runs = 0;
     gate.runWhenBackgroundAllowed(() => runs++);
     assert.strictEqual(runs, 1);
-    assert.strictEqual(world.listeners.size, 0);
   });
 
   it('holds work while restricted and runs it once a usable state arrives', async () => {
-    const { world, gate, publish } = setup({ state: 'metered', plugins: enabled });
+    const { gate, publish } = setup({ state: 'metered', plugins: enabled });
     await gate.firstStateKnown();
     let runs = 0;
     let sawState: boolean | undefined;
@@ -180,20 +153,32 @@ describe('InternetGate', () => {
     await settle();
     assert.strictEqual(runs, 1);
     assert.strictEqual(sawState, true, 'the work sees the new state');
-    assert.strictEqual(world.listeners.size, 0, 'unsubscribed');
     publish('metered');
     publish('online');
     await settle();
     assert.strictEqual(runs, 1, 'ran once');
   });
 
-  it('keeps work held when a usable state is replaced before it runs', async () => {
+  it('runs held work once a disabled signalk-internet clears its state', async () => {
+    const { world, gate, publish } = setup({ state: 'metered', plugins: enabled });
+    await gate.firstStateKnown();
+    let runs = 0;
+    gate.runWhenBackgroundAllowed(() => runs++);
+    world.plugins = disabled;
+    publish(null);
+    await settle();
+    assert.strictEqual(runs, 1);
+  });
+
+  it('keeps work held while a restarted signalk-internet works out the link', async () => {
     const { gate, publish } = setup({ state: 'metered', plugins: enabled });
     await gate.firstStateKnown();
     let runs = 0;
     gate.runWhenBackgroundAllowed(() => runs++);
-    publish('online');
-    publish('offline');
+    publish(null);
+    assert.strictEqual(await isSettled(gate.firstStateKnown()), false, 'waits again');
+    assert.strictEqual(runs, 0);
+    publish('metered');
     await settle();
     assert.strictEqual(runs, 0);
     publish('online');
@@ -201,38 +186,49 @@ describe('InternetGate', () => {
     assert.strictEqual(runs, 1);
   });
 
-  it('asks again on its own while work is held, so a quietly disabled signalk-internet releases it', async () => {
-    mock.timers.enable({ apis: ['setInterval'] });
+  it('releases held work after a bounded wait when a restarted signalk-internet stays silent', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
     try {
-      const { world, gate } = setup({ state: 'metered', plugins: enabled });
+      const { gate, publish } = setup({ state: 'metered', plugins: enabled });
       await gate.firstStateKnown();
       let runs = 0;
       gate.runWhenBackgroundAllowed(() => runs++);
-      world.plugins = [{ id: 'signalk-internet', enabled: false }];
-      world.clock += PUBLISHER_CHECK_MS;
-      mock.timers.tick(PUBLISHER_CHECK_MS);
+      publish(null);
+      await settle();
+      mock.timers.tick(FIRST_STATE_WAIT_MS - 1);
+      await settle();
+      assert.strictEqual(runs, 0);
+      mock.timers.tick(1);
       await settle();
       assert.strictEqual(runs, 1);
-      const calls = world.listCalls;
-      world.clock += 10 * PUBLISHER_CHECK_MS;
-      mock.timers.tick(10 * PUBLISHER_CHECK_MS);
-      await settle();
-      assert.strictEqual(world.listCalls, calls, 'no more checks once released');
     } finally {
       mock.timers.reset();
     }
   });
 
-  it('runs held work once signalk-internet turns out disabled', async () => {
-    const { world, gate } = setup({ state: 'metered', plugins: enabled });
-    await gate.firstStateKnown();
-    let runs = 0;
-    gate.runWhenBackgroundAllowed(() => runs++);
-    world.plugins = [{ id: 'signalk-internet', enabled: false }];
-    world.clock += PUBLISHER_CHECK_MS;
-    gate.state();
+  it('keeps one wait when signalk-internet restarts while the plugin list is asked', async () => {
+    let answer: (plugins: PluginListEntry[]) => void = () => undefined;
+    let onState: (value: unknown) => void = () => undefined;
+    const gate = new InternetGate({
+      getPluginsList: () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+      allowMeteredCharts: () => false,
+      subscribeState: (listener) => {
+        onState = listener;
+        return () => undefined;
+      }
+    });
+    const startup = gate.firstStateKnown();
     await settle();
-    assert.strictEqual(runs, 1);
+    onState(null);
+    await settle();
+    answer(enabled);
+    await settle();
+    onState('online');
+    assert.strictEqual(await isSettled(startup), true, 'the state ends the startup wait');
+    gate.stop();
   });
 
   it('drops held work and unsubscribes when stopped', async () => {
@@ -249,47 +245,85 @@ describe('InternetGate', () => {
   });
 
   it('waits at startup for an enabled signalk-internet to publish its first state', async () => {
-    const { world, gate } = setup({ plugins: enabled });
+    const { gate, publish } = setup({ plugins: enabled });
     const waiting = gate.firstStateKnown();
-    let done = false;
-    void waiting.then(() => (done = true));
-    for (let i = 0; i < 5; i++) {
-      await settle();
-    }
-    assert.strictEqual(done, false);
-    world.state = 'metered';
-    await waiting;
-    assert.ok(world.sleeps > 0);
-    assert.ok(world.clock < FIRST_STATE_WAIT_MS);
+    assert.strictEqual(await isSettled(waiting), false);
+    publish('metered');
+    assert.strictEqual(await isSettled(waiting), true);
     assert.strictEqual(gate.mayRunBackground(), false);
   });
 
   it('gives up waiting for a first state after a bounded time', async () => {
-    const { world, gate } = setup({ plugins: enabled });
-    await gate.firstStateKnown();
-    assert.ok(world.clock >= FIRST_STATE_WAIT_MS);
-    assert.ok(world.clock < FIRST_STATE_WAIT_MS + 2000);
-    assert.strictEqual(gate.mayRunBackground(), true);
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const { gate } = setup({ plugins: enabled });
+      const waiting = gate.firstStateKnown();
+      await settle();
+      mock.timers.tick(FIRST_STATE_WAIT_MS - 1);
+      assert.strictEqual(await isSettled(waiting), false);
+      mock.timers.tick(1);
+      assert.strictEqual(await isSettled(waiting), true);
+      assert.strictEqual(gate.mayRunBackground(), true);
+    } finally {
+      mock.timers.reset();
+    }
   });
 
   it('stops waiting once stopped', async () => {
-    const { world, gate } = setup({ plugins: enabled });
+    const { gate } = setup({ plugins: enabled });
     const waiting = gate.firstStateKnown();
     await settle();
     gate.stop();
-    await waiting;
-    assert.ok(world.clock < FIRST_STATE_WAIT_MS);
+    assert.strictEqual(await isSettled(waiting), true);
   });
 
-  it('treats a server that cannot list plugins as "believe the state"', async () => {
+  it('does not wait on a server that cannot list plugins, and believes a state', async () => {
     const gate = new InternetGate({
-      getSelfPath: () => ({ value: 'metered' }),
       getPluginsList: () => Promise.reject(new Error('boom')),
-      allowMeteredCharts: () => false
+      allowMeteredCharts: () => false,
+      subscribeState: () => () => undefined
     });
-    await gate.firstStateKnown();
-    gate.state();
-    await settle();
-    assert.strictEqual(gate.mayRunBackground(), false);
+    assert.strictEqual(await isSettled(gate.firstStateKnown()), true);
+    const { gate: published } = setup({ state: 'metered', plugins: null });
+    assert.strictEqual(published.mayRunBackground(), false);
+  });
+});
+
+describe('subscribeInternetState', () => {
+  it('follows the path through the subscription manager until unsubscribed', () => {
+    const seen: unknown[] = [];
+    let unsubscribed = 0;
+    let onDelta: ((delta: unknown) => void) | undefined;
+    const subscriptionmanager = {
+      subscribe: (
+        subscription: { context: string; subscribe: { path: string; policy: string }[] },
+        unsubscribes: (() => void)[],
+        _onError: unknown,
+        callback: (delta: unknown) => void
+      ) => {
+        assert.strictEqual(subscription.context, 'vessels.self');
+        assert.deepStrictEqual(subscription.subscribe, [
+          { path: INTERNET_STATE_PATH, policy: 'instant' }
+        ]);
+        onDelta = callback;
+        unsubscribes.push(() => unsubscribed++);
+      },
+      unsubscribe: () => undefined
+    } as unknown as ServerAPI['subscriptionmanager'];
+    const unsubscribe = subscribeInternetState(
+      subscriptionmanager,
+      () => undefined
+    )((value) => seen.push(value));
+    onDelta?.({
+      updates: [
+        { values: [{ path: INTERNET_STATE_PATH, value: 'metered' }] },
+        { meta: [{ path: INTERNET_STATE_PATH, value: {} }] },
+        { values: [{ path: 'navigation.position', value: {} }] },
+        { values: [{ path: INTERNET_STATE_PATH, value: null }] }
+      ]
+    });
+    assert.deepStrictEqual(seen, ['metered', null]);
+    unsubscribe();
+    assert.strictEqual(unsubscribed, 1);
   });
 });

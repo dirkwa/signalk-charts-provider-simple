@@ -66,7 +66,8 @@ function createRecordingApp(configPath: string): RecordingApp {
     },
     getDataDirPath: () => pluginDataDir,
     registerResourceProvider: () => {},
-    handleMessage: () => {}
+    handleMessage: () => {},
+    subscriptionmanager: { subscribe: () => {}, unsubscribe: () => {} }
   } as unknown as ExtendedServerAPI;
   return { app, statuses, errors };
 }

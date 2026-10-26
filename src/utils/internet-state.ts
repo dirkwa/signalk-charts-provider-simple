@@ -8,18 +8,18 @@
  * would without this module: no waits, no checks held back.
  */
 
+import type { Context, Delta, Path, ServerAPI } from '@signalk/server-api';
+
 export const INTERNET_STATE_PATH = 'network.internet.state';
 export const SIGNALK_INTERNET_PLUGIN_ID = 'signalk-internet';
 
 /**
- * How long the startup round waits for signalk-internet's first state, when
- * the plugin is enabled but has not published one yet. Its first probe
- * settles within seconds online; offline it gives up after its retries.
+ * How long the startup round waits for signalk-internet's state, when the
+ * plugin is enabled but has not published one: after a start, and after the
+ * `null` it publishes when it stops (a restart). Its first probe settles
+ * within seconds online; offline it gives up after its retries.
  */
 export const FIRST_STATE_WAIT_MS = 60_000;
-const FIRST_STATE_POLL_MS = 1_000;
-/** How long the answer to "is signalk-internet enabled" is reused. */
-export const PUBLISHER_CHECK_MS = 60_000;
 
 const RESTRICTED_STATES: ReadonlySet<string> = new Set(['metered', 'offline', 'captive']);
 
@@ -29,56 +29,90 @@ export interface PluginListEntry {
   enabled: boolean;
 }
 
+/** Calls `onState` with each value of the state, the current one first; returns the unsubscribe. */
+export type SubscribeState = (onState: (value: unknown) => void) => () => void;
+
+/**
+ * The state through the server's subscription manager, which sends the last
+ * value when the subscription starts.
+ */
+export function subscribeInternetState(
+  subscriptionmanager: ServerAPI['subscriptionmanager'],
+  onError: (error: unknown) => void
+): SubscribeState {
+  return (onState) => {
+    const unsubscribes: (() => void)[] = [];
+    subscriptionmanager.subscribe(
+      {
+        context: 'vessels.self' as Context,
+        subscribe: [{ path: INTERNET_STATE_PATH as Path, policy: 'instant' }]
+      },
+      unsubscribes,
+      onError,
+      (delta: Delta) => {
+        for (const update of delta.updates) {
+          if (!('values' in update)) {
+            continue;
+          }
+          for (const pv of update.values) {
+            if (pv.path === INTERNET_STATE_PATH) {
+              onState(pv.value);
+            }
+          }
+        }
+      }
+    );
+    return () => {
+      for (const unsubscribe of unsubscribes.splice(0)) {
+        unsubscribe();
+      }
+    };
+  };
+}
+
 export interface InternetGateOptions {
-  /** `app.getSelfPath`: the leaf node (`{ value, $source, timestamp }`), or a bare value. */
-  getSelfPath: (path: string) => unknown;
-  /** `app.getPluginsList`; without it a published state is always believed. */
+  /**
+   * The state, followed from the gate's creation until `stop()`. Without it
+   * there is never a state.
+   */
+  subscribeState?: SubscribeState;
+  /**
+   * `app.getPluginsList`; asked only while there is no state, to know whether
+   * a first one is coming. Without it nothing is waited for.
+   */
   getPluginsList?: () => Promise<PluginListEntry[]>;
   /** The user's choice to fetch online chart tiles on a metered link. */
   allowMeteredCharts: () => boolean;
-  /**
-   * Calls `onState` with each new value of the state; returns the
-   * unsubscribe. Only used while work is held for a usable link.
-   */
-  subscribeState?: (onState: (value: unknown) => void) => () => void;
-  now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
  * Answers, at the moment work would run, whether the plugin may go online.
  *
- * A state stays in the server's data model after signalk-internet is
- * disabled or removed, so a state is believed only while that plugin is
- * enabled (checked through `getPluginsList`, at most every
- * `PUBLISHER_CHECK_MS`).
+ * signalk-internet publishes `null` when it stops, so a disabled plugin
+ * leaves no state behind; 0.7.1 and older do not, and their last state stays
+ * until Signal K restarts.
  */
 export class InternetGate {
-  private publisherEnabled: boolean | undefined;
-  private checkedAt = -Infinity;
-  private checking: Promise<boolean | undefined> | null = null;
+  private value: unknown = undefined;
   private firstState: Promise<void> | null = null;
+  /** From the start of a wait for a state until it ends, also while the plugin list is asked. */
+  private waiting = false;
+  /** Ends the wait in progress for a state, once it is on its timer. */
+  private endWait: (() => void) | null = null;
   private stopped = false;
   private held: (() => void)[] = [];
-  private unsubscribe: (() => void) | null = null;
-  private recheck: ReturnType<typeof setInterval> | null = null;
-  private readonly now: () => number;
-  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly unsubscribe: (() => void) | null;
 
   constructor(private readonly options: InternetGateOptions) {
-    this.now = options.now ?? Date.now;
-    this.sleep =
-      options.sleep ??
-      ((ms) =>
-        new Promise((resolve) => {
-          setTimeout(resolve, ms).unref();
-        }));
+    this.unsubscribe =
+      options.subscribeState?.((value) => {
+        this.onState(value);
+      }) ?? null;
   }
 
-  /** The published state, or undefined without one or once its publisher is no longer enabled. */
+  /** The published state, or undefined without one. */
   state(): string | undefined {
-    this.recheckPublisher();
-    return this.publisherEnabled === false ? undefined : this.readValue();
+    return typeof this.value === 'string' ? this.value : undefined;
   }
 
   /**
@@ -105,18 +139,19 @@ export class InternetGate {
   }
 
   /**
-   * Resolves once the startup round can decide: at once when a state is
-   * already there or signalk-internet is not enabled, otherwise when it
-   * publishes its first state or `FIRST_STATE_WAIT_MS` has passed.
+   * Resolves once background work can decide: at once when a state is there
+   * or signalk-internet is not enabled, otherwise when it publishes a state
+   * or `FIRST_STATE_WAIT_MS` has passed. Waits again after signalk-internet
+   * restarts.
    */
   firstStateKnown(): Promise<void> {
-    this.firstState ??= this.waitForFirstState();
+    this.firstState ??= this.waitForState();
     return this.firstState;
   }
 
   /**
    * Run `task` now when background work may run, otherwise once a new state
-   * (or signalk-internet being disabled) allows it.
+   * (or signalk-internet stopping) allows it.
    */
   runWhenBackgroundAllowed(task: () => void): void {
     if (this.stopped) {
@@ -127,40 +162,30 @@ export class InternetGate {
       return;
     }
     this.held.push(task);
-    this.unsubscribe ??=
-      this.options.subscribeState?.((value) => {
-        if (typeof value !== 'string' || !RESTRICTED_STATES.has(value)) {
-          // The server announces a delta before writing it to the data
-          // model, which the held work reads through getSelfPath.
-          queueMicrotask(() => {
-            this.runHeld();
-          });
-        }
-      }) ?? null;
-    // A disabled signalk-internet publishes nothing more, so its state left
-    // behind would hold the work until something happened to ask again.
-    if (!this.recheck && this.options.getPluginsList) {
-      this.recheck = setInterval(() => {
-        this.state();
-      }, PUBLISHER_CHECK_MS);
-      this.recheck.unref();
-    }
   }
 
-  /** Ends a wait for the first state and drops held work; the plugin stopped. */
+  /** Ends a wait for a state, drops held work and unsubscribes; the plugin stopped. */
   stop(): void {
     this.stopped = true;
     this.held = [];
-    this.detach();
+    this.unsubscribe?.();
+    this.endWait?.();
   }
 
-  private detach(): void {
-    this.unsubscribe?.();
-    this.unsubscribe = null;
-    if (this.recheck) {
-      clearInterval(this.recheck);
-      this.recheck = null;
+  private onState(value: unknown): void {
+    this.value = value;
+    if (typeof value === 'string') {
+      this.endWait?.();
+      this.runHeld();
+      return;
     }
+    // signalk-internet stopped: disabled, or restarting with a probe to come.
+    if (!this.waiting) {
+      this.firstState = null;
+    }
+    void this.firstStateKnown().then(() => {
+      this.runHeld();
+    });
   }
 
   private runHeld(): void {
@@ -170,62 +195,46 @@ export class InternetGate {
     }
     const tasks = this.held;
     this.held = [];
-    this.detach();
     for (const task of tasks) {
       task();
     }
   }
 
-  private async waitForFirstState(): Promise<void> {
-    // The publisher first: a left-over state must not count as published.
-    if ((await this.checkPublisher()) !== true || this.readValue() !== undefined) {
-      return;
-    }
-    const until = this.now() + FIRST_STATE_WAIT_MS;
-    while (!this.stopped && this.readValue() === undefined && this.now() < until) {
-      await this.sleep(FIRST_STATE_POLL_MS);
-    }
-  }
-
-  private readValue(): string | undefined {
-    let node: unknown;
+  private async waitForState(): Promise<void> {
+    this.waiting = true;
     try {
-      node = this.options.getSelfPath(INTERNET_STATE_PATH);
-    } catch {
-      return undefined;
+      if (this.state() !== undefined || !(await this.publisherEnabled())) {
+        return;
+      }
+      if (this.stopped || this.state() !== undefined) {
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const done = (): void => {
+          clearTimeout(timer);
+          this.endWait = null;
+          resolve();
+        };
+        const timer = setTimeout(done, FIRST_STATE_WAIT_MS);
+        timer.unref();
+        this.endWait = done;
+      });
+    } finally {
+      this.waiting = false;
     }
-    const value: unknown =
-      node !== null && typeof node === 'object' && 'value' in node ? node.value : node;
-    return typeof value === 'string' ? value : undefined;
   }
 
-  private recheckPublisher(): void {
-    if (!this.checking && this.now() - this.checkedAt >= PUBLISHER_CHECK_MS) {
-      void this.checkPublisher();
-    }
-  }
-
-  /** True or false once the server said; undefined when it can't tell. */
-  private checkPublisher(): Promise<boolean | undefined> {
+  /** Asked at the time, not at start: the server adds a plugin to its list only after starting it. */
+  private async publisherEnabled(): Promise<boolean> {
     const list = this.options.getPluginsList;
     if (!list) {
-      return Promise.resolve(undefined);
+      return false;
     }
-    this.checking ??= Promise.resolve()
-      .then(list)
-      .then((plugins) => {
-        const enabled = plugins.some((p) => p.id === SIGNALK_INTERNET_PLUGIN_ID && p.enabled);
-        this.publisherEnabled = enabled;
-        if (!enabled) {
-          this.runHeld();
-        }
-        return enabled;
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        this.checkedAt = this.now();
-        this.checking = null;
-      });
-    return this.checking;
+    try {
+      const plugins = await list();
+      return plugins.some((p) => p.id === SIGNALK_INTERNET_PLUGIN_ID && p.enabled);
+    } catch {
+      return false;
+    }
   }
 }
