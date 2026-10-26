@@ -1802,6 +1802,27 @@ function updateConversionMessagesInPlace(): void {
   }
 }
 
+/** The catalogs of the install records that were added, removed or changed. */
+function catalogsWithChangedInstalls(
+  prev: Record<string, CatalogInstall>,
+  next: Record<string, CatalogInstall>
+): Set<string> {
+  const changed = new Set<string>();
+  for (const chartNumber of new Set([...Object.keys(prev), ...Object.keys(next)])) {
+    const before = prev[chartNumber];
+    const after = next[chartNumber];
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      if (before) {
+        changed.add(before.catalogFile);
+      }
+      if (after) {
+        changed.add(after.catalogFile);
+      }
+    }
+  }
+  return changed;
+}
+
 async function pollConversions(): Promise<void> {
   // Declared at function scope: a previous bug had it inside the
   // `if (regResp.ok)` block, then referenced it on the outer-scope
@@ -1841,47 +1862,55 @@ async function pollConversions(): Promise<void> {
           }
         }
       }
-      const prevInstalled = JSON.stringify(catalogInstalled);
+      const prevInstalled = catalogInstalled;
       catalogInstalled = regData.installed ?? {};
-      installedChanged = JSON.stringify(catalogInstalled) !== prevInstalled;
+      const changedInstallCatalogs = catalogsWithChangedInstalls(prevInstalled, catalogInstalled);
+      installedChanged = changedInstallCatalogs.size > 0;
 
-      // If any conversion just finished, invalidate cached catalog
-      // data and refresh. For catalogs the user already has expanded
-      // we re-fetch so the card stays open with the new "Installed"
-      // badge — without this the card body's empty (cached data was
-      // dropped) but the .expanded class is still on, so the arrow
+      // When a conversion finishes or an install record changes (another
+      // client may have installed or removed a chart), invalidate the cached
+      // data of the catalogs involved. For catalogs the user already has
+      // expanded we re-fetch so the card stays open with the current
+      // "Installed" badges — without this the card body's empty (cached data
+      // was dropped) but the .expanded class is still on, so the arrow
       // points down with nothing visible underneath.
       justFinished = Object.keys(prevConverting).filter((k) => !catalogConverting[k]);
-      if (justFinished.length > 0) {
-        const affectedCatalogs = new Set<string>();
-        for (const chartNum of justFinished) {
-          const install = catalogInstalled[chartNum];
-          if (install?.catalogFile) {
-            delete catalogChartData[install.catalogFile];
-            if (expandedCatalogs.has(install.catalogFile)) {
-              affectedCatalogs.add(install.catalogFile);
-            }
-          }
+      const staleCatalogs = new Set(changedInstallCatalogs);
+      for (const chartNum of justFinished) {
+        const catalogFile = catalogInstalled[chartNum]?.catalogFile;
+        if (catalogFile) {
+          staleCatalogs.add(catalogFile);
         }
+      }
+      const affectedCatalogs = new Set<string>();
+      for (const catalogFile of staleCatalogs) {
+        delete catalogChartData[catalogFile];
+        if (expandedCatalogs.has(catalogFile)) {
+          affectedCatalogs.add(catalogFile);
+        }
+      }
+      if (justFinished.length > 0) {
         await loadFolders();
-        await Promise.all(
-          [...affectedCatalogs].map(async (catalogFile) => {
-            try {
-              const resp = await fetch(
-                `${CATALOG_API_BASE}/catalog/${encodeURIComponent(catalogFile)}`
-              );
-              if (resp.ok) {
-                catalogChartData[catalogFile] = (await resp.json()) as CatalogData;
-              }
-            } catch {
-              // Network blip — the next user expand/collapse will retry.
+      }
+      await Promise.all(
+        [...affectedCatalogs].map(async (catalogFile) => {
+          try {
+            const resp = await fetch(
+              `${CATALOG_API_BASE}/catalog/${encodeURIComponent(catalogFile)}`
+            );
+            if (resp.ok) {
+              catalogChartData[catalogFile] = (await resp.json()) as CatalogData;
             }
-          })
-        );
-        // A finished conversion means the chart is now up to date — re-fetch
-        // the updates list so it drops out of the panel/badge. Without this
-        // the in-memory catalogUpdates stays stale and the row keeps showing
-        // "update available" until the tab is re-opened.
+          } catch {
+            // Network blip — the next user expand/collapse will retry.
+          }
+        })
+      );
+      // A finished conversion means the chart is now up to date — re-fetch
+      // the updates list so it drops out of the panel/badge. Without this
+      // the in-memory catalogUpdates stays stale and the row keeps showing
+      // "update available" until the tab is re-opened.
+      if (justFinished.length > 0) {
         await refreshUpdateBadge();
       }
     }

@@ -208,6 +208,55 @@ test.describe('Chart Catalog tab', () => {
     ).toHaveText('2');
   });
 
+  test('an install made by another client shows as installed in an expanded catalog', async ({
+    page
+  }) => {
+    const chart = {
+      number: 'US5MA1AA',
+      title: 'Boston Harbor',
+      format: 'MBTiles',
+      zipfile_location: 'https://example.com/boston.mbtiles',
+      zipfile_datetime_iso8601: '2026-05-01T00:00:00Z',
+      urlClassification: { supported: true, format: 'mbtiles', label: 'MBTiles' }
+    };
+    const catalogWith = (installed: boolean) => ({
+      fetchedAt: '2026-05-07T10:00:00Z',
+      catalogFile: 'NOAA_MBTiles_Catalog.xml',
+      header: { title: 'NOAA MBTiles' },
+      charts: [{ ...chart, installed }]
+    });
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'NOAA_MBTiles_Catalog.xml',
+          label: 'NOAA MBTiles',
+          category: 'mbtiles',
+          chartCount: 1,
+          cachedAt: '2026-05-07T10:00:00Z'
+        }
+      ],
+      catalogs: { 'NOAA_MBTiles_Catalog.xml': catalogWith(false) }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await page.getByText('NOAA MBTiles').click();
+    await expect(page.locator('.btn-catalog-download')).toBeVisible();
+
+    await patchMockState(page, {
+      catalogs: { 'NOAA_MBTiles_Catalog.xml': catalogWith(true) },
+      installed: {
+        US5MA1AA: {
+          catalogFile: 'NOAA_MBTiles_Catalog.xml',
+          zipfile_datetime_iso8601: '2026-05-01T00:00:00Z',
+          installedAt: '2026-05-08T00:00:00Z'
+        }
+      }
+    });
+
+    await expect(page.locator('.installed-badge')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('.btn-catalog-download')).toHaveCount(0);
+  });
+
   test('pollConversions updates the in-flight message without recreating the row (regression for shimmer/scrollbar/progress reset bugs)', async ({
     page
   }) => {
