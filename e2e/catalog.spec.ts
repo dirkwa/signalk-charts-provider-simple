@@ -162,6 +162,52 @@ test.describe('Chart Catalog tab', () => {
     await expect(navigation.locator('.category-count')).toHaveText('2');
   });
 
+  test('an install recorded with no conversion running lists its ENC source', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'NL_IENC_Catalog.xml',
+          label: 'NL Inland ENC',
+          category: 'ienc',
+          chartCount: 12,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'enc' }
+        },
+        {
+          file: 'NOAA_MBTiles_Catalog.xml',
+          label: 'NOAA MBTiles',
+          category: 'mbtiles',
+          chartCount: 1234,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'mbtiles' }
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+    await expect(page.locator('.catalog-card-title')).toHaveText(['NOAA MBTiles']);
+
+    await patchMockState(page, {
+      installed: {
+        '1R7WAD01': {
+          catalogFile: 'NL_IENC_Catalog.xml',
+          zipfile_datetime_iso8601: '2026-04-01T00:00:00Z',
+          installedAt: '2026-05-08T00:00:00Z'
+        }
+      }
+    });
+
+    await expect(page.locator('.catalog-card-title')).toHaveText(
+      ['NL Inland ENC', 'NOAA MBTiles'],
+      { timeout: 10_000 }
+    );
+    await expect(
+      page.locator(
+        '[data-filter-group="categories"][data-filter-value="navigation"] .category-count'
+      )
+    ).toHaveText('2');
+  });
+
   test('pollConversions updates the in-flight message without recreating the row (regression for shimmer/scrollbar/progress reset bugs)', async ({
     page
   }) => {

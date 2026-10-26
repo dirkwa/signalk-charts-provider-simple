@@ -1808,6 +1808,9 @@ async function pollConversions(): Promise<void> {
   // `hasActive` line, which silently threw a ReferenceError into the
   // catch and left the UI stuck at "Generating tiles: 100%".
   let justFinished: string[] = [];
+  // An install recorded before its conversion starts (an S-57 download) or
+  // by another client changes which sources are listed with nothing active.
+  let installedChanged = false;
 
   try {
     const statusResp = await fetch(`${CATALOG_API_BASE}/catalog-s57-status`);
@@ -1838,7 +1841,9 @@ async function pollConversions(): Promise<void> {
           }
         }
       }
+      const prevInstalled = JSON.stringify(catalogInstalled);
       catalogInstalled = regData.installed ?? {};
+      installedChanged = JSON.stringify(catalogInstalled) !== prevInstalled;
 
       // If any conversion just finished, invalidate cached catalog
       // data and refresh. For catalogs the user already has expanded
@@ -1887,14 +1892,14 @@ async function pollConversions(): Promise<void> {
     // their progress message text differs).
     const activeStateKey = catalogActiveStateKey();
     const stateChanged =
-      activeStateKey !== catalogPrevActiveStateKey || justFinished.length > 0;
+      activeStateKey !== catalogPrevActiveStateKey || justFinished.length > 0 || installedChanged;
     catalogPrevActiveStateKey = activeStateKey;
 
     const hasActive =
       Object.keys(catalogConverting).length > 0 ||
       Object.keys(catalogConversionErrors).length > 0 ||
       justFinished.length > 0;
-    if (!hasActive) {
+    if (!hasActive && !installedChanged) {
       return;
     }
     if (stateChanged) {
