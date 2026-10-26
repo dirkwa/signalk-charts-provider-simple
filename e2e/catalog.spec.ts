@@ -84,6 +84,29 @@ test.describe('Chart Catalog tab', () => {
     await expect(page.locator('#customCatalogs')).toHaveClass(/active/);
   });
 
+  test('points to ENC Charts when the catalog lists only ENC sources', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'DE_IENC_Catalog.xml',
+          label: 'Germany Inland ENC',
+          category: 'ienc',
+          chartCount: 42,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'enc' }
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+
+    const list = page.locator('#catalogList');
+    await expect(page.locator('.catalog-card')).toHaveCount(0);
+    await expect(list).not.toContainText('Clear filters');
+    await list.getByRole('link', { name: 'ENC Charts' }).click();
+    await expect(page.locator('#customCatalogs')).toHaveClass(/active/);
+  });
+
   test('pollConversions updates the in-flight message without recreating the row (regression for shimmer/scrollbar/progress reset bugs)', async ({
     page
   }) => {

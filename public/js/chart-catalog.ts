@@ -1278,7 +1278,18 @@ function renderCatalogList(): void {
     clearRegistryBanner();
   }
 
-  const filtered = listedRegistry().filter((c) => passesFilters(registryFilterItem(c)));
+  const listed = listedRegistry();
+  // Only ENC sources in the catalog: no filter can bring one back here.
+  if (listed.length === 0) {
+    listEl.innerHTML = `
+      <div class="catalog-empty">
+        This catalog only has ENC charts. Build a chart set from them in the
+        <a href="#" onclick="openTab(null, 'customCatalogs'); return false;">ENC Charts</a> tab.
+      </div>`;
+    return;
+  }
+
+  const filtered = listed.filter((c) => passesFilters(registryFilterItem(c)));
 
   if (filtered.length === 0) {
     listEl.innerHTML = `
