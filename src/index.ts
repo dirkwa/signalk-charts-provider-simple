@@ -27,6 +27,7 @@ import {
   pruneStaleInstalls,
   removeInstall,
   removeInstallByFilename,
+  removeInstallsUnderFolder,
   renameInstallFilename,
   rollbackInstall,
   setCatalogChangedListener,
@@ -1935,8 +1936,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           // successful conversion, so a chart whose filename was
           // rewritten by catalog title (chartNumber=2 →
           // Port_of_Rotterdam_…mbtiles) still gets its catalog
-          // "Installed" badge cleared.
-          if (!removeInstallByFilename(chartPathParam)) {
+          // "Installed" badge cleared. A folder takes every chart it held.
+          if (stat.isDirectory()) {
+            removeInstallsUnderFolder(chartPathParam);
+          } else if (!removeInstallByFilename(chartPathParam)) {
             // Fall back to the legacy chartId/chartNumber heuristics
             // for charts installed before setInstallFilename existed.
             removeInstall(chartId);

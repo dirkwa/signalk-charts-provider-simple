@@ -15,6 +15,7 @@ import {
   trackInstall,
   setInstallFilename,
   removeInstall,
+  removeInstallsUnderFolder,
   rollbackInstall,
   getInstalledCatalogCharts,
   checkForUpdates,
@@ -294,6 +295,44 @@ describe('CatalogManager', () => {
     // Clean up installs for subsequent tests
     after(() => {
       removeInstall('ncds_01a');
+    });
+  });
+
+  describe('removeInstallsUnderFolder()', () => {
+    afterEach(() => {
+      for (const key of Object.keys(getInstalledCatalogCharts())) {
+        removeInstall(key);
+      }
+    });
+
+    function install(chartNumber: string, filename: string): void {
+      trackInstall(chartNumber, 'NL_IENC.xml', '2026-01-01T00:00:00Z', 'https://example.com/x.zip');
+      setInstallFilename(chartNumber, filename);
+    }
+
+    it('removes the installs of charts anywhere inside the folder', () => {
+      install('a', 'Europe/NL/Waddenzee.mbtiles');
+      install('b', 'Europe/NL/Rivers/Maas.mbtiles');
+      install('c', 'Europe/DE/Elbe.mbtiles');
+      install('d', 'Waddenzee.mbtiles');
+
+      assert.strictEqual(removeInstallsUnderFolder('Europe/NL'), 2);
+      assert.deepStrictEqual(Object.keys(getInstalledCatalogCharts()).sort(), ['c', 'd']);
+    });
+
+    it('does not take a sibling folder that shares the name as a prefix', () => {
+      install('a', 'Europe/NL2/Waddenzee.mbtiles');
+
+      assert.strictEqual(removeInstallsUnderFolder('Europe/NL'), 0);
+      assert.ok(getInstalledCatalogCharts()['a']);
+    });
+
+    it('matches across path separators and a trailing slash', () => {
+      install('a', 'Europe\\NL\\Waddenzee.mbtiles');
+      install('b', 'Europe/NL/Maas.mbtiles');
+
+      assert.strictEqual(removeInstallsUnderFolder('Europe\\NL/'), 2);
+      assert.deepStrictEqual(getInstalledCatalogCharts(), {});
     });
   });
 

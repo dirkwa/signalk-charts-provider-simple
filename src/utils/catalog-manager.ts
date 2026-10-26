@@ -708,6 +708,27 @@ export function removeInstallByFilename(filename: string): boolean {
 }
 
 /**
+ * Clear every install record whose tracked file lies inside `folder`
+ * (chartPath-relative). Called when the user deletes a folder, whose charts
+ * the rescan no longer finds but which carry their own filenames, not the
+ * folder's. Returns how many records were removed.
+ */
+export function removeInstallsUnderFolder(folder: string): number {
+  const prefix = `${folder.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')}/`;
+  let removed = 0;
+  for (const [key, install] of Object.entries(installs)) {
+    if (install.installedFilename?.replace(/\\/g, '/').startsWith(prefix)) {
+      delete installs[key];
+      removed++;
+    }
+  }
+  if (removed > 0) {
+    saveInstalls();
+  }
+  return removed;
+}
+
+/**
  * Update an install's tracked filename when the user moves or renames
  * a chart. Matches the prior path's basename to find the right
  * install record (chartPath-relative comparison). Returns true if an
