@@ -12,6 +12,7 @@ import type { ConversionReport } from '../dist/utils/conversion-backend.js';
 import { exportFileParts } from '../dist/utils/s57-band.js';
 
 const {
+  TIPPECANOE_DETAIL_FLAGS,
   consolidateGeoJSONByLayer,
   scaminMinzoom,
   buildExportScript,
@@ -780,6 +781,15 @@ describe('buildTippecanoeCommand (argv stays small regardless of layer count)', 
     assert.ok(
       typeof TIPPECANOE_LAYER_MANIFEST === 'string' && TIPPECANOE_LAYER_MANIFEST.length > 0
     );
+  });
+});
+
+describe('TIPPECANOE_DETAIL_FLAGS', () => {
+  // tippecanoe has no --no-simplification; getopt_long reads it as the prefix
+  // of --no-simplification-of-shared-nodes and keeps simplifying lines.
+  it('turns off line simplification with the option tippecanoe actually has', () => {
+    assert.ok(TIPPECANOE_DETAIL_FLAGS.includes('--no-line-simplification'));
+    assert.ok(!(TIPPECANOE_DETAIL_FLAGS as readonly string[]).includes('--no-simplification'));
   });
 });
 

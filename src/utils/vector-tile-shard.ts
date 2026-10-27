@@ -328,7 +328,7 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
       minzoom: meta.minzoom,
       maxzoom: meta.maxzoom,
       // tolerance 0: charts keep every vertex (tippecanoe ran with
-      // --no-simplification / --no-tiny-polygon-reduction for the same
+      // --no-line-simplification / --no-tiny-polygon-reduction for the same
       // reason — simplification eats harbour basins and narrow channels).
       // indexMaxZoom 0: build nothing up front; the walk below drills to
       // each tile it needs.
