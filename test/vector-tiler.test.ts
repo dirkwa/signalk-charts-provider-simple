@@ -129,17 +129,23 @@ describe('tileShard', () => {
 
   it('writes no vertex twice in a row where many land on one tile pixel', () => {
     // A coastline-like square with 2000 vertices along its south edge, a
-    // sliver whose ring rounds to nothing at zoom 0, and a short line.
+    // sliver whose ring rounds to nothing at zoom 0, the south edge as a line,
+    // and a line whose two vertices round to one pixel.
     const south: Position[] = [];
     for (let i = 0; i <= 2000; i++) {
       south.push([i * 0.005, 0]);
     }
     const coast = [[...south, [10, 10], [0, 10], [0, 0]]];
     const sliver = square(20, 20, 20.000001, 20.000001);
+    const collapsedLine: Position[] = [
+      [30, 30],
+      [30.001, 30]
+    ];
     const features = [
       { type: 'Polygon', coordinates: coast },
       { type: 'Polygon', coordinates: sliver },
-      { type: 'LineString', coordinates: south }
+      { type: 'LineString', coordinates: south },
+      { type: 'LineString', coordinates: collapsedLine }
     ].map((geometry, n) => ({ type: 'Feature', properties: { n }, geometry }));
     const file = path.join(dir, 'shard.ndjson');
     fs.writeFileSync(file, features.map((f) => `0\t${JSON.stringify(f)}`).join('\n') + '\n');
@@ -171,7 +177,11 @@ describe('tileShard', () => {
       kept.set(Number(f.properties.n), f.loadGeometry());
     }
 
-    assert.deepStrictEqual([...kept.keys()].sort(), [0, 2], 'the sliver draws nothing and goes');
+    assert.deepStrictEqual(
+      [...kept.keys()].sort(),
+      [0, 2],
+      'the sliver and the collapsed line draw nothing and go'
+    );
     for (const rings of kept.values()) {
       for (const ring of rings) {
         for (let i = 1; i < ring.length; i++) {
