@@ -86,6 +86,25 @@ test.describe('Chart Catalog tab', () => {
     await expect(page.locator('#customCatalogs')).toHaveClass(/active/);
   });
 
+  test('keeps an ENC source the catalog has not indexed yet', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'XX_IENC_Catalog.xml',
+          label: 'New Inland ENC',
+          category: 'ienc',
+          chartCount: 3,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation' }
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+
+    await expect(page.locator('.catalog-card-title')).toHaveText(['New Inland ENC']);
+  });
+
   test('points to ENC Charts when the catalog lists only ENC sources', async ({ page }) => {
     await page.goto('/plugins/signalk-charts-provider-simple/');
     await setMockState(page, {

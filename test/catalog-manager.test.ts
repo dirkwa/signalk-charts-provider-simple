@@ -504,7 +504,7 @@ describe('CatalogManager', () => {
       removeInstall('same_date_chart');
     });
 
-    it('offers no update for a chart installed from an ENC catalog', async () => {
+    it('offers no update for a chart from an ENC catalog the ENC index covers', async () => {
       const chart = (number: string) => ({
         number,
         title: number,
@@ -515,9 +515,18 @@ describe('CatalogManager', () => {
       stubFetch({
         status: 200,
         body: mergedCatalog(
-          { 'NL_IENC_Catalog.xml': [chart('1R7WAD01')], 'NZ_RNC.xml': [chart('NZ5321')] },
+          {
+            'NL_IENC_Catalog.xml': [chart('1R7WAD01')],
+            'XX_IENC_Catalog.xml': [chart('XX000001')],
+            'NZ_RNC.xml': [chart('NZ5321')]
+          },
           1,
-          { 'NL_IENC_Catalog.xml': { format: 'enc' }, 'NZ_RNC.xml': { format: 'rnc' } }
+          {
+            'NL_IENC_Catalog.xml': { format: 'enc' },
+            // Not indexed yet: the ENC index leaves it out, so the catalog keeps it.
+            'XX_IENC_Catalog.xml': { format: undefined, indexed: false },
+            'NZ_RNC.xml': { format: 'rnc' }
+          }
         )
       });
       await refreshCatalog();
@@ -535,14 +544,21 @@ describe('CatalogManager', () => {
         '2023-08-02T00:08:00Z',
         'https://example.com/NZ5321.zip'
       );
+      trackInstall(
+        'XX000001',
+        'XX_IENC_Catalog.xml',
+        '2023-08-02T00:08:00Z',
+        'https://example.com/XX000001.zip'
+      );
 
       assert.deepStrictEqual(
         checkForUpdates().map((u) => u.chartNumber),
-        ['NZ5321']
+        ['NZ5321', 'XX000001']
       );
 
       removeInstall('1R7WAD01');
       removeInstall('NZ5321');
+      removeInstall('XX000001');
     });
 
     it('reports installedFolder as POSIX, defaulting to root', async () => {

@@ -1084,9 +1084,11 @@ function passesFilters(item: FilterItem, skip?: FilterGroup): boolean {
 /**
  * The downloads this tab lists. ENC sources are left to the ENC Charts tab,
  * which builds their cells into chart sets, so the same cells have one way in.
+ * The ENC index takes exactly the sources whose format facet is `enc`; one the
+ * catalog has not indexed yet stays here until it is.
  */
 function listedRegistry(): CatalogRegistryEntry[] {
-  return catalogRegistry.filter((entry) => entry.category !== 'ienc');
+  return catalogRegistry.filter((entry) => entry.facets?.format !== 'enc');
 }
 
 function allFilterItems(): FilterItem[] {
