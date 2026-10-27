@@ -14,9 +14,9 @@ test.describe('Chart Catalog tab', () => {
     await setMockState(page, {
       registry: [
         {
-          file: 'NL_IENC_Catalog.xml',
-          label: 'NL Inland ENC',
-          category: 'ienc',
+          file: 'NZ_RNC.xml',
+          label: 'New Zealand Raster Charts',
+          category: 'rnc',
           chartCount: 12,
           cachedAt: '2026-05-07T10:00:00Z'
         },
@@ -31,9 +31,82 @@ test.describe('Chart Catalog tab', () => {
     });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
 
-    await expect(page.locator('#catalogList')).toContainText('NL Inland ENC');
+    await expect(page.locator('#catalogList')).toContainText('New Zealand Raster Charts');
     await expect(page.locator('#catalogList')).toContainText('NOAA MBTiles');
     await expect(page.locator('#catalogList')).toContainText('12 charts');
+  });
+
+  test('lists no ENC source, not even one a chart was installed from', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'NL_IENC_Catalog.xml',
+          label: 'NL Inland ENC',
+          category: 'ienc',
+          chartCount: 12,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'enc' }
+        },
+        {
+          file: 'DE_IENC_Catalog.xml',
+          label: 'Germany Inland ENC',
+          category: 'ienc',
+          chartCount: 42,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'enc' }
+        },
+        {
+          file: 'NOAA_MBTiles_Catalog.xml',
+          label: 'NOAA MBTiles',
+          category: 'mbtiles',
+          chartCount: 1234,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'mbtiles' }
+        }
+      ],
+      installed: {
+        '1R7WAD01': {
+          catalogFile: 'NL_IENC_Catalog.xml',
+          zipfile_datetime_iso8601: '2026-04-01T00:00:00Z',
+          installedAt: '2026-04-02T00:00:00Z'
+        }
+      }
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+
+    await expect(page.locator('.catalog-card-title')).toHaveText(['NOAA MBTiles']);
+    await expect(
+      page.locator(
+        '[data-filter-group="categories"][data-filter-value="navigation"] .category-count'
+      )
+    ).toHaveText('1');
+
+    await page.locator('#catalogSourceNote').getByRole('link', { name: 'ENC Charts' }).click();
+    await expect(page.locator('#customCatalogs')).toHaveClass(/active/);
+  });
+
+  test('points to ENC Charts when the catalog lists only ENC sources', async ({ page }) => {
+    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await setMockState(page, {
+      registry: [
+        {
+          file: 'DE_IENC_Catalog.xml',
+          label: 'Germany Inland ENC',
+          category: 'ienc',
+          chartCount: 42,
+          cachedAt: '2026-05-07T10:00:00Z',
+          facets: { category: 'navigation', format: 'enc' }
+        }
+      ]
+    });
+    await page.getByRole('button', { name: /Chart Catalog/i }).click();
+
+    const list = page.locator('#catalogList');
+    await expect(page.locator('.catalog-card')).toHaveCount(0);
+    await expect(list).not.toContainText('Clear filters');
+    await list.getByRole('link', { name: 'ENC Charts' }).click();
+    await expect(page.locator('#customCatalogs')).toHaveClass(/active/);
   });
 
   test('pollConversions updates the in-flight message without recreating the row (regression for shimmer/scrollbar/progress reset bugs)', async ({
@@ -48,26 +121,26 @@ test.describe('Chart Catalog tab', () => {
     await setMockState(page, {
       registry: [
         {
-          file: 'NL_IENC.xml',
-          label: 'NL IENC',
-          category: 'ienc',
+          file: 'NZ_RNC.xml',
+          label: 'NZ RNC',
+          category: 'rnc',
           chartCount: 1,
           cachedAt: '2026-05-07T10:00:00Z'
         }
       ],
       catalogs: {
-        'NL_IENC.xml': {
+        'NZ_RNC.xml': {
           fetchedAt: '2026-05-07T10:00:00Z',
-          catalogFile: 'NL_IENC.xml',
-          header: { title: 'NL IENC' },
+          catalogFile: 'NZ_RNC.xml',
+          header: { title: 'NZ RNC' },
           charts: [
             {
               number: '1',
-              title: 'Waddenzee',
-              format: 'S-57',
-              zipfile_location: 'https://example.com/wadd.zip',
+              title: 'Hauraki Gulf',
+              format: 'BSB',
+              zipfile_location: 'https://example.com/hauraki.zip',
               zipfile_datetime_iso8601: '2026-05-01T00:00:00Z',
-              urlClassification: { supported: true, format: 's57-zip', label: 'S-57 ZIP' }
+              urlClassification: { supported: true, format: 'rnc-zip', label: 'BSB raster' }
             }
           ]
         }
@@ -80,7 +153,7 @@ test.describe('Chart Catalog tab', () => {
 
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
     // Expand the catalog so the chart row + conversion pill render.
-    await page.getByText('NL IENC').click();
+    await page.getByText('NZ RNC').click();
 
     const pill = page.locator('#catalog-conversion-1');
     await expect(pill).toBeVisible();
@@ -179,9 +252,9 @@ test.describe('Chart Catalog tab', () => {
     await setMockState(page, {
       registry: [
         {
-          file: 'NL_IENC.xml',
-          label: 'NL IENC',
-          category: 'ienc',
+          file: 'NZ_RNC.xml',
+          label: 'NZ RNC',
+          category: 'rnc',
           chartCount: 1,
           cachedAt: '2026-05-07T10:00:00Z'
         }
@@ -189,11 +262,11 @@ test.describe('Chart Catalog tab', () => {
       catalogUpdates: [
         {
           chartNumber: '1',
-          catalogFile: 'NL_IENC.xml',
-          title: 'Waddenzee',
+          catalogFile: 'NZ_RNC.xml',
+          title: 'Hauraki Gulf',
           installedDate: '2024-01-01T00:00:00Z',
           availableDate: '2026-05-01T00:00:00Z',
-          downloadUrl: 'https://example.com/wadd.zip',
+          downloadUrl: 'https://example.com/hauraki.zip',
           installedFolder: '/'
         }
       ],
@@ -265,9 +338,9 @@ test.describe('Chart Catalog tab', () => {
     await setMockState(page, {
       registry: [
         {
-          file: 'DE_IENC.xml',
-          label: 'Germany Inland ENC',
-          category: 'ienc',
+          file: 'NZ_RNC.xml',
+          label: 'New Zealand Raster Charts',
+          category: 'rnc',
           chartCount: 3,
           cachedAt: '2026-05-07T10:00:00Z'
         }
@@ -297,9 +370,9 @@ test.describe('Chart Catalog tab', () => {
     await setMockState(page, {
       registry: [
         {
-          file: 'DE_IENC.xml',
-          label: 'Germany Inland ENC',
-          category: 'ienc',
+          file: 'NZ_RNC.xml',
+          label: 'New Zealand Raster Charts',
+          category: 'rnc',
           chartCount: 3,
           cachedAt: '2026-05-07T10:00:00Z'
         }
@@ -332,9 +405,9 @@ test.describe('Chart Catalog tab', () => {
       },
       refreshRegistry: [
         {
-          file: 'NL_IENC.xml',
-          label: 'Netherlands Inland ENC',
-          category: 'ienc',
+          file: 'NZ_RNC.xml',
+          label: 'New Zealand Raster Charts',
+          category: 'rnc',
           chartCount: 5,
           cachedAt: '2026-05-07T10:00:00Z'
         }
@@ -390,9 +463,9 @@ test.describe('Chart Catalog tab', () => {
     await setMockState(page, {
       registry: [
         {
-          file: 'DE_IENC.xml',
-          label: 'Germany Inland ENC',
-          category: 'ienc',
+          file: 'NZ_RNC.xml',
+          label: 'New Zealand Raster Charts',
+          category: 'rnc',
           chartCount: 3,
           cachedAt: '2026-05-07T10:00:00Z'
         }
@@ -467,12 +540,12 @@ test.describe('Chart Catalog tab', () => {
           facets: { category: 'navigation', format: 'mbtiles', bbox: [144, -15, -64, 72] }
         },
         {
-          file: 'DE_IENC_Catalog.xml',
-          label: 'Germany Inland ENC',
-          category: 'ienc',
+          file: 'DE_RNC_Catalog.xml',
+          label: 'German Raster Charts',
+          category: 'rnc',
           chartCount: 42,
           cachedAt: '2026-05-07T10:00:00Z',
-          facets: { category: 'navigation', format: 'enc', bbox: [5.8, 47.2, 15.1, 55.1] }
+          facets: { category: 'navigation', format: 'rnc', bbox: [5.8, 47.2, 15.1, 55.1] }
         },
         {
           file: 'World_Shapefile_Catalog.xml',
@@ -514,7 +587,7 @@ test.describe('Chart Catalog tab', () => {
     ]);
     await expect(
       page.locator('.catalog-section').first().locator('.catalog-card-title')
-    ).toHaveText(['Germany Inland ENC', 'NOAA Vector Charts']);
+    ).toHaveText(['German Raster Charts', 'NOAA Vector Charts']);
 
     const btn = (group: string, value: string) =>
       page.locator(`[data-filter-group="${group}"][data-filter-value="${value}"]`);
@@ -532,7 +605,7 @@ test.describe('Chart Catalog tab', () => {
     // Type filters live behind "More filters".
     await btn('categories', 'navigation').click();
     await btn('nearMe', '').click();
-    await expect(btn('formats', 'enc')).toHaveCount(0);
+    await expect(btn('formats', 'rnc')).toHaveCount(0);
     await btn('showTypes', '').click();
     await btn('formats', 'shapefile').click();
     await expect(cards).toHaveCount(1);

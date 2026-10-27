@@ -851,6 +851,12 @@ export function checkForUpdates(): CatalogUpdate[] {
   const updates: CatalogUpdate[] = [];
 
   for (const [chartNumber, install] of Object.entries(installs)) {
+    // ENC charts come from chart sets in the ENC Charts tab, which keep their
+    // own freshness; the Chart Catalog tab no longer offers ENC downloads.
+    const entry = loaded?.chartcatalogs.get(install.catalogFile);
+    if (entry && downloadCategory(entry) === 'ienc') {
+      continue;
+    }
     const cached = getCatalogData(install.catalogFile);
     if (!cached?.charts) {
       continue;

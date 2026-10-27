@@ -94,7 +94,7 @@ The interface provides seven tabs:
 4. **Chart Catalog**:
    - Downloadable charts from [chartcatalogs.github.io](https://chartcatalogs.github.io/), sectioned by what the charts show, with **Near me** narrowing each section to where you are
    - One-click download for MBTiles charts (NOAA)
-   - Download & convert for S-57 ENC, BSB raster, Pilot Charts, and basemaps
+   - Download & convert for BSB raster, Pilot Charts, and basemaps; ENC (S-57) charts are built into chart sets in the ENC Charts tab
    - Automatic update notifications (Signal K delta + tab badge)
    - Filters: what the chart shows (Navigation, Depth & Seabed, Base maps); chart type under "More filters"; and **Near me**, using the boat's position
 
@@ -126,7 +126,7 @@ The interface provides seven tabs:
 |--------|--------|-----------|--------|
 | **MBTiles** | Direct download | None needed | Raster or vector tiles |
 | **PMTiles** | Direct download, upload or the chart folder | None needed | Raster or vector tiles |
-| **S-57 ENC** (.000) | IENC catalogs, custom upload | GDAL + tippecanoe (containerized) | Vector MBTiles with S-52 styling |
+| **S-57 ENC** (.000) | ENC Charts tab, custom upload | GDAL + tippecanoe (containerized) | Vector MBTiles with S-52 styling |
 | **BSB Raster** (.kap) | RNC catalogs, custom upload | GDAL (containerized) | Raster MBTiles (PNG) |
 | **Pilot Charts** (.kap in .tar.xz) | Pilot catalog | GDAL (containerized) | Raster MBTiles (PNG) |
 | **GSHHG Basemap** | General catalog | GDAL (containerized) | Raster MBTiles (PNG) |

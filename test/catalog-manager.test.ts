@@ -504,6 +504,47 @@ describe('CatalogManager', () => {
       removeInstall('same_date_chart');
     });
 
+    it('offers no update for a chart installed from an ENC catalog', async () => {
+      const chart = (number: string) => ({
+        number,
+        title: number,
+        format: 'S-57',
+        zipfile_location: `https://example.com/${number}.zip`,
+        zipfile_datetime_iso8601: '2024-06-01T00:00:00Z'
+      });
+      stubFetch({
+        status: 200,
+        body: mergedCatalog(
+          { 'NL_IENC_Catalog.xml': [chart('1R7WAD01')], 'NZ_RNC.xml': [chart('NZ5321')] },
+          1,
+          { 'NL_IENC_Catalog.xml': { format: 'enc' }, 'NZ_RNC.xml': { format: 'rnc' } }
+        )
+      });
+      await refreshCatalog();
+      mock.restoreAll();
+
+      trackInstall(
+        '1R7WAD01',
+        'NL_IENC_Catalog.xml',
+        '2023-08-02T00:08:00Z',
+        'https://example.com/1R7WAD01.zip'
+      );
+      trackInstall(
+        'NZ5321',
+        'NZ_RNC.xml',
+        '2023-08-02T00:08:00Z',
+        'https://example.com/NZ5321.zip'
+      );
+
+      assert.deepStrictEqual(
+        checkForUpdates().map((u) => u.chartNumber),
+        ['NZ5321']
+      );
+
+      removeInstall('1R7WAD01');
+      removeInstall('NZ5321');
+    });
+
     it('reports installedFolder as POSIX, defaulting to root', async () => {
       const cacheData = {
         fetchedAt: new Date().toISOString(),

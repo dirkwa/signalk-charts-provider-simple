@@ -505,7 +505,9 @@ function sourceNoteHtml(sources: CatalogSources | null | undefined): string {
     &mdash; a community-maintained catalog. Download links may be outdated or unavailable;
     if a download fails, please report it to the ${link(chartcatalogs.issues, d.chartcatalogs.issues, 'chartcatalogs issue tracker')}.
     Charts that stream from their provider are in the
-    <a href="#" onclick="openTab(null, 'onlineCharts'); return false;">Online Charts</a> tab.`;
+    <a href="#" onclick="openTab(null, 'onlineCharts'); return false;">Online Charts</a> tab,
+    and ENC (S-57) charts are built into chart sets in the
+    <a href="#" onclick="openTab(null, 'customCatalogs'); return false;">ENC Charts</a> tab.`;
 }
 
 function renderSourceNote(sources: CatalogSources | null | undefined): void {
@@ -1110,8 +1112,16 @@ function passesFilters(item: FilterItem, skip?: FilterGroup): boolean {
   return true;
 }
 
+/**
+ * The downloads this tab lists. ENC sources are left to the ENC Charts tab,
+ * which builds their cells into chart sets, so the same cells have one way in.
+ */
+function listedRegistry(): CatalogRegistryEntry[] {
+  return catalogRegistry.filter((entry) => entry.category !== 'ienc');
+}
+
 function allFilterItems(): FilterItem[] {
-  return catalogRegistry.map(registryFilterItem);
+  return listedRegistry().map(registryFilterItem);
 }
 
 /**
@@ -1266,7 +1276,18 @@ function renderCatalogList(): void {
     clearRegistryBanner();
   }
 
-  const filtered = catalogRegistry.filter((c) => passesFilters(registryFilterItem(c)));
+  const listed = listedRegistry();
+  // No filter can bring an ENC source back, so don't offer "Clear filters".
+  if (listed.length === 0) {
+    listEl.innerHTML = `
+      <div class="catalog-empty">
+        This catalog only has ENC charts. Build a chart set from them in the
+        <a href="#" onclick="openTab(null, 'customCatalogs'); return false;">ENC Charts</a> tab.
+      </div>`;
+    return;
+  }
+
+  const filtered = listed.filter((c) => passesFilters(registryFilterItem(c)));
 
   if (filtered.length === 0) {
     listEl.innerHTML = `
