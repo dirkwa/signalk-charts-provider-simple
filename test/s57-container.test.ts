@@ -791,6 +791,10 @@ describe('TIPPECANOE_DETAIL_FLAGS', () => {
     assert.ok(TIPPECANOE_DETAIL_FLAGS.includes('--no-line-simplification'));
     assert.ok(!(TIPPECANOE_DETAIL_FLAGS as readonly string[]).includes('--no-simplification'));
   });
+
+  it('keeps shared nodes, and with them full coordinate precision', () => {
+    assert.ok(TIPPECANOE_DETAIL_FLAGS.includes('--no-simplification-of-shared-nodes'));
+  });
 });
 
 describe('stampMbtilesName (degenerate single-input tile-join path)', () => {
