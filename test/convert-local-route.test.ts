@@ -1,7 +1,8 @@
 /**
  * Route-level tests for converting charts already on the server
- * (POST /convert-local): what it refuses, and that a conversion that fails
- * leaves the source as it was, adds no chart and removes its work folder.
+ * (POST /convert-local): what it refuses, that a conversion that fails
+ * leaves the source as it was, adds no chart and removes its work folder,
+ * and that POST /convert-cancel stops one.
  * Runs the real plugin against a temporary chart folder.
  */
 
@@ -174,5 +175,36 @@ describe('POST /convert-local', () => {
     assert.deepStrictEqual(fs.readdirSync(source), before);
     assert.ok(!fs.readdirSync(chartPath).some((f) => f.endsWith('.mbtiles')));
     assert.ok(!fs.readdirSync(dataDir).some((f) => f.startsWith('convert-local-')));
+  });
+
+  it('cancels a running conversion, installing nothing', async () => {
+    const source = path.join(tempDir, 'Cancel me');
+    fs.mkdirSync(source);
+    for (let i = 0; i < 20; i++) {
+      fs.writeFileSync(path.join(source, `chart_${String(i)}.kap`), 'not a chart');
+    }
+    const res = await convert({ type: 'rnc', path: source });
+    assert.strictEqual(res.statusCode, 200);
+
+    const cancel = handlers.get('post /convert-cancel/:chartNumber');
+    assert.ok(cancel, 'cancel route should be registered');
+    const cancelRes = makeRes();
+    await cancel({ params: { chartNumber: 'Cancel_me' } }, cancelRes);
+    assert.deepStrictEqual(cancelRes.body, {
+      success: true,
+      message: 'Cancellation requested'
+    });
+
+    await waitFor(() => getConvertingCount() === 0, 'conversion should end', 30000);
+    const progress = getConversionProgress('Cancel_me');
+    assert.ok(progress);
+    assert.strictEqual(progress.status, 'failed');
+    assert.strictEqual(progress.message, 'Conversion cancelled');
+    assert.ok(!fs.readdirSync(chartPath).some((f) => f.endsWith('.mbtiles')));
+    assert.ok(!fs.readdirSync(dataDir).some((f) => f.startsWith('convert-local-')));
+
+    const idle = makeRes();
+    await cancel({ params: { chartNumber: 'Cancel_me' } }, idle);
+    assert.deepStrictEqual(idle.body, { success: true, message: 'Nothing running' });
   });
 });

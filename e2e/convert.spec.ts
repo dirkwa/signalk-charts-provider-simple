@@ -49,4 +49,17 @@ test.describe('convert charts already on the server', () => {
     await expect(job).toContainText('/srv/charts/missing does not exist on the Signal K server');
     await expect(input).toHaveValue('/srv/charts/missing');
   });
+
+  test('cancels a running conversion', async ({ page }) => {
+    await page.locator('#s57LocalPath').fill('/srv/charts/ENC_ROOT');
+    await page.locator('button[data-convert-local="s57"]').click();
+    const job = page.locator('.download-job').first();
+    await expect(job).toContainText('/srv/charts/ENC_ROOT');
+
+    const request = page.waitForRequest((r) => r.url().endsWith('/convert-cancel/ENC_ROOT'));
+    await job.getByRole('button', { name: 'Cancel' }).click();
+    expect((await request).method()).toBe('POST');
+    await expect(job).toContainText('Conversion cancelled');
+    await expect(job.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
+  });
 });

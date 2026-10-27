@@ -243,7 +243,8 @@ export async function extractLocalChartSource(
   isChartFile: ChartFileTest,
   workDir: string,
   onArchive?: (zip: string, index: number, count: number) => void,
-  isCompanion?: ChartFileTest
+  isCompanion?: ChartFileTest,
+  signal?: AbortSignal
 ): Promise<{ files: string[]; companions: string[] }> {
   const files = [...source.looseFiles];
   const companions = isCompanion ? [...source.looseCompanions] : [];
@@ -251,7 +252,7 @@ export async function extractLocalChartSource(
     onArchive?.(zip, index + 1, source.zips.length);
     const dest = path.join(workDir, `archive-${String(index + 1)}`);
     fs.mkdirSync(dest, { recursive: true });
-    await extractZipSafely(zip, dest);
+    await extractZipSafely(zip, dest, {}, signal);
     files.push(...(await findChartFiles(dest, isChartFile)));
     if (isCompanion) {
       companions.push(...(await findChartFiles(dest, isCompanion)));

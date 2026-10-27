@@ -177,17 +177,22 @@ function initConvertTab(): void {
     });
   });
 
-  // Delegated click handler for the dynamically rendered "Logs" buttons.
+  // Delegated click handler for the dynamically rendered "Logs" and
+  // "Cancel" buttons.
   const convertJobs = document.getElementById('convertJobs');
   if (convertJobs && !convertJobs.dataset['convertHandlerWired']) {
     convertJobs.addEventListener('click', (ev) => {
-      const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>(
-        '[data-convert-log-chart]'
-      );
-      if (!target) {
+      const target = ev.target as HTMLElement | null;
+      const cancelChart = target?.closest<HTMLElement>('[data-convert-cancel-chart]')?.dataset[
+        'convertCancelChart'
+      ];
+      if (cancelChart) {
+        void cancelConversion(cancelChart);
         return;
       }
-      const chartNumber = target.dataset['convertLogChart'];
+      const chartNumber = target?.closest<HTMLElement>('[data-convert-log-chart]')?.dataset[
+        'convertLogChart'
+      ];
       if (chartNumber) {
         showConvertLog(chartNumber);
       }
@@ -512,6 +517,22 @@ async function pollConvertJobs(): Promise<void> {
   }
 }
 
+async function cancelConversion(chartNumber: string): Promise<void> {
+  for (const job of Object.values(convertActiveJobs)) {
+    if (job.chartNumber === chartNumber && job.status === 'converting') {
+      job.message = 'Cancelling...';
+    }
+  }
+  updateConvertJobsInPlace();
+  try {
+    await fetch(`${CONVERT_API_BASE}/convert-cancel/${encodeURIComponent(chartNumber)}`, {
+      method: 'POST'
+    });
+  } catch {
+    // The next poll still shows the conversion's real state.
+  }
+}
+
 function updateConvertJobsInPlace(): void {
   for (const [id, job] of Object.entries(convertActiveJobs)) {
     const el = document.getElementById(`convert-job-${id}`);
@@ -546,10 +567,13 @@ function renderConvertJobs(): void {
             : job.status === 'failed'
               ? 'status-failed'
               : 'status-downloading';
-        const logsBtn =
-          job.status === 'converting' && job.chartNumber
-            ? `<button class="btn-catalog-log" data-convert-log-chart="${convertEscapeAttr(job.chartNumber)}">Logs</button>`
-            : '';
+        const running = job.status === 'converting' && job.chartNumber;
+        const logsBtn = running
+          ? `<button class="btn-catalog-log" data-convert-log-chart="${convertEscapeAttr(job.chartNumber)}">Logs</button>`
+          : '';
+        const cancelBtn = running
+          ? `<button class="btn btn-danger btn-sm" data-convert-cancel-chart="${convertEscapeAttr(job.chartNumber)}">Cancel</button>`
+          : '';
         return `
           <div class="download-job ${statusClass}" id="convert-job-${convertEscapeAttr(id)}">
             <div class="job-header">
@@ -561,6 +585,7 @@ function renderConvertJobs(): void {
               ${job.status === 'converting' ? '<div class="spinner" style="width:14px;height:14px;border-width:2px;"></div>' : ''}
               <span class="progress-text">${convertEscapeHtml(job.message)}</span>
               ${logsBtn}
+              ${cancelBtn}
             </div>
           </div>
         `;

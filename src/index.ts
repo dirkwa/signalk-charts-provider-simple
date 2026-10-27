@@ -79,6 +79,7 @@ import { getContainerManager, waitForContainerManager } from './utils/container-
 import {
   backendBuildId,
   chooseConversionBackend,
+  CONVERSION_ABORTED_MESSAGE,
   describeBackend,
   fallbackNote,
   getConversionEnginePreference,
@@ -3930,6 +3931,31 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     };
 
+    // Upload and local-folder conversions, by chart number, so the Convert
+    // tab can cancel one. A conversion leaves the map once it starts
+    // installing its charts: installing is not undone.
+    const conversionAborts = new Map<string, AbortController>();
+
+    // Cancel a running upload or local-folder conversion: its container job
+    // is killed (signalk-container >= 1.16.0) or its worker threads are
+    // terminated, and nothing is installed.
+    // A cancellation can land after the converter reported success, so it
+    // replaces whatever result the converter left.
+    const markCancelled = (chartNumber: string, isS57: boolean): void => {
+      (isS57 ? setS57Failed : setRncFailed)(chartNumber, CONVERSION_ABORTED_MESSAGE);
+    };
+
+    router.post('/convert-cancel/:chartNumber', (req: Request, res: Response) => {
+      const { chartNumber } = req.params as Record<string, string>;
+      const controller = conversionAborts.get(chartNumber);
+      if (!controller) {
+        res.json({ success: true, message: 'Nothing running' });
+        return;
+      }
+      controller.abort();
+      res.json({ success: true, message: 'Cancellation requested' });
+    });
+
     router.post('/convert-upload', (req: Request, res: Response) => {
       const bb = Busboy({ headers: req.headers, limits: { fileSize: 500 * 1024 * 1024 } });
       const chartPath = props.chartPath || defaultChartsPath;
@@ -4025,6 +4051,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             return;
           }
           setConvertingState(chartNumber, true);
+          const controller = new AbortController();
+          conversionAborts.set(chartNumber, controller);
           res.json({ success: true, chartNumber, message: 'Conversion started' });
 
           try {
@@ -4036,9 +4064,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 (status, message) => {
                   app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
                 },
-                { minzoom, maxzoom }
+                { minzoom, maxzoom, signal: controller.signal }
               );
 
+              controller.signal.throwIfAborted();
+              conversionAborts.delete(chartNumber);
               await installConvertedCharts(quarantineDir, [result.mbtilesFile], chartPath);
               app.debug(`Convert complete: ${chartNumber} → ${result.mbtilesFile}`);
             } else if (convType === 'rnc') {
@@ -4048,17 +4078,26 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
                 chartNumber,
                 (status, message) => {
                   app.debug(`Convert [${chartNumber}] ${status}: ${message}`);
-                }
+                },
+                { signal: controller.signal }
               );
 
+              controller.signal.throwIfAborted();
+              conversionAborts.delete(chartNumber);
               await installConvertedCharts(quarantineDir, result.mbtilesFiles, chartPath);
               app.debug(`Convert complete: ${chartNumber} → ${result.mbtilesFiles.join(', ')}`);
             }
           } catch (error) {
-            app.error(
-              `Convert failed for ${chartNumber}: ${error instanceof Error ? error.message : String(error)}`
-            );
+            if (controller.signal.aborted) {
+              markCancelled(chartNumber, convType === 's57');
+              app.debug(`Convert cancelled: ${chartNumber}`);
+            } else {
+              app.error(
+                `Convert failed for ${chartNumber}: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
           } finally {
+            conversionAborts.delete(chartNumber);
             setConvertingState(chartNumber, false);
             cleanupQuarantineDir(quarantineDir);
             cleanupDir(tmpDir);
@@ -4153,6 +4192,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           return;
         }
         setConvertingState(chartNumber, true);
+        const controller = new AbortController();
+        conversionAborts.set(chartNumber, controller);
         res.json({
           success: true,
           chartNumber,
@@ -4173,8 +4214,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               quarantineDir,
               chartNumber,
               onStatus,
-              { minzoom, maxzoom }
+              { minzoom, maxzoom, signal: controller.signal }
             );
+            controller.signal.throwIfAborted();
+            conversionAborts.delete(chartNumber);
             await installConvertedCharts(quarantineDir, [result.mbtilesFile], chartPath);
             app.debug(`Convert complete: ${chartNumber} → ${result.mbtilesFile}`);
           } else {
@@ -4183,16 +4226,25 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
               workDir,
               quarantineDir,
               chartNumber,
-              onStatus
+              onStatus,
+              { signal: controller.signal }
             );
+            controller.signal.throwIfAborted();
+            conversionAborts.delete(chartNumber);
             await installConvertedCharts(quarantineDir, result.mbtilesFiles, chartPath);
             app.debug(`Convert complete: ${chartNumber} → ${result.mbtilesFiles.join(', ')}`);
           }
         } catch (error) {
-          app.error(
-            `Convert failed for ${chartNumber}: ${error instanceof Error ? error.message : String(error)}`
-          );
+          if (controller.signal.aborted) {
+            markCancelled(chartNumber, isS57);
+            app.debug(`Convert cancelled: ${chartNumber}`);
+          } else {
+            app.error(
+              `Convert failed for ${chartNumber}: ${error instanceof Error ? error.message : String(error)}`
+            );
+          }
         } finally {
+          conversionAborts.delete(chartNumber);
           setConvertingState(chartNumber, false);
           cleanupQuarantineDir(quarantineDir);
           cleanupDir(workDir);

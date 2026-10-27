@@ -388,6 +388,16 @@ export function startMockServer(
     res.json({ success: true, chartNumber, looseFiles: 2, zips: 1, unreadableZips: 0 });
   });
 
+  router.post(`${PLUGIN_BASE}/convert-cancel/:chartNumber`, (req, res) => {
+    const { chartNumber } = req.params;
+    if (state.conversions[chartNumber]?.status !== 'converting') {
+      res.json({ success: true, message: 'Nothing running' });
+      return;
+    }
+    state.conversions[chartNumber] = { status: 'failed', message: 'Conversion cancelled', log: [] };
+    res.json({ success: true, message: 'Cancellation requested' });
+  });
+
   router.get(`${PLUGIN_BASE}/catalog-s57-status`, (_req, res) => {
     res.json({
       conversionAvailable: true,

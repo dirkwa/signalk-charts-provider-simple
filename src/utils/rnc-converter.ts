@@ -3,6 +3,7 @@ import path from 'path';
 import unzipper from 'unzipper';
 import { getCpuBudget } from './concurrency.js';
 import {
+  CONVERSION_ABORTED_MESSAGE,
   chooseConversionBackend,
   describeBackend,
   fallbackNote,
@@ -19,7 +20,12 @@ import { setMbtilesType } from './mbtiles-metadata.js';
 import { addRasterOverviews } from './raster-pyramid.js';
 import { convertKapFilesInContainer } from './rnc-container.js';
 import { extractTarArchive } from './tar-extract.js';
-import { TaskFailedError, forEachConcurrent, withWorkerPool } from './worker-pool.js';
+import {
+  PoolAbortedError,
+  TaskFailedError,
+  forEachConcurrent,
+  withWorkerPool
+} from './worker-pool.js';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -53,11 +59,39 @@ export function setConversionCompleted(chartNumber: string, message: string): vo
   setConversionResult(conversionProgress, chartNumber, 'completed', message);
 }
 
-async function extractZip(zipPath: string, targetDir: string): Promise<string[]> {
-  await fs
-    .createReadStream(zipPath)
-    .pipe(unzipper.Extract({ path: targetDir }))
-    .promise();
+export interface RncConversionOptions {
+  /**
+   * Aborting it kills the running container job (signalk-container >=
+   * 1.16.0) or terminates the conversion's worker threads; the conversion
+   * then fails with CONVERSION_ABORTED_MESSAGE.
+   */
+  signal?: AbortSignal;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error(CONVERSION_ABORTED_MESSAGE);
+  }
+}
+
+async function extractZip(
+  zipPath: string,
+  targetDir: string,
+  signal?: AbortSignal
+): Promise<string[]> {
+  throwIfAborted(signal);
+  const input = fs.createReadStream(zipPath);
+  const extract = unzipper.Extract({ path: targetDir });
+  const onAbort = (): void => {
+    input.destroy();
+    extract.destroy(new Error(CONVERSION_ABORTED_MESSAGE));
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    await input.pipe(extract).promise();
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
 
   const allFiles: string[] = [];
   const scan = (dir: string): void => {
@@ -134,14 +168,16 @@ async function convertBsbCharts(
   kapFiles: readonly string[],
   chartsDir: string,
   chartNumber: string,
-  statusFn: StatusCallback
+  statusFn: StatusCallback,
+  signal: AbortSignal | undefined
 ): Promise<RncConversionResult> {
+  throwIfAborted(signal);
   debug(`Found ${kapFiles.length} BSB chart file(s) to convert`);
   appendLog(chartNumber, `Found ${kapFiles.length} BSB chart file(s)`);
 
   statusFn('converting', `Converting ${kapFiles.length} BSB chart(s) to MBTiles...`);
   setConvertProgress(chartNumber, 'converting', `Converting ${kapFiles.length} chart(s)...`);
-  const mbtilesFiles = await convertKapFiles(kapFiles, chartsDir, chartNumber, statusFn);
+  const mbtilesFiles = await convertKapFiles(kapFiles, chartsDir, chartNumber, statusFn, signal);
 
   if (mbtilesFiles.length === 0) {
     throw new Error('No charts converted');
@@ -168,7 +204,8 @@ export async function processRncLocal(
   workDir: string,
   chartsDir: string,
   chartNumber: string,
-  onStatus: StatusCallback | null
+  onStatus: StatusCallback | null,
+  options: RncConversionOptions = {}
 ): Promise<RncConversionResult> {
   const statusFn = onStatus ?? (() => {});
   conversionProgress[chartNumber] = {
@@ -187,9 +224,12 @@ export async function processRncLocal(
           const message = `Extracting ${path.basename(zip)} (${String(index)}/${String(count)})...`;
           statusFn('extracting', message);
           setConvertProgress(chartNumber, 'extracting', message);
-        }
+        },
+        undefined,
+        options.signal
       ));
     } catch (err) {
+      throwIfAborted(options.signal);
       throw new Error(
         `Extracting the ZIP files failed: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err }
@@ -198,7 +238,7 @@ export async function processRncLocal(
     if (kapFiles.length === 0) {
       throw new Error('No .kap or .bsb files found');
     }
-    return await convertBsbCharts(kapFiles, chartsDir, chartNumber, statusFn);
+    return await convertBsbCharts(kapFiles, chartsDir, chartNumber, statusFn, options.signal);
   } catch (err) {
     setConversionFailed(
       chartNumber,
@@ -219,7 +259,8 @@ async function convertKapFiles(
   kapFiles: readonly string[],
   chartsDir: string,
   chartNumber: string,
-  statusFn: StatusCallback
+  statusFn: StatusCallback,
+  signal?: AbortSignal
 ): Promise<string[]> {
   const outputNames = chartOutputNames(kapFiles);
   const choice = await chooseConversionBackend({
@@ -247,9 +288,11 @@ async function convertKapFiles(
           chartsDir,
           outputNames,
           chartNumber,
-          reporter(chartNumber)
+          reporter(chartNumber),
+          signal
         )
-      : await convertKapFilesWithWasm(kapFiles, chartsDir, outputNames, chartNumber);
+      : await convertKapFilesWithWasm(kapFiles, chartsDir, outputNames, chartNumber, signal);
+  throwIfAborted(signal);
 
   const converted: string[] = [];
   for (const [index, kap] of kapFiles.entries()) {
@@ -299,11 +342,12 @@ async function convertKapFilesWithWasm(
   kapFiles: readonly string[],
   chartsDir: string,
   outputNames: readonly string[],
-  chartNumber: string
+  chartNumber: string,
+  signal: AbortSignal | undefined
 ): Promise<boolean[]> {
   const written = kapFiles.map(() => false);
   let started = 0;
-  await withWorkerPool(getCpuBudget().workersPerJob, undefined, async (pool) => {
+  await withWorkerPool(getCpuBudget().workersPerJob, signal, async (pool) => {
     await forEachConcurrent(kapFiles, pool.size, async (kap, index) => {
       started++;
       const friendly = path.basename(kap);
@@ -348,6 +392,9 @@ async function convertKapFilesWithWasm(
       }
       written[index] = true;
     });
+  }).catch((err: unknown) => {
+    // A cancelled pool rejects its tasks with PoolAbortedError.
+    throw err instanceof PoolAbortedError ? new Error(CONVERSION_ABORTED_MESSAGE) : err;
   });
   return written;
 }
@@ -356,7 +403,8 @@ export async function processRncZip(
   zipPath: string,
   chartsDir: string,
   chartNumber: string,
-  onStatus: StatusCallback | null
+  onStatus: StatusCallback | null,
+  options: RncConversionOptions = {}
 ): Promise<RncConversionResult> {
   const statusFn = onStatus ?? (() => {});
 
@@ -376,8 +424,9 @@ export async function processRncZip(
     setConvertProgress(chartNumber, 'extracting', 'Extracting BSB files...');
     let extracted: string[];
     try {
-      extracted = await extractZip(zipPath, tmpDir);
+      extracted = await extractZip(zipPath, tmpDir, options.signal);
     } catch (zipErr) {
+      throwIfAborted(options.signal);
       throw new Error(
         `Downloaded file is not a valid ZIP archive (${zipErr instanceof Error ? zipErr.message : String(zipErr)}). The server may have returned an error page instead.`,
         { cause: zipErr }
@@ -395,7 +444,7 @@ export async function processRncZip(
       throw new Error('No .kap or .bsb files found in ZIP archive');
     }
 
-    return await convertBsbCharts(kapFiles, chartsDir, chartNumber, statusFn);
+    return await convertBsbCharts(kapFiles, chartsDir, chartNumber, statusFn, options.signal);
   } catch (err) {
     if (chartNumber) {
       setConversionFailed(

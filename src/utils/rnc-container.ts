@@ -11,7 +11,7 @@ import path from 'path';
 import { withOutputChmod } from './container-fs.js';
 import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
 import { resolveJobPaths, runJob as runContainerJob } from './container-jobs.js';
-import type { ConversionReport } from './conversion-backend.js';
+import { CONVERSION_ABORTED_MESSAGE, type ConversionReport } from './conversion-backend.js';
 
 /** Container path of a resolved mount, with its named-volume subPath. */
 const mountPrefix = (root: string, subPath: string): string =>
@@ -28,13 +28,17 @@ export async function convertKapFilesInContainer(
   chartsDir: string,
   outputNames: readonly string[],
   label: string,
-  report: ConversionReport
+  report: ConversionReport,
+  signal?: AbortSignal
 ): Promise<boolean[]> {
   const written: boolean[] = [];
   const logLine = (line: string): void => {
     report.log(line);
   };
   for (const [index, kap] of kapFiles.entries()) {
+    if (signal?.aborted) {
+      throw new Error(CONVERSION_ABORTED_MESSAGE);
+    }
     const friendly = path.basename(kap);
     const outputName = outputNames[index];
     report.log(`PROGRESS: Converting ${friendly} (${index + 1}/${kapFiles.length})`);
@@ -81,6 +85,7 @@ export async function convertKapFilesInContainer(
       outputs: { '/output': resolved['/output'].source },
       // Single-process GDAL stage; one core is enough.
       resources: { cpus: 1 },
+      signal,
       onStdoutLine: logLine,
       onStderrLine: logLine
     });
@@ -101,6 +106,7 @@ export async function convertKapFilesInContainer(
       ),
       outputs: { '/output': resolved['/output'].source },
       resources: { cpus: 1 },
+      signal,
       onStdoutLine: logLine,
       onStderrLine: logLine
     });

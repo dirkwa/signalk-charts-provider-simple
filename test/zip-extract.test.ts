@@ -301,6 +301,21 @@ describe('extractMbtilesFromZip', () => {
 });
 
 describe('extractZipSafely', () => {
+  it('stops before the next entry once its signal aborts', async () => {
+    const zip = writeZip('cancel.zip', [
+      { name: 'ENC_ROOT/A/A.000', data: Buffer.from('A') },
+      { name: 'ENC_ROOT/B/B.000', data: Buffer.from('B') }
+    ]);
+    const dest = destDir('cancel');
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(extractZipSafely(zip, dest, {}, controller.signal), {
+      name: 'AbortError'
+    });
+    assert.deepEqual(fs.readdirSync(dest), []);
+  });
+
   it('preserves the archive directory structure', async () => {
     const zip = writeZip('tree.zip', [
       { name: 'ENC_ROOT/US5NY1CM/US5NY1CM.000', data: Buffer.from('CELL') },

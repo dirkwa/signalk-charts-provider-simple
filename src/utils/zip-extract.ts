@@ -180,20 +180,23 @@ async function writeEntry(entry: ZipEntry, target: string, remaining: number): P
  * Extract every file entry into `destDir`, preserving the archive's internal
  * directory structure. Entries that would resolve outside `destDir` are
  * skipped rather than treated as fatal — a stray absolute path in an
- * otherwise good ENC archive shouldn't lose the whole bundle.
+ * otherwise good ENC archive shouldn't lose the whole bundle. Aborting
+ * `signal` stops before the next entry.
  *
  * Returns the number of files written.
  */
 export async function extractZipSafely(
   zipPath: string,
   destDir: string,
-  limits: ExtractLimits = {}
+  limits: ExtractLimits = {},
+  signal?: AbortSignal
 ): Promise<number> {
   const { files, bounds } = await openAndValidate(zipPath, limits);
 
   let written = 0;
   let bytesWritten = 0;
   for (const entry of files) {
+    signal?.throwIfAborted();
     const target = path.join(destDir, entry.path);
     // Zip-slip guard: never write outside destDir, regardless of entry path.
     if (!isWithinBase(target, destDir)) {
