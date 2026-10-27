@@ -1,4 +1,5 @@
 import os from 'os';
+import v8 from 'node:v8';
 
 export type CpuBudgetPreset = 'single-core' | 'half' | 'all';
 
@@ -74,4 +75,63 @@ export function getCpuBudget(): ResolvedBudget {
 /** For tests: pure function over a synthetic CPU count. */
 export function _computeBudgetForTests(preset: CpuBudgetPreset, cpus: number): ResolvedBudget {
   return resolveBudget(preset, cpus);
+}
+
+/**
+ * Memory one tile worker can take on a dense ENC set: Rotterdam's harbour
+ * cells, the densest measured, tiled in 1.4 GB with a 768 MB heap.
+ */
+const TILE_WORKER_MEMORY_MB = 1536;
+/** Below this a worker's heap holds too little to tile any band. */
+const MIN_TILE_HEAP_MB = 256;
+
+export interface TilePoolSize {
+  workers: number;
+  /** Old-generation limit of each worker; undefined leaves V8's default. */
+  heapMb: number | undefined;
+}
+
+/**
+ * How many tile workers fit in the memory that is free, at most the CPU
+ * budget's `workersPerJob`, and the heap each may grow to. V8 grows a heap
+ * up to its default limit before it collects in earnest, so without a
+ * limit the workers together can take more than the host has, and the
+ * kernel then kills the whole server rather than one task. Half of each
+ * worker's share goes to the heap; the rest is GDAL's and the tiles'
+ * buffers, which live outside it.
+ *
+ * A server started with `--max-old-space-size` gives every worker that
+ * heap, and a worker's own limit cannot lower it (`heapFixed`), so each
+ * worker then counts as twice that heap.
+ */
+export function tilePoolSize(
+  workersPerJob: number,
+  availableMb: number,
+  defaultHeapMb: number,
+  heapFixed = false
+): TilePoolSize {
+  const perWorkerMb = heapFixed
+    ? Math.max(TILE_WORKER_MEMORY_MB, 2 * defaultHeapMb)
+    : TILE_WORKER_MEMORY_MB;
+  const workers = Math.max(1, Math.min(workersPerJob, Math.floor(availableMb / perWorkerMb)));
+  if (heapFixed) {
+    return { workers, heapMb: undefined };
+  }
+  const heap = Math.max(MIN_TILE_HEAP_MB, Math.floor(availableMb / workers / 2));
+  return { workers, heapMb: heap < defaultHeapMb ? heap : undefined };
+}
+
+const MB = 1024 * 1024;
+
+const HEAP_FLAG = '--max-old-space-size';
+
+/** `tilePoolSize` for this host now, within the live CPU budget. */
+export function getTilePoolSize(): TilePoolSize {
+  const flags = [...process.execArgv, ...(process.env.NODE_OPTIONS ?? '').split(/\s+/)];
+  return tilePoolSize(
+    current.workersPerJob,
+    process.availableMemory() / MB,
+    v8.getHeapStatistics().heap_size_limit / MB,
+    flags.some((flag) => flag.startsWith(HEAP_FLAG))
+  );
 }

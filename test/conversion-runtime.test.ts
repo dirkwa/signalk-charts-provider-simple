@@ -86,6 +86,37 @@ describe('WorkerPool', () => {
     }
   });
 
+  it('runs tasks on workers with a heap limit', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-pool-'));
+    try {
+      const shard = path.join(tmp, 'shard.ndjson');
+      const feature = {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'Point', coordinates: [0.001, 0.001] }
+      };
+      fs.writeFileSync(shard, `0\t${JSON.stringify(feature)}\n`);
+      await withWorkerPool({ workers: 1, heapMb: 256 }, undefined, async (pool) => {
+        const done = await pool.run({
+          op: 'tile-shard',
+          shard: {
+            files: [shard],
+            groups: [{ layer: 'X', minzoom: 2, maxzoom: 3 }],
+            z: 2,
+            x: 2,
+            y: 1,
+            extent: 4096,
+            buffer: 64,
+            gzip: false
+          }
+        });
+        assert.ok(done.tiles > 0);
+      });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('reports a failed task as a TaskFailedError', async () => {
     await withWorkerPool(1, undefined, async (pool) => {
       await assert.rejects(

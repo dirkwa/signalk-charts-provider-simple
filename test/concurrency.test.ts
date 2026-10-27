@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 
-import { _computeBudgetForTests, setCpuBudget, getCpuBudget } from '../dist/utils/concurrency.js';
+import {
+  _computeBudgetForTests,
+  setCpuBudget,
+  getCpuBudget,
+  getTilePoolSize,
+  tilePoolSize
+} from '../dist/utils/concurrency.js';
 
 describe('cpu budget presets', () => {
   describe('_computeBudgetForTests (pure mapping)', () => {
@@ -123,6 +129,37 @@ describe('cpu budget presets', () => {
       setCpuBudget(null);
       const b = getCpuBudget();
       assert.ok(b.maxConcurrentConversions >= 1);
+    });
+  });
+
+  describe('tilePoolSize', () => {
+    it('keeps the CPU budget and V8 default heap when memory is plentiful', () => {
+      assert.deepStrictEqual(tilePoolSize(2, 20000, 4144), { workers: 2, heapMb: undefined });
+    });
+
+    it('runs fewer workers when the free memory holds fewer', () => {
+      assert.deepStrictEqual(tilePoolSize(4, 3500, 4144), { workers: 2, heapMb: 875 });
+    });
+
+    it('keeps one worker with a smaller heap when memory is short', () => {
+      assert.deepStrictEqual(tilePoolSize(2, 1200, 2096), { workers: 1, heapMb: 600 });
+      assert.deepStrictEqual(tilePoolSize(2, 300, 2096), { workers: 1, heapMb: 256 });
+    });
+
+    it('never raises the heap above V8 default', () => {
+      assert.deepStrictEqual(tilePoolSize(1, 12000, 2096), { workers: 1, heapMb: undefined });
+    });
+
+    it('counts a worker as twice a heap set with --max-old-space-size', () => {
+      assert.deepStrictEqual(tilePoolSize(4, 9000, 2096, true), { workers: 2, heapMb: undefined });
+      assert.deepStrictEqual(tilePoolSize(4, 9000, 512, true), { workers: 4, heapMb: undefined });
+      assert.deepStrictEqual(tilePoolSize(4, 1000, 4144, true), { workers: 1, heapMb: undefined });
+    });
+
+    it('reads this host within the live budget', () => {
+      setCpuBudget('single-core');
+      assert.strictEqual(getTilePoolSize().workers, 1);
+      setCpuBudget(undefined);
     });
   });
 });

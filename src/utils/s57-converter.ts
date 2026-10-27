@@ -12,7 +12,7 @@ import type {
   StatusCallback
 } from '../types.js';
 import { sanitizeChartFilename } from './catalog-title.js';
-import { getCpuBudget } from './concurrency.js';
+import { getCpuBudget, getTilePoolSize } from './concurrency.js';
 import {
   CONVERSION_ABORTED_MESSAGE,
   chooseConversionBackend,
@@ -690,7 +690,16 @@ async function tileS57WithWasm(
     throw new Error(CONVERSION_ABORTED_MESSAGE);
   }
 
-  await withWorkerPool(workers, options.signal, async (pool) => {
+  const tilePool = getTilePoolSize();
+  if (tilePool.workers < workers || tilePool.heapMb !== undefined) {
+    appendLog(
+      chartNumber,
+      `Tiling with ${tilePool.workers} worker(s)` +
+        (tilePool.heapMb === undefined ? '' : `, ${tilePool.heapMb} MB heap each`) +
+        ', to fit the free memory'
+    );
+  }
+  await withWorkerPool(tilePool, options.signal, async (pool) => {
     const sources = planTileSources(geojsonDir, userMinzoom, userMaxzoom);
     if (sources.length === 0) {
       throw new Error('No valid GeoJSON layers to process');

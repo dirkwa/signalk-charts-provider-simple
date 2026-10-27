@@ -6,8 +6,8 @@
  * GDAL call or a tile shard at once rather than at the next boundary.
  *
  * The pool's size is the conversion's share of the CPU budget
- * (concurrency.ts); workers start on demand, so a one-file conversion starts
- * one.
+ * (concurrency.ts), and for tiling also what the free memory holds;
+ * workers start on demand, so a one-file conversion starts one.
  */
 
 import { Worker } from 'node:worker_threads';
@@ -71,7 +71,9 @@ export class WorkerPool {
 
   constructor(
     readonly size: number,
-    private readonly signal?: AbortSignal
+    private readonly signal?: AbortSignal,
+    /** Old-generation limit of each worker; undefined leaves V8's default. */
+    private readonly heapMb?: number
   ) {
     signal?.addEventListener('abort', this.onAbort, { once: true });
   }
@@ -140,7 +142,10 @@ export class WorkerPool {
   }
 
   private spawn(): PoolWorker {
-    const worker = new Worker(new URL('./conversion-worker.js', import.meta.url));
+    const worker = new Worker(
+      new URL('./conversion-worker.js', import.meta.url),
+      this.heapMb === undefined ? {} : { resourceLimits: { maxOldGenerationSizeMb: this.heapMb } }
+    );
     const entry: PoolWorker = { worker, current: null };
     this.workers.push(entry);
     worker.on('message', (reply: WorkerReply) => {
@@ -199,13 +204,17 @@ export class WorkerPool {
 
 /**
  * Run `body` with a pool of `size` workers, closing it however `body` ends.
+ * `size` may also carry each worker's old-generation limit.
  */
 export async function withWorkerPool<T>(
-  size: number,
+  size: number | { workers: number; heapMb: number | undefined },
   signal: AbortSignal | undefined,
   body: (pool: WorkerPool) => Promise<T>
 ): Promise<T> {
-  const pool = new WorkerPool(size, signal);
+  const pool =
+    typeof size === 'number'
+      ? new WorkerPool(size, signal)
+      : new WorkerPool(size.workers, signal, size.heapMb);
   try {
     return await body(pool);
   } finally {
