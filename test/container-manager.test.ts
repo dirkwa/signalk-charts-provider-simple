@@ -301,3 +301,23 @@ describe('waitForContainerManager — plugin list', () => {
     assert.strictEqual(result, manager);
   });
 });
+
+describe('getContainerManager — a manager published after discovery gave up', () => {
+  it('takes it up once its runtime is detected, without a conversion', async () => {
+    const gaveUp = await waitForContainerManager({
+      budgetMs: 1000,
+      isInstalled: () => Promise.resolve(false)
+    });
+    assert.strictEqual(gaveUp, null);
+    assert.strictEqual(getContainerManager(), null);
+
+    let runtime: ContainerRuntimeInfo | null = null;
+    const manager = makeManager(null);
+    manager.getRuntime = () => runtime;
+    globalThis[GLOBAL_KEY] = manager;
+    assert.strictEqual(getContainerManager(), null, 'not before its runtime is detected');
+
+    runtime = { runtime: 'podman', version: '5.0.0' };
+    assert.strictEqual(getContainerManager(), manager);
+  });
+});

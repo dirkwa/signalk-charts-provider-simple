@@ -288,32 +288,39 @@ async function discoverContainerManager(opts: {
   return null;
 }
 
-/**
- * Return the manager last resolved by `waitForContainerManager`, or
- * null if discovery hasn't run / has failed.  Converters use this as
- * a synchronous accessor; they're only called after `start()` has
- * already populated the slot.
- */
-export function getContainerManager(): ContainerManagerApi | null {
-  return resolvedManager;
-}
-
-/**
- * The manager once discovery has settled: waits for a discovery still
- * running, and takes up a manager signalk-container published after the
- * discovery gave up (a slow runtime detection, or the plugin enabled later),
- * once its runtime is detected. Null when there is none.
- */
-export async function settledContainerManager(): Promise<ContainerManagerApi | null> {
-  if (pendingDiscovery) {
-    await pendingDiscovery;
-  }
+// A manager signalk-container published after discovery gave up (a slow
+// runtime detection, or the plugin enabled later), once its runtime is
+// detected.
+function adoptPublishedManager(): void {
   if (!resolvedManager) {
     const candidate = publishedManager();
     if (candidate?.getRuntime()) {
       resolvedManager = candidate;
     }
   }
+}
+
+/**
+ * The manager discovery resolved, or one published since discovery gave up;
+ * null while a discovery still runs, or when there is none. Never waits, so
+ * converters and the status route can call it synchronously.
+ */
+export function getContainerManager(): ContainerManagerApi | null {
+  if (!pendingDiscovery) {
+    adoptPublishedManager();
+  }
+  return resolvedManager;
+}
+
+/**
+ * The manager once discovery has settled: waits for a discovery still
+ * running, then as `getContainerManager`. Null when there is none.
+ */
+export async function settledContainerManager(): Promise<ContainerManagerApi | null> {
+  if (pendingDiscovery) {
+    await pendingDiscovery;
+  }
+  adoptPublishedManager();
   return resolvedManager;
 }
 
