@@ -95,9 +95,7 @@ export interface InternetGateOptions {
 export class InternetGate {
   private value: unknown = undefined;
   private firstState: Promise<void> | null = null;
-  /** From the start of a wait for a state until it ends, also while the plugin list is asked. */
-  private waiting = false;
-  /** Ends the wait in progress for a state. */
+  /** Set exactly while a wait for a state runs, from before the plugin list is asked. */
   private endWait: (() => void) | null = null;
   private stopped = false;
   private held: (() => void)[] = [];
@@ -180,7 +178,7 @@ export class InternetGate {
       return;
     }
     // signalk-internet stopped: disabled, or restarting with a probe to come.
-    if (!this.waiting) {
+    if (this.endWait === null) {
       this.firstState = null;
     }
     void this.firstStateKnown().then(() => {
@@ -189,8 +187,14 @@ export class InternetGate {
   }
 
   private runHeld(): void {
-    // A usable state may already have been replaced by a restricted one.
-    if (this.stopped || this.held.length === 0 || !this.mayRunBackground()) {
+    // A usable state may already have been replaced by a restricted one, or a
+    // restart of signalk-internet may have started a new wait.
+    if (
+      this.stopped ||
+      this.held.length === 0 ||
+      this.endWait !== null ||
+      !this.mayRunBackground()
+    ) {
       return;
     }
     const tasks = this.held;
@@ -201,31 +205,31 @@ export class InternetGate {
   }
 
   private async waitForState(): Promise<void> {
-    this.waiting = true;
-    try {
-      if (this.state() !== undefined) {
-        return;
-      }
-      // The bound starts before the plugin list is asked, so a slow answer cannot stretch it.
-      const bounded = new Promise<void>((resolve) => {
-        const done = (): void => {
-          clearTimeout(timer);
-          this.endWait = null;
-          resolve();
-        };
-        const timer = setTimeout(done, FIRST_STATE_WAIT_MS);
-        timer.unref();
-        this.endWait = done;
-      });
-      const enabled = await Promise.race([this.publisherEnabled(), bounded.then(() => false)]);
-      if (!enabled || this.stopped || this.state() !== undefined) {
-        this.endWait?.();
-        return;
-      }
-      await bounded;
-    } finally {
-      this.waiting = false;
+    if (this.state() !== undefined) {
+      return;
     }
+    // The bound starts before the plugin list is asked, so a slow answer cannot stretch it.
+    let end: () => void = () => undefined;
+    const bounded = new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        // A later wait may have started since; it keeps its own end.
+        if (this.endWait === done) {
+          this.endWait = null;
+        }
+        resolve();
+      };
+      const timer = setTimeout(done, FIRST_STATE_WAIT_MS);
+      timer.unref();
+      this.endWait = done;
+      end = done;
+    });
+    const enabled = await Promise.race([this.publisherEnabled(), bounded.then(() => false)]);
+    if (!enabled || this.stopped || this.state() !== undefined) {
+      end();
+      return;
+    }
+    await bounded;
   }
 
   /** Asked at the time, not at start: the server adds a plugin to its list only after starting it. */

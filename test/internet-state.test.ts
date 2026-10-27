@@ -186,6 +186,24 @@ describe('InternetGate', () => {
     assert.strictEqual(runs, 1);
   });
 
+  it('keeps work held when signalk-internet restarts right after a state', async () => {
+    const { gate, publish } = setup({ state: 'metered', plugins: enabled });
+    await gate.firstStateKnown();
+    let runs = 0;
+    gate.runWhenBackgroundAllowed(() => runs++);
+    publish(null);
+    await settle();
+    // The state ends the wait; the null comes before that wait has finished.
+    publish('metered');
+    publish(null);
+    assert.strictEqual(await isSettled(gate.firstStateKnown()), false, 'waits again');
+    assert.strictEqual(runs, 0);
+    publish('online');
+    await settle();
+    assert.strictEqual(runs, 1);
+    gate.stop();
+  });
+
   it('releases held work after a bounded wait when a restarted signalk-internet stays silent', async () => {
     mock.timers.enable({ apis: ['setTimeout'] });
     try {
