@@ -667,26 +667,30 @@ async function tileS57WithWasm(
       bucketPercent
     });
   };
-  await withWorkerPool(workers, options.signal, async (pool) => {
-    statusFn('converting', 'Converting S-57 layers to GeoJSON...');
-    emit('export', options.geojsonFor ? -1 : 0);
-    if (options.geojsonFor) {
-      appendLog(chartNumber, `Using the kept GeoJSON of ${encFiles.length} cell(s)`);
-      await options.geojsonFor(encFiles, geojsonDir);
-    } else {
-      setProgress(chartNumber, 'converting', `Exporting ${encFiles.length} ENC files...`);
-      appendLog(
-        chartNumber,
-        `Exporting ${encFiles.length} ENC file(s) with GDAL (WebAssembly), ${workers} worker(s)`
-      );
-      await exportAllLayersToGeoJSON(encFiles, geojsonDir, chartNumber, pool, (pct) => {
+  statusFn('converting', 'Converting S-57 layers to GeoJSON...');
+  emit('export', options.geojsonFor ? -1 : 0);
+  if (options.geojsonFor) {
+    appendLog(chartNumber, `Using the kept GeoJSON of ${encFiles.length} cell(s)`);
+    await options.geojsonFor(encFiles, geojsonDir);
+  } else {
+    setProgress(chartNumber, 'converting', `Exporting ${encFiles.length} ENC files...`);
+    appendLog(
+      chartNumber,
+      `Exporting ${encFiles.length} ENC file(s) with GDAL (WebAssembly), ${workers} worker(s)`
+    );
+    // A pool of its own: a GDAL instance's WASM heap never shrinks, so
+    // workers that exported would carry it through tiling.
+    await withWorkerPool(workers, options.signal, (pool) =>
+      exportAllLayersToGeoJSON(encFiles, geojsonDir, chartNumber, pool, (pct) => {
         emit('export', pct);
-      });
-    }
-    if (options.isAborted?.() || options.signal?.aborted) {
-      throw new Error(CONVERSION_ABORTED_MESSAGE);
-    }
+      })
+    );
+  }
+  if (options.isAborted?.() || options.signal?.aborted) {
+    throw new Error(CONVERSION_ABORTED_MESSAGE);
+  }
 
+  await withWorkerPool(workers, options.signal, async (pool) => {
     const sources = planTileSources(geojsonDir, userMinzoom, userMaxzoom);
     if (sources.length === 0) {
       throw new Error('No valid GeoJSON layers to process');
