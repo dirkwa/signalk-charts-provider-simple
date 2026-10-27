@@ -77,6 +77,13 @@ interface GroupIndex {
 
 type VtTile = NonNullable<ReturnType<GeoJSONVT['getTile']>>;
 
+interface VisitedTile {
+  vz: number;
+  vx: number;
+  vy: number;
+  groups: GroupIndex[];
+}
+
 // geojson-vt's tile id (its `toID`), for dropping visited tiles.
 const tileId = (z: number, x: number, y: number): number => ((1 << z) * y + x) * 32 + z;
 
@@ -277,8 +284,19 @@ function rerootGeometry(geometry: GeoJSON.Geometry, frame: ShardFrame): GeoJSON.
   }
 }
 
-function readShard(task: ShardTask): Map<number, GeoJSON.Feature[]> {
-  const byGroup = new Map<number, GeoJSON.Feature[]>();
+// NDJSON characters of features a shard holds parsed before they go into an
+// index. A parsed GeoJSON feature takes several times its text; the index
+// keeps the geometry in compact typed arrays, so features are indexed in
+// chunks instead of all of a shard's at once.
+const limits = { pendingChars: 32 * 1024 * 1024 };
+
+/**
+ * Read a shard into geojson-vt indexes, one or more per group: once the
+ * parsed features waiting for an index pass `limits.pendingChars`, the group holding
+ * most of them is indexed and its features let go. Several indexes of one
+ * group together hold its features, and the walk merges them into its layer.
+ */
+function indexShard(task: ShardTask): GroupIndex[] {
   const margin = task.buffer / task.extent;
   const frame: ShardFrame = {
     scale: 2 ** task.z,
@@ -287,6 +305,50 @@ function readShard(task: ShardTask): Map<number, GeoJSON.Feature[]> {
     lo: -margin,
     hi: 1 + margin
   };
+  // A real zoom as a zoom of the re-rooted indexes.
+  const local = (zoom: number): number => zoom - task.z + ROOT_Z;
+  // Indexes in the order their groups first appear in the shard, chunks of
+  // a group in the order they were read: the order a tile's layers and
+  // features are written in.
+  const indexes: { rank: number; index: GroupIndex }[] = [];
+  const rank = new Map<number, number>();
+  const pending = new Map<number, { features: GeoJSON.Feature[]; chars: number }>();
+  let pendingChars = 0;
+
+  const index = (group: number): void => {
+    const chunk = pending.get(group);
+    const meta = task.groups[group] as ShardGroup | undefined;
+    if (!chunk || !meta) {
+      return;
+    }
+    pending.delete(group);
+    pendingChars -= chunk.chars;
+    indexes.push({
+      rank: rank.get(group) ?? 0,
+      index: {
+        layer: meta.layer,
+        minzoom: meta.minzoom,
+        maxzoom: meta.maxzoom,
+        // tolerance 0: charts keep every vertex (tippecanoe ran with
+        // --no-line-simplification / --no-tiny-polygon-reduction for the same
+        // reason — simplification eats harbour basins and narrow channels).
+        // indexMaxZoom 0: build nothing up front; the walk drills to each
+        // tile it needs.
+        index: new GeoJSONVT(
+          { type: 'FeatureCollection', features: chunk.features },
+          {
+            maxZoom: local(meta.maxzoom),
+            indexMaxZoom: 0,
+            indexMaxPoints: 0,
+            tolerance: 0,
+            extent: task.extent,
+            buffer: task.buffer
+          }
+        )
+      }
+    });
+  };
+
   for (const file of task.files) {
     forEachLine(file, (line) => {
       const tab = line.indexOf('\t');
@@ -294,6 +356,10 @@ function readShard(task: ShardTask): Map<number, GeoJSON.Feature[]> {
         return;
       }
       const group = Number(line.slice(0, tab));
+      const meta = task.groups[group] as ShardGroup | undefined;
+      if (!meta || meta.maxzoom < task.z) {
+        return;
+      }
       const feature = JSON.parse(line.slice(tab + 1)) as GeoJSON.Feature;
       const geometry = feature.geometry as GeoJSON.Geometry | null;
       const rerooted = geometry ? rerootGeometry(geometry, frame) : null;
@@ -301,12 +367,32 @@ function readShard(task: ShardTask): Map<number, GeoJSON.Feature[]> {
         return;
       }
       feature.geometry = rerooted;
-      const list = byGroup.get(group) ?? [];
-      list.push(feature);
-      byGroup.set(group, list);
+      if (!rank.has(group)) {
+        rank.set(group, rank.size);
+      }
+      let chunk = pending.get(group);
+      if (!chunk) {
+        chunk = { features: [], chars: 0 };
+        pending.set(group, chunk);
+      }
+      chunk.features.push(feature);
+      chunk.chars += line.length;
+      pendingChars += line.length;
+      if (pendingChars > limits.pendingChars) {
+        let largest = group;
+        for (const [g, c] of pending) {
+          if (c.chars > (pending.get(largest)?.chars ?? 0)) {
+            largest = g;
+          }
+        }
+        index(largest);
+      }
     });
   }
-  return byGroup;
+  for (const group of [...pending.keys()]) {
+    index(group);
+  }
+  return indexes.sort((a, b) => a.rank - b.rank).map((entry) => entry.index);
 }
 
 /**
@@ -314,38 +400,9 @@ function readShard(task: ShardTask): Map<number, GeoJSON.Feature[]> {
  * tiles emitted.
  */
 export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void): number {
-  const byGroup = readShard(task);
+  const indexes = indexShard(task);
   // A real zoom as a zoom of the re-rooted indexes.
   const local = (zoom: number): number => zoom - task.z + ROOT_Z;
-  const indexes: GroupIndex[] = [];
-  for (const [group, features] of byGroup) {
-    const meta = task.groups[group] as ShardGroup | undefined;
-    if (!meta || features.length === 0 || meta.maxzoom < task.z) {
-      continue;
-    }
-    indexes.push({
-      layer: meta.layer,
-      minzoom: meta.minzoom,
-      maxzoom: meta.maxzoom,
-      // tolerance 0: charts keep every vertex (tippecanoe ran with
-      // --no-line-simplification / --no-tiny-polygon-reduction for the same
-      // reason — simplification eats harbour basins and narrow channels).
-      // indexMaxZoom 0: build nothing up front; the walk below drills to
-      // each tile it needs.
-      index: new GeoJSONVT(
-        { type: 'FeatureCollection', features },
-        {
-          maxZoom: local(meta.maxzoom),
-          indexMaxZoom: 0,
-          indexMaxPoints: 0,
-          tolerance: 0,
-          extent: task.extent,
-          buffer: task.buffer
-        }
-      )
-    });
-  }
-  byGroup.clear();
 
   let count = 0;
   let batch: EncodedTile[] = [];
@@ -361,7 +418,10 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
   const stack: { z: number; vx: number; vy: number; active: GroupIndex[] }[] = [
     { z: task.z, vx: ROOT_XY, vy: ROOT_XY, active: indexes }
   ];
-  const visited: { vz: number; vx: number; vy: number; groups: GroupIndex[] }[] = [];
+  // A tile's entry is needed only to drill its children from, which happens
+  // when the first of them is visited, right after it (depth-first), so each
+  // tile is forgotten once the next one has been visited.
+  let previous: VisitedTile | null = null;
   while (stack.length > 0) {
     const node = stack.pop();
     if (!node) {
@@ -419,14 +479,14 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
         stack.push({ z: z + 1, vx: vx * 2 + dx, vy: vy * 2 + dy, active: deeper });
       }
     }
-    // Children are pushed above this tile, so by the time the stack drops
-    // back below this depth they are done; forget visited tiles lazily.
-    visited.push({ vz, vx, vy, groups: next });
-    if (visited.length > 4096) {
-      forget(visited.splice(0, visited.length - 64));
+    if (previous) {
+      forget(previous);
     }
+    previous = { vz, vx, vy, groups: next };
   }
-  forget(visited);
+  if (previous) {
+    forget(previous);
+  }
   flush();
   return count;
 }
@@ -435,17 +495,12 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
 // walk's path are passed in: geojson-vt rebuilds any it is asked for again
 // from the nearest cached ancestor, so an early drop costs time, not
 // correctness.
-function forget(
-  tiles: readonly { vz: number; vx: number; vy: number; groups: GroupIndex[] }[]
-): void {
-  for (const { vz, vx, vy, groups } of tiles) {
-    const id = tileId(vz, vx, vy);
-    for (const g of groups) {
-      // geojson-vt documents `tiles` as public API; its typings omit it.
-
-      delete (g.index as unknown as { tiles: Record<number, unknown> }).tiles[id];
-      g.index.tileCoords.length = 0;
-    }
+function forget({ vz, vx, vy, groups }: VisitedTile): void {
+  const id = tileId(vz, vx, vy);
+  for (const g of groups) {
+    // geojson-vt documents `tiles` as public API; its typings omit it.
+    delete (g.index as unknown as { tiles: Record<number, unknown> }).tiles[id];
+    g.index.tileCoords.length = 0;
   }
 }
 
@@ -765,3 +820,5 @@ export function mergeTiles(task: MergeTask): EncodedTile[] {
     return { z, x, y, data: gzip(data) };
   });
 }
+
+export const _testInternals = { limits };

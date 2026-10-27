@@ -9,7 +9,7 @@ import { VectorTile } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
 
 import { buildVectorMbtiles, groupSources } from '../dist/utils/vector-tiler.js';
-import { tileProperties } from '../dist/utils/vector-tile-shard.js';
+import { _testInternals, tileProperties, tileShard } from '../dist/utils/vector-tile-shard.js';
 import { withWorkerPool } from '../dist/utils/worker-pool.js';
 
 type Position = [number, number];
@@ -59,6 +59,72 @@ describe('tileProperties', () => {
       tileProperties({ COLOUR: ['1', '3'], DRVAL1: 2.5, OBJNAM: null, LIT: true, NAME: 'x' }),
       { COLOUR: '1,3', DRVAL1: 2.5, LIT: true, NAME: 'x' }
     );
+  });
+});
+
+describe('tileShard', () => {
+  let dir: string;
+  before(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tile-shard-'));
+  });
+  after(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function tileAll(file: string): Map<string, Buffer> {
+    const tiles = new Map<string, Buffer>();
+    tileShard(
+      {
+        files: [file],
+        groups: [
+          { layer: 'LNDARE', minzoom: 0, maxzoom: 5 },
+          { layer: 'DEPARE', minzoom: 2, maxzoom: 6 }
+        ],
+        z: 0,
+        x: 0,
+        y: 0,
+        extent: 4096,
+        buffer: 64,
+        gzip: false
+      },
+      (batch) => {
+        for (const t of batch) {
+          tiles.set(`${t.z}/${t.x}/${t.y}`, Buffer.from(t.data));
+        }
+      }
+    );
+    return tiles;
+  }
+
+  it('writes the same tiles when a shard is indexed in chunks', () => {
+    const file = path.join(dir, 'shard.ndjson');
+    const lines: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const west = -170 + i * 8;
+      const feature = {
+        type: 'Feature',
+        properties: { n: i },
+        geometry: { type: 'Polygon', coordinates: square(west, -40 + i, west + 5, -30 + i) }
+      };
+      lines.push(`${i % 2}\t${JSON.stringify(feature)}`);
+    }
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+
+    const whole = tileAll(file);
+    const saved = _testInternals.limits.pendingChars;
+    _testInternals.limits.pendingChars = 1;
+    let chunked: Map<string, Buffer>;
+    try {
+      chunked = tileAll(file);
+    } finally {
+      _testInternals.limits.pendingChars = saved;
+    }
+
+    assert.ok(whole.size > 40);
+    assert.deepStrictEqual([...chunked.keys()].sort(), [...whole.keys()].sort());
+    for (const [key, data] of whole) {
+      assert.ok(chunked.get(key)?.equals(data), `tile ${key} differs`);
+    }
   });
 });
 
