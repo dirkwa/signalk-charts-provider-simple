@@ -1213,10 +1213,10 @@ export async function rasterizeLandInContainer(opts: {
       'GTiff',
       '-co',
       'COMPRESS=LZW',
-      // From GSHHG's intermediate resolution up (and the high and full
-      // shapefile basemaps) the raster is past 4 GB uncompressed, and even
-      // compressed may outgrow a classic TIFF; GDAL only switches to BigTIFF
-      // unasked when it can tell an uncompressed file needs it.
+      // For the high and full shapefile basemaps the raster is past 4 GB
+      // uncompressed, and even compressed may outgrow a classic TIFF; GDAL
+      // only switches to BigTIFF unasked when it can tell an uncompressed
+      // file needs it.
       '-co',
       'BIGTIFF=IF_SAFER',
       `${mounts['/input'].prefix}/${path.basename(opts.shp)}`,

@@ -39,6 +39,11 @@ const FETCH_TIMEOUT_MS = 20000;
 // often than this when the UI opens only costs bandwidth.
 const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
+// Catalogs this plugin no longer installs from. GSHHG was converted from
+// NOAA's shapefiles, which NCEI decommissioned; the OSM basemaps cover the
+// same need. The published catalog keeps them for other consumers.
+const RETIRED_CATALOGS: ReadonlySet<string> = new Set(['GSHHG_Catalog.xml']);
+
 /**
  * What this plugin needs from a chartcatalogs entry, and nothing more. The
  * published schema also constrains facets (category, regions, bbox) with
@@ -506,18 +511,20 @@ export function getCatalogRegistry(): CatalogRegistryInfo[] {
     return [];
   }
   const fetchedAt = loaded.fetchedAt;
-  return [...loaded.chartcatalogs.values()].map((entry) => ({
-    file: entry.file,
-    label: entry.label,
-    category: downloadCategory(entry),
-    chartCount: entry.charts.length,
-    cachedAt: fetchedAt,
-    facets: {
-      ...(entry.category !== undefined ? { category: entry.category } : {}),
-      ...(entry.format !== undefined ? { format: entry.format } : {}),
-      ...(entry.bbox !== undefined ? { bbox: entry.bbox } : {})
-    }
-  }));
+  return [...loaded.chartcatalogs.values()]
+    .filter((entry) => !RETIRED_CATALOGS.has(entry.file))
+    .map((entry) => ({
+      file: entry.file,
+      label: entry.label,
+      category: downloadCategory(entry),
+      chartCount: entry.charts.length,
+      cachedAt: fetchedAt,
+      facets: {
+        ...(entry.category !== undefined ? { category: entry.category } : {}),
+        ...(entry.format !== undefined ? { format: entry.format } : {}),
+        ...(entry.bbox !== undefined ? { bbox: entry.bbox } : {})
+      }
+    }));
 }
 
 /** One chartcatalogs catalog in the shape the tab and download flow use. */
@@ -558,8 +565,12 @@ export function classifyUrl(
     return { supported: false, format: 'zip', label: 'ZIP archive - not yet supported' };
   }
   if (lower.endsWith('.tar.xz') || lower.endsWith('.tar.gz')) {
-    if (lower.includes('gshhg') || lower.includes('chartcatalogs/gshhg')) {
-      return { supported: true, format: 'gshhg', label: 'GSHHG basemap (converted on import)' };
+    if (lower.includes('gshhg')) {
+      return {
+        supported: false,
+        format: 'tar',
+        label: 'GSHHG basemap - no longer available; use an OSM basemap'
+      };
     }
     if (lower.includes('pilot_kaps') || lower.includes('pilot')) {
       return { supported: true, format: 'pilot-tar', label: 'Pilot Chart (converted on import)' };
@@ -851,8 +862,12 @@ export function checkForUpdates(): CatalogUpdate[] {
   for (const [chartNumber, install] of Object.entries(installs)) {
     // ENC charts come from chart sets in the ENC Charts tab, which keep their
     // own freshness; the Chart Catalog tab no longer lists the sources the ENC
-    // index covers, which are those with the `enc` format facet.
-    if (loaded?.chartcatalogs.get(install.catalogFile)?.format === 'enc') {
+    // index covers, which are those with the `enc` format facet. A retired
+    // catalog has no download to update from.
+    if (
+      RETIRED_CATALOGS.has(install.catalogFile) ||
+      loaded?.chartcatalogs.get(install.catalogFile)?.format === 'enc'
+    ) {
       continue;
     }
     const cached = getCatalogData(install.catalogFile);

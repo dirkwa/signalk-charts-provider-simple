@@ -56,8 +56,8 @@ reviews:
            shapes), and serves tiles from `.mbtiles` (via `node:sqlite`)
            or tilemap directories. Display path needs NO container
            runtime.
-        2. **Convert charts** (write path). S-57 ENC, GSHHG, SHP
-           basemaps, BSB/KAP raster and Pilot tarballs, with one of two
+        2. **Convert charts** (write path). S-57 ENC, SHP basemaps,
+           BSB/KAP raster and Pilot tarballs, with one of two
            toolchains that `utils/conversion-backend.ts` picks per
            conversion: the container one (GDAL → tippecanoe → tile-join
            in the charts-toolbox image, through the `signalk-container`

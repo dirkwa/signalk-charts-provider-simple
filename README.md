@@ -12,7 +12,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 - **ENC Charts**: Pick chart areas on a map from every free ENC source (NOAA, the European inland waterways and more); the plugin downloads their ENC cells and converts them into a single vector MBTiles named after your chart set
 - **S-57 ENC Conversion**: Convert IENC/ENC charts to vector MBTiles with full S-52 symbology in Freeboard-SK
 - **BSB Raster Conversion**: Convert BSB/KAP raster charts and Pilot Charts to raster MBTiles
-- **World Basemaps**: GSHHG and OSM coastline basemaps for offline use
+- **World Basemaps**: OSM coastline basemaps for offline use
 - **Custom Upload**: Upload your own ZIP files containing S-57 ENC or BSB charts for conversion
 - **Modern Web UI**: Material Design 3 interface with drag-and-drop
 - **Dual API Support**: Compatible with Signal K v1 and v2 API
@@ -128,7 +128,6 @@ The interface provides seven tabs:
 | **S-57 ENC** (.000) | ENC Charts tab, custom upload, server folder | GDAL + tippecanoe (containerized), or GDAL (WebAssembly) + built-in vector tiler | Vector MBTiles with S-52 styling |
 | **BSB Raster** (.kap) | RNC catalogs, custom upload, server folder | GDAL (containerized or WebAssembly) | Raster MBTiles (PNG) |
 | **Pilot Charts** (.kap in .tar.xz) | Pilot catalog | GDAL (containerized or WebAssembly) | Raster MBTiles (PNG) |
-| **GSHHG Basemap** | General catalog | GDAL (containerized or WebAssembly) | Raster MBTiles (PNG) |
 | **OSM Basemap** | General catalog | GDAL (containerized or WebAssembly) | Raster MBTiles (PNG) |
 
 ### Compatible Chart Plotters

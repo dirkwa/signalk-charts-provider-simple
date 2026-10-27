@@ -151,7 +151,6 @@ import {
   getAllConversionProgress as getAllS57Progress,
   getConversionProgress as getS57Progress,
   initS57Converter,
-  processGshhg,
   processS57Directory,
   processS57Local,
   processS57Zip,
@@ -4261,13 +4260,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           fs.mkdirSync(targetDir, { recursive: true });
         }
 
-        const needsConversion = [
-          's57-zip',
-          'rnc-zip',
-          'gshhg',
-          'pilot-tar',
-          'shp-basemap'
-        ].includes(classification.format);
+        const needsConversion = ['s57-zip', 'rnc-zip', 'pilot-tar', 'shp-basemap'].includes(
+          classification.format
+        );
 
         // The converting state is keyed by chart number: a second conversion
         // of one would share the first's slot.
@@ -4339,17 +4334,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             chartNumber,
             catalogFile,
             zipfileDatetime,
-            targetDir,
-            chartPath
-          );
-        } else if (classification.format === 'gshhg') {
-          handleGshhgDownload(
-            res,
-            app,
-            chartNumber,
-            catalogFile,
-            zipfileDatetime,
-            url,
             targetDir,
             chartPath
           );
@@ -5136,75 +5120,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     downloadManager.on('job-failed', shpFailListener);
 
     res.json({ success: true, jobId, message: 'Basemap download and conversion started' });
-  }
-
-  function handleGshhgDownload(
-    res: Response,
-    app: ExtendedServerAPI,
-    chartNumber: string,
-    catalogFile: string,
-    zipfileDatetime: string | undefined,
-    url: string,
-    targetDir: string,
-    chartPath: string
-  ): void {
-    const resolution = chartNumber.replace('poly-', '');
-
-    trackInstall(chartNumber, catalogFile, zipfileDatetime ?? '', url);
-    setConvertingState(chartNumber, true);
-
-    const tmpDir = path.join(app.getDataDirPath(), `gshhg-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
-
-    void (async () => {
-      let quarantineDir: string | null = null;
-      try {
-        quarantineDir = makeUniqueQuarantineDir(app.getDataDirPath(), chartNumber);
-        const result = await processGshhg(
-          tmpDir,
-          quarantineDir,
-          resolution,
-          chartNumber,
-          (status, message) => {
-            app.debug(`GSHHG [${chartNumber}] ${status}: ${message}`);
-          }
-        );
-
-        await promoteQuarantine(quarantineDir, [result.mbtilesFile], targetDir);
-
-        setConvertingState(chartNumber, false);
-        cleanupQuarantineDir(quarantineDir);
-        setInstallFilename(
-          chartNumber,
-          path.relative(chartPath, path.join(targetDir, result.mbtilesFile))
-        );
-        await refreshChartProviders();
-
-        const chartId = `gshhg-basemap-${resolution}`;
-        if (chartProviders[chartId]) {
-          const chartData = sanitizeProvider(chartProviders[chartId], 2);
-          emitChartDelta(chartId, chartData);
-        }
-        app.debug(`GSHHG basemap installed: ${resolution}`);
-      } catch (error) {
-        app.error(
-          `GSHHG conversion failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-        rollbackInstall(chartNumber);
-        setConvertingState(chartNumber, false);
-        if (quarantineDir !== null) {
-          cleanupQuarantineDir(quarantineDir);
-        }
-      } finally {
-        cleanupDir(tmpDir);
-      }
-    })();
-
-    res.json({
-      success: true,
-      jobId: `gshhg-${chartNumber}`,
-      message: 'GSHHG basemap conversion started'
-    });
   }
 
   function sameStrings(a: readonly string[], b: readonly string[]): boolean {

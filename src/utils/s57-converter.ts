@@ -1,7 +1,5 @@
 import fs from 'fs';
-import https from 'https';
 import { DatabaseSync } from 'node:sqlite';
-import { pipeline } from 'node:stream/promises';
 import path from 'path';
 import unzipper from 'unzipper';
 import type {
@@ -877,8 +875,6 @@ export async function processS57Local(
   );
 }
 
-const GSHHG_URL = 'https://www.ngdc.noaa.gov/mgg/shorelines/data/gshhg/latest/gshhg-shp-2.3.7.zip';
-
 // Overview zooms below a basemap's native zoom: what gdaladdo's 2…256
 // factors gave.
 const BASEMAP_OVERVIEW_LEVELS = 8;
@@ -937,10 +933,10 @@ async function rasterizeLandToMbtiles(opts: {
       'GTiff',
       '-co',
       'COMPRESS=LZW',
-      // From GSHHG's intermediate resolution up (and the high and full
-      // shapefile basemaps) the raster is past 4 GB uncompressed, and even
-      // compressed may outgrow a classic TIFF; GDAL only switches to BigTIFF
-      // unasked when it can tell an uncompressed file needs it.
+      // For the high and full shapefile basemaps the raster is past 4 GB
+      // uncompressed, and even compressed may outgrow a classic TIFF; GDAL
+      // only switches to BigTIFF unasked when it can tell an uncompressed
+      // file needs it.
       '-co',
       'BIGTIFF=IF_SAFER'
     ]
@@ -1009,142 +1005,6 @@ function setRasterMetadata(file: string, rows: Record<string, string>): void {
   } catch {
     debug(`Warning: failed to set metadata of ${path.basename(file)}`);
   }
-}
-
-const DOWNLOAD_STALL_MS = 60_000;
-
-async function downloadFile(
-  url: string,
-  dest: string,
-  onProgress: (downloaded: number, total: number) => void
-): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = (target: string, redirects: number): void => {
-      const req = https.get(target, (response) => {
-        const status = response.statusCode ?? 0;
-        const location = response.headers.location;
-        if (status >= 300 && status < 400 && location && redirects < 5) {
-          response.resume();
-          // A bad Location, or one off https, throws here, inside the
-          // response listener; fail the download rather than the process.
-          try {
-            request(new URL(location, target).toString(), redirects + 1);
-          } catch (err) {
-            reject(err instanceof Error ? err : new Error(String(err)));
-          }
-          return;
-        }
-        if (status !== 200) {
-          response.resume();
-          reject(new Error(`NOAA returned HTTP ${status}`));
-          return;
-        }
-        const total = parseInt(response.headers['content-length'] ?? '0');
-        let downloaded = 0;
-        response.on('data', (chunk: Buffer) => {
-          downloaded += chunk.length;
-          onProgress(downloaded, total);
-        });
-        // pipeline settles on an error of either stream, so a dropped
-        // connection fails the download instead of leaving it pending.
-        pipeline(response, fs.createWriteStream(dest)).then(resolve, reject);
-      });
-      // A connection silent this long has stalled; fail it.
-      req.setTimeout(DOWNLOAD_STALL_MS, () => {
-        req.destroy(new Error('Download stalled'));
-      });
-      req.on('error', reject);
-    };
-    request(url, 0);
-  });
-}
-
-export async function processGshhg(
-  tmpDir: string,
-  chartsDir: string,
-  resolution: string,
-  chartNumber: string,
-  onStatus: StatusCallback | null
-): Promise<S57ConversionResult> {
-  const statusFn = onStatus ?? (() => {});
-  const resLabels: Record<string, string> = {
-    c: 'Crude',
-    l: 'Low',
-    i: 'Intermediate',
-    h: 'High',
-    f: 'Full'
-  };
-
-  if (!Object.prototype.hasOwnProperty.call(resLabels, resolution)) {
-    throw new Error(`Invalid GSHHG resolution: ${resolution}`);
-  }
-
-  setProgress(chartNumber, 'converting', 'Downloading GSHHG shapefiles from NOAA...');
-  appendLog(
-    chartNumber,
-    `Downloading GSHHG shapefiles (${resLabels[resolution] ?? resolution})...`
-  );
-
-  const zipPath = path.join(tmpDir, 'gshhg-shp.zip');
-  await downloadFile(GSHHG_URL, zipPath, (downloaded, total) => {
-    if (total > 0) {
-      const pct = Math.round((downloaded / total) * 100);
-      const mb = (downloaded / (1024 * 1024)).toFixed(1);
-      const totalMb = (total / (1024 * 1024)).toFixed(0);
-      setProgress(
-        chartNumber,
-        'converting',
-        `Downloading shapefiles: ${mb}/${totalMb} MB (${pct}%)`
-      );
-    }
-  });
-
-  appendLog(chartNumber, 'Download complete. Extracting shapefiles...');
-  setProgress(chartNumber, 'converting', 'Extracting shapefiles...');
-
-  const shpDir = path.join(tmpDir, 'shp');
-  fs.mkdirSync(shpDir, { recursive: true });
-
-  await fs
-    .createReadStream(zipPath)
-    .pipe(unzipper.Extract({ path: shpDir }))
-    .promise();
-
-  const rasterSizes: Record<string, number> = { c: 8192, l: 16384, i: 65536, h: 131072, f: 262144 };
-  const rasterSize = rasterSizes[resolution] ?? 32768;
-
-  appendLog(chartNumber, `Rasterizing land polygons (${rasterSize}px width)...`);
-  setProgress(chartNumber, 'converting', 'Rasterizing land polygons...');
-
-  const outputName = `gshhg-basemap-${resolution}.mbtiles`;
-  const outputPath = path.join(chartsDir, outputName);
-
-  await rasterizeLand({
-    shp: path.join(shpDir, 'GSHHS_shp', resolution, `GSHHS_${resolution}_L1.shp`),
-    workDir: tmpDir,
-    outputPath,
-    width: rasterSize,
-    chartNumber,
-    statusFn
-  });
-
-  setRasterMetadata(outputPath, {
-    name: `GSHHG World Basemap (${resLabels[resolution] ?? resolution})`,
-    description: `Global coastlines and lakes - GSHHG v2.3.7 ${(resLabels[resolution] ?? resolution).toLowerCase()} resolution`,
-    type: 'tilelayer',
-    format: 'png'
-  });
-
-  const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
-  const doneMsg = `GSHHG basemap installed (${size} MB)`;
-  statusFn('completed', doneMsg);
-  appendLog(chartNumber, `Done: ${outputName} (${size} MB)`);
-
-  if (chartNumber) {
-    setConversionCompleted(chartNumber, doneMsg);
-  }
-
-  return { mbtilesFile: outputName };
 }
 
 export async function processShpBasemap(

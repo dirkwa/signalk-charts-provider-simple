@@ -216,6 +216,15 @@ describe('CatalogManager', () => {
       assert.strictEqual(result.format, 'tar');
     });
 
+    it('says a GSHHG basemap is no longer available', () => {
+      const result = classifyUrl(
+        'https://github.com/chartcatalogs/gshhg/releases/download/v2.3.7/gshhg-shp-2.3.7.tar.xz',
+        'shapefile'
+      );
+      assert.strictEqual(result.supported, false);
+      assert.match(result.label, /no longer available/);
+    });
+
     it('should classify .tar.gz as unsupported', () => {
       const result = classifyUrl('https://example.com/chart.tar.gz', '');
       assert.strictEqual(result.supported, false);
@@ -436,6 +445,25 @@ describe('CatalogManager', () => {
     it('should return empty array when no installs', () => {
       const updates = checkForUpdates();
       assert.deepStrictEqual(updates, []);
+    });
+
+    it('offers no update for a chart from the retired GSHHG catalog', async () => {
+      await seedCatalog('GSHHG_Catalog.xml', [
+        {
+          number: 'gshhg-basemap-f',
+          title: 'GSHHG full',
+          format: 'Shapefile',
+          zipfile_location: 'https://example.com/gshhg-shp.tar.xz',
+          zipfile_datetime_iso8601: '2024-06-01T00:00:00Z'
+        }
+      ]);
+      trackInstall(
+        'gshhg-basemap-f',
+        'GSHHG_Catalog.xml',
+        '2023-08-02T00:08:00Z',
+        'https://example.com/gshhg-shp.tar.xz'
+      );
+      assert.deepStrictEqual(checkForUpdates(), []);
     });
 
     it('should detect when catalog has newer version', async () => {
@@ -982,6 +1010,19 @@ describe('CatalogManager', () => {
         category: 'depth',
         format: 'mbtiles'
       });
+    });
+
+    it('leaves out the retired GSHHG catalog', async () => {
+      stubFetch({
+        status: 200,
+        body: mergedCatalog({ 'GSHHG_Catalog.xml': [], 'OSM_Catalog.xml': [] }, 1)
+      });
+      await refreshCatalog();
+      mock.restoreAll();
+      assert.deepStrictEqual(
+        getCatalogRegistry().map((r) => r.file),
+        ['OSM_Catalog.xml']
+      );
     });
 
     it('keeps a catalog whose facets have the wrong type, without them', async () => {

@@ -261,7 +261,6 @@ export type UrlFormat =
   | 'zip'
   | 's57-zip'
   | 'rnc-zip'
-  | 'gshhg'
   | 'pilot-tar'
   | 'shp-basemap'
   | 'bsb'

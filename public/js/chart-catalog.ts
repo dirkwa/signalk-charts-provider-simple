@@ -854,7 +854,7 @@ async function downloadUpdateChart(
       // checks conversionError before the in-progress state).
       delete catalogConversionErrors[update.chartNumber];
       dismissedConversionErrors.delete(update.chartNumber);
-      if (result.jobId && !result.jobId.startsWith('gshhg-')) {
+      if (result.jobId) {
         catalogDownloadJobs[update.chartNumber] = result.jobId;
       } else {
         catalogConverting[update.chartNumber] = true;
@@ -1452,11 +1452,11 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
       } else if (isInstalled) {
         actionHtml = `<span class="installed-badge">Installed</span>`;
       } else if (cls.supported) {
-        const needsConversion = ['s57-zip', 'rnc-zip', 'gshhg', 'pilot-tar', 'shp-basemap'].includes(
+        const needsConversion = ['s57-zip', 'rnc-zip', 'pilot-tar', 'shp-basemap'].includes(
           cls.format
         );
         const showZoomSelector =
-          needsConversion && !['gshhg', 'pilot-tar', 'shp-basemap'].includes(cls.format);
+          needsConversion && !['pilot-tar', 'shp-basemap'].includes(cls.format);
         const btnLabel = needsConversion ? 'Download & Convert' : 'Download';
         const zoomHtml = showZoomSelector
           ? `
@@ -1556,8 +1556,7 @@ async function downloadCatalogChart(
 
     const result = (await response.json()) as CatalogDownloadResponse;
     if (result.success) {
-      // GSHHG doesn't use DownloadManager — goes straight to converting
-      if (result.jobId && !result.jobId.startsWith('gshhg-')) {
+      if (result.jobId) {
         catalogDownloadJobs[chartNumber] = result.jobId;
       } else {
         catalogConverting[chartNumber] = true;
