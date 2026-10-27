@@ -463,7 +463,11 @@ describe('CatalogManager', () => {
         '2023-08-02T00:08:00Z',
         'https://example.com/gshhg-shp.tar.xz'
       );
-      assert.deepStrictEqual(checkForUpdates(), []);
+      try {
+        assert.deepStrictEqual(checkForUpdates(), []);
+      } finally {
+        removeInstall('gshhg-basemap-f');
+      }
     });
 
     it('should detect when catalog has newer version', async () => {
