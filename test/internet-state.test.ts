@@ -269,6 +269,42 @@ describe('InternetGate', () => {
     }
   });
 
+  it('bounds the wait while the plugin list does not answer', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const gate = new InternetGate({
+        getPluginsList: () => new Promise(() => undefined),
+        allowMeteredCharts: () => false,
+        subscribeState: () => () => undefined
+      });
+      const waiting = gate.firstStateKnown();
+      await settle();
+      mock.timers.tick(FIRST_STATE_WAIT_MS - 1);
+      assert.strictEqual(await isSettled(waiting), false);
+      mock.timers.tick(1);
+      assert.strictEqual(await isSettled(waiting), true);
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it('ends the wait when a state arrives while the plugin list is asked', async () => {
+    let onState: (value: unknown) => void = () => undefined;
+    const gate = new InternetGate({
+      getPluginsList: () => new Promise(() => undefined),
+      allowMeteredCharts: () => false,
+      subscribeState: (listener) => {
+        onState = listener;
+        return () => undefined;
+      }
+    });
+    const waiting = gate.firstStateKnown();
+    await settle();
+    onState('metered');
+    assert.strictEqual(await isSettled(waiting), true);
+    gate.stop();
+  });
+
   it('stops waiting once stopped', async () => {
     const { gate } = setup({ plugins: enabled });
     const waiting = gate.firstStateKnown();

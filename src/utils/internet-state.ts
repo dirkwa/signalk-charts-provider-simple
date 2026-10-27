@@ -97,7 +97,7 @@ export class InternetGate {
   private firstState: Promise<void> | null = null;
   /** From the start of a wait for a state until it ends, also while the plugin list is asked. */
   private waiting = false;
-  /** Ends the wait in progress for a state, once it is on its timer. */
+  /** Ends the wait in progress for a state. */
   private endWait: (() => void) | null = null;
   private stopped = false;
   private held: (() => void)[] = [];
@@ -203,13 +203,11 @@ export class InternetGate {
   private async waitForState(): Promise<void> {
     this.waiting = true;
     try {
-      if (this.state() !== undefined || !(await this.publisherEnabled())) {
+      if (this.state() !== undefined) {
         return;
       }
-      if (this.stopped || this.state() !== undefined) {
-        return;
-      }
-      await new Promise<void>((resolve) => {
+      // The bound starts before the plugin list is asked, so a slow answer cannot stretch it.
+      const bounded = new Promise<void>((resolve) => {
         const done = (): void => {
           clearTimeout(timer);
           this.endWait = null;
@@ -219,6 +217,12 @@ export class InternetGate {
         timer.unref();
         this.endWait = done;
       });
+      const enabled = await Promise.race([this.publisherEnabled(), bounded.then(() => false)]);
+      if (!enabled || this.stopped || this.state() !== undefined) {
+        this.endWait?.();
+        return;
+      }
+      await bounded;
     } finally {
       this.waiting = false;
     }
