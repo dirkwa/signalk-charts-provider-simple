@@ -126,6 +126,63 @@ describe('tileShard', () => {
       assert.ok(chunked.get(key)?.equals(data), `tile ${key} differs`);
     }
   });
+
+  it('writes no vertex twice in a row where many land on one tile pixel', () => {
+    // A coastline-like square with 2000 vertices along its south edge, a
+    // sliver whose ring rounds to nothing at zoom 0, and a short line.
+    const south: Position[] = [];
+    for (let i = 0; i <= 2000; i++) {
+      south.push([i * 0.005, 0]);
+    }
+    const coast = [[...south, [10, 10], [0, 10], [0, 0]]];
+    const sliver = square(20, 20, 20.000001, 20.000001);
+    const features = [
+      { type: 'Polygon', coordinates: coast },
+      { type: 'Polygon', coordinates: sliver },
+      { type: 'LineString', coordinates: south }
+    ].map((geometry, n) => ({ type: 'Feature', properties: { n }, geometry }));
+    const file = path.join(dir, 'shard.ndjson');
+    fs.writeFileSync(file, features.map((f) => `0\t${JSON.stringify(f)}`).join('\n') + '\n');
+
+    const tiles = new Map<string, Uint8Array>();
+    tileShard(
+      {
+        files: [file],
+        groups: [{ layer: 'LNDARE', minzoom: 0, maxzoom: 0 }],
+        z: 0,
+        x: 0,
+        y: 0,
+        extent: 4096,
+        buffer: 64,
+        gzip: false
+      },
+      (batch) => {
+        for (const t of batch) {
+          tiles.set(`${t.z}/${t.x}/${t.y}`, t.data);
+        }
+      }
+    );
+    const data = tiles.get('0/0/0');
+    assert.ok(data);
+    const layer = new VectorTile(new PbfReader(data)).layers.LNDARE;
+    const kept = new Map<number, { x: number; y: number }[][]>();
+    for (let i = 0; i < layer.length; i++) {
+      const f = layer.feature(i);
+      kept.set(Number(f.properties.n), f.loadGeometry());
+    }
+
+    assert.deepStrictEqual([...kept.keys()].sort(), [0, 2], 'the sliver draws nothing and goes');
+    for (const rings of kept.values()) {
+      for (const ring of rings) {
+        for (let i = 1; i < ring.length; i++) {
+          const repeated = ring[i].x === ring[i - 1].x && ring[i].y === ring[i - 1].y;
+          assert.ok(!repeated, `vertex ${i} repeats the one before it`);
+        }
+      }
+    }
+    // 2000 source vertices over 10 degrees cover about 114 pixels at zoom 0.
+    assert.ok((kept.get(0)?.[0].length ?? 0) < 200);
+  });
 });
 
 describe('groupSources', () => {

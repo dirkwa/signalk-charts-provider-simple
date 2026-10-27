@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { VectorTile } from '@mapbox/vector-tile';
-import GeoJSONVT from 'geojson-vt';
+import GeoJSONVT, { type LegacyFeature, type RawFeature } from 'geojson-vt';
 import { PbfReader } from 'pbf';
 import { fromGeojsonVt, fromVectorTileJs } from 'vt-pbf';
 import { forEachLine } from './line-reader.js';
@@ -74,8 +74,6 @@ interface GroupIndex {
   maxzoom: number;
   index: GeoJSONVT;
 }
-
-type VtTile = NonNullable<ReturnType<GeoJSONVT['getTile']>>;
 
 interface VisitedTile {
   vz: number;
@@ -429,11 +427,11 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
     }
     const { z, vx, vy } = node;
     const vz = local(z);
-    const layers: Record<string, { features: VtTile['features'] }> = {};
+    const layers: Record<string, { features: LegacyFeature[] }> = {};
     let hasLayer = false;
     const next: GroupIndex[] = [];
     for (const g of node.active) {
-      const tile = g.index.getTile(vz, vx, vy);
+      const tile = g.index.getTileRaw(vz, vx, vy);
       if (!tile || tile.features.length === 0) {
         continue;
       }
@@ -441,16 +439,19 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
       if (z >= g.minzoom) {
         for (const f of tile.features) {
           const own = f.tags?.[FEATURE_MINZOOM_KEY];
-          if (typeof own === 'number') {
-            if (z < own) {
-              continue;
-            }
-            const tags = { ...f.tags };
-            delete tags[FEATURE_MINZOOM_KEY];
-            (layers[g.layer] ??= { features: [] }).features.push({ ...f, tags });
-          } else {
-            (layers[g.layer] ??= { features: [] }).features.push(f);
+          if (typeof own === 'number' && z < own) {
+            continue;
           }
+          const feature = tileFeature(f);
+          if (!feature) {
+            continue;
+          }
+          if (typeof own === 'number' && feature.tags) {
+            const tags = { ...feature.tags };
+            delete tags[FEATURE_MINZOOM_KEY];
+            feature.tags = tags;
+          }
+          (layers[g.layer] ??= { features: [] }).features.push(feature);
           hasLayer = true;
         }
       }
@@ -489,6 +490,50 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
   }
   flush();
   return count;
+}
+
+/**
+ * A tile's feature in the shape vt-pbf encodes. geojson-vt keeps every source
+ * vertex (tolerance 0) and only then rounds them to the tile grid, so at low
+ * zooms long runs of vertices land on one grid point. Dropping a vertex equal
+ * to the one before it loses nothing at tile resolution. A ring with no area
+ * goes too, since renderers skip it, and so does a line left with fewer than
+ * two points. Null when nothing is left.
+ */
+function tileFeature(f: RawFeature): LegacyFeature | null {
+  const tags = f.tags ?? null;
+  const id = f.id !== undefined ? { id: f.id } : {};
+  if (f.type === 4) {
+    return { type: 1, geometry: [[f.x, f.y]], tags, ...id };
+  }
+  if (f.type === 1) {
+    const points: [number, number][] = [];
+    for (let i = 0; i < f.geometry.length; i += 2) {
+      points.push([f.geometry[i], f.geometry[i + 1]]);
+    }
+    return { type: 1, geometry: points, tags, ...id };
+  }
+  const rings: [number, number][][] = [];
+  for (const flat of f.geometry) {
+    const ring: [number, number][] = [];
+    let area = 0;
+    for (let i = 0; i < flat.length; i += 2) {
+      const x = flat[i];
+      const y = flat[i + 1];
+      const last = ring.at(-1);
+      if (last && last[0] === x && last[1] === y) {
+        continue;
+      }
+      if (last) {
+        area += last[0] * y - x * last[1];
+      }
+      ring.push([x, y]);
+    }
+    if (f.type === 2 ? ring.length >= 2 : ring.length >= 4 && area !== 0) {
+      rings.push(ring);
+    }
+  }
+  return rings.length > 0 ? { type: f.type, geometry: rings, tags, ...id } : null;
 }
 
 // Drop tiles from the indexes' caches. Only tiles that are no longer on the
