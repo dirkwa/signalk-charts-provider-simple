@@ -6,6 +6,7 @@ import {
   setCpuBudget,
   getCpuBudget,
   getTilePoolSize,
+  setsHeapLimit,
   tilePoolSize
 } from '../dist/utils/concurrency.js';
 
@@ -154,6 +155,12 @@ describe('cpu budget presets', () => {
       assert.deepStrictEqual(tilePoolSize(4, 9000, 2096, true), { workers: 2, heapMb: undefined });
       assert.deepStrictEqual(tilePoolSize(4, 9000, 512, true), { workers: 4, heapMb: undefined });
       assert.deepStrictEqual(tilePoolSize(4, 1000, 4144, true), { workers: 1, heapMb: undefined });
+    });
+
+    it('spots the heap flag in either spelling', () => {
+      assert.ok(setsHeapLimit(['--max-old-space-size=4096']));
+      assert.ok(setsHeapLimit(['--trace-warnings', '--max_old_space_size=4096']));
+      assert.ok(!setsHeapLimit(['--max-semi-space-size=64', '']));
     });
 
     it('reads this host within the live budget', () => {

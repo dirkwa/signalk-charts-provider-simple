@@ -125,13 +125,17 @@ const MB = 1024 * 1024;
 
 const HEAP_FLAG = '--max-old-space-size';
 
+/** Whether `flags` set the V8 heap limit; V8 reads `_` and `-` in a flag name alike. */
+export function setsHeapLimit(flags: readonly string[]): boolean {
+  return flags.some((flag) => flag.replace(/_/g, '-').startsWith(HEAP_FLAG));
+}
+
 /** `tilePoolSize` for this host now, within the live CPU budget. */
 export function getTilePoolSize(): TilePoolSize {
-  const flags = [...process.execArgv, ...(process.env.NODE_OPTIONS ?? '').split(/\s+/)];
   return tilePoolSize(
     current.workersPerJob,
     process.availableMemory() / MB,
     v8.getHeapStatistics().heap_size_limit / MB,
-    flags.some((flag) => flag.startsWith(HEAP_FLAG))
+    setsHeapLimit([...process.execArgv, ...(process.env.NODE_OPTIONS ?? '').split(/\s+/)])
   );
 }
