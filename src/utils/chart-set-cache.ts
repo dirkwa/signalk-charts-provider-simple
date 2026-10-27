@@ -5,8 +5,8 @@
  * `<dataDir>/chart-set-cache/<setId>/cells/<cell>/` holds the cell as it was
  * staged (`raw/`: the `.000` and its update files), its GDAL output
  * (`geojson/<LAYER>__<cell>.geojson.gz`) and `cell.json`, which records the
- * version and the export revision. Building the final MBTiles (tippecanoe
- * and tile-join) still runs over every cell of the set.
+ * version and the export revision. Building the final MBTiles (the vector
+ * tiler, vector-tiler.ts) still runs over every cell of the set.
  *
  * A cell is built in the set's staging dir and renamed into place with its
  * `cell.json` already written, so a cancelled or failed run never leaves a
@@ -23,7 +23,7 @@ import type { EncDownloadResult } from './custom-catalog-download.js';
 import type { PlannedCell } from './enc-chart-set.js';
 import { isWithinBase } from './path-safety.js';
 import { exportFileParts } from './s57-band.js';
-import { COMPLETE_MARKER_PREFIX, EXPORT_ERROR_FILE_BASENAME } from './s57-converter.js';
+import { COMPLETE_MARKER_PREFIX, EXPORT_ERROR_FILE_BASENAME } from './s57-export-files.js';
 
 /**
  * Bump when the GDAL export changes what it writes for the same cell, so
@@ -45,7 +45,11 @@ const SAFE_CELL = /^[A-Za-z0-9_-]{1,64}$/;
 export interface CachedCellInfo {
   version: string | undefined;
   exportRevision: number;
-  /** The GDAL image that exported it; its output depends on GDAL's version. */
+  /**
+   * The GDAL build that exported it (gdal-wasm.ts `gdalBuildId`; a
+   * charts-toolbox image name for cells kept by 2.x), since its output
+   * depends on GDAL's version.
+   */
   image: string | undefined;
   /** Bytes the cell's entry takes on disk. */
   bytes: number;

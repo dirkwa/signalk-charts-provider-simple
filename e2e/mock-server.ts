@@ -122,9 +122,6 @@ interface MockState {
   // When set, POST /online-charts answers with this status and an HTML
   // body, like a proxy error page.
   onlineAddFailStatus: number | null;
-  s57PodmanAvailable: boolean;
-  podmanVersion: string | null;
-  containerRuntimeEngine: string | null;
 }
 
 const okStatus: CatalogStatusMock = {
@@ -160,10 +157,7 @@ const initialState: MockState = {
   downloadJobs: [],
   catalogUpdates: [],
   downloadFailStatus: null,
-  onlineAddFailStatus: null,
-  s57PodmanAvailable: true,
-  podmanVersion: 'podman version 5.4.2',
-  containerRuntimeEngine: 'podman'
+  onlineAddFailStatus: null
 };
 
 let state: MockState = structuredClone(initialState);
@@ -396,12 +390,14 @@ export function startMockServer(
 
   router.get(`${PLUGIN_BASE}/catalog-s57-status`, (_req, res) => {
     res.json({
-      containerRuntimeAvailable: state.s57PodmanAvailable,
-      containerRuntimeVersion: state.podmanVersion,
-      containerRuntimeEngine: state.containerRuntimeEngine,
-      containerRuntimeSocketPath: null,
-      podmanAvailable: state.s57PodmanAvailable,
-      podmanVersion: state.podmanVersion,
+      conversionAvailable: true,
+      conversionEngine: 'wasm',
+      conversionEnginePreference: 'auto',
+      converter: 'built-in GDAL (WebAssembly, gdal3.js 2.8.1)',
+      wasmConverter: 'gdal3.js 2.8.1',
+      containerRuntimeAvailable: false,
+      containerRuntimeVersion: null,
+      podmanAvailable: true,
       conversions: state.conversions
     });
   });

@@ -8,6 +8,13 @@ test.describe('convert charts already on the server', () => {
     await page.getByRole('button', { name: /^Convert$/i }).click();
   });
 
+  test('says which toolchain converts charts', async ({ page }) => {
+    const note = page.locator('#convertEngineNote');
+    await expect(note).toBeVisible();
+    await expect(note).toContainText('the built-in GDAL (WebAssembly, gdal3.js 2.8.1)');
+    await expect(note).toContainText('signalk-container');
+  });
+
   test('converts an S-57 folder with the chosen zoom levels', async ({ page }) => {
     await page.locator('#convertS57Maxzoom').selectOption('16');
     await page.locator('#s57LocalPath').fill('/srv/charts/ENC_ROOT');

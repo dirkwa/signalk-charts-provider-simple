@@ -5,9 +5,14 @@ export type CpuBudgetPreset = 'single-core' | 'half' | 'all';
 export interface ResolvedBudget {
   /** Max number of conversion jobs that can run at the same time. */
   maxConcurrentConversions: number;
-  /** TIPPECANOE_MAX_THREADS env passed to each tippecanoe container. */
+  /**
+   * Worker threads each WebAssembly conversion runs on (worker-pool.ts):
+   * GDAL exports and tile shards, one per worker at a time.
+   */
+  workersPerJob: number;
+  /** TIPPECANOE_MAX_THREADS (and the CPU cap) of each container tippecanoe job. */
   tippecanoeThreadsPerJob: number;
-  /** Width of the xargs -P fan-out used for parallel ogr2ogr in the GDAL export stage. */
+  /** Width of the xargs -P fan-out used for parallel ogr2ogr in the container GDAL export. */
   gdalExportParallelism: number;
 }
 
@@ -19,14 +24,16 @@ function resolveBudget(preset: CpuBudgetPreset, cpus: number): ResolvedBudget {
     case 'single-core':
       return {
         maxConcurrentConversions: 1,
+        workersPerJob: 1,
         tippecanoeThreadsPerJob: 1,
         gdalExportParallelism: 1
       };
     case 'all':
       // One full-throttle job. Multi-bundle uploads queue serially; each
-      // single bundle uses every core in both stages.
+      // single bundle uses every core in every stage.
       return {
         maxConcurrentConversions: 1,
+        workersPerJob: safe,
         tippecanoeThreadsPerJob: safe,
         gdalExportParallelism: safe
       };
@@ -43,6 +50,7 @@ function resolveBudget(preset: CpuBudgetPreset, cpus: number): ResolvedBudget {
       const perJob = Math.max(1, Math.floor(safe / 2));
       return {
         maxConcurrentConversions: 1,
+        workersPerJob: perJob,
         tippecanoeThreadsPerJob: perJob,
         gdalExportParallelism: perJob
       };

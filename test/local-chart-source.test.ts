@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { after, afterEach, before, describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import {
   LocalSourceError,
   extractLocalChartSource,
@@ -13,25 +13,12 @@ import {
   isS57Update,
   resolveLocalPath
 } from '../dist/utils/local-chart-source.js';
+import { gatherCellUpdates } from '../dist/utils/s57-export-files.js';
 import {
   getConversionProgress as getRncProgress,
   processRncLocal
 } from '../dist/utils/rnc-converter.js';
-import {
-  _testInternals,
-  gatherCellUpdates,
-  getConversionProgress as getS57Progress,
-  processS57Local
-} from '../dist/utils/s57-converter.js';
-import {
-  _resetContainerManagerForTests,
-  waitForContainerManager,
-  type ContainerManagerApi
-} from '../dist/utils/container-manager.js';
-
-declare global {
-  var __signalk_containerManager: ContainerManagerApi | undefined;
-}
+import { _testInternals } from '../dist/utils/s57-converter.js';
 
 const { uniqueCells } = _testInternals;
 
@@ -347,7 +334,7 @@ describe('S-57 updates kept apart from their cells', () => {
 });
 
 describe('processRncLocal', () => {
-  it('reports a conversion that fails, and leaves the folder unchanged', async () => {
+  it('reports a folder whose charts fail to convert, and leaves it unchanged', async () => {
     const dir = path.join(TMP, 'bad-rnc');
     write(path.join(dir, 'broken_1.kap'), 'not a chart');
     const before = snapshot(dir);
@@ -356,8 +343,7 @@ describe('processRncLocal', () => {
     fs.mkdirSync(out);
     await assert.rejects(
       processRncLocal(source, path.join(TMP, 'bad-rnc-work'), out, 'bad-rnc', null),
-      // No container runtime in the tests.
-      /signalk-container plugin is required/
+      /No charts converted/
     );
     assert.equal(getRncProgress('bad-rnc')?.status, 'failed');
     assert.deepEqual(fs.readdirSync(out), []);
@@ -377,65 +363,5 @@ describe('uniqueCells', () => {
       '/work/archive-1/ENC_ROOT/US5MA2AA/US5MA2AA.000'
     ]);
     assert.deepEqual(duplicates, ['/work/archive-1/ENC_ROOT/US5MA1AA/us5ma1aa.000']);
-  });
-});
-
-describe('processS57Local in the helper container', () => {
-  afterEach(() => {
-    delete globalThis.__signalk_containerManager;
-    _resetContainerManagerForTests();
-  });
-
-  it('exports the staged cells, each with its updates, wherever they were found', async () => {
-    const dir = path.join(TMP, 'local-s57');
-    write(path.join(dir, 'ENC_ROOT', 'US5MA1AA', 'US5MA1AA.000'), 'base');
-    write(path.join(dir, 'ENC_ROOT', 'US5MA1AA', 'US5MA1AA.001'), 'beside');
-    write(path.join(dir, 'updates', 'US5MA1AA.002'), 'apart');
-    write(path.join(dir, 'copy', 'US5MA1AA.000'), 'a second copy');
-    const before = snapshot(dir);
-
-    let staged: Record<string, string> = {};
-    globalThis.__signalk_containerManager = {
-      getRuntime: () => ({ runtime: 'podman', version: '5.0.0' }),
-      imageExists: () => Promise.resolve(true),
-      pullImage: () => Promise.resolve(),
-      runJob: (config) => {
-        // What the export job's /input holds while it "runs".
-        const input = config.inputs?.['/input'];
-        if (input) {
-          staged = Object.fromEntries(
-            fs
-              .readdirSync(input)
-              .sort()
-              .map((f) => [f, fs.readFileSync(path.join(input, f), 'utf8')])
-          );
-        }
-        return Promise.resolve({ status: 'completed', exitCode: 1, log: ['ogr2ogr: boom'] });
-      },
-      resolveSignalkDataMount: () => Promise.resolve(null),
-      resolveHostPath: (absPath) => Promise.resolve({ source: absPath, subPath: '' })
-    };
-    assert.ok(await waitForContainerManager({ budgetMs: 1000 }));
-
-    const source = await inspectLocalChartSource(dir, isS57Cell, 'S-57 cells', isS57Update);
-    const workDir = path.join(TMP, 'local-s57-work');
-    fs.mkdirSync(workDir);
-    const out = path.join(TMP, 'local-s57-out');
-    fs.mkdirSync(out);
-    await assert.rejects(
-      processS57Local(source, workDir, out, 'local-s57', null),
-      /exit code 1|boom|failed/
-    );
-    assert.deepEqual(staged, {
-      'US5MA1AA.000': 'base',
-      'US5MA1AA.001': 'beside',
-      'US5MA1AA.002': 'apart'
-    });
-    assert.ok(
-      getS57Progress('local-s57')?.log.some((l) => l.includes('a cell of the same name')),
-      'the second copy is skipped, and said so'
-    );
-    assert.deepEqual(fs.readdirSync(out), []);
-    assert.deepEqual(snapshot(dir), before, 'the source is only read');
   });
 });

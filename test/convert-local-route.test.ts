@@ -2,8 +2,7 @@
  * Route-level tests for converting charts already on the server
  * (POST /convert-local): what it refuses, and that a conversion that fails
  * leaves the source as it was, adds no chart and removes its work folder.
- * Runs the real plugin against a temporary chart folder, with a fake
- * signalk-container whose helper jobs all fail.
+ * Runs the real plugin against a temporary chart folder.
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -18,14 +17,6 @@ import pluginFactoryDefault from '../dist/index.js';
 import { downloadManager } from '../dist/utils/download-manager.js';
 import { getConvertingCount, setConvertingState } from '../dist/utils/catalog-manager.js';
 import { getConversionProgress } from '../dist/utils/rnc-converter.js';
-import {
-  _resetContainerManagerForTests,
-  type ContainerManagerApi
-} from '../dist/utils/container-manager.js';
-
-declare global {
-  var __signalk_containerManager: ContainerManagerApi | undefined;
-}
 
 const pluginFactory = pluginFactoryDefault as unknown as (app: ExtendedServerAPI) => Plugin;
 
@@ -82,15 +73,6 @@ describe('POST /convert-local', () => {
   };
 
   before(async () => {
-    _resetContainerManagerForTests();
-    globalThis.__signalk_containerManager = {
-      getRuntime: () => ({ runtime: 'podman', version: '5.0.0' }),
-      imageExists: () => Promise.resolve(true),
-      pullImage: () => Promise.resolve(),
-      runJob: () => Promise.resolve({ status: 'completed', exitCode: 1, log: ['gdal: boom'] }),
-      resolveSignalkDataMount: () => Promise.resolve(null),
-      resolveHostPath: (absPath) => Promise.resolve({ source: absPath, subPath: '' })
-    };
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'convert-local-'));
     chartPath = path.join(tempDir, 'charts');
     fs.mkdirSync(chartPath, { recursive: true });
@@ -109,6 +91,9 @@ describe('POST /convert-local', () => {
         started = true;
       },
       handleMessage: () => {},
+      // No signalk-container: conversions take the WebAssembly toolchain
+      // without waiting for its discovery.
+      getPluginsList: () => Promise.resolve([]),
       getSelfPath: () => undefined
     } as unknown as ExtendedServerAPI;
 
@@ -130,8 +115,6 @@ describe('POST /convert-local', () => {
   after(() => {
     plugin.stop?.();
     downloadManager.removeAllListeners();
-    delete globalThis.__signalk_containerManager;
-    _resetContainerManagerForTests();
     fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 

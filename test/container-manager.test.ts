@@ -8,7 +8,6 @@ import {
   type ContainerManagerApi,
   type ContainerRuntimeInfo
 } from '../dist/utils/container-manager.js';
-import { hasStartedJobs, holdJobsDuring, runJob } from '../dist/utils/container-jobs.js';
 
 const GLOBAL_KEY = '__signalk_containerManager';
 
@@ -263,32 +262,42 @@ describe('waitForContainerManager', () => {
   });
 });
 
-describe('runJob during an orphan reap', () => {
-  it('starts no helper job until the reap is done', async () => {
-    const started: string[] = [];
-    const manager = makeManager({ runtime: 'podman', version: '5.0.0' });
-    manager.runJob = (config) => {
-      started.push(config.label ?? '');
-      return Promise.resolve({ status: 'completed', exitCode: 0, log: [] });
-    };
+describe('waitForContainerManager — plugin list', () => {
+  it('gives up at once when signalk-container is not installed or enabled', async () => {
+    const started = Date.now();
+    const result = await waitForContainerManager({
+      budgetMs: 5000,
+      pollIntervalMs: 50,
+      isInstalled: () => Promise.resolve(false)
+    });
+    assert.strictEqual(result, null);
+    assert.ok(Date.now() - started < 1000, 'must not wait out the budget');
+  });
+
+  it('still takes a manager already published, whatever the list says', async () => {
+    const manager = {
+      getRuntime: () => ({ runtime: 'podman', version: '5.0.0' })
+    } as unknown as ContainerManagerApi;
     globalThis[GLOBAL_KEY] = manager;
-    assert.strictEqual(await waitForContainerManager({ budgetMs: 1000 }), manager);
+    const result = await waitForContainerManager({
+      budgetMs: 1000,
+      isInstalled: () => Promise.resolve(false)
+    });
+    assert.strictEqual(result, manager);
+  });
 
-    let finishReap: () => void = () => {};
-    const reap = holdJobsDuring(
-      new Promise<void>((resolve) => {
-        finishReap = resolve;
-      })
-    );
-    const job = runJob({ image: 'toolbox', command: ['true'], label: 'gdal-export-x' });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.deepStrictEqual(started, [], 'the job must wait for the reap');
-    assert.strictEqual(hasStartedJobs(), false);
-
-    finishReap();
-    await reap;
-    assert.strictEqual((await job).exitCode, 0);
-    assert.deepStrictEqual(started, ['gdal-export-x']);
-    assert.strictEqual(hasStartedJobs(), true);
+  it('waits as before when the list cannot be read', async () => {
+    const manager = {
+      getRuntime: () => ({ runtime: 'docker', version: '27.0.0' })
+    } as unknown as ContainerManagerApi;
+    setTimeout(() => {
+      globalThis[GLOBAL_KEY] = manager;
+    }, 100);
+    const result = await waitForContainerManager({
+      budgetMs: 2000,
+      pollIntervalMs: 20,
+      isInstalled: () => Promise.reject(new Error('no list'))
+    });
+    assert.strictEqual(result, manager);
   });
 });

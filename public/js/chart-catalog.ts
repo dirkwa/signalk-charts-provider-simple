@@ -68,7 +68,6 @@ interface LocalChartsResponse {
 }
 
 interface S57StatusCatalogResponse {
-  podmanAvailable?: boolean;
   conversions?: Record<string, ConversionProgress>;
 }
 
@@ -159,7 +158,6 @@ const catalogConversionErrors: Record<string, string> = {};
 // Tracks chart numbers whose error the user has dismissed; keeps poll
 // from silently re-injecting the same error on the next tick.
 const dismissedConversionErrors = new Set<string>();
-let s57PodmanAvailable = false;
 
 let catalogDownloadPollInterval: ReturnType<typeof setInterval> | null = null;
 let catalogConversionPollInterval: ReturnType<typeof setInterval> | null = null;
@@ -231,7 +229,6 @@ async function initCatalogTab(): Promise<void> {
   output.innerHTML = `
     <div class="catalog-container">
       <div id="catalogSourceNote" class="catalog-source-note">${sourceNoteHtml(null)}</div>
-      <div id="catalogPodmanWarning"></div>
       <div id="catalogUpdatesSection"></div>
       <div id="catalogToolbar" class="catalog-toolbar">
         <button type="button" class="btn-catalog-refresh" data-catalog-refresh title="Download the latest chart catalog">
@@ -251,7 +248,6 @@ async function initCatalogTab(): Promise<void> {
 
   const registryOk = await loadCatalogRegistry();
   await loadFolders();
-  await checkS57Status();
   await refreshUpdateBadge();
   // Re-seed catalogDownloadJobs from any in-flight server-side jobs.
   // Without this, a page reload during download loses the local
@@ -676,33 +672,6 @@ async function loadFolders(): Promise<void> {
     catalogFolders = data.folders ?? ['/'];
   } catch {
     // Ignore folder load errors
-  }
-}
-
-async function checkS57Status(): Promise<void> {
-  try {
-    const response = await fetch(`${CATALOG_API_BASE}/catalog-s57-status`);
-    if (!response.ok) {
-      return;
-    }
-    const data = (await response.json()) as S57StatusCatalogResponse;
-    s57PodmanAvailable = data.podmanAvailable ?? false;
-  } catch {
-    s57PodmanAvailable = false;
-  }
-
-  const warningEl = document.getElementById('catalogPodmanWarning');
-  if (warningEl) {
-    if (!s57PodmanAvailable) {
-      warningEl.innerHTML = `
-        <div class="catalog-podman-warning">
-          <strong>Container runtime not reachable.</strong>
-          IENC (S-57) and RNC (BSB raster) chart conversion needs a Docker- or Podman-compatible socket.
-          <a href="https://github.com/dirkwa/signalk-charts-provider-simple/blob/main/docs/running-in-docker.md" target="_blank" rel="noopener">See setup notes</a>.
-        </div>`;
-    } else {
-      warningEl.innerHTML = '';
-    }
   }
 }
 
@@ -1487,15 +1456,8 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
         const showZoomSelector =
           needsConversion && !['gshhg', 'pilot-tar', 'shp-basemap'].includes(cls.format);
         const btnLabel = needsConversion ? 'Download & Convert' : 'Download';
-        const btnDisabled = needsConversion && !s57PodmanAvailable ? 'disabled' : '';
-        const podmanHint =
-          needsConversion && !s57PodmanAvailable
-            ? `<span class="format-badge unsupported">Container runtime required</span>`
-            : '';
-
-        const zoomHtml =
-          showZoomSelector && s57PodmanAvailable
-            ? `
+        const zoomHtml = showZoomSelector
+          ? `
           <span class="catalog-zoom-label">Zoom</span>
           <select class="catalog-zoom-select" id="catalog-minzoom-${downloadRowId(catalogFile, chart.number)}">
             ${[4, 5, 6, 7, 8, 9, 10, 11, 12]
@@ -1512,13 +1474,12 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
             : '';
 
         actionHtml = `
-          ${podmanHint}
           ${zoomHtml}
           <label class="catalog-folder-label" for="catalog-folder-${downloadRowId(catalogFile, chart.number)}">Save to</label>
           <select class="catalog-folder-select" id="catalog-folder-${downloadRowId(catalogFile, chart.number)}">
             ${buildFolderOptions(defaultFolder)}
           </select>
-          <button class="btn-catalog-download" ${btnDisabled}
+          <button class="btn-catalog-download"
                   data-catalog-download="${catalogEscapeAttr(chart.number)}"
                   data-catalog-file="${catalogEscapeAttr(catalogFile)}"
                   data-catalog-url="${catalogEscapeAttr(chart.zipfile_location)}"

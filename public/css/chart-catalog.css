@@ -465,31 +465,6 @@ option.catalog-folder-option-new {
     text-decoration: underline;
 }
 
-/* Podman warning banner */
-.catalog-podman-warning {
-    padding: var(--md-sys-spacing-3) var(--md-sys-spacing-4);
-    background: rgba(255, 201, 71, 0.15);
-    color: var(--md-sys-color-on-surface);
-    border-radius: var(--md-sys-shape-corner-medium);
-    margin-bottom: var(--md-sys-spacing-4);
-    font-size: 14px;
-    border-left: 4px solid var(--md-sys-color-tertiary);
-}
-
-.catalog-podman-warning strong {
-    color: var(--md-sys-color-tertiary);
-}
-
-.catalog-podman-warning a {
-    color: var(--md-sys-color-primary);
-    text-decoration: none;
-    font-weight: 500;
-}
-
-.catalog-podman-warning a:hover {
-    text-decoration: underline;
-}
-
 /* Catalog empty/error states */
 .catalog-empty {
     padding: var(--md-sys-spacing-8);

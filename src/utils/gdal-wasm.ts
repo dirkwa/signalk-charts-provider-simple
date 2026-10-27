@@ -4,7 +4,7 @@
  *
  * The helpers fix every input under `/input` and every output under one
  * `/output` directory chosen at load time, and they open each dataset
- * without open options. Its callers need neither restriction: they read
+ * without open options. The converters need neither restriction: they read
  * from and write to arbitrary host directories, and the S-57 sounding layer
  * must be opened with `SPLIT_MULTIPOINT` / `ADD_SOUNDG_DEPTH`. So this module
  * calls `GDALOpenEx` / `GDALVectorTranslate` / `GDALTranslate` /
@@ -13,8 +13,8 @@
  * place: nothing is copied into WASM memory, so a chart larger than the WASM
  * heap still converts.
  *
- * One instance is single-threaded and owns its heap. One runs per worker
- * thread (see conversion-worker.ts), never on the server's event
+ * One instance is single-threaded and owns its heap. The converters run one
+ * per worker thread (see conversion-worker.ts), never on the server's event
  * loop.
  */
 
@@ -33,7 +33,7 @@ const CE_FAILURE = 3;
 // GDAL's block cache lives in the WASM heap, which never shrinks. GDAL's
 // default (5% of RAM, as WASM reports it) would let one conversion pin
 // hundreds of MB per worker; 64 MB is ample for the sequential reads and
-// writes done here.
+// writes the converters do.
 const GDAL_CACHE_BYTES = 64 * 1024 * 1024;
 
 type Cwrap = (name: string, ret: string | null, args: string[]) => (...a: unknown[]) => unknown;
@@ -377,8 +377,8 @@ function readGdalVersion(): string {
 }
 
 /**
- * Identifies the GDAL build, for caches whose content
- * depends on GDAL's output: the gdal3.js package
+ * Identifies the GDAL build the converters run, for caches whose content
+ * depends on GDAL's output (chart-set-cache.ts): the gdal3.js package
  * version, which pins one GDAL build. Readable without loading the WASM.
  */
 export function gdalBuildId(): string {

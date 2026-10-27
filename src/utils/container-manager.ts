@@ -1,8 +1,9 @@
 /**
  * Discovery and access for the running `signalk-container` plugin's
- * manager API.  The runtime layer of this plugin (GDAL exports,
- * tippecanoe, basemap pipelines) is delegated to that plugin starting
- * with chart-provider 2.0; it transparently resolves bind / named-volume
+ * manager API.  The container toolchain (GDAL exports, tippecanoe,
+ * basemap pipelines in the charts-toolbox image) runs through that
+ * plugin; without it, conversion falls back to GDAL compiled to
+ * WebAssembly (see conversion-backend.ts).  signalk-container transparently resolves bind / named-volume
  * sources for the SignalK data dir, which is the structural fix for the
  * "Signal K in Docker with mismatched binds" failure mode that 1.x
  * worked around with a probe + startup warning.
@@ -11,8 +12,7 @@
  * publishes its API on `(globalThis as any).__signalk_containerManager`
  * once its own `start()` runs.  Plugin load order is not deterministic,
  * so we wait up to ~30 s for the global to appear before giving up and
- * letting the plugin show a `setPluginError` so the user can install
- * the dependency.
+ * converting with the WebAssembly fallback.
  */
 
 /**
@@ -177,6 +177,14 @@ export interface ContainerManagerApi {
 }
 
 let resolvedManager: ContainerManagerApi | null = null;
+// The discovery a start() began, while it runs: a conversion requested
+// meanwhile waits for it rather than taking the WebAssembly fallback early.
+let pendingDiscovery: Promise<ContainerManagerApi | null> | null = null;
+
+function publishedManager(): ContainerManagerApi | undefined {
+  return (globalThis as { __signalk_containerManager?: ContainerManagerApi })
+    .__signalk_containerManager;
+}
 
 /**
  * Wait for `signalk-container` to publish its manager on globalThis,
@@ -189,19 +197,53 @@ let resolvedManager: ContainerManagerApi | null = null;
  * because the caller wants to fall through to `setPluginError` rather
  * than crash the plugin.
  */
-export async function waitForContainerManager(opts: {
+export function waitForContainerManager(opts: {
   budgetMs?: number;
   pollIntervalMs?: number;
   onWaitingStatus?: () => void;
+  /**
+   * Whether signalk-container is installed and enabled, from the server's
+   * plugin list; false skips the wait. Undefined (unknown) waits.
+   */
+  isInstalled?: () => Promise<boolean | undefined>;
 }): Promise<ContainerManagerApi | null> {
+  const discovery = discoverContainerManager(opts);
+  pendingDiscovery = discovery;
+  void discovery.finally(() => {
+    if (pendingDiscovery === discovery) {
+      pendingDiscovery = null;
+    }
+  });
+  return discovery;
+}
+
+async function discoverContainerManager(opts: {
+  budgetMs?: number;
+  pollIntervalMs?: number;
+  onWaitingStatus?: () => void;
+  isInstalled?: () => Promise<boolean | undefined>;
+}): Promise<ContainerManagerApi | null> {
+  // Not installed, or disabled: nothing will publish a manager, so don't
+  // hold conversions for the whole budget. A manager published anyway is
+  // still taken up later (settledContainerManager).
+  if (opts.isInstalled && !publishedManager()) {
+    let installed: boolean | undefined;
+    try {
+      installed = await opts.isInstalled();
+    } catch {
+      installed = undefined;
+    }
+    if (installed === false) {
+      return null;
+    }
+  }
   const budgetMs = opts.budgetMs ?? 30000;
   const pollIntervalMs = opts.pollIntervalMs ?? 1000;
   const deadline = Date.now() + budgetMs;
   let signalledWait = false;
 
   while (Date.now() < deadline) {
-    const candidate = (globalThis as { __signalk_containerManager?: ContainerManagerApi })
-      .__signalk_containerManager;
+    const candidate = publishedManager();
     if (candidate) {
       // Fast path: detection already settled successfully, no need to wait.
       if (candidate.getRuntime()) {
@@ -256,7 +298,27 @@ export function getContainerManager(): ContainerManagerApi | null {
   return resolvedManager;
 }
 
+/**
+ * The manager once discovery has settled: waits for a discovery still
+ * running, and takes up a manager signalk-container published after the
+ * discovery gave up (a slow runtime detection, or the plugin enabled later),
+ * once its runtime is detected. Null when there is none.
+ */
+export async function settledContainerManager(): Promise<ContainerManagerApi | null> {
+  if (pendingDiscovery) {
+    await pendingDiscovery;
+  }
+  if (!resolvedManager) {
+    const candidate = publishedManager();
+    if (candidate?.getRuntime()) {
+      resolvedManager = candidate;
+    }
+  }
+  return resolvedManager;
+}
+
 /** Test helper. */
 export function _resetContainerManagerForTests(): void {
   resolvedManager = null;
+  pendingDiscovery = null;
 }

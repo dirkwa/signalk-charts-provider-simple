@@ -1274,7 +1274,7 @@ function renderProgress(): void {
     cancelHtml = `<span class="cc-cancel-pending">Cancelling…</span>`;
   } else if (ccBusy) {
     // Every phase — including the combine — is cancellable: the cancel
-    // route aborts the in-flight download or container job.
+    // route aborts the in-flight download, container job or conversion.
     cancelHtml = `<button class="cc-btn cc-btn-danger cc-cancel-btn" data-cc-action="cancel">Cancel</button>`;
   }
 

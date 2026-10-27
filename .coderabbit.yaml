@@ -56,10 +56,15 @@ reviews:
            shapes), and serves tiles from `.mbtiles` (via `node:sqlite`)
            or tilemap directories. Display path needs NO container
            runtime.
-        2. **Convert charts** (write path). Runs GDAL → tippecanoe
-           pipelines for S-57 ENC, GSHHG, SHP basemaps, BSB/KAP raster,
-           and Pilot tarballs. Goes through the `signalk-container`
-           plugin's manager API — never imports `dockerode` directly.
+        2. **Convert charts** (write path). S-57 ENC, GSHHG, SHP
+           basemaps, BSB/KAP raster and Pilot tarballs, with one of two
+           toolchains that `utils/conversion-backend.ts` picks per
+           conversion: the container one (GDAL → tippecanoe → tile-join
+           in the charts-toolbox image, through the `signalk-container`
+           plugin's manager API — never `dockerode` directly), preferred;
+           and the WebAssembly one (gdal3.js + the built-in vector tiler
+           on worker threads), the fallback when the container one cannot
+           run. The `conversionEngine` config pins either.
 
         Single entry: `src/index.ts`. Built output lands in `dist/`.
         Node ≥ 22.5 required (uses built-in `node:sqlite`).
@@ -107,16 +112,19 @@ reviews:
 
         `waitForContainerManager()` never rejects. The
         `whenReady?():` declaration is intentionally optional so
-        signalk-container < 1.6.0 still works. Callers handle a `null`
-        return via `setPluginError`, NOT by catching thrown errors.
+        signalk-container < 1.6.0 still works. A `null` return means
+        conversions use the WebAssembly toolchain, NOT an error.
 
-        ## Display path stays functional without signalk-container
+        ## Nothing depends on signalk-container
 
-        If `signalk-container` is missing, the plugin still loads and
-        **serves charts** (display path needs no runtime); only the
-        convert path is disabled with `setPluginError` pointing at the
-        App Store. Flag any change that makes chart display dependent
-        on container availability.
+        If `signalk-container` is missing, the plugin loads, **serves
+        charts** and **converts** them with the WebAssembly toolchain;
+        a missing container runtime is not a plugin error. Flag any
+        change that makes chart display or conversion depend on
+        container availability (except with `conversionEngine:
+        'container'`, where a conversion the container cannot run must
+        fail with the reason), or that lets a fallback start after a
+        container run has written anything.
 
         ## CPU budget is a single source of truth
 
@@ -124,9 +132,9 @@ reviews:
         decisions. The plugin config exposes `cpuBudget`
         (`single-core` / `half` / `all`); `setCpuBudget()` is called
         from `start()` and `getCpuBudget()` returns the live
-        `{ maxConcurrentConversions, tippecanoeThreadsPerJob,
-        gdalExportParallelism }` so converters pick up changes between
-        jobs without a restart.
+        `{ maxConcurrentConversions, workersPerJob,
+        tippecanoeThreadsPerJob, gdalExportParallelism }` so converters
+        pick up changes between jobs without a restart.
 
         Flag any reimplementation of CPU/concurrency logic elsewhere
         (S-57 converter, RNC converter, download manager, etc.). Read
@@ -305,8 +313,10 @@ reviews:
           this is the chosen logging strategy.
         - The pretest step regenerating the mbtiles fixture — needed
           because the fixture isn't committed.
-        - `signalk.requires: ['signalk-container']` without a
+        - `signalk.recommends: ['signalk-container']` without a
           matching npm dependency — loose coupling.
+        - Two conversion toolchains (container and WebAssembly) — the
+          WebAssembly one is the deliberate fallback, not dead code.
         - The single-source CPU budget in `utils/concurrency.ts` —
           converters MUST read from it, not reimplement.
         - The quarantine staging dir for in-progress writes — the

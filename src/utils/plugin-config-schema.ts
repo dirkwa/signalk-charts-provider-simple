@@ -7,6 +7,12 @@ export const CpuBudgetPresetSchema = Type.Union([
   Type.Literal('all')
 ]);
 
+export const ConversionEngineSchema = Type.Union([
+  Type.Literal('auto'),
+  Type.Literal('container'),
+  Type.Literal('wasm')
+]);
+
 // `chartPath` is required in the parsed shape so downstream callers can
 // treat it as a definite string. Empty string means "use the computed
 // default": Signal K passes `{}` on auto-enable (the plugin has
@@ -16,6 +22,7 @@ export const CpuBudgetPresetSchema = Type.Union([
 export const PluginConfigSchema = Type.Object({
   chartPath: Type.String(),
   cpuBudget: Type.Optional(CpuBudgetPresetSchema),
+  conversionEngine: Type.Optional(ConversionEngineSchema),
   onlineCacheLimitMB: Type.Optional(Type.Integer({ minimum: 0 })),
   maskedCacheLimitMB: Type.Optional(Type.Integer({ minimum: 0 })),
   disableUpdateNotifications: Type.Optional(Type.Boolean()),

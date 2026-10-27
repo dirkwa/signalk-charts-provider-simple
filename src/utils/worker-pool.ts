@@ -1,15 +1,19 @@
 /**
- * The worker threads WebAssembly GDAL runs on (conversion-worker.ts), never
- * the server's event loop. A job opens its own pool and closes it when done,
- * so the WASM heaps of its GDAL instances (which never shrink) are released
- * with it, and a cancel can stop work mid-task: aborting the pool's signal
- * terminates every worker, which stops a GDAL call at once rather than at the
- * next boundary. Workers start on demand, up to the pool's size.
+ * The worker threads chart conversion runs on. Each conversion opens its own
+ * pool and closes it when done, so the WASM heaps of its GDAL instances (which
+ * never shrink) are released with it, and a cancel can stop work mid-task:
+ * aborting the conversion's signal terminates every worker, which stops a
+ * GDAL call or a tile shard at once rather than at the next boundary.
+ *
+ * The pool's size is the conversion's share of the CPU budget
+ * (concurrency.ts); workers start on demand, so a one-file conversion starts
+ * one.
  */
 
 import { Worker } from 'node:worker_threads';
 import type {
   ConversionTask,
+  TaskEvent,
   TaskResult,
   WorkerReply,
   WorkerRequest
@@ -37,6 +41,7 @@ export class TaskFailedError extends Error {
 interface Pending {
   task: ConversionTask;
   transfer: ArrayBuffer[];
+  onEvent?: (event: TaskEvent) => void;
   resolve: (result: TaskResult) => void;
   reject: (err: Error) => void;
 }
@@ -49,6 +54,8 @@ interface PoolWorker {
 export interface RunOptions {
   /** Buffers moved to the worker rather than copied. */
   transfer?: ArrayBuffer[];
+  /** Intermediate output of the task (tile batches, progress). */
+  onEvent?: (event: TaskEvent) => void;
 }
 
 export class WorkerPool {
@@ -83,6 +90,7 @@ export class WorkerPool {
       this.queue.push({
         task,
         transfer: options.transfer ?? [],
+        onEvent: options.onEvent,
         resolve: resolve as (result: TaskResult) => void,
         reject
       });
@@ -140,6 +148,23 @@ export class WorkerPool {
       if (current?.id !== reply.id) {
         return;
       }
+      if (reply.type === 'event') {
+        try {
+          current.onEvent?.(reply.event);
+        } catch (err) {
+          // A failing consumer (a full disk under the tile sink, say) fails
+          // this task; it must not throw out of the listener, where it would
+          // take the server down. The worker goes, mid-task.
+          this.workers.splice(this.workers.indexOf(entry), 1);
+          entry.current = null;
+          current.reject(err instanceof Error ? err : new Error('Task event failed'));
+          this.stopping.push(entry.worker.terminate());
+          if (!this.closed) {
+            this.dispatch();
+          }
+        }
+        return;
+      }
       entry.current = null;
       if (reply.type === 'done') {
         current.resolve(reply.result);
@@ -150,7 +175,7 @@ export class WorkerPool {
     });
     // A crashed worker (an aborted WASM instance, an out-of-memory heap)
     // fails its task only, as a TaskFailedError like any other failed task,
-    // so callers skip the one cell; the next task gets a fresh
+    // so callers skip the one cell or chart; the next task gets a fresh
     // worker.
     const fail = (err: Error): void => {
       const index = this.workers.indexOf(entry);
@@ -185,5 +210,34 @@ export async function withWorkerPool<T>(
     return await body(pool);
   } finally {
     await pool.close();
+  }
+}
+
+/**
+ * Run `items` through `fn` with at most `limit` in flight. Rejects with the
+ * first failure once the in-flight items have settled.
+ */
+export async function forEachConcurrent<T>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  // A holder, not a `let`: assignments inside the lanes are invisible to
+  // the narrowing of a local.
+  const state: { failure: Error | null } = { failure: null };
+  const lanes = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (state.failure === null && next < items.length) {
+      const index = next++;
+      try {
+        await fn(items[index], index);
+      } catch (err) {
+        state.failure ??= err instanceof Error ? err : new Error('Task failed', { cause: err });
+      }
+    }
+  });
+  await Promise.all(lanes);
+  if (state.failure !== null) {
+    throw state.failure;
   }
 }

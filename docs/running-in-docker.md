@@ -3,7 +3,9 @@
 Chart **display** (serving tiles from `.mbtiles`) needs nothing extra and works
 the same whether Signal K runs bare-metal or in a container. This page is only
 about chart **conversion** (S-57 ENC → vector MBTiles, BSB → raster MBTiles,
-basemaps), which runs OCI containers.
+basemaps), which runs OCI helper containers when it can, and otherwise GDAL
+compiled to WebAssembly inside the Signal K process (see
+[chart-conversion.md](chart-conversion.md)).
 
 ## Conversion is delegated to `signalk-container`
 
@@ -15,8 +17,10 @@ the [`signalk-container`](https://github.com/dirkwa/signalk-container) plugin.
 That means there is nothing Docker-specific to configure here. Install
 `signalk-container` from the App Store (the Charts Provider Simple detail page
 lists it as a recommended plugin) and make sure it reports a healthy runtime in
-its config panel. If conversion is unavailable, the Convert and Chart Catalog
-tabs show a warning; chart display keeps working regardless.
+its config panel. Without it, or while its runtime is unavailable, charts
+convert with the built-in GDAL (WebAssembly) inside the Signal K container,
+which needs no socket, mount or extra configuration; the Convert tab says
+which toolchain is in use.
 
 ## Where to set up the runtime
 

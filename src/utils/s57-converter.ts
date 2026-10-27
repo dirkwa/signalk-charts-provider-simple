@@ -1,10 +1,9 @@
 import fs from 'fs';
 import https from 'https';
 import { DatabaseSync } from 'node:sqlite';
+import { pipeline } from 'node:stream/promises';
 import path from 'path';
-import { pipeline } from 'stream/promises';
 import unzipper from 'unzipper';
-import zlib from 'zlib';
 import type {
   ConversionProgress,
   ConversionProgressMap,
@@ -14,55 +13,57 @@ import type {
   S57ConversionResult,
   StatusCallback
 } from '../types.js';
-
-// Message thrown when an in-progress conversion is cancelled — either at a
-// bucket boundary (isAborted) or mid-job when signalk-container kills the
-// container on abort and returns `status: 'cancelled'`. Callers (the Custom
-// Catalogs flow) detect cancellation via their own flag, so this is just a
-// recognizable stop signal.
-export const CONVERSION_ABORTED_MESSAGE = 'Conversion cancelled';
-
-// Stop the pipeline when a container job was killed by an abort signal
-// (signalk-container >= 1.16.0). Checked before the exit-code check, since a
-// killed job's exit code is meaningless.
-function throwIfJobCancelled(result: { status?: string }): void {
-  if (result.status === 'cancelled') {
-    throw new Error(CONVERSION_ABORTED_MESSAGE);
-  }
-}
 import { sanitizeChartFilename } from './catalog-title.js';
 import { getCpuBudget } from './concurrency.js';
 import {
-  makeContainerWritable,
-  makeContainerWritableDir,
-  shellQuote,
-  withOutputChmod
-} from './container-fs.js';
-import { CHARTS_TOOLBOX_IMAGE } from './container-images.js';
+  CONVERSION_ABORTED_MESSAGE,
+  chooseConversionBackend,
+  describeBackend,
+  fallbackNote,
+  type ConversionBackend,
+  type ConversionReport
+} from './conversion-backend.js';
 import { MAX_CONVERSION_LOG_LINES } from './conversion-log.js';
-import {
-  ensureImage as ensureContainerImage,
-  resolveJobPaths,
-  runJob as runContainerJob
-} from './container-jobs.js';
-import { getContainerManager } from './container-manager.js';
+import { setConversionResult } from './conversion-progress.js';
 import {
   extractLocalChartSource,
   isS57Cell,
   isS57Update,
   type LocalChartSource
 } from './local-chart-source.js';
-import { setConversionResult } from './conversion-progress.js';
-import { throwJobFailure } from './job-failure.js';
 import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata.js';
+import { addRasterOverviews } from './raster-pyramid.js';
+import { BAND_MAX_ZOOM, BAND_MIN_ZOOM, detectEncBand, exportFileParts } from './s57-band.js';
 import {
-  BAND_MAX_ZOOM,
-  BAND_MIN_ZOOM,
-  bandClampedMaxzoom,
-  groupCellsByBand,
-  exportFileParts,
-  highestBandForFiles
-} from './s57-band.js';
+  exportCellsInContainer,
+  rasterizeLandInContainer,
+  tileS57InContainer
+} from './s57-container.js';
+import {
+  COMPLETE_MARKER_PREFIX,
+  EXPORT_ERROR_FILE_BASENAME,
+  SKIP_LAYERS,
+  exportErrorReport,
+  gatherCellUpdates,
+  geojsonContentSize
+} from './s57-export-files.js';
+import { extractTarArchive } from './tar-extract.js';
+import { buildVectorMbtiles, type TileSource } from './vector-tiler.js';
+import {
+  PoolAbortedError,
+  TaskFailedError,
+  forEachConcurrent,
+  withWorkerPool,
+  type WorkerPool
+} from './worker-pool.js';
+
+export { CONVERSION_ABORTED_MESSAGE, COMPLETE_MARKER_PREFIX, EXPORT_ERROR_FILE_BASENAME };
+
+// A cancelled pool rejects its tasks with PoolAbortedError; surface that as
+// the one cancellation message callers know.
+function asCancellation(err: unknown): unknown {
+  return err instanceof PoolAbortedError ? new Error(CONVERSION_ABORTED_MESSAGE) : err;
+}
 
 const conversionProgress: ConversionProgressMap = {};
 const MAX_LOG_LINES = MAX_CONVERSION_LOG_LINES;
@@ -181,14 +182,64 @@ function setProgress(chartNumber: string, status: string, message: string): void
   }
 }
 
+/** The sinks a toolchain reports `chartNumber`'s conversion through. */
+function reporter(chartNumber: string): ConversionReport {
+  return {
+    log: (text) => {
+      appendLog(chartNumber, text);
+    },
+    progress: (status, message) => {
+      setProgress(chartNumber, status, message);
+    },
+    message: (text) => {
+      if (chartNumber && conversionProgress[chartNumber]) {
+        conversionProgress[chartNumber].message = text;
+      }
+    },
+    debug: (msg) => {
+      debug(msg);
+    }
+  };
+}
+
 /**
- * The `name` metadata row tippecanoe/tile-join should bake into the output
- * MBTiles. Without an explicit `-n/--name`, both tools default that row to
- * the `-o` container path (e.g. `/output/Waddenzee.mbtiles`), which then
- * leaks into the chart name shown in clients and the catalog screen when the
- * post-conversion metadata patch fails (it is best-effort and never throws).
- * Passing this up front means the file is born with a sensible name and the
- * `/output/...` value can never survive — the patch only ever refines it to
+ * The toolchain for one conversion: `preset` when the caller chose already
+ * (a chart set picks one for its whole run), otherwise the container one
+ * when it can mount `mountPaths`, else the WebAssembly fallback. The choice
+ * and any fallback reason go to the conversion log.
+ */
+async function pickBackend(
+  chartNumber: string,
+  preset: ConversionBackend | undefined,
+  mountPaths: readonly string[],
+  statusFn: StatusCallback
+): Promise<ConversionBackend> {
+  if (preset) {
+    return preset;
+  }
+  const choice = await chooseConversionBackend({
+    mountPaths,
+    debug: (msg) => {
+      debug(msg);
+    },
+    onCheckingImage: () => {
+      statusFn('pulling', 'Checking container image...');
+      setProgress(chartNumber, 'pulling', 'Checking charts-toolbox image...');
+    }
+  });
+  const note = fallbackNote(choice);
+  if (note) {
+    debug(note);
+    appendLog(chartNumber, note);
+  }
+  appendLog(chartNumber, `Conversion engine: ${describeBackend(choice.backend)}`);
+  return choice.backend;
+}
+
+/**
+ * The `name` metadata row the tiler writes into the output MBTiles, so the
+ * file is born with a sensible name even when the post-conversion metadata
+ * patch (best-effort, never throws) fails; the patch only ever refines it to
  * the cleaned catalog title.
  *
  * Mirrors the fallback the patcher uses (`S-57 <chartNumber>`) so an
@@ -197,42 +248,6 @@ function setProgress(chartNumber: string, status: string, message: string): void
 function wantedMbtilesName(chartNumber: string, displayName: string | undefined): string {
   const trimmed = displayName?.trim();
   return trimmed ? trimmed : `S-57 ${chartNumber || 'ENC'}`;
-}
-
-/**
- * Best-effort, synchronous overwrite of the `name` metadata row. Used by the
- * tile-join single-input degenerate path, where no container job runs to bake
- * the name in via `-n`. DELETE-then-INSERT (not INSERT OR REPLACE) because
- * tippecanoe's `metadata` table has no UNIQUE constraint on `name`, so REPLACE
- * would append a second row rather than overwrite. The DELETE + INSERT run in
- * a transaction so a throwing INSERT can't leave the file with the old `name`
- * deleted and no replacement (mirrors setMbtilesDisplayName). Never throws —
- * the post-conversion patch is the authoritative pass.
- */
-function stampMbtilesName(outputPath: string, name: string): void {
-  try {
-    const db = new DatabaseSync(outputPath);
-    let inTransaction = false;
-    try {
-      db.exec('BEGIN TRANSACTION');
-      inTransaction = true;
-      db.exec("DELETE FROM metadata WHERE name = 'name'");
-      db.prepare("INSERT INTO metadata (name, value) VALUES ('name', ?)").run(name);
-      db.exec('COMMIT');
-      inTransaction = false;
-    } finally {
-      if (inTransaction) {
-        try {
-          db.exec('ROLLBACK');
-        } catch {
-          /* already closed / rolled back */
-        }
-      }
-      db.close();
-    }
-  } catch {
-    /* best-effort; patchS57Mbtiles/setMbtilesDisplayName run afterward */
-  }
 }
 
 /**
@@ -293,1378 +308,195 @@ export function chooseOutputFilename(opts: {
   return `${base}-${Date.now()}.mbtiles`;
 }
 
-interface ExportScriptOptions {
-  multiFile: boolean;
-  /** xargs -P fan-out for the per-layer ogr2ogr loop. 1 = sequential. */
-  parallelism: number;
-  skipLayers: string[];
-  /**
-   * Container path the input ENC files are reachable at.  Normally `/input`
-   * for bind-mounted SignalK deployments where signalk-container can
-   * subpath-bind the host filesystem.  When SignalK is on a named volume
-   * the runtime layer mounts the whole volume at `/input` and this prefix
-   * becomes `/input/<subPath>` to navigate to the actual ENC dir inside.
-   * Defaults to `/input` for backwards compat with existing tests.
-   */
-  inputPrefix?: string;
-  /** Container path the GeoJSON output dir is reachable at. */
-  outputPrefix?: string;
-  /** Write `${COMPLETE_MARKER_PREFIX}<cell>` for each cell exported without an error. */
-  markComplete?: boolean;
-}
-
 /**
- * Prefix of the empty file the export writes for each cell it exported
- * without an error, when asked to (`markComplete`).
+ * Export every layer of every cell to `<LAYER>__<cell>.geojson` in
+ * `geojsonDir` (`<LAYER>.geojson` for a lone cell, unless `perCell`), one
+ * cell per worker at a time. One unreadable layer or cell is logged, not
+ * fatal: a 60-cell bundle still converts when one cell is damaged.
+ *
+ * With `perCell` (the chart-set cache, which keeps output per cell), every
+ * output is named after its cell and each cell exported without an error
+ * gets an empty `${COMPLETE_MARKER_PREFIX}<cell>` file, so a partial export
+ * is never kept as complete.
  */
-export const COMPLETE_MARKER_PREFIX = '.complete-';
-
-// Path inside the container where per-file ogr2ogr stderr is captured.
-// Without this, ogr2ogr failures get swallowed (they used to redirect to
-// /dev/null) and a "the export ran but produced nothing" outcome is
-// indistinguishable from "every chart failed for the same reason".
-// Surfaced into the user-visible conversion log when zero output files
-// land in /output.
-export const EXPORT_ERROR_FILE_BASENAME = '.export-errors.log';
-/**
- * Container path the export script writes per-file ogr2ogr stderr to,
- * for the default `/output` mount.  The script computes the actual
- * path from `outputPrefix` so it stays correct when SignalK is on a
- * named volume that needs a `/output/<subPath>` prefix; this constant
- * still reflects the bind-mount default and is exported for tests.
- */
-export const EXPORT_ERRORS_LOG = `/output/${EXPORT_ERROR_FILE_BASENAME}`;
-const EXPORT_ERROR_SAMPLE_LINES = 10;
-
-// Build the shell script that runs inside the GDAL container. Extracted as a
-// pure function so it's testable and so the parallelism knob is visible.
-//
-// When parallelism > 1, the per-layer loop uses `xargs -P` and the per-layer
-// body runs in a child shell that receives $enc, $name, $multi as positional
-// args (so chart names with spaces / shell metacharacters can't escape into
-// the command). When parallelism === 1, the script keeps the simpler
-// sequential `for layer` form — same behaviour as before this option existed.
-export function buildExportScript(opts: ExportScriptOptions): string {
-  const skipPattern = opts.skipLayers.join('|');
-  const parallel = Math.max(1, Math.floor(opts.parallelism));
-  // `<LAYER>__<cell>`: see EXPORT_NAME_SEPARATOR for why two underscores.
-  const multiBranch = opts.multiFile ? '${layer}__${name}' : '${layer}';
-  const inDir = opts.inputPrefix ?? '/input';
-  const outDir = opts.outputPrefix ?? '/output';
-  const errLog = `${outDir}/${EXPORT_ERROR_FILE_BASENAME}`;
-  // With markComplete, a cell whose ogrinfo and every ogr2ogr succeeded gets
-  // an empty `${COMPLETE_MARKER_PREFIX}<cell>` file beside its output, so a
-  // caller keeping the output can tell a complete export from a partial one.
-  const markComplete = opts.markComplete
-    ? `  if [ "$failed" = 0 ]; then : > "${outDir}/${COMPLETE_MARKER_PREFIX}$name"; fi\n`
-    : '';
-
-  if (parallel === 1) {
-    return `
-set -e
-: > ${errLog}
-count=$(find ${inDir} -name '*.000' ! -name '._*' -type f | wc -l)
-i=0
-find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
-  i=$((i + 1))
-  name=$(basename "$enc" .000)
-  echo "PROGRESS: Processing $name ($i/$count)"
-  failed=0
-  info=$(ogrinfo -so "$enc" 2>>${errLog}) || failed=1
-  layers=$(printf '%s\\n' "$info" | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
-  for layer in $layers; do
-    case "$layer" in ${skipPattern}) continue ;; esac
-    outname="${multiBranch}"
-    if [ "$layer" = "SOUNDG" ]; then
-      ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || failed=1
-    else
-      ogr2ogr -f GeoJSON "${outDir}/$outname.geojson" "$enc" "$layer" 2>>${errLog} || failed=1
-    fi
-  done
-${markComplete}done
-echo "PROGRESS: Export complete"
-`;
-  }
-
-  // Parallel branch: fan out per-layer ogr2ogr via xargs -P.
-  // The inner sh -c receives layer / enc / name / multi as positional args
-  // so we don't smuggle untrusted strings through shell quoting. A failed
-  // ogr2ogr exits its inner shell with 1 (never 255, which would stop xargs
-  // early), so xargs fails and marks the cell; it never stops the export.
-  const multiArg = opts.multiFile ? '1' : '0';
-  return `
-set -e
-: > ${errLog}
-count=$(find ${inDir} -name '*.000' ! -name '._*' -type f | wc -l)
-i=0
-find ${inDir} -name '*.000' ! -name '._*' -type f -print0 | while IFS= read -r -d '' enc; do
-  i=$((i + 1))
-  name=$(basename "$enc" .000)
-  echo "PROGRESS: Processing $name ($i/$count)"
-  failed=0
-  info=$(ogrinfo -so "$enc" 2>>${errLog}) || failed=1
-  layers=$(printf '%s\\n' "$info" | grep -E '^[0-9]+:' | awk -F': ' '{print $2}' | awk '{print $1}')
-  printf '%s\\n' $layers | xargs -P ${parallel} -I '{}' sh -c '
-    layer="$1"
-    enc="$2"
-    name="$3"
-    multi="$4"
-    case "$layer" in ${skipPattern}) exit 0 ;; esac
-    if [ "$multi" = "1" ]; then outname="\${layer}__\${name}"; else outname="$layer"; fi
-    if [ "$layer" = "SOUNDG" ]; then
-      ogr2ogr -f GeoJSON -oo SPLIT_MULTIPOINT=YES -oo ADD_SOUNDG_DEPTH=YES \\
-        "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || exit 1
-    else
-      ogr2ogr -f GeoJSON "${outDir}/\${outname}.geojson" "$enc" "$layer" 2>>${errLog} || exit 1
-    fi
-  ' _ '{}' "$enc" "$name" "${multiArg}" || failed=1
-${markComplete}done
-echo "PROGRESS: Export complete"
-`;
-}
-
 async function exportAllLayersToGeoJSON(
-  encDir: string,
   encFiles: readonly string[],
   geojsonDir: string,
   chartNumber: string,
-  signal?: AbortSignal,
-  // For the chart-set cache, which keeps output per cell: name every output
-  // `<LAYER>__<cell>.geojson`, even for one cell, and mark each cell exported
-  // without an error, so a partial export is never kept as complete.
+  pool: WorkerPool,
+  onPercent?: (pct: number) => void,
   perCell = false
 ): Promise<void> {
-  const skipLayers = ['DSID', 'C_AGGR', 'C_ASSO', 'Generic'];
   const multiFile = perCell || encFiles.length > 1;
-  const parallelism = getCpuBudget().gdalExportParallelism;
-
-  // Translate the absolute host paths into (source, subPath) pairs the
-  // signalk-container runtime layer can mount.  The subPath is non-empty
-  // when SignalK is on a named volume that covers a parent directory;
-  // in that case we mount the whole volume at /input or /output and the
-  // export script reads from /input/<subPath>, writes to /output/<subPath>.
-  const resolved = await resolveJobPaths({ '/input': encDir, '/output': geojsonDir }, (cp, ap) =>
-    appendLog(
-      chartNumber,
-      `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
-    )
-  );
-  if (!resolved) {
-    throw new Error(
-      'Chart conversion paths are not reachable from the container runtime. ' +
-        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
-        'container bind/volume to cover it.'
-    );
-  }
-
-  const inputPrefix = resolved['/input'].subPath
-    ? `/input/${resolved['/input'].subPath}`
-    : '/input';
-  const outputPrefix = resolved['/output'].subPath
-    ? `/output/${resolved['/output'].subPath}`
-    : '/output';
-
-  const script = buildExportScript({
-    multiFile,
-    parallelism,
-    skipLayers,
-    inputPrefix,
-    outputPrefix,
-    markComplete: perCell
-  });
-
-  const result = await runContainerJob({
-    image: CHARTS_TOOLBOX_IMAGE,
-    label: `gdal-export-${chartNumber}`,
-    // bash, not sh.  The toolbox image's `/bin/sh` is dash on
-    // Ubuntu, which doesn't accept `read -r -d ''` (a bash-ism we
-    // use to consume `find -print0` output safely).  Earlier alpine
-    // images linked `/bin/sh` to BusyBox `ash`, which did accept
-    // `-d` — that's why the script worked there and silently
-    // failed here with `sh: read: Illegal option -d` once the
-    // converter switched to the toolbox image.  The toolbox image
-    // ships bash 5.x at `/usr/bin/bash`; invoking via PATH lookup
-    // works the same way `sh` did.
-    command: ['bash', '-c', script],
-    inputs: { '/input': resolved['/input'].source },
-    outputs: { '/output': resolved['/output'].source },
-    // Cap the helper at the budgeted parallelism — without this the
-    // xargs -P fan-out can saturate every core regardless of the
-    // budget setting.  gdalExportParallelism mirrors what we already
-    // pass to xargs, so this just enforces the same ceiling at the
-    // kernel cgroup level.
-    resources: { cpus: parallelism },
-    signal,
-    onStdoutLine: (line) => {
-      appendLog(chartNumber, line);
-      const match = line.match(/PROGRESS: Processing (\S+)/);
-      if (match?.[1]) {
-        setProgress(chartNumber, 'converting', `Exporting ${match[1]}...`);
+  const errorLog = path.join(geojsonDir, EXPORT_ERROR_FILE_BASENAME);
+  fs.writeFileSync(errorLog, '');
+  let done = 0;
+  await forEachConcurrent(encFiles, pool.size, async (cell) => {
+    const name = path.basename(cell, path.extname(cell));
+    let result;
+    try {
+      result = await pool.run({
+        op: 's57-cell',
+        cell,
+        outDir: geojsonDir,
+        multiFile,
+        skipLayers: SKIP_LAYERS
+      });
+    } catch (err) {
+      if (!(err instanceof TaskFailedError)) {
+        throw err;
       }
-    },
-    onStderrLine: (line) => appendLog(chartNumber, line)
+      // The worker died on this cell (a GDAL abort); the pool replaced it.
+      result = { files: 0, complete: false, errors: [...err.log, `${name}: ${err.message}`] };
+    }
+    done++;
+    appendLog(chartNumber, `PROGRESS: Processing ${name} (${done}/${encFiles.length})`);
+    setProgress(chartNumber, 'converting', `Exporting ${name}...`);
+    onPercent?.((done / encFiles.length) * 100);
+    if (result.errors.length > 0) {
+      fs.appendFileSync(errorLog, result.errors.join('\n') + '\n');
+    }
+    if (perCell && result.complete) {
+      fs.writeFileSync(path.join(geojsonDir, `${COMPLETE_MARKER_PREFIX}${name}`), '');
+    }
   });
 
-  throwIfJobCancelled(result);
-
-  if (result.exitCode !== 0) {
-    // A structural export failure (find/ogrinfo/bash) may still have written
-    // per-file ogr2ogr stderr before dying; surface that alongside the
-    // container log tail so an empty /input and a per-chart parse error are
-    // distinguishable.
-    surfaceExportErrorsIfEmpty(geojsonDir, chartNumber);
-    throwJobFailure(result, `gdal-export-${chartNumber}`, (t) => appendLog(chartNumber, t));
-  }
-
-  // The export script swallows non-zero exits from per-file ogr2ogr calls
-  // (one bad chart shouldn't kill a 60-chart bundle), so a clean exit
-  // doesn't mean any output landed. If nothing usable came out, surface
-  // a sample of the per-file stderr the script captured, so the user
-  // sees the actual GDAL error instead of just the downstream
-  // "No valid GeoJSON layers" message.
+  // Per-cell failures don't fail the export, so finishing doesn't mean any
+  // output landed. If nothing usable came out, surface a sample of what GDAL
+  // reported, so the user sees the actual error instead of just the
+  // downstream "No valid GeoJSON layers" message.
   surfaceExportErrorsIfEmpty(geojsonDir, chartNumber);
 }
 
 function surfaceExportErrorsIfEmpty(geojsonDir: string, chartNumber: string): void {
-  let hasUsableOutput = false;
-  try {
-    for (const f of fs.readdirSync(geojsonDir)) {
-      if (!f.endsWith('.geojson')) {
-        continue;
-      }
-      if (fs.statSync(path.join(geojsonDir, f)).size > 100) {
-        hasUsableOutput = true;
-        break;
-      }
-    }
-  } catch {
-    return;
-  }
-  if (hasUsableOutput) {
-    return;
-  }
-
-  const errorFile = path.join(geojsonDir, EXPORT_ERROR_FILE_BASENAME);
-  let raw: string;
-  try {
-    raw = fs.readFileSync(errorFile, 'utf8');
-  } catch {
-    appendLog(
-      chartNumber,
-      'GDAL export produced no usable layers and no per-file errors were captured. ' +
-        'This usually means the GDAL container could not read /input — check chart-path host bind mounts and SELinux/AppArmor labels.'
-    );
-    return;
-  }
-  const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length === 0) {
-    appendLog(
-      chartNumber,
-      'GDAL export produced no usable layers and the captured error log was empty.'
-    );
-    return;
-  }
-  appendLog(
-    chartNumber,
-    `GDAL export ran but produced no usable GeoJSON layers. First ${Math.min(EXPORT_ERROR_SAMPLE_LINES, lines.length)} of ${lines.length} captured ogr2ogr/ogrinfo error line(s):`
-  );
-  for (const line of lines.slice(0, EXPORT_ERROR_SAMPLE_LINES)) {
-    appendLog(chartNumber, `  ${line}`);
-  }
-  if (lines.length > EXPORT_ERROR_SAMPLE_LINES) {
-    appendLog(
-      chartNumber,
-      `  ... ${lines.length - EXPORT_ERROR_SAMPLE_LINES} more error line(s) suppressed.`
-    );
+  for (const line of exportErrorReport(
+    geojsonDir,
+    'Check that the chart files are readable by the Signal K server.'
+  )) {
+    appendLog(chartNumber, line);
   }
 }
 
-// One row per merged layer. `sourceFiles` are the per-chart GeoJSON filenames
-// (basenames, e.g. 'HRBFAC__US5MA1SK.geojson') that fed the merge — kept for
-// caller diagnostics (per-band log line). Per-feature minzoom is already
-// stamped onto features inside the merged file via `tippecanoe.minzoom`.
-type ConsolidatedLayer = { file: string; sourceFiles: string[] };
+/** A band's zoom range within the user's: the band's native scales, clamped. */
+export function bandZoomRange(
+  band: number | null,
+  userMinzoom: number,
+  userMaxzoom: number
+): { minzoom: number; maxzoom: number } {
+  if (band === null) {
+    return { minzoom: userMinzoom, maxzoom: userMaxzoom };
+  }
+  return {
+    minzoom: Math.max(userMinzoom, BAND_MIN_ZOOM[band] ?? userMinzoom),
+    maxzoom: Math.min(userMaxzoom, BAND_MAX_ZOOM[band] ?? userMaxzoom)
+  };
+}
 
-// Group per-chart-per-layer GeoJSON files into one merged file per layer.
-// Tippecanoe runs faster with fewer -L args (one merged file per layer) than
-// with N×M args (one per chart × layer). Streams the output so a multi-state
-// bundle's largest layer doesn't have to fit in memory at once.
-//
-// Each emitted feature carries a `tippecanoe.minzoom` extension property
-// derived from its source chart's IHO band: tippecanoe respects the
-// per-feature `tippecanoe.minzoom` extension and won't emit the feature
-// below that zoom. (Tippecanoe's `-L` JSON form does NOT support per-layer
-// minzoom — silently ignored — so we MUST set it per-feature.) Source
-// charts that don't follow the IHO Annex E filename convention (IENC,
-// hand-named) get no band floor and fall back to the global `-Z`.
-//
-// A feature's own SCAMIN can raise its minzoom further (see
-// `scaminMinzoom`), capped at `maxzoom` so the feature still reaches the
-// deepest tiles that clients overzoom.
-function consolidateGeoJSONByLayer(
+/**
+ * Turn a directory of GDAL exports (`<LAYER>__<cell>.geojson[.gz]`, or
+ * `<LAYER>.geojson` for a lone cell) into tiler sources: one per layer and
+ * IHO band, shown at that band's zooms within the user's range. A band-5
+ * harbour cell's features thus never crowd the overview zooms, and a band-2
+ * cell's coarse coastline never draws over a harbour plan, in one pass over
+ * the whole bundle. Cells whose names don't follow the IHO convention (IENC,
+ * hand-named) use the user's range. Within it, a feature with a SCAMIN
+ * starts at the zoom S-52 shows it at (s57-scamin.ts). Empty exports are
+ * skipped.
+ */
+export function planTileSources(
   geojsonDir: string,
   userMinzoom: number,
-  maxzoom = 16
-): ConsolidatedLayer[] {
-  // `.geojson.gz` is what the chart-set cache keeps; it reads the same.
-  const files = fs
-    .readdirSync(geojsonDir)
-    .filter((f) => f.endsWith('.geojson') || f.endsWith('.geojson.gz'));
-  const readSource = (file: string): string => {
-    const bytes = fs.readFileSync(path.join(geojsonDir, file));
-    return (file.endsWith('.gz') ? zlib.gunzipSync(bytes) : bytes).toString('utf8');
-  };
-
-  // Group by layer name. The export script writes `<LAYER>__<cell>.geojson`
-  // for multi-chart bundles and `<LAYER>.geojson` for single-chart ones.
-  const layerGroups = new Map<string, string[]>();
-  for (const file of files) {
-    const fullPath = path.join(geojsonDir, file);
-    // An empty FeatureCollection. A gzip file records its uncompressed size
-    // (modulo 2^32) in its last four bytes, which is enough to tell.
-    if (
-      (file.endsWith('.gz') ? gzipUncompressedSize(fullPath) : fs.statSync(fullPath).size) <= 100
-    ) {
+  userMaxzoom: number
+): TileSource[] {
+  const sources = new Map<string, TileSource>();
+  for (const file of fs.readdirSync(geojsonDir).sort()) {
+    if (!file.endsWith('.geojson') && !file.endsWith('.geojson.gz')) {
       continue;
     }
-    const { layer } = exportFileParts(file);
-    const list = layerGroups.get(layer) ?? [];
-    list.push(file);
-    layerGroups.set(layer, list);
-  }
-
-  const mergedDir = path.join(geojsonDir, '.merged');
-  fs.mkdirSync(mergedDir, { recursive: true });
-
-  const consolidated: ConsolidatedLayer[] = [];
-  for (const [layer, sources] of layerGroups) {
-    const out = path.join(mergedDir, `${layer}.geojson`);
-    const handle = fs.openSync(out, 'w');
-    fs.writeSync(handle, '{"type":"FeatureCollection","features":[\n');
-    let first = true;
-    for (const source of sources) {
-      // Per-source-chart band → per-feature minzoom. Files in this source
-      // share a band because they all come from the same chart cell, so the
-      // band lookup is one-shot per source file.
-      const band = highestBandForFiles([source]);
-      const bandFloor = band !== null ? BAND_MIN_ZOOM[band] : null;
-      const featureMinzoom = bandFloor !== null ? Math.max(userMinzoom, bandFloor) : null;
-
-      let parsed: { features?: unknown[] };
-      try {
-        parsed = JSON.parse(readSource(source)) as {
-          features?: unknown[];
-        };
-      } catch {
-        continue;
-      }
-      const features = parsed.features ?? [];
-      for (const feat of features) {
-        if (!first) {
-          fs.writeSync(handle, ',\n');
-        }
-        const flattened = flattenListProperties(feat);
-        const scaminZoom = scaminMinzoom(flattened);
-        const minzoomCandidates = [featureMinzoom, scaminZoom].filter(
-          (z): z is number => z !== null
-        );
-        const stamped =
-          minzoomCandidates.length > 0
-            ? withTippecanoeMinzoom(
-                flattened,
-                Math.min(maxzoom, Math.max(userMinzoom, ...minzoomCandidates))
-              )
-            : flattened;
-        fs.writeSync(handle, JSON.stringify(stamped));
-        first = false;
-      }
+    const fullPath = path.join(geojsonDir, file);
+    if (geojsonContentSize(fullPath) <= 100) {
+      continue;
     }
-    fs.writeSync(handle, '\n]}\n');
-    fs.closeSync(handle);
-    consolidated.push({ file: out, sourceFiles: sources });
-  }
-
-  return consolidated;
-}
-
-function gzipUncompressedSize(file: string): number {
-  const handle = fs.openSync(file, 'r');
-  try {
-    const size = fs.fstatSync(handle).size;
-    if (size < 4) {
-      return 0;
+    const { layer, cell } = exportFileParts(file);
+    const band = cell !== null ? detectEncBand(cell) : null;
+    const { minzoom, maxzoom } = bandZoomRange(band, userMinzoom, userMaxzoom);
+    if (minzoom > maxzoom) {
+      continue;
     }
-    const tail = Buffer.alloc(4);
-    fs.readSync(handle, tail, 0, 4, size - 4);
-    return tail.readUInt32LE(0);
-  } finally {
-    fs.closeSync(handle);
+    const key = `${layer}/${String(minzoom)}/${String(maxzoom)}`;
+    const source = sources.get(key) ?? { layer, minzoom, maxzoom, files: [], scamin: true };
+    source.files.push(fullPath);
+    sources.set(key, source);
   }
-}
-
-// MVT properties must be scalar (string|number|bool). GDAL emits S-57 list
-// attributes (COLOUR, STATUS, COLPAT, CATLIT, CATSPM, …) as JSON arrays;
-// tippecanoe then stringifies them as `["3"]`, which client decoders that
-// split on `,` can't read. Convert arrays to comma-separated strings so
-// downstream code can treat them uniformly.
-function flattenListProperties(feature: unknown): unknown {
-  if (typeof feature !== 'object' || feature === null) {
-    return feature;
-  }
-  const f = feature as Record<string, unknown>;
-  const props = f.properties;
-  if (typeof props !== 'object' || props === null) {
-    return feature;
-  }
-  const p = props as Record<string, unknown>;
-  let changed = false;
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(p)) {
-    if (Array.isArray(v)) {
-      out[k] = v.join(',');
-      changed = true;
-    } else {
-      out[k] = v;
-    }
-  }
-  return changed ? { ...f, properties: out } : feature;
-}
-
-/**
- * Scale denominator of a 256 px web-mercator tile at zoom 0 on the equator,
- * with the OGC standard rendering pixel of 0.28 mm.
- */
-const ZOOM0_SCALE_DENOMINATOR = 559082264.0287178;
-
-/**
- * The lowest zoom whose tiles should carry a feature with an S-57 SCAMIN
- * attribute. S-52 hides a feature while the display scale is smaller than
- * 1:SCAMIN, so at zooms below this one no client would draw it, yet every
- * tile would still have to ship and decode it (soundings above all).
- *
- * The web-mercator scale grows towards the poles, and tippecanoe applies a
- * minzoom to the whole feature, so the feature's position farthest from the
- * equator decides: the part of it that qualifies first must not be missing.
- * Rounded up, because OpenLayers draws a fractional zoom from the next
- * higher zoom's tiles by default, so the feature still shows from the
- * integer zoom below. Null when the feature has no usable SCAMIN or position.
- */
-function scaminMinzoom(feature: unknown): number | null {
-  if (typeof feature !== 'object' || feature === null) {
-    return null;
-  }
-  const f = feature as { properties?: unknown; geometry?: unknown };
-  const props = f.properties as Record<string, unknown> | null | undefined;
-  const scamin = Number(props?.SCAMIN);
-  if (!Number.isFinite(scamin) || scamin <= 0) {
-    return null;
-  }
-  const geometry = f.geometry as { coordinates?: unknown } | null | undefined;
-  const latitude = farthestLatitude(geometry?.coordinates);
-  if (latitude === null) {
-    return null;
-  }
-  const denominatorAtZoom0 = ZOOM0_SCALE_DENOMINATOR * Math.cos((latitude * Math.PI) / 180);
-  return Math.max(0, Math.ceil(Math.log2(denominatorAtZoom0 / scamin)));
-}
-
-/**
- * The largest absolute latitude among a GeoJSON geometry's positions, at any
- * nesting depth (point, line, polygon, multi-geometries). Null when there is
- * no position short of a pole.
- */
-function farthestLatitude(coordinates: unknown): number | null {
-  if (!Array.isArray(coordinates)) {
-    return null;
-  }
-  const items = coordinates as unknown[];
-  if (typeof items[0] === 'number') {
-    const latitude = items[1];
-    return typeof latitude === 'number' && Math.abs(latitude) < 90 ? Math.abs(latitude) : null;
-  }
-  let farthest: number | null = null;
-  for (const child of items) {
-    const latitude = farthestLatitude(child);
-    if (latitude !== null && (farthest === null || latitude > farthest)) {
-      farthest = latitude;
-    }
-  }
-  return farthest;
-}
-
-// Stamp tippecanoe.minzoom on a single feature without mutating the input.
-// Preserves any existing `tippecanoe` extension fields if the source already
-// set them (rare for ogr2ogr output, but harmless to support).
-function withTippecanoeMinzoom(feature: unknown, minzoom: number): unknown {
-  if (typeof feature !== 'object' || feature === null) {
-    return feature;
-  }
-  const f = feature as Record<string, unknown>;
-  const existing =
-    typeof f.tippecanoe === 'object' && f.tippecanoe !== null
-      ? (f.tippecanoe as Record<string, unknown>)
-      : {};
-  return { ...f, tippecanoe: { ...existing, minzoom } };
-}
-
-// tippecanoe takes its layers as `-L NAME:FILE` pairs (the simple form).
-// Per-layer minzoom is *not* settable via `-L` — tippecanoe silently ignores
-// `minzoom` fields there. Per-band minzoom is therefore stamped onto each
-// feature in the consolidator (see `consolidateGeoJSONByLayer`), and tippecanoe
-// honors `feature.tippecanoe.minzoom` natively.
-
-// Basename for the per-job layer manifest, written into the mounted /input
-// dir alongside the consolidated GeoJSON.
-const TIPPECANOE_LAYER_MANIFEST = '.tippecanoe-layers';
-
-// One `layerName:/input/file.geojson` line per consolidated layer — the same
-// pairs `-L` would take, as a newline-delimited file the container reads.
-// `inputPrefix` defaults to `/input`; it changes to `/input/<subPath>` when
-// SignalK is on a named volume that covers a parent dir of the scratch.
-function buildLayerManifest(
-  layers: readonly ConsolidatedLayer[],
-  inputPrefix: string = '/input'
-): string {
-  return (
-    layers
-      .map(({ file }) => {
-        const rel = path.basename(file);
-        const layer = path.basename(rel, '.geojson');
-        return `${layer}:${inputPrefix}/${rel}`;
-      })
-      .join('\n') + '\n'
-  );
-}
-
-// `shellQuote` and `withOutputChmod` live in container-fs.ts (next to
-// makeContainerWritable, the rest of the toolbox-UID permission story) so both
-// converters share one copy — see the imports at the top of this file.
-
-// Build the tippecanoe invocation as a small `bash -c` script that reads the
-// `-L` layer pairs from the manifest at runtime, instead of inlining them into
-// argv. A large bundle has 100+ layers, so inlining produced a 200+ element
-// container `Cmd` (a multi-KB createContainer body) that old podman's
-// docker-compat socket rejects with `write EPIPE` (issue #132). Reading them
-// from a file keeps argv at a constant 3 elements regardless of layer count —
-// the same shape the GDAL export step already uses successfully.
-function buildTippecanoeCommand(
-  fixedArgs: readonly string[],
-  manifestContainerPath: string
-): string[] {
-  // Single-quote for the shell so paths/flags with spaces survive
-  // word-splitting (the manifest path can carry a named-volume subPath, and
-  // chart dirs commonly contain spaces).
-  const sq = shellQuote;
-  const quoted = fixedArgs.map(sq).join(' ');
-  // The `-o <path>` pair gives us the container-side output path to chmod
-  // once tippecanoe is done — see withOutputChmod above for why.
-  const outputIndex = fixedArgs.indexOf('-o');
-  const outputContainerPath = outputIndex >= 0 ? fixedArgs[outputIndex + 1] : undefined;
-  const script = [
-    'set -e',
-    'layers=()',
-    `while IFS= read -r line; do`,
-    '  [ -n "$line" ] && layers+=(-L "$line")',
-    `done < ${sq(manifestContainerPath)}`,
-    `tippecanoe ${quoted} "\${layers[@]}"`,
-    ...(outputContainerPath ? [`chmod 666 ${sq(outputContainerPath)}`] : [])
-  ].join('\n');
-  return ['bash', '-c', script];
+  return [...sources.values()];
 }
 
 export const _testInternals = {
-  consolidateGeoJSONByLayer,
-  scaminMinzoom,
-  buildExportScript,
-  bandClampedMaxzoom,
-  buildLayerManifest,
-  buildTippecanoeCommand,
-  withOutputChmod,
-  TIPPECANOE_LAYER_MANIFEST,
   surfaceExportErrorsIfEmpty,
-  wantedMbtilesName,
-  stampMbtilesName,
-  cellFiles,
-  linkBucketCells,
   uniqueCells,
-  stageCells
+  wantedMbtilesName,
+  SKIP_LAYERS
 };
-
-async function runTippecanoe(
-  geojsonDir: string,
-  outputMbtiles: string,
-  chartNumber: string,
-  options: S57ConversionOptions = {},
-  onTilePercent?: (pct: number) => void,
-  // The `name` metadata row to bake in. Set only for the final output of a
-  // conversion (single-pass, or the joined per-band result); per-band
-  // intermediates leave it undefined since tile-join sets the final name.
-  mbtilesName?: string
-): Promise<void> {
-  const minzoom = options.minzoom ?? 9;
-  const maxzoom = options.maxzoom ?? 16;
-
-  // Merge per-chart-per-layer GeoJSON into one file per layer before invoking
-  // tippecanoe. A typical NOAA bundle of 4 charts × ~30 layers used to mean
-  // 120 -L args; consolidating drops that to ~30 and cuts tippecanoe's I/O
-  // setup proportionally.
-  const mergedLayers = consolidateGeoJSONByLayer(geojsonDir, minzoom, maxzoom);
-  if (mergedLayers.length === 0) {
-    throw new Error('No valid GeoJSON layers to process');
-  }
-  const mergedDir = path.dirname(mergedLayers[0].file);
-  const outputDirHost = path.dirname(outputMbtiles);
-
-  // Translate the absolute host paths into (source, subPath) pairs
-  // that signalk-container can mount, regardless of how SignalK is
-  // deployed.  See exportAllLayersToGeoJSON for the same pattern.
-  const resolved = await resolveJobPaths(
-    { '/input': mergedDir, '/output': outputDirHost },
-    (cp, ap) =>
-      appendLog(
-        chartNumber,
-        `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
-      )
-  );
-  if (!resolved) {
-    throw new Error(
-      'Tippecanoe input/output paths are not reachable from the container runtime. ' +
-        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
-        'container bind/volume to cover it.'
-    );
-  }
-  const inputPrefix = resolved['/input'].subPath
-    ? `/input/${resolved['/input'].subPath}`
-    : '/input';
-  const outputPrefix = resolved['/output'].subPath
-    ? `/output/${resolved['/output'].subPath}`
-    : '/output';
-  // Write the layer list into the mounted /input dir; tippecanoe reads it at
-  // runtime so the container Cmd stays small (see buildTippecanoeCommand).
-  fs.writeFileSync(
-    path.join(mergedDir, TIPPECANOE_LAYER_MANIFEST),
-    buildLayerManifest(mergedLayers, inputPrefix)
-  );
-  const manifestContainerPath = `${inputPrefix}/${TIPPECANOE_LAYER_MANIFEST}`;
-
-  // Log per-band layer breakdown so users can see why low-zoom features differ
-  // by band. Counts plus a sample of layer names — full lists would be noisy
-  // (a state bundle has ~40 layers per band).
-  const byBand = new Map<number | null, string[]>();
-  for (const { file, sourceFiles } of mergedLayers) {
-    const b = highestBandForFiles(sourceFiles);
-    const layer = path.basename(file, '.geojson');
-    const list = byBand.get(b) ?? [];
-    list.push(layer);
-    byBand.set(b, list);
-  }
-  const sortedBands = [...byBand.entries()].sort(
-    ([a], [b]) => (a ?? Number.POSITIVE_INFINITY) - (b ?? Number.POSITIVE_INFINITY)
-  );
-  for (const [band, layers] of sortedBands) {
-    const floor = band !== null ? BAND_MIN_ZOOM[band] : minzoom;
-    const effectiveFloor = Math.max(minzoom, floor);
-    const sample = layers.slice(0, 6).join(', ');
-    const more = layers.length > 6 ? `, …` : '';
-    appendLog(
-      chartNumber,
-      `Band ${band ?? 'unknown'}: ${layers.length} layers from z${effectiveFloor} (${sample}${more})`
-    );
-  }
-
-  const tippecanoeThreads = getCpuBudget().tippecanoeThreadsPerJob;
-  debug(
-    `Running tippecanoe with ${mergedLayers.length} consolidated layers, zoom ${minzoom}-${maxzoom}, ${tippecanoeThreads} threads`
-  );
-
-  const handleTippecanoeLine = (line: string): void => {
-    appendLog(chartNumber, line);
-    const match = line.match(/(\d+(?:\.\d+)?)%/);
-    if (match) {
-      const pct = parseFloat(match[1]);
-      if (chartNumber && conversionProgress[chartNumber]) {
-        conversionProgress[chartNumber].message = `Generating tiles: ${Math.round(pct)}%`;
-      }
-      onTilePercent?.(pct);
-    }
-  };
-
-  const result = await runContainerJob({
-    image: CHARTS_TOOLBOX_IMAGE,
-    label: `tippecanoe-${chartNumber}`,
-    command: buildTippecanoeCommand(
-      [
-        '-o',
-        `${outputPrefix}/${path.basename(outputMbtiles)}`,
-        // Bake the `name` metadata row so it never defaults to the `/output/`
-        // container path (issue #151). Omitted for per-band intermediates.
-        ...(mbtilesName ? ['-n', mbtilesName] : []),
-        '-z',
-        String(maxzoom),
-        '-Z',
-        String(minzoom),
-        '--no-tile-size-limit',
-        '--no-feature-limit',
-        '--detect-shared-borders',
-        // Preserve coastline detail end-to-end. Tippecanoe's defaults aggressively
-        // simplify and drop tiny polygons at high zooms, which destroys the
-        // coastline indentations that define marina basins, inland lagoons, and
-        // narrow harbour features. Empirically the basin-as-land issue some NOAA
-        // bundles exhibit at z16 (Michigan City Outer Basin, Lake Worth) goes
-        // away when these defaults are off — the basin coastline is in the
-        // source data, simplification was destroying it. Larger tile buffer
-        // (80, default 5) keeps polygon edges that hug a tile boundary intact.
-        '--no-simplification',
-        '--no-tiny-polygon-reduction',
-        '--buffer=80',
-        '--force'
-      ],
-      manifestContainerPath
-    ),
-    inputs: { '/input': resolved['/input'].source },
-    outputs: { '/output': resolved['/output'].source },
-    env: { TIPPECANOE_MAX_THREADS: String(tippecanoeThreads) },
-    // Cap the helper at the budgeted thread count.  Without this the
-    // env var only limits tippecanoe's worker threads — the kernel
-    // scheduler still gives each worker its own core, so on a multi-
-    // core box "half" budget feels indistinguishable from "all".
-    resources: { cpus: tippecanoeThreads },
-    signal: options.signal,
-    onStdoutLine: handleTippecanoeLine,
-    onStderrLine: handleTippecanoeLine
-  });
-
-  throwIfJobCancelled(result);
-  if (result.exitCode !== 0) {
-    throwJobFailure(result, 'tippecanoe', (t) => appendLog(chartNumber, t));
-  }
-
-  // Best-effort cleanup of the merged dir.
-  try {
-    fs.rmSync(mergedDir, { recursive: true, force: true });
-  } catch {
-    // ignore
-  }
-}
-
-/**
- * Run `tile-join` over a list of per-band intermediate `.mbtiles` files
- * to produce the final, single output `.mbtiles`. Layers with the same
- * name across inputs are merged (default tile-join behaviour); per-band
- * minzoom regimes are preserved because each input was tippecanoe'd
- * with its own `-Z` so its tiles only exist at zooms ≥ that band's
- * floor.
- *
- * `--no-tile-size-limit` mirrors the per-band tippecanoe flag so a
- * mid-zoom band with bursty feature density doesn't get its tiles
- * truncated post-hoc by tile-join.
- */
-async function runTileJoin(
-  inputMbtiles: readonly string[],
-  outputMbtiles: string,
-  chartNumber: string,
-  onPercent?: (pct: number) => void,
-  signal?: AbortSignal,
-  // The `name` metadata row to bake into the joined output, so it never
-  // defaults to the `/output/` container path (issue #151).
-  mbtilesName?: string
-): Promise<void> {
-  if (inputMbtiles.length === 0) {
-    throw new Error('runTileJoin called with no inputs');
-  }
-  if (inputMbtiles.length === 1) {
-    // Degenerate case — runPerBandPipeline can legitimately end up
-    // here when every band but one was skipped (user maxzoom below the
-    // remaining bands' floors). Move the single intermediate into
-    // place so the rest of the pipeline doesn't have to special-case.
-    // Fall back to copy+unlink across filesystems (chartPath on a USB
-    // mount is the realistic case where rename returns EXDEV).
-    // Honor cancellation here too, so this branch behaves like the
-    // multi-input path's post-job throwIfJobCancelled check.
-    if (signal?.aborted) {
-      throw new Error(CONVERSION_ABORTED_MESSAGE);
-    }
-    try {
-      fs.renameSync(inputMbtiles[0], outputMbtiles);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EXDEV') {
-        throw err;
-      }
-      fs.copyFileSync(inputMbtiles[0], outputMbtiles);
-      fs.unlinkSync(inputMbtiles[0]);
-    }
-    // No tile-join ran, so the moved intermediate still carries its
-    // per-band tippecanoe `name` (the `/output/` default). Stamp the
-    // wanted name directly so this branch matches the joined path.
-    // Best-effort: the post-conversion patch refines it further.
-    if (mbtilesName) {
-      stampMbtilesName(outputMbtiles, mbtilesName);
-    }
-    // Mirror the multi-input path's completion so the "Combining" bar
-    // reaches 100% even when the join collapsed to a single file move.
-    onPercent?.(100);
-    return;
-  }
-
-  // All intermediate `.mbtiles` live in the per-conversion tmpDir; the
-  // final output lands in `chartsDir` (in-progress quarantine subdir).
-  // These are always distinct, so we mount `/input` (intermediates,
-  // read-only) and `/output` (final mbtiles) separately.
-  const inputDir = path.dirname(inputMbtiles[0]);
-  const outputDir = path.dirname(outputMbtiles);
-  for (const f of inputMbtiles) {
-    if (path.dirname(f) !== inputDir) {
-      throw new Error(`tile-join inputs must share a parent dir: ${f}`);
-    }
-  }
-
-  const resolved = await resolveJobPaths({ '/input': inputDir, '/output': outputDir }, (cp, ap) =>
-    appendLog(
-      chartNumber,
-      `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
-    )
-  );
-  if (!resolved) {
-    throw new Error(
-      'tile-join paths are not reachable from the container runtime. ' +
-        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
-        'container bind/volume to cover it.'
-    );
-  }
-  const inputPrefix = resolved['/input'].subPath
-    ? `/input/${resolved['/input'].subPath}`
-    : '/input';
-  const outputPrefix = resolved['/output'].subPath
-    ? `/output/${resolved['/output'].subPath}`
-    : '/output';
-
-  const inputArgs = inputMbtiles.map((f) => `${inputPrefix}/${path.basename(f)}`);
-  const tippecanoeThreads = getCpuBudget().tippecanoeThreadsPerJob;
-
-  appendLog(
-    chartNumber,
-    `Combining ${inputMbtiles.length} per-band tile sets into ${path.basename(outputMbtiles)}...`
-  );
-  debug(`Running tile-join on ${inputMbtiles.length} inputs`);
-
-  // tile-join gives us no usable streaming progress. Its only output is the
-  // current tile coordinate (`z/x/y`, no percentage), and it block-buffers
-  // that to stderr — flushing the entire ~30-line sample at process exit — so
-  // parsing stdout would leave the bar at 0% then snap to 100% at the very end
-  // (confirmed: a CPU-throttled join emits 0 bytes for its whole runtime, even
-  // under stdbuf or a PTY). Instead we watch the REAL signal: the output
-  // MBTiles grows on disk (a host-mounted path) as tiles are inserted, and its
-  // final size is ~the sum of the inputs (per-band intermediates have disjoint
-  // zoom ranges, so almost nothing dedupes). So currentSize / expectedSize
-  // tracks the merge smoothly and monotonically. Cap at 99%; snap to 100 once
-  // the job exits.
-  const expectedBytes = inputMbtiles.reduce((sum, f) => {
-    try {
-      return sum + fs.statSync(f).size;
-    } catch {
-      return sum;
-    }
-  }, 0);
-  let lastPct = 0;
-  const pollOutputSize = (): void => {
-    if (!onPercent || expectedBytes <= 0) {
-      return;
-    }
-    let size: number;
-    try {
-      size = fs.statSync(outputMbtiles).size;
-    } catch {
-      return; // output not created yet
-    }
-    const pct = Math.min(99, Math.round((size / expectedBytes) * 100));
-    if (pct > lastPct) {
-      lastPct = pct;
-      onPercent(pct);
-    }
-  };
-  const sizeTimer = setInterval(pollOutputSize, 1000);
-
-  // tile-join's coordinate lines all arrive in one burst at exit; keep them out
-  // of the conversion log, but surface anything else (e.g. errors).
-  const tileLineRe = /^\s*\d+\/\d+\/\d+/;
-  const handleTileJoinLine = (line: string): void => {
-    if (!tileLineRe.test(line)) {
-      appendLog(chartNumber, line);
-    }
-  };
-
-  let result: Awaited<ReturnType<typeof runContainerJob>>;
-  try {
-    result = await runContainerJob({
-      image: CHARTS_TOOLBOX_IMAGE,
-      label: `tile-join-${chartNumber}`,
-      command: withOutputChmod(
-        [
-          'tile-join',
-          '-o',
-          `${outputPrefix}/${path.basename(outputMbtiles)}`,
-          // Bake the `name` metadata row so the joined output never defaults
-          // to the `/output/` container path (issue #151).
-          ...(mbtilesName ? ['-n', mbtilesName] : []),
-          '--no-tile-size-limit',
-          '--force',
-          ...inputArgs
-        ],
-        `${outputPrefix}/${path.basename(outputMbtiles)}`
-      ),
-      inputs: { '/input': resolved['/input'].source },
-      outputs: { '/output': resolved['/output'].source },
-      env: { TIPPECANOE_MAX_THREADS: String(tippecanoeThreads) },
-      resources: { cpus: tippecanoeThreads },
-      signal,
-      onStdoutLine: handleTileJoinLine,
-      onStderrLine: handleTileJoinLine
-    });
-  } finally {
-    clearInterval(sizeTimer);
-  }
-
-  throwIfJobCancelled(result);
-  if (result.exitCode !== 0) {
-    throwJobFailure(result, 'tile-join', (t) => appendLog(chartNumber, t));
-  }
-  onPercent?.(100);
-}
-
-// An S-57 update file: the cell's name with a three-digit extension past 000.
-const UPDATE_EXTENSION = /^\.\d{3}$/;
-
-/**
- * The files GDAL reads for a cell: its `.000` and the update files beside it
- * (`.001`, `.002`, …), which the S-57 driver applies when it opens the cell.
- * An update's name is matched without regard to case, as producers differ;
- * whoever places these for GDAL names each after the cell. When two files
- * hold the same update in different case, the one named exactly like the
- * cell is kept, else the first in sorted order.
- */
-function cellFiles(cell: string): string[] {
-  const dir = path.dirname(cell);
-  const stem = path.basename(cell, path.extname(cell));
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return [cell];
-  }
-  const exactFirst = (name: string): number =>
-    path.basename(name, path.extname(name)) === stem ? 0 : 1;
-  names.sort((a, b) => exactFirst(a) - exactFirst(b) || (a < b ? -1 : a > b ? 1 : 0));
-  const updates = new Map<string, string>();
-  for (const name of names) {
-    const ext = path.extname(name);
-    if (
-      !updates.has(ext) &&
-      path.basename(name, ext).toUpperCase() === stem.toUpperCase() &&
-      UPDATE_EXTENSION.test(ext) &&
-      ext !== '.000' &&
-      fs.statSync(path.join(dir, name)).isFile()
-    ) {
-      updates.set(ext, path.join(dir, name));
-    }
-  }
-  return [cell, ...updates.values()];
-}
-
-/**
- * Hardlink a bucket's cells, each with its update files, into a
- * bucket-scoped dir, so the export script (which walks
- * `find <inDir> -name '*.000'`) only sees this bucket. Each file is named
- * after its cell: GDAL looks for a cell's updates by the cell's own name.
- * Hardlinks keep IO cheap (no data copy) and — unlike symlinks — survive
- * being bind-mounted into a container: a symlink target pointing at an
- * absolute host path doesn't exist inside the container's filesystem
- * namespace, so `find` would silently miss every cell. Copy is the
- * fallback for the rare case where the scratch dir spans filesystems.
- */
-function linkBucketCells(encDir: string, cells: readonly string[], bucketEncDir: string): void {
-  fs.mkdirSync(bucketEncDir, { recursive: true });
-  for (const cellPath of cells) {
-    const linkDir = path.join(bucketEncDir, path.dirname(path.relative(encDir, cellPath)));
-    fs.mkdirSync(linkDir, { recursive: true });
-    const stem = path.basename(cellPath, path.extname(cellPath));
-    for (const file of cellFiles(cellPath)) {
-      const linkPath = path.join(linkDir, `${stem}${path.extname(file)}`);
-      try {
-        fs.linkSync(file, linkPath);
-      } catch {
-        fs.copyFileSync(file, linkPath);
-      }
-    }
-  }
-}
-
-/**
- * Give each cell the update files found apart from it: GDAL applies only
- * the updates beside a cell, but a source can keep a base cell and its
- * updates in different folders or archives. A cell with updates elsewhere
- * is linked (or, across file systems, copied) into its own folder under
- * `workDir` together with its own files and those updates, named after the
- * cell; an update already beside the cell wins over one of the same number
- * elsewhere. Returns the cells to read, in the same order, and the names of
- * the cells that were given updates.
- */
-export function gatherCellUpdates(
-  cells: readonly string[],
-  updates: readonly string[],
-  workDir: string
-): { cells: string[]; withUpdates: string[] } {
-  const byStem = new Map<string, string[]>();
-  for (const update of updates) {
-    const stem = path.basename(update, path.extname(update)).toUpperCase();
-    const list = byStem.get(stem) ?? [];
-    list.push(update);
-    byStem.set(stem, list);
-  }
-  const withUpdates: string[] = [];
-  const result = cells.map((cell, index) => {
-    const dir = path.dirname(cell);
-    const stem = path.basename(cell, path.extname(cell));
-    const elsewhere = (byStem.get(stem.toUpperCase()) ?? []).filter((u) => path.dirname(u) !== dir);
-    if (elsewhere.length === 0) {
-      return cell;
-    }
-    const dest = path.join(workDir, 'cell-updates', String(index));
-    fs.mkdirSync(dest, { recursive: true });
-    const placed = new Set<string>();
-    // The cell's own files first, then the updates found elsewhere, each
-    // under the cell's own name so GDAL finds it.
-    for (const file of [...cellFiles(cell), ...elsewhere.sort()]) {
-      const name = `${stem}${path.extname(file)}`;
-      if (placed.has(name.toUpperCase())) {
-        continue;
-      }
-      placed.add(name.toUpperCase());
-      try {
-        fs.linkSync(file, path.join(dest, name));
-      } catch {
-        fs.copyFileSync(file, path.join(dest, name));
-      }
-    }
-    withUpdates.push(stem);
-    return path.join(dest, `${stem}${path.extname(cell)}`);
-  });
-  return { cells: result, withUpdates };
-}
-
-/**
- * Link (or, across file systems, copy) the given cells, each with its update
- * files and named after it, flat into `destDir`, and return the staged
- * cells in the same order. The cells must have distinct names (uniqueCells).
- * The helper container then reads them from the scratch dir, which it can
- * always mount, wherever the cells themselves are.
- */
-function stageCells(cells: readonly string[], destDir: string): string[] {
-  fs.mkdirSync(destDir, { recursive: true });
-  return cells.map((cell) => {
-    const stem = path.basename(cell, path.extname(cell));
-    for (const file of cellFiles(cell)) {
-      const dest = path.join(destDir, `${stem}${path.extname(file)}`);
-      try {
-        fs.linkSync(file, dest);
-      } catch {
-        fs.copyFileSync(file, dest);
-      }
-    }
-    return path.join(destDir, path.basename(cell));
-  });
-}
-
-/**
- * Fill one bucket's GeoJSON dir: from the caller's `geojsonFor` when it has
- * the output already, otherwise by running GDAL on the bucket's cells,
- * linked into `bucketEncDir` with their update files (linkBucketCells).
- */
-async function geojsonForBucket(
-  encDir: string,
-  cells: readonly string[],
-  bucketEncDir: string,
-  bucketGeojsonDir: string,
-  chartNumber: string,
-  options: S57ConversionOptions
-): Promise<void> {
-  if (options.geojsonFor) {
-    await options.geojsonFor(cells, bucketGeojsonDir);
-    return;
-  }
-  linkBucketCells(encDir, cells, bucketEncDir);
-  await exportAllLayersToGeoJSON(
-    bucketEncDir,
-    cells,
-    bucketGeojsonDir,
-    chartNumber,
-    options.signal
-  );
-}
 
 /**
  * Run GDAL on every cell under `encDir`, writing one `<LAYER>__<cell>.geojson`
  * per layer and cell into `geojsonDir`, without making tiles. The chart-set
  * cache keeps this output per cell, so an update runs GDAL only on the cells
  * that changed. Progress and errors go to `chartNumber`'s conversion log.
+ * `backend` is the toolchain the chart set's run chose, whose GDAL build keys
+ * the cache; without it one is chosen here.
  */
 export async function exportS57CellsToGeoJSON(
   encDir: string,
   geojsonDir: string,
   chartNumber: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  backend?: ConversionBackend
 ): Promise<void> {
-  if (!getContainerManager()) {
-    throw new Error(
-      'signalk-container plugin is required for S-57 conversion. ' +
-        'Install it from the App Store and restart Signal K.'
-    );
-  }
-  await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
   const encFiles = findEncFiles(encDir);
   if (encFiles.length === 0) {
     throw new Error('No S-57 ENC files (.000) found in the chart data');
   }
   fs.mkdirSync(geojsonDir, { recursive: true });
-  makeContainerWritable(geojsonDir);
   // A fresh log, so it holds only what this export reports.
   conversionProgress[chartNumber] = { status: 'converting', message: '', log: [] };
+  const chosen = await pickBackend(chartNumber, backend, [encDir, geojsonDir], () => {});
   appendLog(chartNumber, `Exporting ${encFiles.length} changed cell(s) to GeoJSON...`);
-  await exportAllLayersToGeoJSON(encDir, encFiles, geojsonDir, chartNumber, signal, true);
-}
-
-/**
- * Per-band orchestrator: bucket the cells, run a separate
- * export → consolidate → tippecanoe pipeline for each band into its
- * own intermediate `.mbtiles`, then `tile-join` them into the final
- * output. Bands with no cells in the bundle are skipped.
- *
- * For the unbanded bucket (cells whose filenames don't match the IHO
- * Annex E convention — IENC, hand-named, custom producers) we run the
- * same single-pass tippecanoe the legacy code path used, with the
- * user-requested -Z/-z; that intermediate joins the rest at the end.
- *
- * The win over single-pass is that each band's tippecanoe drop /
- * coalesce / simplification heuristics see only same-scale features:
- * a sparse band-3 cell can no longer push a dense band-5 harbour cell
- * into the drop-densest pass, and per-band tile-size budgets stop
- * one band from squeezing another's tiles.
- */
-async function runPerBandPipeline(
-  encDir: string,
-  encFiles: readonly string[],
-  tmpDir: string,
-  chartNumber: string,
-  options: S57ConversionOptions,
-  outputMbtiles: string
-): Promise<void> {
-  const grouping = groupCellsByBand(encFiles);
-  const userMinzoom = options.minzoom ?? 9;
-  const userMaxzoom = options.maxzoom ?? 16;
-
-  appendLog(
-    chartNumber,
-    `Per-band pipeline: bands=[${grouping.bands.join(', ')}]` +
-      (grouping.unbanded.length > 0 ? ` + ${grouping.unbanded.length} unbanded cell(s)` : '')
-  );
-
-  const intermediates: string[] = [];
-  let bandIndex = 0;
-  const totalBuckets = grouping.bands.length + (grouping.unbanded.length > 0 ? 1 : 0);
-
-  // Structured progress for the Custom Catalogs UI. No-op when the caller
-  // didn't pass an onProgress (upload / single-chart catalog flows).
-  const emitBucket = (
-    stage: S57BucketProgress['stage'],
-    label: string,
-    bucketPercent: number
-  ): void => {
-    options.onProgress?.({
-      stage,
-      bucketIndex: bandIndex,
-      bucketCount: totalBuckets,
-      bucketLabel: label,
-      bucketPercent
+  if (chosen === 'container') {
+    await exportCellsInContainer(encDir, geojsonDir, chartNumber, reporter(chartNumber), {
+      multiFile: true,
+      perCell: true,
+      signal
     });
-  };
-  // Cooperative cancel: stop at the next bucket boundary. An in-flight
-  // container job can't be force-killed, so this only fires between buckets.
-  const abortIfRequested = (): void => {
-    if (options.isAborted?.()) {
-      throw new Error(CONVERSION_ABORTED_MESSAGE);
-    }
-  };
-
-  for (const band of grouping.bands) {
-    bandIndex += 1;
-    abortIfRequested();
-    const cells = grouping.byBand.get(band) ?? [];
-    const bandFloor = BAND_MIN_ZOOM[band] ?? userMinzoom;
-    const bandCeiling = BAND_MAX_ZOOM[band] ?? userMaxzoom;
-    const bandMinzoom = Math.max(userMinzoom, bandFloor);
-    const bandMaxzoom = Math.min(userMaxzoom, bandCeiling);
-
-    if (bandMinzoom > bandMaxzoom) {
-      // User asked for z<bandFloor, which leaves this band with an
-      // empty zoom range. Skip — tippecanoe would error and the band
-      // wouldn't contribute anything visible anyway.
-      appendLog(
-        chartNumber,
-        `Band ${band}: skipped (user maxzoom z${userMaxzoom} below band floor z${bandFloor})`
-      );
-      continue;
-    }
-
-    // Surface the per-band clamp: an all-Band-5 NOAA bundle with the
-    // user asking for z22 used to silently produce z16 tiles. The
-    // single-pass branch already logged this; the per-band branch did
-    // not. With the wide z4-z22 default range, both a floor-raise and
-    // a ceiling-clamp can apply to the same band — report each side
-    // independently rather than picking one.
-    const clampNotes: string[] = [];
-    if (bandMinzoom > userMinzoom) {
-      clampNotes.push(`raised to band floor z${bandFloor}`);
-    }
-    if (bandMaxzoom < userMaxzoom) {
-      clampNotes.push(`clamped to band ceiling z${bandCeiling}`);
-    }
-    const clampNote = clampNotes.length > 0 ? `, ${clampNotes.join('; ')}` : '';
-    appendLog(
-      chartNumber,
-      `Band ${band}: z${bandMinzoom}-z${bandMaxzoom} (user requested z${userMinzoom}-z${userMaxzoom}${clampNote})`
-    );
-
-    const bandEncDir = path.join(tmpDir, `enc-band-${band}`);
-    const bandGeojsonDir = path.join(tmpDir, `geojson-band-${band}`);
-    fs.mkdirSync(bandGeojsonDir, { recursive: true });
-    makeContainerWritable(bandGeojsonDir);
-
-    const bucketProgressPrefix = `[band ${band} ${bandIndex}/${totalBuckets}]`;
-    const bucketLabel = `Band ${band}`;
-    setProgress(
-      chartNumber,
-      'converting',
-      `${bucketProgressPrefix} Exporting ${cells.length} cell(s)...`
-    );
-    appendLog(
-      chartNumber,
-      options.geojsonFor
-        ? `${bucketProgressPrefix} Using the kept GeoJSON of ${cells.length} cell(s)`
-        : `${bucketProgressPrefix} Exporting ${cells.length} cell(s) to GeoJSON...`
-    );
-    emitBucket('export', bucketLabel, -1);
-    await geojsonForBucket(encDir, cells, bandEncDir, bandGeojsonDir, chartNumber, options);
-
-    setProgress(
-      chartNumber,
-      'converting',
-      `${bucketProgressPrefix} Generating tiles z${bandMinzoom}-z${bandMaxzoom}...`
-    );
-    appendLog(chartNumber, `${bucketProgressPrefix} Tippecanoe z${bandMinzoom}-z${bandMaxzoom}`);
-    emitBucket('tiles', bucketLabel, 0);
-    const bandMbtiles = path.join(tmpDir, `band-${band}.mbtiles`);
-    await runTippecanoe(
-      bandGeojsonDir,
-      bandMbtiles,
-      chartNumber,
-      { ...options, minzoom: bandMinzoom, maxzoom: bandMaxzoom },
-      (pct) => emitBucket('tiles', bucketLabel, pct)
-    );
-    intermediates.push(bandMbtiles);
+    return;
   }
-
-  if (grouping.unbanded.length > 0) {
-    bandIndex += 1;
-    abortIfRequested();
-    const unbandedEncDir = path.join(tmpDir, 'enc-unbanded');
-    const unbandedGeojsonDir = path.join(tmpDir, 'geojson-unbanded');
-    fs.mkdirSync(unbandedGeojsonDir, { recursive: true });
-    makeContainerWritable(unbandedGeojsonDir);
-
-    const bucketProgressPrefix = `[unbanded ${bandIndex}/${totalBuckets}]`;
-    const bucketLabel = 'Other charts';
-    setProgress(
-      chartNumber,
-      'converting',
-      `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s)...`
+  try {
+    await withWorkerPool(getCpuBudget().workersPerJob, signal, (pool) =>
+      exportAllLayersToGeoJSON(encFiles, geojsonDir, chartNumber, pool, undefined, true)
     );
-    appendLog(
-      chartNumber,
-      options.geojsonFor
-        ? `${bucketProgressPrefix} Using the kept GeoJSON of ${grouping.unbanded.length} cell(s)`
-        : `${bucketProgressPrefix} Exporting ${grouping.unbanded.length} cell(s) to GeoJSON...`
-    );
-    emitBucket('export', bucketLabel, -1);
-    await geojsonForBucket(
-      encDir,
-      grouping.unbanded,
-      unbandedEncDir,
-      unbandedGeojsonDir,
-      chartNumber,
-      options
-    );
-
-    setProgress(
-      chartNumber,
-      'converting',
-      `${bucketProgressPrefix} Generating tiles z${userMinzoom}-z${userMaxzoom}...`
-    );
-    appendLog(
-      chartNumber,
-      `${bucketProgressPrefix} Tippecanoe z${userMinzoom}-z${userMaxzoom} (user-requested)`
-    );
-    emitBucket('tiles', bucketLabel, 0);
-    const unbandedMbtiles = path.join(tmpDir, 'band-unbanded.mbtiles');
-    await runTippecanoe(
-      unbandedGeojsonDir,
-      unbandedMbtiles,
-      chartNumber,
-      { ...options, minzoom: userMinzoom, maxzoom: userMaxzoom },
-      (pct) => emitBucket('tiles', bucketLabel, pct)
-    );
-    intermediates.push(unbandedMbtiles);
+  } catch (err) {
+    throw asCancellation(err);
   }
-
-  if (intermediates.length === 0) {
-    throw new Error(
-      'Per-band pipeline produced no intermediate tile sets — every band was skipped.'
-    );
-  }
-
-  abortIfRequested();
-  setProgress(chartNumber, 'converting', 'Combining per-band tile sets...');
-  const emitJoin = (bucketPercent: number): void =>
-    options.onProgress?.({
-      stage: 'join',
-      bucketIndex: totalBuckets,
-      bucketCount: totalBuckets,
-      bucketLabel: 'Combining',
-      bucketPercent
-    });
-  emitJoin(0);
-  await runTileJoin(
-    intermediates,
-    outputMbtiles,
-    chartNumber,
-    emitJoin,
-    options.signal,
-    wantedMbtilesName(chartNumber, options.displayName)
-  );
 }
 
 /**
  * Convert a directory tree of already-extracted S-57 ENC cells (`.000`
  * files, possibly nested) into a single vector MBTiles. This is the reusable
  * core of the conversion pipeline: `processS57Zip` extracts one ZIP and
- * delegates here, and the Custom Catalogs flow extracts many NOAA ENC ZIPs
+ * delegates here, and the Custom Catalogs flow extracts many ENC archives
  * into one combined tree and converts it in a single pass so the output is
- * one `.mbtiles` per custom catalog.
+ * one `.mbtiles` per chart set.
  *
- * `encDir` is treated as read-only input (an input-only container mount, so
- * it doesn't need `makeContainerWritable`). All conversion scratch — GeoJSON
- * export and per-band intermediate `.mbtiles` — is created under
- * `scratchParent` (defaulting to the parent of `encDir`) and removed on the
- * way out, so the caller's input tree is never mutated.
+ * Two stages: GDAL exports each cell's layers to GeoJSON, then the tiles are
+ * built with each IHO band at its own zooms. The container toolchain runs
+ * GDAL and tippecanoe in the charts-toolbox image (s57-container.ts); its
+ * WebAssembly fallback runs GDAL and the vector tiler on the conversion's
+ * worker threads (see planTileSources). `options.backend` pins the
+ * toolchain; otherwise conversion-backend.ts picks one.
+ *
+ * `encDir` is treated as read-only input. All conversion scratch is created
+ * under `scratchParent` (defaulting to the parent of `encDir`) and removed on
+ * the way out, so the caller's input tree is never mutated.
  */
 export async function processS57Directory(
   encDir: string,
@@ -1678,11 +510,6 @@ export async function processS57Directory(
   const tmpDir = path.join(scratchParent ?? path.dirname(encDir), `s57out_${Date.now()}`);
   const geojsonDir = path.join(tmpDir, 'geojson');
   fs.mkdirSync(geojsonDir, { recursive: true });
-  // The multi-band pipeline has tippecanoe write its intermediate
-  // `band-*.mbtiles` directly into tmpDir (its `/output`), so tmpDir itself
-  // must be container-writable, not just the geojson export dir.
-  makeContainerWritable(tmpDir);
-  makeContainerWritable(geojsonDir);
 
   if (chartNumber) {
     conversionProgress[chartNumber] = {
@@ -1692,53 +519,24 @@ export async function processS57Directory(
     };
   }
 
-  try {
-    statusFn('checking', 'Checking container runtime...');
-    const manager = getContainerManager();
-    if (!manager) {
-      throw new Error(
-        'signalk-container plugin is required for S-57 conversion. ' +
-          'Install it from the App Store and restart Signal K.'
-      );
+  // Cooperative cancel between stages; the abort signal stops a stage
+  // mid-way by killing its container job or terminating its workers.
+  const abortIfRequested = (): void => {
+    if (options.isAborted?.() || options.signal?.aborted) {
+      throw new Error(CONVERSION_ABORTED_MESSAGE);
     }
+  };
 
-    statusFn('pulling', 'Checking container image...');
-    setProgress(chartNumber, 'pulling', 'Checking charts-toolbox image...');
-    await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
-
-    const { kept: foundCells, duplicates } = uniqueCells(options.cells ?? findEncFiles(encDir));
-    if (foundCells.length === 0) {
+  try {
+    const { kept: encFiles, duplicates } = uniqueCells(options.cells ?? findEncFiles(encDir));
+    if (encFiles.length === 0) {
       throw new Error('No S-57 ENC files (.000) found in the chart data');
     }
-    debug(`Found ${foundCells.length} ENC files`);
-    appendLog(chartNumber, `Found ${foundCells.length} ENC files`);
+    debug(`Found ${encFiles.length} ENC files`);
+    appendLog(chartNumber, `Found ${encFiles.length} ENC files`);
     for (const cell of duplicates) {
       appendLog(chartNumber, `Skipping ${cell}: a cell of the same name is already included`);
     }
-    // Cells the caller lists can lie outside encDir, in a folder the helper
-    // container may not be able to mount: they are staged in the scratch dir.
-    let cellsDir = encDir;
-    let encFiles = foundCells;
-    if (options.cells) {
-      cellsDir = path.join(tmpDir, 'cells');
-      encFiles = stageCells(foundCells, cellsDir);
-    }
-
-    // Choose pipeline. Per-band runs a separate tippecanoe per IHO band
-    // and tile-joins the result — each band's drop / coalesce /
-    // tile-size budget heuristics see only same-scale features instead
-    // of competing across mixed-scale bundles. Triggers when the bundle
-    // actually has more than one bucket (≥2 bands, or a band+unbanded
-    // mix); single-bucket bundles (one band only, or all-unbanded) fall
-    // through to the legacy single-pass code path so we don't pay the
-    // tile-join cost when there's nothing to fan out.
-    const grouping = groupCellsByBand(encFiles);
-    const bucketCount = grouping.bands.length + (grouping.unbanded.length > 0 ? 1 : 0);
-    const usePerBand = bucketCount >= 2;
-
-    const userMaxzoom = options.maxzoom ?? 16;
-    const encBasenames = encFiles.map((f) => path.basename(f));
-    const clamp = bandClampedMaxzoom(encBasenames, userMaxzoom);
 
     const outputName = chooseOutputFilename({
       chartsDir,
@@ -1746,90 +544,39 @@ export async function processS57Directory(
       chartNumber
     });
     const outputPath = path.join(chartsDir, outputName);
+    const backend = await pickBackend(chartNumber, options.backend, [tmpDir, chartsDir], statusFn);
+    abortIfRequested();
 
-    if (usePerBand) {
-      statusFn('converting', 'Running per-band conversion pipeline...');
-      appendLog(
-        chartNumber,
-        `Per-band pipeline selected: ${bucketCount} bucket(s) ` +
-          `[bands ${grouping.bands.join(', ') || '(none)'}` +
-          `${grouping.unbanded.length > 0 ? ` + ${grouping.unbanded.length} unbanded` : ''}]`
-      );
-      await runPerBandPipeline(cellsDir, encFiles, tmpDir, chartNumber, options, outputPath);
+    if (backend === 'container') {
+      await tileS57InContainer({
+        encFiles,
+        tmpDir,
+        outputPath,
+        label: chartNumber || 'enc',
+        mbtilesName: wantedMbtilesName(chartNumber, options.displayName),
+        options,
+        report: reporter(chartNumber),
+        statusFn
+      });
     } else {
-      statusFn('converting', 'Converting S-57 layers to GeoJSON...');
-      setProgress(chartNumber, 'converting', `Exporting ${encFiles.length} ENC files...`);
-      appendLog(
-        chartNumber,
-        `Single-pass pipeline: ${encFiles.length} ENC file(s) in one GDAL container`
-      );
-
-      options.onProgress?.({
-        stage: 'export',
-        bucketIndex: 1,
-        bucketCount: 1,
-        bucketLabel: 'Charts',
-        bucketPercent: -1
-      });
-      if (options.geojsonFor) {
-        await options.geojsonFor(encFiles, geojsonDir);
-      } else {
-        await exportAllLayersToGeoJSON(cellsDir, encFiles, geojsonDir, chartNumber, options.signal);
-      }
-
-      statusFn('converting', 'Generating vector tiles...');
-      setProgress(chartNumber, 'converting', 'Generating vector tiles with tippecanoe...');
-      options.onProgress?.({
-        stage: 'tiles',
-        bucketIndex: 1,
-        bucketCount: 1,
-        bucketLabel: 'Charts',
-        bucketPercent: 0
-      });
-
-      // Clamp tippecanoe's maxzoom to the IHO band ceiling. Most
-      // tippecanoe time is spent at the highest zooms; if the only
-      // bucket is band-3 (coastal), asking for z16 emits 4 zoom levels
-      // of tiles that can't be backed by real feature precision.
-      if (clamp.highestBand !== null && clamp.effective < userMaxzoom) {
-        const msg =
-          `Detected IHO bands [${clamp.bands.join(', ')}] (highest = ${clamp.highestBand}) ` +
-          `→ tippecanoe maxzoom clamped to z${clamp.effective} (was z${userMaxzoom})`;
-        debug(msg);
-        appendLog(chartNumber, msg);
-      } else if (clamp.highestBand === null) {
-        const msg = `No IHO band detected (likely IENC or non-conforming filenames); using user maxzoom z${userMaxzoom}`;
-        debug(msg);
-        appendLog(chartNumber, msg);
-      }
-      const effectiveOptions: S57ConversionOptions = { ...options, maxzoom: clamp.effective };
-      await runTippecanoe(
+      await tileS57WithWasm(
+        encFiles,
+        tmpDir,
         geojsonDir,
         outputPath,
         chartNumber,
-        effectiveOptions,
-        (pct) =>
-          options.onProgress?.({
-            stage: 'tiles',
-            bucketIndex: 1,
-            bucketCount: 1,
-            bucketLabel: 'Charts',
-            bucketPercent: pct
-          }),
-        wantedMbtilesName(chartNumber, options.displayName)
+        options,
+        statusFn
       );
     }
 
     if (!fs.existsSync(outputPath)) {
-      throw new Error('tippecanoe completed but output file not found');
+      throw new Error('Tiling completed but output file not found');
     }
 
-    // Overwrite tippecanoe's default `type=overlay` and `name=/output/...` with
-    // `type=S-57` so Signal K + chart consumers identify the file correctly.
-    // The patcher logs to BOTH the conversion log (visible in the UI) and
-    // server stdout — earlier versions only logged to debug() so failures
-    // (sqlite locks, node:sqlite unavailable on older Nodes, …) were silent.
-    // See docs/reports against 1.11.x bundles still ending up as type=overlay.
+    // Set `type=S-57` so Signal K + chart consumers identify the file
+    // correctly. The patcher logs to BOTH the conversion log (visible in the
+    // UI) and server stdout, so a failure (sqlite locks, …) is never silent.
     const patchResult = await patchS57Mbtiles(outputPath, chartNumber, {
       onMessage: (msg) => {
         debug(msg);
@@ -1878,7 +625,8 @@ export async function processS57Directory(
     }
 
     return { mbtilesFile: outputName };
-  } catch (err) {
+  } catch (caught) {
+    const err = asCancellation(caught);
     if (chartNumber) {
       setConversionFailed(
         chartNumber,
@@ -1896,11 +644,120 @@ export async function processS57Directory(
 }
 
 /**
+ * Tile S-57 cells into `outputPath` with the WebAssembly toolchain: GDAL
+ * exports each cell on the conversion's worker threads, then the vector
+ * tiler builds every band in one pass.
+ */
+async function tileS57WithWasm(
+  encFiles: readonly string[],
+  tmpDir: string,
+  geojsonDir: string,
+  outputPath: string,
+  chartNumber: string,
+  options: S57ConversionOptions,
+  statusFn: StatusCallback
+): Promise<void> {
+  const userMinzoom = options.minzoom ?? 9;
+  const userMaxzoom = options.maxzoom ?? 16;
+  const workers = getCpuBudget().workersPerJob;
+  const emit = (stage: S57BucketProgress['stage'], bucketPercent: number): void => {
+    options.onProgress?.({
+      stage,
+      bucketIndex: 1,
+      bucketCount: 1,
+      bucketLabel: 'Charts',
+      bucketPercent
+    });
+  };
+  await withWorkerPool(workers, options.signal, async (pool) => {
+    statusFn('converting', 'Converting S-57 layers to GeoJSON...');
+    emit('export', options.geojsonFor ? -1 : 0);
+    if (options.geojsonFor) {
+      appendLog(chartNumber, `Using the kept GeoJSON of ${encFiles.length} cell(s)`);
+      await options.geojsonFor(encFiles, geojsonDir);
+    } else {
+      setProgress(chartNumber, 'converting', `Exporting ${encFiles.length} ENC files...`);
+      appendLog(
+        chartNumber,
+        `Exporting ${encFiles.length} ENC file(s) with GDAL (WebAssembly), ${workers} worker(s)`
+      );
+      await exportAllLayersToGeoJSON(encFiles, geojsonDir, chartNumber, pool, (pct) => {
+        emit('export', pct);
+      });
+    }
+    if (options.isAborted?.() || options.signal?.aborted) {
+      throw new Error(CONVERSION_ABORTED_MESSAGE);
+    }
+
+    const sources = planTileSources(geojsonDir, userMinzoom, userMaxzoom);
+    if (sources.length === 0) {
+      throw new Error('No valid GeoJSON layers to process');
+    }
+    logBandPlan(chartNumber, sources, userMinzoom, userMaxzoom);
+
+    statusFn('converting', 'Generating vector tiles...');
+    setProgress(chartNumber, 'converting', 'Generating vector tiles...');
+    emit('tiles', 0);
+    const result = await buildVectorMbtiles({
+      sources,
+      output: outputPath,
+      scratchDir: path.join(tmpDir, 'tiles'),
+      pool,
+      name: wantedMbtilesName(chartNumber, options.displayName),
+      description: options.displayDescription,
+      signal: options.signal,
+      log: (msg) => {
+        appendLog(chartNumber, msg);
+      },
+      onPercent: (pct) => {
+        if (chartNumber && conversionProgress[chartNumber]) {
+          conversionProgress[chartNumber].message = `Generating tiles: ${pct}%`;
+        }
+        emit('tiles', pct);
+      }
+    });
+    appendLog(
+      chartNumber,
+      `Wrote ${result.tiles} tiles (z${result.minzoom}-z${result.maxzoom}) from ${result.features} features`
+    );
+  });
+}
+
+/**
+ * Log which layers show from which zoom, per band, so users can see why
+ * low-zoom features differ by band. Counts plus a sample of layer names —
+ * full lists would be noisy (a state bundle has ~40 layers per band).
+ */
+function logBandPlan(
+  chartNumber: string,
+  sources: readonly TileSource[],
+  userMinzoom: number,
+  userMaxzoom: number
+): void {
+  const byRange = new Map<string, Set<string>>();
+  for (const s of sources) {
+    const key = `z${s.minzoom}-z${s.maxzoom}`;
+    const layers = byRange.get(key) ?? new Set<string>();
+    layers.add(s.layer);
+    byRange.set(key, layers);
+  }
+  appendLog(
+    chartNumber,
+    `Zoom plan (user requested z${userMinzoom}-z${userMaxzoom}, clamped per IHO band):`
+  );
+  for (const [range, layers] of [...byRange.entries()].sort()) {
+    const list = [...layers];
+    const sample = list.slice(0, 6).join(', ');
+    const more = list.length > 6 ? ', …' : '';
+    appendLog(chartNumber, `  ${range}: ${list.length} layers (${sample}${more})`);
+  }
+}
+
+/**
  * Extract a single S-57 ENC ZIP into a scratch tree and convert it to one
  * vector MBTiles. Thin wrapper over {@link processS57Directory}: it owns the
  * ZIP-specific extraction step (and its "not a valid ZIP archive" error
  * surface), then hands the extracted `enc/` tree to the shared pipeline.
- * Behaviour for the upload / single-catalog-chart flows is unchanged.
  */
 export async function processS57Zip(
   zipPath: string,
@@ -1941,8 +798,8 @@ export async function processS57Zip(
     }
 
     // Delegate to the shared pipeline. `tmpDir` is the scratch parent, so the
-    // pipeline's GeoJSON/per-band scratch lands alongside `enc/` and is
-    // cleaned up together with it by the finally below.
+    // pipeline's scratch lands alongside `enc/` and is cleaned up together
+    // with it by the finally below.
     return await processS57Directory(encDir, chartsDir, chartNumber, onStatus, options, tmpDir);
   } catch (err) {
     // processS57Directory already records its own failures; this also covers
@@ -2022,14 +879,140 @@ export async function processS57Local(
 
 const GSHHG_URL = 'https://www.ngdc.noaa.gov/mgg/shorelines/data/gshhg/latest/gshhg-shp-2.3.7.zip';
 
-const DOWNLOAD_STALL_MS = 60_000;
+// Overview zooms below a basemap's native zoom: what gdaladdo's 2…256
+// factors gave.
+const BASEMAP_OVERVIEW_LEVELS = 8;
 
 /**
- * Download `url` to `dest` over https, following up to five redirects.
- * Rejects on an HTTP error, a bad redirect, a dropped connection, or a
- * connection silent for DOWNLOAD_STALL_MS, so the conversion fails instead
- * of waiting forever.
+ * Burn a land-polygon shapefile into a world raster (sand on sea blue) and
+ * tile it into a PNG MBTiles at `outputPath`, with overview zooms.
  */
+async function rasterizeLandToMbtiles(opts: {
+  shp: string;
+  workDir: string;
+  outputPath: string;
+  width: number;
+  chartNumber: string;
+  pool: WorkerPool;
+}): Promise<void> {
+  const { chartNumber, pool } = opts;
+  const worldTif = path.join(opts.workDir, 'world.tif');
+  const logGdal = (lines: readonly string[]): void => {
+    for (const line of lines) {
+      appendLog(chartNumber, line);
+    }
+  };
+
+  appendLog(chartNumber, 'Rasterizing shapefile...');
+  const rasterized = await pool.run({
+    op: 'gdal-rasterize',
+    source: { path: opts.shp },
+    dst: worldTif,
+    args: [
+      '-burn',
+      '240',
+      '-burn',
+      '230',
+      '-burn',
+      '208',
+      '-init',
+      '168',
+      '-init',
+      '212',
+      '-init',
+      '230',
+      '-a_srs',
+      'EPSG:4326',
+      '-te',
+      '-180',
+      '-85.05',
+      '180',
+      '85.05',
+      '-ts',
+      String(opts.width),
+      String(Math.round(opts.width / 2)),
+      '-ot',
+      'Byte',
+      '-of',
+      'GTiff',
+      '-co',
+      'COMPRESS=LZW',
+      // From GSHHG's intermediate resolution up (and the high and full
+      // shapefile basemaps) the raster is past 4 GB uncompressed, and even
+      // compressed may outgrow a classic TIFF; GDAL only switches to BigTIFF
+      // unasked when it can tell an uncompressed file needs it.
+      '-co',
+      'BIGTIFF=IF_SAFER'
+    ]
+  });
+  logGdal(rasterized.log);
+
+  setProgress(chartNumber, 'converting', 'Creating MBTiles...');
+  appendLog(chartNumber, 'Creating MBTiles...');
+  const translated = await pool.run({
+    op: 'gdal-translate',
+    source: { path: worldTif },
+    dst: opts.outputPath,
+    args: ['-of', 'MBTiles', '-co', 'TILE_FORMAT=PNG']
+  });
+  logGdal(translated.log);
+
+  setProgress(chartNumber, 'converting', 'Adding zoom levels...');
+  appendLog(chartNumber, 'Adding overview zoom levels...');
+  const added = await addRasterOverviews(opts.outputPath, BASEMAP_OVERVIEW_LEVELS, pool);
+  appendLog(chartNumber, `Added ${added} overview tiles`);
+}
+
+/**
+ * Rasterize a land shapefile into a basemap MBTiles with the toolchain
+ * conversion-backend.ts picks for it.
+ */
+async function rasterizeLand(opts: {
+  shp: string;
+  workDir: string;
+  outputPath: string;
+  width: number;
+  chartNumber: string;
+  statusFn: StatusCallback;
+}): Promise<void> {
+  const { chartNumber } = opts;
+  const backend = await pickBackend(
+    chartNumber,
+    undefined,
+    [path.dirname(opts.shp), opts.workDir, path.dirname(opts.outputPath)],
+    opts.statusFn
+  );
+  setProgress(chartNumber, 'converting', 'Rasterizing land polygons...');
+  if (backend === 'container') {
+    await rasterizeLandInContainer({ ...opts, label: chartNumber, report: reporter(chartNumber) });
+    return;
+  }
+  await withWorkerPool(getCpuBudget().workersPerJob, undefined, (pool) =>
+    rasterizeLandToMbtiles({ ...opts, pool })
+  );
+}
+
+/** Overwrite metadata rows; best-effort. */
+function setRasterMetadata(file: string, rows: Record<string, string>): void {
+  try {
+    const db = new DatabaseSync(file);
+    try {
+      db.exec('BEGIN');
+      for (const [name, value] of Object.entries(rows)) {
+        db.prepare('DELETE FROM metadata WHERE name = ?').run(name);
+        db.prepare('INSERT INTO metadata (name, value) VALUES (?, ?)').run(name, value);
+      }
+      db.exec('COMMIT');
+    } finally {
+      db.close();
+    }
+  } catch {
+    debug(`Warning: failed to set metadata of ${path.basename(file)}`);
+  }
+}
+
+const DOWNLOAD_STALL_MS = 60_000;
+
 async function downloadFile(
   url: string,
   dest: string,
@@ -2096,18 +1079,6 @@ export async function processGshhg(
     throw new Error(`Invalid GSHHG resolution: ${resolution}`);
   }
 
-  const manager = getContainerManager();
-  if (!manager) {
-    throw new Error(
-      'signalk-container plugin is required for chart conversion. ' +
-        'Install it from the App Store and restart Signal K.'
-    );
-  }
-  setProgress(chartNumber, 'pulling', 'Checking charts-toolbox image...');
-  await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
-  // gdal_rasterize writes the world raster into tmpDir as the toolbox user.
-  makeContainerWritable(tmpDir);
-
   setProgress(chartNumber, 'converting', 'Downloading GSHHG shapefiles from NOAA...');
   appendLog(
     chartNumber,
@@ -2148,160 +1119,21 @@ export async function processGshhg(
   const outputName = `gshhg-basemap-${resolution}.mbtiles`;
   const outputPath = path.join(chartsDir, outputName);
 
-  // Resolve all three host paths up front.  shpDir and tmpDir live under
-  // the temp tree (typically inside the data dir or a sibling); chartsDir
-  // is the user-configured chart output.  All three need to be reachable
-  // from the host runtime, otherwise we surface an actionable error rather
-  // than letting the helper container fail with a confusing "no input"
-  // exit.
-  const resolved = await resolveJobPaths(
-    { '/input': shpDir, '/work': tmpDir, '/output': chartsDir },
-    (cp, ap) =>
-      appendLog(
-        chartNumber,
-        `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
-      )
-  );
-  if (!resolved) {
-    throw new Error(
-      'GSHHG conversion paths are not reachable from the container runtime. ' +
-        'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
-        'container bind/volume to cover it.'
-    );
-  }
-  const inputPrefix = resolved['/input'].subPath
-    ? `/input/${resolved['/input'].subPath}`
-    : '/input';
-  const workPrefix = resolved['/work'].subPath ? `/work/${resolved['/work'].subPath}` : '/work';
-  const outputPrefix = resolved['/output'].subPath
-    ? `/output/${resolved['/output'].subPath}`
-    : '/output';
-
-  appendLog(chartNumber, 'Rasterizing shapefile...');
-  const rasterizeResult = await runContainerJob({
-    image: CHARTS_TOOLBOX_IMAGE,
-    label: `gdal-rasterize-${chartNumber}`,
-    command: [
-      'gdal_rasterize',
-      '-burn',
-      '240',
-      '-burn',
-      '230',
-      '-burn',
-      '208',
-      '-init',
-      '168',
-      '-init',
-      '212',
-      '-init',
-      '230',
-      '-a_srs',
-      'EPSG:4326',
-      '-te',
-      '-180',
-      '-85.05',
-      '180',
-      '85.05',
-      '-ts',
-      String(rasterSize),
-      String(Math.round(rasterSize / 2)),
-      '-ot',
-      'Byte',
-      '-of',
-      'GTiff',
-      '-co',
-      'COMPRESS=LZW',
-      // From the intermediate resolution up the raster is past 4 GB
-      // uncompressed, and even compressed may outgrow a classic TIFF; GDAL
-      // only switches to BigTIFF unasked when it can tell an uncompressed
-      // file needs it.
-      '-co',
-      'BIGTIFF=IF_SAFER',
-      `${inputPrefix}/GSHHS_shp/${resolution}/GSHHS_${resolution}_L1.shp`,
-      `${workPrefix}/world.tif`
-    ],
-    inputs: { '/input': resolved['/input'].source },
-    outputs: { '/work': resolved['/work'].source },
-    // gdal_rasterize is single-process; one core is enough.
-    resources: { cpus: 1 },
-    onStdoutLine: (line) => appendLog(chartNumber, line),
-    onStderrLine: (line) => appendLog(chartNumber, line)
+  await rasterizeLand({
+    shp: path.join(shpDir, 'GSHHS_shp', resolution, `GSHHS_${resolution}_L1.shp`),
+    workDir: tmpDir,
+    outputPath,
+    width: rasterSize,
+    chartNumber,
+    statusFn
   });
-  if (rasterizeResult.exitCode !== 0) {
-    throwJobFailure(rasterizeResult, 'gdal_rasterize', (t) => appendLog(chartNumber, t));
-  }
 
-  setProgress(chartNumber, 'converting', 'Creating MBTiles...');
-  appendLog(chartNumber, 'Creating MBTiles...');
-  const translateResult = await runContainerJob({
-    image: CHARTS_TOOLBOX_IMAGE,
-    label: `gdal-translate-${chartNumber}`,
-    command: [
-      'gdal_translate',
-      '-of',
-      'MBTiles',
-      '-co',
-      'TILE_FORMAT=PNG',
-      `${workPrefix}/world.tif`,
-      `${outputPrefix}/${outputName}`
-    ],
-    inputs: { '/work': resolved['/work'].source },
-    outputs: { '/output': resolved['/output'].source },
-    // Single-process GDAL stage; one core is enough.
-    resources: { cpus: 1 },
-    onStdoutLine: (line) => appendLog(chartNumber, line),
-    onStderrLine: (line) => appendLog(chartNumber, line)
+  setRasterMetadata(outputPath, {
+    name: `GSHHG World Basemap (${resLabels[resolution] ?? resolution})`,
+    description: `Global coastlines and lakes - GSHHG v2.3.7 ${(resLabels[resolution] ?? resolution).toLowerCase()} resolution`,
+    type: 'tilelayer',
+    format: 'png'
   });
-  if (translateResult.exitCode !== 0) {
-    throwJobFailure(translateResult, 'gdal_translate', (t) => appendLog(chartNumber, t));
-  }
-
-  setProgress(chartNumber, 'converting', 'Adding zoom levels...');
-  appendLog(chartNumber, 'Adding overview zoom levels...');
-  const overviewResult = await runContainerJob({
-    image: CHARTS_TOOLBOX_IMAGE,
-    label: `gdaladdo-${chartNumber}`,
-    command: withOutputChmod(
-      [
-        'gdaladdo',
-        '-r',
-        'average',
-        `${outputPrefix}/${outputName}`,
-        '2',
-        '4',
-        '8',
-        '16',
-        '32',
-        '64',
-        '128',
-        '256'
-      ],
-      `${outputPrefix}/${outputName}`
-    ),
-    outputs: { '/output': resolved['/output'].source },
-    // Single-process; one core is enough.
-    resources: { cpus: 1 },
-    onStdoutLine: (line) => appendLog(chartNumber, line),
-    onStderrLine: (line) => appendLog(chartNumber, line)
-  });
-  if (overviewResult.exitCode !== 0) {
-    throwJobFailure(overviewResult, 'gdaladdo', (t) => appendLog(chartNumber, t));
-  }
-
-  try {
-    const db = new DatabaseSync(outputPath);
-    db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('name', ?)").run(
-      `GSHHG World Basemap (${resLabels[resolution] ?? resolution})`
-    );
-    db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('description', ?)").run(
-      `Global coastlines and lakes - GSHHG v2.3.7 ${(resLabels[resolution] ?? resolution).toLowerCase()} resolution`
-    );
-    db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')").run();
-    db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('format', 'png')").run();
-    db.close();
-  } catch {
-    debug('Warning: failed to set GSHHG metadata');
-  }
 
   const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
   const doneMsg = `GSHHG basemap installed (${size} MB)`;
@@ -2322,9 +1154,8 @@ export async function processShpBasemap(
   onStatus: StatusCallback | null
 ): Promise<S57ConversionResult> {
   const statusFn = onStatus ?? (() => {});
-  const tmpDir = makeContainerWritableDir(
-    path.join(path.dirname(tarPath), `shpbasemap_${Date.now()}`)
-  );
+  const tmpDir = path.join(path.dirname(tarPath), `shpbasemap_${Date.now()}`);
+  fs.mkdirSync(tmpDir, { recursive: true });
 
   if (chartNumber) {
     conversionProgress[chartNumber] = {
@@ -2335,77 +1166,17 @@ export async function processShpBasemap(
   }
 
   try {
-    const manager = getContainerManager();
-    if (!manager) {
-      throw new Error(
-        'signalk-container plugin is required for chart conversion. ' +
-          'Install it from the App Store and restart Signal K.'
-      );
-    }
-    setProgress(chartNumber, 'pulling', 'Checking charts-toolbox image...');
-    await ensureContainerImage(CHARTS_TOOLBOX_IMAGE, (msg) => debug(msg));
-
     setProgress(chartNumber, 'extracting', 'Extracting shapefiles...');
-    appendLog(chartNumber, 'Extracting .tar.xz archive...');
+    appendLog(chartNumber, 'Extracting archive...');
+    const extracted = await extractTarArchive(tarPath, tmpDir);
 
-    // Resolve archive (input) and tmpDir (output) up-front; the rasterize/
-    // translate/overview steps reuse the latter as /work.  chartsDir gets
-    // resolved separately later because it's not needed by the tar step.
-    const archiveDir = path.dirname(tarPath);
-    const tarResolved = await resolveJobPaths(
-      { '/archive': archiveDir, '/output': tmpDir },
-      (cp, ap) =>
-        appendLog(
-          chartNumber,
-          `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
-        )
-    );
-    if (!tarResolved) {
-      throw new Error(
-        'SHP basemap conversion paths are not reachable from the container runtime. ' +
-          'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
-          'container bind/volume to cover it.'
-      );
-    }
-    const archivePrefix = tarResolved['/archive'].subPath
-      ? `/archive/${tarResolved['/archive'].subPath}`
-      : '/archive';
-    const tarOutputPrefix = tarResolved['/output'].subPath
-      ? `/output/${tarResolved['/output'].subPath}`
-      : '/output';
-
-    const tarResult = await runContainerJob({
-      image: CHARTS_TOOLBOX_IMAGE,
-      label: `tar-extract-${chartNumber}`,
-      command: ['tar', '-xf', `${archivePrefix}/${path.basename(tarPath)}`, '-C', tarOutputPrefix],
-      inputs: { '/archive': tarResolved['/archive'].source },
-      outputs: { '/output': tarResolved['/output'].source },
-      // Tar is single-process; one core is enough.
-      resources: { cpus: 1 },
-      onStdoutLine: (line) => appendLog(chartNumber, line),
-      onStderrLine: (line) => appendLog(chartNumber, line)
-    });
-    if (tarResult.exitCode !== 0) {
-      throwJobFailure(tarResult, 'tar extraction', (t) => appendLog(chartNumber, t));
-    }
-
-    const findShp = (dir: string, prefix: string | null): string | null => {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          const found = findShp(fullPath, prefix);
-          if (found) {
-            return found;
-          }
-        } else if (entry.name.endsWith('.shp') && (!prefix || entry.name.includes(prefix))) {
-          return fullPath;
-        }
-      }
-      return null;
-    };
-
-    const landShp = findShp(tmpDir, 'L1') ?? findShp(tmpDir, 'land') ?? findShp(tmpDir, null);
+    const shapefiles = extracted
+      .filter((f) => f.endsWith('.shp') && !path.basename(f).startsWith('._'))
+      .sort();
+    const landShp =
+      shapefiles.find((f) => path.basename(f).includes('L1')) ??
+      shapefiles.find((f) => path.basename(f).includes('land')) ??
+      shapefiles[0];
 
     if (!landShp) {
       throw new Error('No .shp files found in archive');
@@ -2428,156 +1199,21 @@ export async function processShpBasemap(
 
     const outputName = `osm-basemap-${chartNumber.replace('basemap_', '')}.mbtiles`;
     const outputPath = path.join(chartsDir, outputName);
-    const shpDir = path.dirname(landShp);
-    const shpName = path.basename(landShp);
 
-    // Resolve the three remaining paths: shpDir (extracted shapefile parent),
-    // tmpDir (scratch /work for world.tif), chartsDir (final output).
-    const rasterResolved = await resolveJobPaths(
-      { '/input': shpDir, '/work': tmpDir, '/output': chartsDir },
-      (cp, ap) =>
-        appendLog(
-          chartNumber,
-          `Cannot mount ${cp} ← ${ap}: path is not reachable from the SignalK container runtime.`
-        )
-    );
-    if (!rasterResolved) {
-      throw new Error(
-        'SHP basemap conversion paths are not reachable from the container runtime. ' +
-          'Move the chart directory under app.getDataDirPath() or extend the SignalK ' +
-          'container bind/volume to cover it.'
-      );
-    }
-    const inputPrefix = rasterResolved['/input'].subPath
-      ? `/input/${rasterResolved['/input'].subPath}`
-      : '/input';
-    const workPrefix = rasterResolved['/work'].subPath
-      ? `/work/${rasterResolved['/work'].subPath}`
-      : '/work';
-    const outputPrefix = rasterResolved['/output'].subPath
-      ? `/output/${rasterResolved['/output'].subPath}`
-      : '/output';
-
-    appendLog(chartNumber, 'Rasterizing...');
-    const rasterizeResult = await runContainerJob({
-      image: CHARTS_TOOLBOX_IMAGE,
-      label: `gdal-rasterize-${chartNumber}`,
-      command: [
-        'gdal_rasterize',
-        '-burn',
-        '240',
-        '-burn',
-        '230',
-        '-burn',
-        '208',
-        '-init',
-        '168',
-        '-init',
-        '212',
-        '-init',
-        '230',
-        '-a_srs',
-        'EPSG:4326',
-        '-te',
-        '-180',
-        '-85.05',
-        '180',
-        '85.05',
-        '-ts',
-        String(res.size),
-        String(Math.round(res.size / 2)),
-        '-ot',
-        'Byte',
-        '-of',
-        'GTiff',
-        '-co',
-        'COMPRESS=LZW',
-        // The high and full rasters are past 4 GB uncompressed, and even
-        // compressed may outgrow a classic TIFF (see processGshhg).
-        '-co',
-        'BIGTIFF=IF_SAFER',
-        `${inputPrefix}/${shpName}`,
-        `${workPrefix}/world.tif`
-      ],
-      inputs: { '/input': rasterResolved['/input'].source },
-      outputs: { '/work': rasterResolved['/work'].source },
-      // gdal_rasterize is single-process; one core is enough.
-      resources: { cpus: 1 },
-      onStdoutLine: (line) => appendLog(chartNumber, line),
-      onStderrLine: (line) => appendLog(chartNumber, line)
+    await rasterizeLand({
+      shp: landShp,
+      workDir: tmpDir,
+      outputPath,
+      width: res.size,
+      chartNumber,
+      statusFn
     });
-    if (rasterizeResult.exitCode !== 0) {
-      throwJobFailure(rasterizeResult, 'gdal_rasterize', (t) => appendLog(chartNumber, t));
-    }
 
-    appendLog(chartNumber, 'Creating MBTiles...');
-    const translateResult = await runContainerJob({
-      image: CHARTS_TOOLBOX_IMAGE,
-      label: `gdal-translate-${chartNumber}`,
-      command: [
-        'gdal_translate',
-        '-of',
-        'MBTiles',
-        '-co',
-        'TILE_FORMAT=PNG',
-        `${workPrefix}/world.tif`,
-        `${outputPrefix}/${outputName}`
-      ],
-      inputs: { '/work': rasterResolved['/work'].source },
-      outputs: { '/output': rasterResolved['/output'].source },
-      // Single-process GDAL stage; one core is enough.
-      resources: { cpus: 1 },
-      onStdoutLine: (line) => appendLog(chartNumber, line),
-      onStderrLine: (line) => appendLog(chartNumber, line)
+    setRasterMetadata(outputPath, {
+      name: `OSM Basemap (${res.label})`,
+      type: 'tilelayer',
+      format: 'png'
     });
-    if (translateResult.exitCode !== 0) {
-      throwJobFailure(translateResult, 'gdal_translate', (t) => appendLog(chartNumber, t));
-    }
-
-    appendLog(chartNumber, 'Adding zoom levels...');
-    const overviewResult = await runContainerJob({
-      image: CHARTS_TOOLBOX_IMAGE,
-      label: `gdaladdo-${chartNumber}`,
-      command: withOutputChmod(
-        [
-          'gdaladdo',
-          '-r',
-          'average',
-          `${outputPrefix}/${outputName}`,
-          '2',
-          '4',
-          '8',
-          '16',
-          '32',
-          '64',
-          '128',
-          '256'
-        ],
-        `${outputPrefix}/${outputName}`
-      ),
-      outputs: { '/output': rasterResolved['/output'].source },
-      // Single-process; one core is enough.
-      resources: { cpus: 1 },
-      onStdoutLine: (line) => appendLog(chartNumber, line),
-      onStderrLine: (line) => appendLog(chartNumber, line)
-    });
-    if (overviewResult.exitCode !== 0) {
-      throwJobFailure(overviewResult, 'gdaladdo', (t) => appendLog(chartNumber, t));
-    }
-
-    try {
-      const db = new DatabaseSync(outputPath);
-      db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('name', ?)").run(
-        `OSM Basemap (${res.label})`
-      );
-      db.prepare(
-        "INSERT OR REPLACE INTO metadata (name, value) VALUES ('type', 'tilelayer')"
-      ).run();
-      db.prepare("INSERT OR REPLACE INTO metadata (name, value) VALUES ('format', 'png')").run();
-      db.close();
-    } catch {
-      debug('Warning: failed to set basemap metadata');
-    }
 
     const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
     const doneMsg = `Basemap installed (${size} MB)`;

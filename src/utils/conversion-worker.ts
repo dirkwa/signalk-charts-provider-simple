@@ -1,13 +1,25 @@
 /**
- * Entry point of the GDAL worker threads (worker-pool.ts). One worker runs
- * one task at a time: a GDAL call on its own WebAssembly GDAL instance
- * (gdal-wasm.ts, loaded on the worker's first task).
+ * Entry point of the chart conversion worker threads (worker-pool.ts). One
+ * worker runs one task at a time: a GDAL call on its own WebAssembly GDAL
+ * instance (gdal-wasm.ts, loaded on the worker's first GDAL task), one shard
+ * of vector tiles (vector-tile-shard.ts), or one raster overview tile.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { parentPort } from 'node:worker_threads';
 import { loadGdalWasm, GdalError, type GdalSource, type GdalWasm } from './gdal-wasm.js';
+import { composeRasterTile } from './raster-compose.js';
+import {
+  bucketFeatures,
+  mergeTiles,
+  tileShard,
+  type BucketResult,
+  type BucketTask,
+  type EncodedTile,
+  type MergeTask,
+  type ShardTask
+} from './vector-tile-shard.js';
 
 /** Export every layer of one S-57 cell to `<outDir>/<LAYER>[__<cell>].geojson`. */
 export interface S57CellTask {
@@ -39,8 +51,36 @@ export interface GdalVectorTranslateTask extends GdalUtilityTask {
   op: 'gdal-vector-translate';
 }
 
+export interface BucketFeaturesTask {
+  op: 'bucket-features';
+  bucket: BucketTask;
+}
+
+export interface TileShardTask {
+  op: 'tile-shard';
+  shard: ShardTask;
+}
+
+export interface MergeTilesTask {
+  op: 'merge-tiles';
+  merge: MergeTask;
+}
+
+/** Downsample up to four stored children into their parent tile. */
+export interface RasterDownsampleTask {
+  op: 'raster-downsample';
+  children: { raw: Uint8Array; dx: number; dy: number }[];
+}
+
 export type ConversionTask =
-  S57CellTask | GdalTranslateTask | GdalRasterizeTask | GdalVectorTranslateTask;
+  | S57CellTask
+  | GdalTranslateTask
+  | GdalRasterizeTask
+  | GdalVectorTranslateTask
+  | BucketFeaturesTask
+  | TileShardTask
+  | MergeTilesTask
+  | RasterDownsampleTask;
 
 export type TaskResult =
   | {
@@ -53,7 +93,13 @@ export type TaskResult =
     }
   | { op: 'gdal-translate'; log: string[] }
   | { op: 'gdal-rasterize'; log: string[] }
-  | { op: 'gdal-vector-translate'; log: string[] };
+  | { op: 'gdal-vector-translate'; log: string[] }
+  | { op: 'bucket-features'; bucket: BucketResult }
+  | { op: 'tile-shard'; tiles: number }
+  | { op: 'merge-tiles'; tiles: EncodedTile[] }
+  | { op: 'raster-downsample'; tile: Uint8Array | null };
+
+export type TaskEvent = { kind: 'tiles'; tiles: EncodedTile[] };
 
 export interface WorkerRequest {
   id: number;
@@ -62,6 +108,7 @@ export interface WorkerRequest {
 
 export type WorkerReply =
   | { id: number; type: 'done'; result: TaskResult }
+  | { id: number; type: 'event'; event: TaskEvent }
   | { id: number; type: 'error'; message: string; log: string[] };
 
 let gdal: Promise<GdalWasm> | null = null;
@@ -126,7 +173,7 @@ function exportS57Cell(g: GdalWasm, task: S57CellTask): TaskResult {
   return { op: 's57-cell', files, complete, errors };
 }
 
-async function runTask(task: ConversionTask): Promise<TaskResult> {
+async function runTask(id: number, task: ConversionTask): Promise<TaskResult> {
   switch (task.op) {
     case 's57-cell':
       return exportS57Cell(await getGdal(), task);
@@ -147,15 +194,45 @@ async function runTask(task: ConversionTask): Promise<TaskResult> {
           g.vectorTranslate(task.dst, task.source, task.args);
           return { op: task.op, log: g.drainLog() };
       }
+      break;
+    }
+    case 'bucket-features':
+      return { op: 'bucket-features', bucket: bucketFeatures(task.bucket) };
+    case 'merge-tiles':
+      return { op: 'merge-tiles', tiles: mergeTiles(task.merge) };
+    case 'tile-shard': {
+      const tiles = tileShard(task.shard, (batch) => {
+        const reply: WorkerReply = { id, type: 'event', event: { kind: 'tiles', tiles: batch } };
+        parentPort?.postMessage(
+          reply,
+          batch.map((t) => t.data.buffer as ArrayBuffer)
+        );
+      });
+      return { op: 'tile-shard', tiles };
+    }
+    case 'raster-downsample': {
+      const tile = composeRasterTile({ format: 'png', ancestor: null, children: task.children });
+      return { op: 'raster-downsample', tile: tile ? new Uint8Array(tile.data) : null };
     }
   }
 }
 
+// Tile bytes move to the main thread rather than being copied.
+function transferables(result: TaskResult): ArrayBuffer[] {
+  if (result.op === 'merge-tiles') {
+    return result.tiles.map((t) => t.data.buffer as ArrayBuffer);
+  }
+  if (result.op === 'raster-downsample' && result.tile) {
+    return [result.tile.buffer as ArrayBuffer];
+  }
+  return [];
+}
+
 parentPort?.on('message', ({ id, task }: WorkerRequest) => {
-  runTask(task).then(
+  runTask(id, task).then(
     (result) => {
       const reply: WorkerReply = { id, type: 'done', result };
-      parentPort?.postMessage(reply);
+      parentPort?.postMessage(reply, transferables(result));
     },
     (err: unknown) => {
       if (!(err instanceof GdalError)) {

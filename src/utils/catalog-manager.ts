@@ -338,9 +338,7 @@ function loadInstalls(): void {
  * that was interrupted before it committed (a clean success clears the marker
  * via setInstallFilename). Since we are loading fresh from disk in a new
  * process, that conversion is by definition not running here — so roll each one
- * back to its prior version (issue #120 restart window). This makes recovery
- * independent of the orphan-reap path, which only fires for leaked containers
- * and never runs when the restart happened during the download phase.
+ * back to its prior version (issue #120 restart window).
  */
 function recoverInFlightUpdates(): void {
   let changed = false;
@@ -552,22 +550,22 @@ export function classifyUrl(
       return { supported: true, format: 'zip', label: 'ZIP archive (contains MBTiles)' };
     }
     if (catalogCategory === 'ienc') {
-      return { supported: true, format: 's57-zip', label: 'S-57 ENC (requires Podman)' };
+      return { supported: true, format: 's57-zip', label: 'S-57 ENC (converted on import)' };
     }
     if (catalogCategory === 'rnc') {
-      return { supported: true, format: 'rnc-zip', label: 'BSB raster (requires Podman)' };
+      return { supported: true, format: 'rnc-zip', label: 'BSB raster (converted on import)' };
     }
     return { supported: false, format: 'zip', label: 'ZIP archive - not yet supported' };
   }
   if (lower.endsWith('.tar.xz') || lower.endsWith('.tar.gz')) {
     if (lower.includes('gshhg') || lower.includes('chartcatalogs/gshhg')) {
-      return { supported: true, format: 'gshhg', label: 'GSHHG basemap (requires Podman)' };
+      return { supported: true, format: 'gshhg', label: 'GSHHG basemap (converted on import)' };
     }
     if (lower.includes('pilot_kaps') || lower.includes('pilot')) {
-      return { supported: true, format: 'pilot-tar', label: 'Pilot Chart (requires Podman)' };
+      return { supported: true, format: 'pilot-tar', label: 'Pilot Chart (converted on import)' };
     }
     if (lower.includes('chartcatalogs/shapefiles') || lower.includes('basemap_')) {
-      return { supported: true, format: 'shp-basemap', label: 'Basemap (requires Podman)' };
+      return { supported: true, format: 'shp-basemap', label: 'Basemap (converted on import)' };
     }
     return { supported: false, format: 'tar', label: 'Compressed archive - not yet supported' };
   }
@@ -575,10 +573,10 @@ export function classifyUrl(
     return { supported: false, format: 'bsb', label: 'BSB raster - not yet supported' };
   }
   if (catalogCategory === 'ienc') {
-    return { supported: true, format: 's57-zip', label: 'S-57 ENC (requires Podman)' };
+    return { supported: true, format: 's57-zip', label: 'S-57 ENC (converted on import)' };
   }
   if (catalogCategory === 'rnc') {
-    return { supported: true, format: 'rnc-zip', label: 'BSB raster (requires Podman)' };
+    return { supported: true, format: 'rnc-zip', label: 'BSB raster (converted on import)' };
   }
   return { supported: false, format: 'unknown', label: 'Unknown format - not yet supported' };
 }

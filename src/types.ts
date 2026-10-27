@@ -7,6 +7,7 @@ import type { ChartTimeBlock } from './utils/time-dimension.js';
 import type { AreaDownloadLimits, OnlineTileSource } from './utils/online-tile-cache.js';
 import type { ChartMask, CustomOnlineChart } from './utils/online-charts.js';
 import type { PluginListEntry } from './utils/internet-state.js';
+import type { ConversionBackend } from './utils/conversion-backend.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -304,21 +305,22 @@ export interface S57ConversionResult {
 }
 
 /**
- * Structured per-bucket progress for the multi-band S-57 pipeline. A "bucket"
- * is one IHO band (or the unbanded remainder); the pipeline runs them in
- * sequence, then tile-joins. Consumed by the Custom Catalogs UI to drive its
- * progress bars; the upload / single-chart catalog flows don't pass an
- * `onProgress` and so never see these.
+ * Structured per-bucket progress of an S-57 conversion, consumed by the
+ * Custom Catalogs UI to drive its progress bars; the upload / single-chart
+ * catalog flows don't pass an `onProgress` and so never see these. A
+ * "bucket" is one IHO band (or the unbanded remainder): the container
+ * toolchain runs a tippecanoe per band, then tile-joins them; the
+ * WebAssembly toolchain tiles every band in one pass, reported as one bucket.
  */
 export interface S57BucketProgress {
-  /** `export` = GDAL→GeoJSON, `tiles` = tippecanoe, `join` = tile-join. */
+  /** `export` = GDAL→GeoJSON, `tiles` = vector tiling, `join` = tile-join. */
   stage: 'export' | 'tiles' | 'join';
   /** 1-based index of the current bucket. */
   bucketIndex: number;
   bucketCount: number;
-  /** Human label, e.g. "Band 4" / "Other charts" / "Joining". */
+  /** Human label, e.g. "Band 4" / "Other charts" / "Combining". */
   bucketLabel: string;
-  /** 0–100 for `tiles`; -1 (indeterminate) for `export` / `join`. */
+  /** 0–100, or -1 when indeterminate. */
   bucketPercent: number;
 }
 
@@ -340,23 +342,30 @@ export interface S57ConversionOptions {
    */
   displayDescription?: string;
   /**
-   * Optional structured progress reporter. Called as the per-band pipeline
-   * moves through export → tiles → join for each bucket. Only the Custom
+   * Optional structured progress reporter, called as the conversion moves
+   * through export → tiles (→ join) for each bucket. Only the Custom
    * Catalogs flow passes this.
    */
   onProgress?: (progress: S57BucketProgress) => void;
   /**
-   * Optional cooperative-cancel check. Polled between buckets (and before
-   * tile-join) to stop the pipeline at the next boundary — a complement to
-   * `signal`, and the only cancel path on signalk-container < 1.16.0.
+   * Optional cooperative-cancel check, polled between stages (and between
+   * bands) — a complement to `signal`, and the only cancel path for a
+   * container job on signalk-container < 1.16.0.
    */
   isAborted?: () => boolean;
   /**
-   * Optional abort signal threaded into every container job. On
-   * signalk-container >= 1.16.0 this kills the in-flight job (GDAL,
-   * tippecanoe, or tile-join) immediately rather than waiting for a boundary.
+   * Optional abort signal. Aborting it kills the in-flight container job
+   * (signalk-container >= 1.16.0) or terminates the conversion's worker
+   * threads, stopping a GDAL export or tiling pass at once rather than at
+   * the next stage boundary.
    */
   signal?: AbortSignal;
+  /**
+   * The toolchain to convert with, when the caller chose one already (a
+   * chart set's run, whose cached GeoJSON is keyed by it). Otherwise
+   * conversion-backend.ts picks one.
+   */
+  backend?: ConversionBackend;
   /**
    * Optional source of the GeoJSON for a group of cells, in place of
    * running GDAL on them: it fills `outDir` with `<LAYER>__<cell>.geojson`
@@ -370,13 +379,6 @@ export interface S57ConversionOptions {
    * passes the cells it found there and in its archives.
    */
   cells?: readonly string[];
-}
-
-export interface ContainerRuntimeStatus {
-  available: boolean;
-  version: string | null;
-  socketPath: string | null;
-  engine: 'docker' | 'podman' | null;
 }
 
 export interface RncConversionResult {

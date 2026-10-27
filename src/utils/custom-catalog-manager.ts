@@ -578,8 +578,9 @@ export function setCatalogDetail(id: string, detail: Partial<CustomCatalogProgre
 
 // ---- Cancellation ----
 
-// Per-run abort controller. The flow registers one at start; cancel aborts it
-// to kill the in-flight container job (signalk-container >= 1.16.0). The
+// Per-run abort controller. The flow registers one at start; cancel aborts it,
+// which kills the in-flight container job (signalk-container >= 1.16.0) or
+// terminates the conversion's worker threads mid-stage. The
 // cancelRequested flag remains the boundary-cancel signal and the way the flow
 // distinguishes a cancel from a genuine failure.
 const abortControllers = new Map<string, AbortController>();
@@ -595,8 +596,8 @@ export function requestCatalogCancel(id: string): boolean {
     return false;
   }
   cancelRequested.add(id);
-  // Kill the in-flight container job immediately where supported; the boundary
-  // check (isCatalogCancelRequested) covers older signalk-container.
+  // Stop the in-flight download or conversion at once; the boundary check
+  // (isCatalogCancelRequested) covers the steps between them.
   abortControllers.get(id)?.abort();
   return true;
 }
