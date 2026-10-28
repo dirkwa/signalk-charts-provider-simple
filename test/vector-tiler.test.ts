@@ -231,6 +231,168 @@ describe('tileShard', () => {
     const [nw, se, all] = lines.map((line) => Buffer.byteLength(line));
     assert.deepStrictEqual(result.quarters, [all + nw, all, all, all + se]);
   });
+
+  it('with rootOnly, writes its tile as the full walk does', () => {
+    const hole = square(-20, -10, 20, 10)[0].reverse();
+    const geometries: unknown[] = [
+      { type: 'Polygon', coordinates: [...square(-60, -40, 60, 40), hole] },
+      {
+        type: 'MultiPolygon',
+        coordinates: [square(100, 10, 120, 30), square(-120, -30, -100, -10)]
+      },
+      {
+        type: 'LineString',
+        coordinates: [
+          [-170, 0],
+          [170, 5]
+        ]
+      },
+      {
+        type: 'MultiLineString',
+        coordinates: [
+          [
+            [0, 70],
+            [10, 75]
+          ],
+          [
+            [-50, -70],
+            [-40, -75]
+          ]
+        ]
+      },
+      { type: 'Point', coordinates: [5, 5] },
+      {
+        type: 'MultiPoint',
+        coordinates: [
+          [1, 1],
+          [-1, -1]
+        ]
+      },
+      {
+        type: 'GeometryCollection',
+        geometries: [
+          { type: 'Point', coordinates: [30, 30] },
+          {
+            type: 'LineString',
+            coordinates: [
+              [30, 30],
+              [40, 35]
+            ]
+          }
+        ]
+      },
+      // Reaches past the shard's buffer, so only its clipped part is drawn.
+      { type: 'Polygon', coordinates: square(150, -50, 200, 50) }
+    ];
+    const lines = [
+      ...geometries
+        .map((geometry, n) => ({
+          group: n % 2,
+          properties: { n, NAME: n % 3 === 0 ? 'a' : 'b', DRVAL1: n - 2.5, LIT: n > 3, X: null }
+        }))
+        .map(({ group, properties }, n) => ({
+          group,
+          feature: { type: 'Feature', properties, geometry: geometries[n] }
+        })),
+      // Shown only from zoom 1, by its own minzoom or its group's.
+      {
+        group: 0,
+        feature: {
+          type: 'Feature',
+          properties: { n: 90, '\u0000minzoom': 1 },
+          geometry: { type: 'Point', coordinates: [0, 0] }
+        }
+      },
+      {
+        group: 2,
+        feature: {
+          type: 'Feature',
+          properties: { n: 91 },
+          geometry: { type: 'Point', coordinates: [0, 0] }
+        }
+      },
+      {
+        group: 3,
+        feature: {
+          type: 'Feature',
+          properties: { n: 92 },
+          geometry: { type: 'Point', coordinates: [2, 2] }
+        }
+      }
+    ].map(({ group, feature }) => `${String(group)}\t${JSON.stringify(feature)}`);
+    const file = path.join(dir, 'root-equal.ndjson');
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+
+    interface Point {
+      x: number;
+      y: number;
+    }
+    interface Decoded {
+      type: number;
+      properties: Record<string, unknown>;
+      geometry: Point[][];
+    }
+    const root = (rootOnly: boolean): Record<string, Decoded[]> => {
+      let data: Uint8Array | undefined;
+      tileShard(
+        {
+          files: [file],
+          groups: [
+            { layer: 'DEPARE', minzoom: 0, maxzoom: 1 },
+            { layer: 'DEPARE', minzoom: 0, maxzoom: 0 },
+            { layer: 'LIGHTS', minzoom: 1, maxzoom: 1 },
+            { layer: 'LIGHTS', minzoom: 0, maxzoom: 1 }
+          ],
+          z: 0,
+          x: 0,
+          y: 0,
+          extent: 4096,
+          buffer: 1280,
+          gzip: false,
+          rootOnly
+        },
+        (batch) => {
+          data ??= batch.find((t) => t.z === 0)?.data;
+        }
+      );
+      assert.ok(data);
+      const tile = new VectorTile(new PbfReader(data));
+      const out: Record<string, Decoded[]> = {};
+      for (const [name, layer] of Object.entries(tile.layers)) {
+        out[name] = Array.from({ length: layer.length }, (_, i) => {
+          const f = layer.feature(i);
+          return { type: f.type, properties: f.properties, geometry: f.loadGeometry() };
+        });
+      }
+      return out;
+    };
+
+    const whole = root(false);
+    assert.deepStrictEqual(Object.keys(whole), ['DEPARE', 'LIGHTS']);
+    assert.ok(!whole.DEPARE.some((f) => f.properties.n === 90));
+    // geojson-vt rounds positions to its deepest zoom's grid before this
+    // tile's, so they can land a grid step away from a single rounding.
+    const nearly = (a: Point, b: Point): boolean =>
+      Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1;
+    const streamed = root(true);
+    assert.deepStrictEqual(Object.keys(streamed), Object.keys(whole));
+    for (const [name, features] of Object.entries(whole)) {
+      const other = streamed[name];
+      assert.strictEqual(other.length, features.length, name);
+      features.forEach((f, i) => {
+        const g = other[i];
+        assert.strictEqual(g.type, f.type);
+        assert.deepStrictEqual(g.properties, f.properties);
+        assert.strictEqual(g.geometry.length, f.geometry.length);
+        f.geometry.forEach((ring, r) => {
+          assert.strictEqual(g.geometry[r].length, ring.length);
+          ring.forEach((p, k) => {
+            assert.ok(nearly(p, g.geometry[r][k]), `${name} feature ${String(f.properties.n)}`);
+          });
+        });
+      });
+    }
+  });
 });
 
 describe('groupSources', () => {

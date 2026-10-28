@@ -21,7 +21,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { VectorTile } from '@mapbox/vector-tile';
 import GeoJSONVT, { type LegacyFeature, type RawFeature } from 'geojson-vt';
-import { PbfReader } from 'pbf';
+import { PbfReader, PbfWriter } from 'pbf';
 import { fromGeojsonVt, fromVectorTileJs } from 'vt-pbf';
 import { forEachLine } from './line-reader.js';
 import { scaminMinzoom } from './s57-scamin.js';
@@ -264,12 +264,15 @@ function toRerooted([u, v]: ShardPoint): GeoJSON.Position {
   return [vx * 360 - 180, (Math.atan(Math.sinh(Math.PI * (1 - 2 * vy))) * 180) / Math.PI];
 }
 
+type Place = (p: ShardPoint) => GeoJSON.Position;
+
 const inWindow = (p: ShardPoint, frame: ShardFrame): boolean =>
   p[0] >= frame.lo && p[0] <= frame.hi && p[1] >= frame.lo && p[1] <= frame.hi;
 
 function rerootPolygon(
   rings: GeoJSON.Position[][],
-  frame: ShardFrame
+  frame: ShardFrame,
+  place: Place
 ): GeoJSON.Position[][] | null {
   const out: GeoJSON.Position[][] = [];
   for (const [i, ring] of rings.entries()) {
@@ -286,25 +289,30 @@ function rerootPolygon(
       }
       continue;
     }
-    out.push(snapped.map(toRerooted));
+    out.push(snapped.map(place));
   }
   return out;
 }
 
-/** The geometry clipped to the shard and re-rooted; null when nothing is left. */
-function rerootGeometry(geometry: GeoJSON.Geometry, frame: ShardFrame): GeoJSON.Geometry | null {
+/**
+ * The geometry clipped to the shard, its positions taken through `place`
+ * (by default, re-rooted); null when nothing is left.
+ */
+function rerootGeometry(
+  geometry: GeoJSON.Geometry,
+  frame: ShardFrame,
+  place: Place = toRerooted
+): GeoJSON.Geometry | null {
   switch (geometry.type) {
     case 'Point': {
       const p = toShard(geometry.coordinates, frame);
-      return inWindow(p, frame)
-        ? { type: 'Point', coordinates: toRerooted(snap(p, frame.grid)) }
-        : null;
+      return inWindow(p, frame) ? { type: 'Point', coordinates: place(snap(p, frame.grid)) } : null;
     }
     case 'MultiPoint': {
       const points = geometry.coordinates
         .map((c) => toShard(c, frame))
         .filter((p) => inWindow(p, frame))
-        .map((p) => toRerooted(snap(p, frame.grid)));
+        .map((p) => place(snap(p, frame.grid)));
       return points.length > 0 ? { type: 'MultiPoint', coordinates: points } : null;
     }
     case 'LineString':
@@ -318,23 +326,23 @@ function rerootGeometry(geometry: GeoJSON.Geometry, frame: ShardFrame): GeoJSON.
         )
           .map((piece) => snapPath(piece, frame.grid))
           .filter((piece) => piece.length >= 2)
-          .map((piece) => piece.map(toRerooted))
+          .map((piece) => piece.map(place))
       );
       return pieces.length > 0 ? { type: 'MultiLineString', coordinates: pieces } : null;
     }
     case 'Polygon': {
-      const rings = rerootPolygon(geometry.coordinates, frame);
+      const rings = rerootPolygon(geometry.coordinates, frame, place);
       return rings ? { type: 'Polygon', coordinates: rings } : null;
     }
     case 'MultiPolygon': {
       const polygons = geometry.coordinates
-        .map((rings) => rerootPolygon(rings, frame))
+        .map((rings) => rerootPolygon(rings, frame, place))
         .filter((rings): rings is GeoJSON.Position[][] => rings !== null);
       return polygons.length > 0 ? { type: 'MultiPolygon', coordinates: polygons } : null;
     }
     case 'GeometryCollection': {
       const members = geometry.geometries
-        .map((g) => rerootGeometry(g, frame))
+        .map((g) => rerootGeometry(g, frame, place))
         .filter((g): g is GeoJSON.Geometry => g !== null);
       return members.length > 0 ? { type: 'GeometryCollection', geometries: members } : null;
     }
@@ -374,17 +382,15 @@ function forEachPosition(geometry: GeoJSON.Geometry, fn: (pos: GeoJSON.Position)
 }
 
 /**
- * Which of the shard's children a re-rooted geometry reaches, each with its
- * own buffer, as bits in `ShardResult.quarters` order.
+ * Which of the shard's children a geometry in shard units reaches, each with
+ * its own buffer, as bits in `ShardResult.quarters` order.
  */
 function reachedQuarters(geometry: GeoJSON.Geometry, margin: number): number {
   let minU = Infinity;
   let minV = Infinity;
   let maxU = -Infinity;
   let maxV = -Infinity;
-  forEachPosition(geometry, (pos) => {
-    const u = mercX(pos[0]) * (1 << ROOT_Z) - ROOT_XY;
-    const v = mercY(pos[1]) * (1 << ROOT_Z) - ROOT_XY;
+  forEachPosition(geometry, ([u, v]) => {
     minU = Math.min(minU, u);
     maxU = Math.max(maxU, u);
     minV = Math.min(minV, v);
@@ -408,6 +414,12 @@ function reachedQuarters(geometry: GeoJSON.Geometry, margin: number): number {
   return bits;
 }
 
+/** The shard's tile plus its buffer, in shard units. */
+function shardFrame(task: ShardTask): ShardFrame {
+  const margin = task.buffer / task.extent;
+  return { scale: 2 ** task.z, x: task.x, y: task.y, lo: -margin, hi: 1 + margin };
+}
+
 // NDJSON characters of features a shard holds parsed before they go into an
 // index. A parsed GeoJSON feature takes several times its text; the index
 // keeps the geometry in compact typed arrays, so features are indexed in
@@ -420,19 +432,8 @@ const limits = { pendingChars: 32 * 1024 * 1024 };
  * most of them is indexed and its features let go. Several indexes of one
  * group together hold its features, and the walk merges them into its layer.
  */
-function indexShard(task: ShardTask): {
-  indexes: GroupIndex[];
-  quarters: [number, number, number, number];
-} {
-  const margin = task.buffer / task.extent;
-  const exactFrame: ShardFrame = {
-    scale: 2 ** task.z,
-    x: task.x,
-    y: task.y,
-    lo: -margin,
-    hi: 1 + margin
-  };
-  const frame: ShardFrame = task.rootOnly ? { ...exactFrame, grid: task.extent } : exactFrame;
+function indexShard(task: ShardTask): GroupIndex[] {
+  const frame = shardFrame(task);
   // A real zoom as a zoom of the re-rooted indexes.
   const local = (zoom: number): number => zoom - task.z + ROOT_Z;
   // Indexes in the order their groups first appear in the shard, chunks of
@@ -442,7 +443,6 @@ function indexShard(task: ShardTask): {
   const rank = new Map<number, number>();
   const pending = new Map<number, { features: GeoJSON.Feature[]; chars: number }>();
   let pendingChars = 0;
-  const quarters: [number, number, number, number] = [0, 0, 0, 0];
 
   const index = (group: number): void => {
     const chunk = pending.get(group);
@@ -494,18 +494,6 @@ function indexShard(task: ShardTask): {
       if (!geometry) {
         return;
       }
-      // Counted from the exact geometry: a feature too small for this tile's
-      // grid can still show at the finer zooms below it.
-      if (task.rootOnly && meta.maxzoom > task.z) {
-        const exact = rerootGeometry(geometry, exactFrame);
-        const bits = exact ? reachedQuarters(exact, margin) : 0;
-        const bytes = Buffer.byteLength(line);
-        for (let q = 0; q < 4; q++) {
-          if (bits & (1 << q)) {
-            quarters[q] += bytes;
-          }
-        }
-      }
       const rerooted = rerootGeometry(geometry, frame);
       if (!rerooted) {
         return;
@@ -536,12 +524,15 @@ function indexShard(task: ShardTask): {
   for (const group of [...pending.keys()]) {
     index(group);
   }
-  return { indexes: indexes.sort((a, b) => a.rank - b.rank).map((entry) => entry.index), quarters };
+  return indexes.sort((a, b) => a.rank - b.rank).map((entry) => entry.index);
 }
 
 /** Tile one shard, handing tiles to `emit` in batches. */
 export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void): ShardResult {
-  const { indexes, quarters } = indexShard(task);
+  if (task.rootOnly) {
+    return writeRootTile(task, emit);
+  }
+  const indexes = indexShard(task);
   // A real zoom as a zoom of the re-rooted indexes.
   const local = (zoom: number): number => zoom - task.z + ROOT_Z;
 
@@ -612,7 +603,7 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
         flush();
       }
     }
-    const deeper = task.rootOnly ? [] : next.filter((g) => g.maxzoom > z);
+    const deeper = next.filter((g) => g.maxzoom > z);
     if (deeper.length > 0) {
       for (const [dx, dy] of [
         [1, 1],
@@ -635,7 +626,270 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
     forget(previous);
   }
   flush();
-  return task.rootOnly ? { tiles: count, quarters } : { tiles: count };
+  return { tiles: count };
+}
+
+/*
+ * The shard's own tile alone, for a caller short of memory (`rootOnly`).
+ * Such a shard is too large to index, and so is its tile's share of it: a
+ * geojson-vt index drilled to the tile holds every feature of the shard plus
+ * the siblings its buffer reaches. Instead each feature is clipped, snapped
+ * to the tile grid and encoded as it is read, so the tile takes memory in
+ * proportion to its encoded size. It comes out as the walk would encode it:
+ * the same clip, grid and ring winding, layers and features in the same
+ * order, and properties tabled per layer as vt-pbf does.
+ */
+
+// Mapbox Vector Tile geometry commands.
+const MOVE_TO = 1;
+const LINE_TO = 2;
+const CLOSE_PATH = 7;
+
+type TilePoint = [number, number];
+
+interface RootPart {
+  type: 1 | 2 | 3;
+  rings: TilePoint[][];
+}
+
+type TileValue = string | number | boolean;
+
+interface RootLayer {
+  keys: string[];
+  keyIndex: Map<string, number>;
+  values: TileValue[];
+  valueIndex: Map<string, number>;
+}
+
+interface RootGroup {
+  layer: string;
+  /** The group's encoded features, each as a layer's `features` field; null while it has none. */
+  features: PbfWriter | null;
+}
+
+/** Signed area of a ring in tile coordinates, as geojson-vt winds by it. */
+function ringArea(ring: readonly TilePoint[]): number {
+  let area = 0;
+  for (let i = 1; i < ring.length; i++) {
+    area += ring[i - 1][0] * ring[i][1] - ring[i][0] * ring[i - 1][1];
+  }
+  return area;
+}
+
+// geojson-vt's winding: outer rings positive, holes negative.
+function wind(ring: TilePoint[], outer: boolean): TilePoint[] {
+  return ringArea(ring) < 0 === outer ? ring.reverse() : ring;
+}
+
+/** A clipped geometry in tile coordinates as the features geojson-vt makes of it. */
+function tileParts(geometry: GeoJSON.Geometry): RootPart[] {
+  const pts = (positions: GeoJSON.Position[]): TilePoint[] => positions.map((p) => [p[0], p[1]]);
+  const polygon = (rings: GeoJSON.Position[][]): TilePoint[][] =>
+    rings.map((ring, i) => wind(pts(ring), i === 0));
+  switch (geometry.type) {
+    case 'Point':
+      return [{ type: 1, rings: [pts([geometry.coordinates])] }];
+    case 'MultiPoint':
+      return [{ type: 1, rings: [pts(geometry.coordinates)] }];
+    case 'LineString':
+      return [{ type: 2, rings: [pts(geometry.coordinates)] }];
+    case 'MultiLineString':
+      return [{ type: 2, rings: geometry.coordinates.map(pts) }];
+    case 'Polygon':
+      return [{ type: 3, rings: polygon(geometry.coordinates) }];
+    case 'MultiPolygon':
+      return [{ type: 3, rings: geometry.coordinates.flatMap(polygon) }];
+    case 'GeometryCollection':
+      return geometry.geometries.flatMap(tileParts);
+  }
+}
+
+const zigzag = (n: number): number => (n << 1) ^ (n >> 31);
+
+function writeGeometry(part: RootPart, pbf: PbfWriter): void {
+  let x = 0;
+  let y = 0;
+  for (const ring of part.rings) {
+    pbf.writeVarint(MOVE_TO | ((part.type === 1 ? ring.length : 1) << 3));
+    // A polygon's closing position is a ClosePath, not a LineTo.
+    const count = part.type === 3 ? ring.length - 1 : ring.length;
+    for (let i = 0; i < count; i++) {
+      if (i === 1 && part.type !== 1) {
+        pbf.writeVarint(LINE_TO | ((count - 1) << 3));
+      }
+      pbf.writeVarint(zigzag(ring[i][0] - x));
+      pbf.writeVarint(zigzag(ring[i][1] - y));
+      x = ring[i][0];
+      y = ring[i][1];
+    }
+    if (part.type === 3) {
+      pbf.writeVarint(CLOSE_PATH | (1 << 3));
+    }
+  }
+}
+
+/** Key and value indices of a feature's properties, adding new ones to the layer's tables. */
+function tagIndices(properties: GeoJSON.GeoJsonProperties, layer: RootLayer): number[] {
+  const tags: number[] = [];
+  for (const key in properties) {
+    const raw: unknown = properties[key];
+    if (raw === null || raw === undefined || key === FEATURE_MINZOOM_KEY) {
+      continue;
+    }
+    let k = layer.keyIndex.get(key);
+    if (k === undefined) {
+      k = layer.keys.push(key) - 1;
+      layer.keyIndex.set(key, k);
+    }
+    const value: TileValue =
+      typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean'
+        ? raw
+        : JSON.stringify(raw);
+    const valueKey = `${typeof raw}:${String(value)}`;
+    let v = layer.valueIndex.get(valueKey);
+    if (v === undefined) {
+      v = layer.values.push(value) - 1;
+      layer.valueIndex.set(valueKey, v);
+    }
+    tags.push(k, v);
+  }
+  return tags;
+}
+
+function writeValue(value: TileValue, pbf: PbfWriter): void {
+  if (typeof value === 'string') {
+    pbf.writeStringField(1, value);
+  } else if (typeof value === 'boolean') {
+    pbf.writeBooleanField(7, value);
+  } else if (value % 1 !== 0) {
+    pbf.writeDoubleField(3, value);
+  } else if (value < 0) {
+    pbf.writeSVarintField(6, value);
+  } else {
+    pbf.writeVarintField(5, value);
+  }
+}
+
+function writeRootTile(task: ShardTask, emit: (tiles: EncodedTile[]) => void): ShardResult {
+  const exactFrame = shardFrame(task);
+  const margin = task.buffer / task.extent;
+  const frame: ShardFrame = { ...exactFrame, grid: task.extent };
+  const toTile: Place = (p) => [Math.round(p[0] * task.extent), Math.round(p[1] * task.extent)];
+  const toShardUnits: Place = (p) => p;
+  const quarters: [number, number, number, number] = [0, 0, 0, 0];
+  // In the order the walk ranks groups: by the first feature of each that
+  // reaches the shard, drawn on this tile or not.
+  const groups = new Map<number, RootGroup>();
+  const layers = new Map<string, RootLayer>();
+
+  for (const file of task.files) {
+    forEachLine(file, (line) => {
+      const tab = line.indexOf('\t');
+      if (tab <= 0) {
+        return;
+      }
+      const group = Number(line.slice(0, tab));
+      const meta = task.groups[group] as ShardGroup | undefined;
+      if (!meta || meta.maxzoom < task.z) {
+        return;
+      }
+      const feature = JSON.parse(line.slice(tab + 1)) as GeoJSON.Feature;
+      const geometry = feature.geometry as GeoJSON.Geometry | null;
+      if (!geometry) {
+        return;
+      }
+      // Counted from the exact geometry: a feature too small for this tile's
+      // grid can still show at the finer zooms below it.
+      let exact: GeoJSON.Geometry | null | undefined;
+      if (meta.maxzoom > task.z) {
+        exact = rerootGeometry(geometry, exactFrame, toShardUnits);
+        const bits = exact ? reachedQuarters(exact, margin) : 0;
+        const bytes = Buffer.byteLength(line);
+        for (let q = 0; q < 4; q++) {
+          if (bits & (1 << q)) {
+            quarters[q] += bytes;
+          }
+        }
+      }
+      let g = groups.get(group);
+      if (!g) {
+        exact ??= rerootGeometry(geometry, exactFrame, toShardUnits);
+        if (!exact) {
+          return;
+        }
+        g = { layer: meta.layer, features: null };
+        groups.set(group, g);
+      }
+      const own: unknown = feature.properties?.[FEATURE_MINZOOM_KEY];
+      if (task.z < meta.minzoom || (typeof own === 'number' && task.z < own)) {
+        return;
+      }
+      const clipped = rerootGeometry(geometry, frame, toTile);
+      if (!clipped) {
+        return;
+      }
+      const features = (g.features ??= new PbfWriter());
+      let layer = layers.get(meta.layer);
+      if (!layer) {
+        layer = { keys: [], keyIndex: new Map(), values: [], valueIndex: new Map() };
+        layers.set(meta.layer, layer);
+      }
+      const tags = tagIndices(feature.properties, layer);
+      for (const part of tileParts(clipped)) {
+        features.writeMessage(
+          2,
+          (p: RootPart, pbf: PbfWriter) => {
+            if (typeof feature.id === 'number') {
+              pbf.writeVarintField(1, feature.id);
+            }
+            pbf.writePackedVarint(2, tags);
+            pbf.writeVarintField(3, p.type);
+            pbf.writeMessage(4, writeGeometry, p);
+          },
+          part
+        );
+      }
+    });
+  }
+
+  // Layers in the order of their first group with features, as the walk adds them.
+  const drawn = [...groups.values()].filter((g) => g.features !== null);
+  if (drawn.length === 0) {
+    return { tiles: 0, quarters };
+  }
+  const tile = new PbfWriter();
+  for (const name of new Set(drawn.map((g) => g.layer))) {
+    const layer = layers.get(name);
+    if (!layer) {
+      continue;
+    }
+    tile.writeMessage(
+      3,
+      (_: null, pbf: PbfWriter) => {
+        pbf.writeVarintField(15, 2);
+        pbf.writeStringField(1, name);
+        pbf.writeVarintField(5, task.extent);
+        for (const g of drawn) {
+          if (g.layer === name && g.features) {
+            const bytes = g.features.finish();
+            pbf.realloc(bytes.length);
+            pbf.buf.set(bytes, pbf.pos);
+            pbf.pos += bytes.length;
+          }
+        }
+        for (const key of layer.keys) {
+          pbf.writeStringField(3, key);
+        }
+        for (const value of layer.values) {
+          pbf.writeMessage(4, writeValue, value);
+        }
+      },
+      null
+    );
+  }
+  const encoded = tile.finish();
+  emit([{ z: task.z, x: task.x, y: task.y, data: task.gzip ? gzip(encoded) : encoded.slice() }]);
+  return { tiles: 1, quarters };
 }
 
 /**
