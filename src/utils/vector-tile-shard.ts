@@ -341,7 +341,8 @@ function rerootGeometry(geometry: GeoJSON.Geometry, frame: ShardFrame): GeoJSON.
   }
 }
 
-/** Visit every position of a geometry. */
+// Includes the members of a GeometryCollection, so a child reached only by
+// one of them still counts.
 function forEachPosition(geometry: GeoJSON.Geometry, fn: (pos: GeoJSON.Position) => void): void {
   switch (geometry.type) {
     case 'Point':
@@ -498,9 +499,10 @@ function indexShard(task: ShardTask): {
       if (task.rootOnly && meta.maxzoom > task.z) {
         const exact = rerootGeometry(geometry, exactFrame);
         const bits = exact ? reachedQuarters(exact, margin) : 0;
+        const bytes = Buffer.byteLength(line);
         for (let q = 0; q < 4; q++) {
           if (bits & (1 << q)) {
-            quarters[q] += line.length;
+            quarters[q] += bytes;
           }
         }
       }
@@ -906,6 +908,9 @@ export function bucketFeatures(task: BucketTask): BucketResult {
         properties,
         geometry: feature.geometry
       })}\n`;
+      // In UTF-8 bytes, as the shard file holds it: the tiler compares a
+      // shard's size with what a worker's heap can tile at once.
+      const bytes = Buffer.byteLength(line);
       const x0 = Math.max(0, Math.floor((mercX(box[0]) - margin / n) * n));
       const x1 = Math.min(n - 1, Math.floor((mercX(box[2]) + margin / n) * n));
       // North is the smaller y.
@@ -920,8 +925,8 @@ export function bucketFeatures(task: BucketTask): BucketResult {
             buffers.set(key, buf);
           }
           buf.chunks.push(line);
-          buf.size += line.length;
-          buffered += line.length;
+          buf.size += bytes;
+          buffered += bytes;
           if (buf.size >= SHARD_FLUSH_BYTES) {
             flushShard(key);
           }

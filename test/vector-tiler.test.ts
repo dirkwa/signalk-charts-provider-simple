@@ -201,7 +201,7 @@ describe('tileShard', () => {
       square(-170, -60, 170, 60) // all four
     ].map((coordinates, n) => ({
       type: 'Feature',
-      properties: { n },
+      properties: { n, OBJNAM: 'Ærøskøbing' },
       geometry: { type: 'Polygon', coordinates }
     }));
     const lines = features.map((f) => `0\t${JSON.stringify(f)}`);
@@ -227,7 +227,8 @@ describe('tileShard', () => {
     );
 
     assert.deepStrictEqual(keys, ['0/0/0']);
-    const [nw, se, all] = lines.map((line) => line.length);
+    // In UTF-8 bytes, as the shard file holds them.
+    const [nw, se, all] = lines.map((line) => Buffer.byteLength(line));
     assert.deepStrictEqual(result.quarters, [all + nw, all, all, all + se]);
   });
 });
