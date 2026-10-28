@@ -483,6 +483,9 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
     if (previous) {
       forget(previous);
     }
+    if (z === task.z) {
+      forgetAboveRoot(node.active);
+    }
     previous = { vz, vx, vy, groups: next };
   }
   if (previous) {
@@ -546,6 +549,15 @@ function forget({ vz, vx, vy, groups }: VisitedTile): void {
     // geojson-vt documents `tiles` as public API; its typings omit it.
     delete (g.index as unknown as { tiles: Record<number, unknown> }).tiles[id];
     g.index.tileCoords.length = 0;
+  }
+}
+
+// The tiles geojson-vt drilled through to reach the shard's own tile: each
+// holds every feature of the shard, and the walk never visits them.
+function forgetAboveRoot(groups: readonly GroupIndex[]): void {
+  for (let z = 0; z < ROOT_Z; z++) {
+    const xy = ROOT_XY >> (ROOT_Z - z);
+    forget({ vz: z, vx: xy, vy: xy, groups: [...groups] });
   }
 }
 
