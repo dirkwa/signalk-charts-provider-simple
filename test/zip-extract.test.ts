@@ -316,6 +316,30 @@ describe('extractZipSafely', () => {
     assert.deepEqual(fs.readdirSync(dest), []);
   });
 
+  it('stops and removes the entry being written when its signal aborts', async () => {
+    const zip = writeZip('cancel-mid.zip', [
+      { name: 'ENC_ROOT/BIG/BIG.000', data: Buffer.alloc(128 * 1024 * 1024) }
+    ]);
+    const dest = destDir('cancel-mid');
+    const target = path.join(dest, 'ENC_ROOT/BIG/BIG.000');
+    const controller = new AbortController();
+    const started = setInterval(() => {
+      if (fs.existsSync(target)) {
+        clearInterval(started);
+        controller.abort();
+      }
+    }, 1);
+
+    try {
+      await assert.rejects(extractZipSafely(zip, dest, {}, controller.signal), {
+        name: 'AbortError'
+      });
+    } finally {
+      clearInterval(started);
+    }
+    assert.ok(!fs.existsSync(target), 'the partly written entry is removed');
+  });
+
   it('preserves the archive directory structure', async () => {
     const zip = writeZip('tree.zip', [
       { name: 'ENC_ROOT/US5NY1CM/US5NY1CM.000', data: Buffer.from('CELL') },

@@ -119,7 +119,12 @@ async function openAndValidate(
  *
  * Returns the number of bytes written.
  */
-async function writeEntry(entry: ZipEntry, target: string, remaining: number): Promise<number> {
+async function writeEntry(
+  entry: ZipEntry,
+  target: string,
+  remaining: number,
+  signal?: AbortSignal
+): Promise<number> {
   fs.mkdirSync(path.dirname(target), { recursive: true });
 
   let written = 0;
@@ -128,12 +133,16 @@ async function writeEntry(entry: ZipEntry, target: string, remaining: number): P
       const source = entry.stream();
       const sink = fs.createWriteStream(target);
       let settled = false;
+      const onAbort = (): void => {
+        fail(signal?.reason instanceof Error ? signal.reason : new Error('Aborted'));
+      };
 
       const fail = (err: Error): void => {
         if (settled) {
           return;
         }
         settled = true;
+        signal?.removeEventListener('abort', onAbort);
         // Stop pulling bytes immediately; without this the source keeps
         // decompressing into a sink we no longer care about.
         source.unpipe(sink);
@@ -157,10 +166,12 @@ async function writeEntry(entry: ZipEntry, target: string, remaining: number): P
       sink.on('finish', () => {
         if (!settled) {
           settled = true;
+          signal?.removeEventListener('abort', onAbort);
           resolve();
         }
       });
 
+      signal?.addEventListener('abort', onAbort, { once: true });
       source.pipe(sink);
     });
   } catch (err) {
@@ -181,7 +192,7 @@ async function writeEntry(entry: ZipEntry, target: string, remaining: number): P
  * directory structure. Entries that would resolve outside `destDir` are
  * skipped rather than treated as fatal — a stray absolute path in an
  * otherwise good ENC archive shouldn't lose the whole bundle. Aborting
- * `signal` stops before the next entry.
+ * `signal` stops the entry being written and removes it.
  *
  * Returns the number of files written.
  */
@@ -202,7 +213,7 @@ export async function extractZipSafely(
     if (!isWithinBase(target, destDir)) {
       continue;
     }
-    bytesWritten += await writeEntry(entry, target, bounds.maxTotalBytes - bytesWritten);
+    bytesWritten += await writeEntry(entry, target, bounds.maxTotalBytes - bytesWritten, signal);
     written += 1;
   }
   return written;
