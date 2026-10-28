@@ -18,6 +18,7 @@ import {
   type BucketTask,
   type EncodedTile,
   type MergeTask,
+  type ShardResult,
   type ShardTask
 } from './vector-tile-shard.js';
 
@@ -95,7 +96,7 @@ export type TaskResult =
   | { op: 'gdal-rasterize'; log: string[] }
   | { op: 'gdal-vector-translate'; log: string[] }
   | { op: 'bucket-features'; bucket: BucketResult }
-  | { op: 'tile-shard'; tiles: number }
+  | ({ op: 'tile-shard' } & ShardResult)
   | { op: 'merge-tiles'; tiles: EncodedTile[] }
   | { op: 'raster-downsample'; tile: Uint8Array | null };
 
@@ -201,14 +202,14 @@ async function runTask(id: number, task: ConversionTask): Promise<TaskResult> {
     case 'merge-tiles':
       return { op: 'merge-tiles', tiles: mergeTiles(task.merge) };
     case 'tile-shard': {
-      const tiles = tileShard(task.shard, (batch) => {
+      const result = tileShard(task.shard, (batch) => {
         const reply: WorkerReply = { id, type: 'event', event: { kind: 'tiles', tiles: batch } };
         parentPort?.postMessage(
           reply,
           batch.map((t) => t.data.buffer as ArrayBuffer)
         );
       });
-      return { op: 'tile-shard', tiles };
+      return { op: 'tile-shard', ...result };
     }
     case 'raster-downsample': {
       const tile = composeRasterTile({ format: 'png', ancestor: null, children: task.children });

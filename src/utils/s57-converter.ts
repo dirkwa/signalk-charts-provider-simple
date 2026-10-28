@@ -46,7 +46,7 @@ import {
   geojsonContentSize
 } from './s57-export-files.js';
 import { extractTarArchive } from './tar-extract.js';
-import { buildVectorMbtiles, type TileSource } from './vector-tiler.js';
+import { buildVectorMbtiles, shardBytesForHeap, type TileSource } from './vector-tiler.js';
 import {
   PoolAbortedError,
   TaskFailedError,
@@ -716,6 +716,9 @@ async function tileS57WithWasm(
       pool,
       name: wantedMbtilesName(chartNumber, options.displayName),
       description: options.displayDescription,
+      ...(tilePool.heapMb === undefined
+        ? {}
+        : { shardBytesLimit: shardBytesForHeap(tilePool.heapMb) }),
       signal: options.signal,
       log: (msg) => {
         appendLog(chartNumber, msg);

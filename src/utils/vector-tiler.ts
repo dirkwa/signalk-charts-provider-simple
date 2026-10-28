@@ -57,6 +57,12 @@ export interface VectorTilerOptions {
   /** `type` metadata row; `overlay` unless given. */
   type?: string;
   signal?: AbortSignal;
+  /**
+   * A shard of more NDJSON bytes than this is tiled in parts: its own tile first,
+   * then each of its children as a shard of its own, so that one worker never
+   * holds all of it. Unlimited when not given.
+   */
+  shardBytesLimit?: number;
   /** Overall progress, 0–100. */
   onPercent?: (pct: number) => void;
   log?: (message: string) => void;
@@ -74,6 +80,15 @@ export interface VectorTilerResult {
 // tile): polygon edges that hug a tile boundary stay intact.
 export const TILE_EXTENT = 4096;
 export const TILE_BUFFER = (80 / 256) * TILE_EXTENT;
+
+// Heap a worker reaches while tiling a shard, per byte of the shard's NDJSON:
+// about twice its size on dense ENC bundles, with headroom on top.
+const HEAP_PER_SHARD_BYTE = 2.5;
+
+/** The largest shard a worker with `heapMb` of heap tiles in one piece. */
+export function shardBytesForHeap(heapMb: number): number {
+  return Math.floor((heapMb * 1024 * 1024) / HEAP_PER_SHARD_BYTE);
+}
 
 // Share of the progress bar each stage gets.
 const BUCKET_SHARE = 15;
@@ -274,22 +289,34 @@ export async function buildVectorMbtiles(opts: VectorTilerOptions): Promise<Vect
 
     const shards = [...shardBytes.entries()].sort((a, b) => b[1] - a[1]);
     const totalBytes = shards.reduce((n, [, bytes]) => n + bytes, 0) || 1;
+    const limit = opts.shardBytesLimit ?? Infinity;
     let doneBytes = 0;
     let tileCount = 0;
-    await forEachConcurrent(shards, pool.size, async ([key, bytes]) => {
-      const [z, x, y] = key.split('-').map(Number);
+    let splits = 0;
+    // Tile the subtree under z/x/y from a shard's files; `share` is the
+    // shard's bytes this subtree accounts for in the progress bar.
+    const tile = async (
+      files: string[],
+      z: number,
+      x: number,
+      y: number,
+      size: number,
+      share: number
+    ): Promise<void> => {
+      const rootOnly = size > limit && z < maxzoom;
       const result = await pool.run(
         {
           op: 'tile-shard',
           shard: {
-            files: (shardParts.get(key) ?? []).map((part) => shardPartPath(shardDir, key, part)),
+            files,
             groups,
             z,
             x,
             y,
             extent: TILE_EXTENT,
             buffer: TILE_BUFFER,
-            gzip: !mayCollide
+            gzip: !mayCollide,
+            ...(rootOnly ? { rootOnly } : {})
           }
         },
         {
@@ -299,13 +326,49 @@ export async function buildVectorMbtiles(opts: VectorTilerOptions): Promise<Vect
         }
       );
       tileCount += result.tiles;
-      doneBytes += bytes;
+      if (!rootOnly || !result.quarters) {
+        doneBytes += share;
+        progress(BUCKET_SHARE + (doneBytes / totalBytes) * TILE_SHARE);
+        return;
+      }
+      splits++;
+      const quarters = result.quarters;
+      const reached = quarters.reduce((n, c) => n + c, 0);
+      // The shard's own tile counts as a fifth of its share.
+      doneBytes += reached === 0 ? share : share / 5;
       progress(BUCKET_SHARE + (doneBytes / totalBytes) * TILE_SHARE);
+      // A child no feature reaches would re-read the whole shard for nothing.
+      const children = [0, 1, 2, 3].filter((q) => quarters[q] > 0);
+      await forEachConcurrent(children, pool.size, (q) =>
+        tile(
+          files,
+          z + 1,
+          x * 2 + (q % 2),
+          y * 2 + Math.floor(q / 2),
+          quarters[q],
+          ((share * 4) / 5) * (quarters[q] / reached)
+        )
+      );
+    };
+    await forEachConcurrent(shards, pool.size, async ([key, bytes]) => {
+      const [z, x, y] = key.split('-').map(Number);
+      const parts = shardParts.get(key) ?? [];
+      await tile(
+        parts.map((part) => shardPartPath(shardDir, key, part)),
+        z,
+        x,
+        y,
+        bytes,
+        bytes
+      );
       // The shard's input is no longer needed; free the disk as we go.
-      for (const part of shardParts.get(key) ?? []) {
+      for (const part of parts) {
         fs.rmSync(shardPartPath(shardDir, key, part), { force: true });
       }
     });
+    if (splits > 0) {
+      log(`Tiled ${String(splits)} large shard(s) in parts, to fit the memory`);
+    }
     throwIfAborted(signal);
 
     // 3. Merge.

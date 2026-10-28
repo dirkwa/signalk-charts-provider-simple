@@ -54,6 +54,21 @@ export interface ShardTask {
   buffer: number;
   /** Gzip each tile, ready for the MBTiles; false leaves them for `mergeTiles`. */
   gzip: boolean;
+  /**
+   * Emit only the shard's own tile, and count the features reaching each of
+   * its four children, so that a caller short of memory can tile the
+   * children as shards of their own.
+   */
+  rootOnly?: boolean;
+}
+
+export interface ShardResult {
+  tiles: number;
+  /**
+   * With `rootOnly`: NDJSON bytes of the features reaching each child,
+   * in the order (2x, 2y), (2x + 1, 2y), (2x, 2y + 1), (2x + 1, 2y + 1).
+   */
+  quarters?: [number, number, number, number];
 }
 
 /** One encoded, uncompressed tile; `y` counts from the top (XYZ). */
@@ -198,6 +213,44 @@ interface ShardFrame {
   /** Window in shard units: the shard's tile plus its buffer. */
   lo: number;
   hi: number;
+  /**
+   * Grid points per shard unit to snap positions to: the grid of the only
+   * tile drawn from them, so they come out where they would have anyway.
+   */
+  grid?: number;
+}
+
+function snap(p: ShardPoint, grid: number | undefined): ShardPoint {
+  return grid === undefined ? p : [Math.round(p[0] * grid) / grid, Math.round(p[1] * grid) / grid];
+}
+
+/** Snapped, without a position equal to the one before it. */
+function snapPath(points: readonly ShardPoint[], grid: number | undefined): ShardPoint[] {
+  if (grid === undefined) {
+    return [...points];
+  }
+  const out: ShardPoint[] = [];
+  for (const p of points) {
+    const q = snap(p, grid);
+    const last = out.at(-1);
+    if (!last || last[0] !== q[0] || last[1] !== q[1]) {
+      out.push(q);
+    }
+  }
+  return out;
+}
+
+/** A closed ring snapped; null when no area is left. */
+function snapRing(ring: ShardPoint[], grid: number | undefined): ShardPoint[] | null {
+  if (grid === undefined) {
+    return ring;
+  }
+  const out = snapPath(ring, grid);
+  let area = 0;
+  for (let i = 1; i < out.length; i++) {
+    area += out[i - 1][0] * out[i][1] - out[i][0] * out[i - 1][1];
+  }
+  return out.length >= 4 && area !== 0 ? out : null;
 }
 
 function toShard(pos: GeoJSON.Position, frame: ShardFrame): ShardPoint {
@@ -225,14 +278,15 @@ function rerootPolygon(
       frame.lo,
       frame.hi
     );
-    if (!clipped) {
+    const snapped = clipped && snapRing(clipped, frame.grid);
+    if (!snapped) {
       if (i === 0) {
         // The outer ring is outside the shard: so is the whole polygon.
         return null;
       }
       continue;
     }
-    out.push(clipped.map(toRerooted));
+    out.push(snapped.map(toRerooted));
   }
   return out;
 }
@@ -242,13 +296,15 @@ function rerootGeometry(geometry: GeoJSON.Geometry, frame: ShardFrame): GeoJSON.
   switch (geometry.type) {
     case 'Point': {
       const p = toShard(geometry.coordinates, frame);
-      return inWindow(p, frame) ? { type: 'Point', coordinates: toRerooted(p) } : null;
+      return inWindow(p, frame)
+        ? { type: 'Point', coordinates: toRerooted(snap(p, frame.grid)) }
+        : null;
     }
     case 'MultiPoint': {
       const points = geometry.coordinates
         .map((c) => toShard(c, frame))
         .filter((p) => inWindow(p, frame))
-        .map(toRerooted);
+        .map((p) => toRerooted(snap(p, frame.grid)));
       return points.length > 0 ? { type: 'MultiPoint', coordinates: points } : null;
     }
     case 'LineString':
@@ -259,7 +315,10 @@ function rerootGeometry(geometry: GeoJSON.Geometry, frame: ShardFrame): GeoJSON.
           line.map((p) => toShard(p, frame)),
           frame.lo,
           frame.hi
-        ).map((piece) => piece.map(toRerooted))
+        )
+          .map((piece) => snapPath(piece, frame.grid))
+          .filter((piece) => piece.length >= 2)
+          .map((piece) => piece.map(toRerooted))
       );
       return pieces.length > 0 ? { type: 'MultiLineString', coordinates: pieces } : null;
     }
@@ -282,6 +341,72 @@ function rerootGeometry(geometry: GeoJSON.Geometry, frame: ShardFrame): GeoJSON.
   }
 }
 
+/** Visit every position of a geometry. */
+function forEachPosition(geometry: GeoJSON.Geometry, fn: (pos: GeoJSON.Position) => void): void {
+  switch (geometry.type) {
+    case 'Point':
+      fn(geometry.coordinates);
+      break;
+    case 'MultiPoint':
+    case 'LineString':
+      geometry.coordinates.forEach(fn);
+      break;
+    case 'MultiLineString':
+    case 'Polygon':
+      for (const line of geometry.coordinates) {
+        line.forEach(fn);
+      }
+      break;
+    case 'MultiPolygon':
+      for (const rings of geometry.coordinates) {
+        for (const ring of rings) {
+          ring.forEach(fn);
+        }
+      }
+      break;
+    case 'GeometryCollection':
+      for (const member of geometry.geometries) {
+        forEachPosition(member, fn);
+      }
+      break;
+  }
+}
+
+/**
+ * Which of the shard's children a re-rooted geometry reaches, each with its
+ * own buffer, as bits in `ShardResult.quarters` order.
+ */
+function reachedQuarters(geometry: GeoJSON.Geometry, margin: number): number {
+  let minU = Infinity;
+  let minV = Infinity;
+  let maxU = -Infinity;
+  let maxV = -Infinity;
+  forEachPosition(geometry, (pos) => {
+    const u = mercX(pos[0]) * (1 << ROOT_Z) - ROOT_XY;
+    const v = mercY(pos[1]) * (1 << ROOT_Z) - ROOT_XY;
+    minU = Math.min(minU, u);
+    maxU = Math.max(maxU, u);
+    minV = Math.min(minV, v);
+    maxV = Math.max(maxV, v);
+  });
+  // A child's buffer, in the shard's units, is half the shard's.
+  const m = margin / 2;
+  let bits = 0;
+  for (let j = 0; j < 2; j++) {
+    for (let i = 0; i < 2; i++) {
+      if (
+        maxU >= i / 2 - m &&
+        minU <= (i + 1) / 2 + m &&
+        maxV >= j / 2 - m &&
+        minV <= (j + 1) / 2 + m
+      ) {
+        bits |= 1 << (i + 2 * j);
+      }
+    }
+  }
+  return bits;
+}
+
 // NDJSON characters of features a shard holds parsed before they go into an
 // index. A parsed GeoJSON feature takes several times its text; the index
 // keeps the geometry in compact typed arrays, so features are indexed in
@@ -294,15 +419,19 @@ const limits = { pendingChars: 32 * 1024 * 1024 };
  * most of them is indexed and its features let go. Several indexes of one
  * group together hold its features, and the walk merges them into its layer.
  */
-function indexShard(task: ShardTask): GroupIndex[] {
+function indexShard(task: ShardTask): {
+  indexes: GroupIndex[];
+  quarters: [number, number, number, number];
+} {
   const margin = task.buffer / task.extent;
-  const frame: ShardFrame = {
+  const exactFrame: ShardFrame = {
     scale: 2 ** task.z,
     x: task.x,
     y: task.y,
     lo: -margin,
     hi: 1 + margin
   };
+  const frame: ShardFrame = task.rootOnly ? { ...exactFrame, grid: task.extent } : exactFrame;
   // A real zoom as a zoom of the re-rooted indexes.
   const local = (zoom: number): number => zoom - task.z + ROOT_Z;
   // Indexes in the order their groups first appear in the shard, chunks of
@@ -312,6 +441,7 @@ function indexShard(task: ShardTask): GroupIndex[] {
   const rank = new Map<number, number>();
   const pending = new Map<number, { features: GeoJSON.Feature[]; chars: number }>();
   let pendingChars = 0;
+  const quarters: [number, number, number, number] = [0, 0, 0, 0];
 
   const index = (group: number): void => {
     const chunk = pending.get(group);
@@ -360,7 +490,21 @@ function indexShard(task: ShardTask): GroupIndex[] {
       }
       const feature = JSON.parse(line.slice(tab + 1)) as GeoJSON.Feature;
       const geometry = feature.geometry as GeoJSON.Geometry | null;
-      const rerooted = geometry ? rerootGeometry(geometry, frame) : null;
+      if (!geometry) {
+        return;
+      }
+      // Counted from the exact geometry: a feature too small for this tile's
+      // grid can still show at the finer zooms below it.
+      if (task.rootOnly && meta.maxzoom > task.z) {
+        const exact = rerootGeometry(geometry, exactFrame);
+        const bits = exact ? reachedQuarters(exact, margin) : 0;
+        for (let q = 0; q < 4; q++) {
+          if (bits & (1 << q)) {
+            quarters[q] += line.length;
+          }
+        }
+      }
+      const rerooted = rerootGeometry(geometry, frame);
       if (!rerooted) {
         return;
       }
@@ -390,15 +534,12 @@ function indexShard(task: ShardTask): GroupIndex[] {
   for (const group of [...pending.keys()]) {
     index(group);
   }
-  return indexes.sort((a, b) => a.rank - b.rank).map((entry) => entry.index);
+  return { indexes: indexes.sort((a, b) => a.rank - b.rank).map((entry) => entry.index), quarters };
 }
 
-/**
- * Tile one shard, handing tiles to `emit` in batches. Returns the number of
- * tiles emitted.
- */
-export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void): number {
-  const indexes = indexShard(task);
+/** Tile one shard, handing tiles to `emit` in batches. */
+export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void): ShardResult {
+  const { indexes, quarters } = indexShard(task);
   // A real zoom as a zoom of the re-rooted indexes.
   const local = (zoom: number): number => zoom - task.z + ROOT_Z;
 
@@ -469,7 +610,7 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
         flush();
       }
     }
-    const deeper = next.filter((g) => g.maxzoom > z);
+    const deeper = task.rootOnly ? [] : next.filter((g) => g.maxzoom > z);
     if (deeper.length > 0) {
       for (const [dx, dy] of [
         [1, 1],
@@ -489,7 +630,7 @@ export function tileShard(task: ShardTask, emit: (tiles: EncodedTile[]) => void)
     forget(previous);
   }
   flush();
-  return count;
+  return task.rootOnly ? { tiles: count, quarters } : { tiles: count };
 }
 
 /**

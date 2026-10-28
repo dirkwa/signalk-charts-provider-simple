@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { VectorTile } from '@mapbox/vector-tile';
 import { PbfReader } from 'pbf';
 
-import { buildVectorMbtiles, groupSources } from '../dist/utils/vector-tiler.js';
+import { buildVectorMbtiles, groupSources, shardBytesForHeap } from '../dist/utils/vector-tiler.js';
 import { _testInternals, tileProperties, tileShard } from '../dist/utils/vector-tile-shard.js';
 import { withWorkerPool } from '../dist/utils/worker-pool.js';
 
@@ -192,6 +192,43 @@ describe('tileShard', () => {
     }
     // 2000 source vertices over 10 degrees cover about 114 pixels at zoom 0.
     assert.ok((kept.get(0)?.[0].length ?? 0) < 200);
+  });
+
+  it('with rootOnly, writes only its own tile and counts what reaches each child', () => {
+    const features = [
+      square(-100, 40, -90, 50), // north-west
+      square(90, -50, 100, -40), // south-east
+      square(-170, -60, 170, 60) // all four
+    ].map((coordinates, n) => ({
+      type: 'Feature',
+      properties: { n },
+      geometry: { type: 'Polygon', coordinates }
+    }));
+    const lines = features.map((f) => `0\t${JSON.stringify(f)}`);
+    const file = path.join(dir, 'root-only.ndjson');
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+
+    const keys: string[] = [];
+    const result = tileShard(
+      {
+        files: [file],
+        groups: [{ layer: 'DEPARE', minzoom: 0, maxzoom: 4 }],
+        z: 0,
+        x: 0,
+        y: 0,
+        extent: 4096,
+        buffer: 64,
+        gzip: false,
+        rootOnly: true
+      },
+      (batch) => {
+        keys.push(...batch.map((t) => `${t.z}/${t.x}/${t.y}`));
+      }
+    );
+
+    assert.deepStrictEqual(keys, ['0/0/0']);
+    const [nw, se, all] = lines.map((line) => line.length);
+    assert.deepStrictEqual(result.quarters, [all + nw, all, all, all + se]);
   });
 });
 
@@ -379,6 +416,92 @@ describe('buildVectorMbtiles', () => {
       .prepare('SELECT 1 FROM tiles WHERE zoom_level = 6 AND tile_column = ? AND tile_row = ?')
       .get(x, 2 ** 6 - 1 - y);
     assert.ok(row);
+  });
+});
+
+describe('buildVectorMbtiles with a shard size limit', () => {
+  let tmp: string;
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-charts-split-'));
+    const features = [];
+    for (let i = 0; i < 30; i++) {
+      const west = 10 + (i % 6) * 0.3;
+      const south = 54 + Math.floor(i / 6) * 0.2;
+      features.push({
+        type: 'Feature',
+        properties: { n: i },
+        geometry: { type: 'Polygon', coordinates: square(west, south, west + 0.25, south + 0.15) }
+      });
+    }
+    features.push({
+      type: 'Feature',
+      properties: { n: 30 },
+      geometry: { type: 'Point', coordinates: [10.6, 54.5] }
+    });
+    // Alone in its quarter, and too small for the grid of the tiles above it.
+    features.push({
+      type: 'Feature',
+      properties: { n: 31 },
+      geometry: { type: 'Polygon', coordinates: square(14.5, 57, 14.5004, 57.0003) }
+    });
+    writeFC(path.join(tmp, 'depare.geojson'), features);
+  });
+  after(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  async function build(name: string, shardBytesLimit?: number): Promise<DatabaseSync> {
+    const output = path.join(tmp, `${name}.mbtiles`);
+    await withWorkerPool(2, undefined, (pool) =>
+      buildVectorMbtiles({
+        sources: [
+          { layer: 'DEPARE', minzoom: 6, maxzoom: 10, files: [path.join(tmp, 'depare.geojson')] }
+        ],
+        output,
+        scratchDir: path.join(tmp, `scratch-${name}`),
+        pool,
+        name,
+        ...(shardBytesLimit === undefined ? {} : { shardBytesLimit })
+      })
+    );
+    return new DatabaseSync(output);
+  }
+
+  /** Each tile's features, as their `n` values. */
+  function contents(db: DatabaseSync): Map<string, number[]> {
+    const rows = db
+      .prepare('SELECT zoom_level z, tile_column x, tile_row y, tile_data d FROM tiles')
+      .all() as { z: number; x: number; y: number; d: Uint8Array }[];
+    const out = new Map<string, number[]>();
+    for (const row of rows) {
+      const layer = new VectorTile(new PbfReader(zlib.gunzipSync(row.d))).layers.DEPARE;
+      const ns = Array.from({ length: layer.length }, (_, i) =>
+        Number(layer.feature(i).properties.n)
+      );
+      out.set(
+        `${row.z}/${row.x}/${row.y}`,
+        ns.sort((a, b) => a - b)
+      );
+    }
+    return out;
+  }
+
+  it('writes the same tiles when every shard is tiled in parts', async () => {
+    const whole = await build('whole');
+    const parts = await build('parts', 1);
+    try {
+      const a = contents(whole);
+      assert.ok(a.size > 10);
+      assert.ok([...a.values()].some((ns) => ns.includes(31)));
+      assert.deepStrictEqual(contents(parts), a);
+    } finally {
+      whole.close();
+      parts.close();
+    }
+  });
+
+  it('sizes the largest shard a worker tiles in one piece from its heap', () => {
+    assert.strictEqual(shardBytesForHeap(512), Math.floor((512 * 1024 * 1024) / 2.5));
   });
 });
 
