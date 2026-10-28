@@ -82,8 +82,9 @@ export const TILE_EXTENT = 4096;
 export const TILE_BUFFER = (80 / 256) * TILE_EXTENT;
 
 // Heap a worker reaches while tiling a shard, per byte of the shard's NDJSON:
-// about twice its size on dense ENC bundles, with headroom on top.
-const HEAP_PER_SHARD_BYTE = 2.5;
+// about three times its size on dense ENC bundles (a 180 MB part of the Dutch
+// cells needs 560 MB), with headroom on top.
+const HEAP_PER_SHARD_BYTE = 4;
 
 /** The largest shard a worker with `heapMb` of heap tiles in one piece. */
 export function shardBytesForHeap(heapMb: number): number {

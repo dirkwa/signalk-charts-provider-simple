@@ -285,6 +285,15 @@ describe('tileShard', () => {
       { type: 'Polygon', coordinates: square(150, -50, 200, 50) }
     ];
     const lines = [
+      // Not drawn here, yet it ranks its group first, ahead of the others.
+      {
+        group: 4,
+        feature: {
+          type: 'Feature',
+          properties: { n: 80, '\u0000minzoom': 1 },
+          geometry: { type: 'Point', coordinates: [3, 3] }
+        }
+      },
       ...geometries
         .map((geometry, n) => ({
           group: n % 2,
@@ -309,6 +318,14 @@ describe('tileShard', () => {
           type: 'Feature',
           properties: { n: 91 },
           geometry: { type: 'Point', coordinates: [0, 0] }
+        }
+      },
+      {
+        group: 4,
+        feature: {
+          type: 'Feature',
+          properties: { n: 81 },
+          geometry: { type: 'Point', coordinates: [4, 4] }
         }
       },
       {
@@ -341,7 +358,8 @@ describe('tileShard', () => {
             { layer: 'DEPARE', minzoom: 0, maxzoom: 1 },
             { layer: 'DEPARE', minzoom: 0, maxzoom: 0 },
             { layer: 'LIGHTS', minzoom: 1, maxzoom: 1 },
-            { layer: 'LIGHTS', minzoom: 0, maxzoom: 1 }
+            { layer: 'LIGHTS', minzoom: 0, maxzoom: 1 },
+            { layer: 'DEPARE', minzoom: 0, maxzoom: 1 }
           ],
           z: 0,
           x: 0,
@@ -370,6 +388,7 @@ describe('tileShard', () => {
     const whole = root(false);
     assert.deepStrictEqual(Object.keys(whole), ['DEPARE', 'LIGHTS']);
     assert.ok(!whole.DEPARE.some((f) => f.properties.n === 90));
+    assert.strictEqual(whole.DEPARE[0].properties.n, 81);
     // geojson-vt rounds positions to its deepest zoom's grid before this
     // tile's, so they can land a grid step away from a single rounding.
     const nearly = (a: Point, b: Point): boolean =>
@@ -664,7 +683,7 @@ describe('buildVectorMbtiles with a shard size limit', () => {
   });
 
   it('sizes the largest shard a worker tiles in one piece from its heap', () => {
-    assert.strictEqual(shardBytesForHeap(512), Math.floor((512 * 1024 * 1024) / 2.5));
+    assert.strictEqual(shardBytesForHeap(512), Math.floor((512 * 1024 * 1024) / 4));
   });
 });
 
