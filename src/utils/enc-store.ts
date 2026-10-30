@@ -821,6 +821,24 @@ export async function detachChartCollection(chart: string): Promise<boolean> {
   return id !== null;
 }
 
+/**
+ * What a reader finds of collection `id`: `ready` to read, `writing` while
+ * its cells are written (a reader that reads them now may miss one being
+ * replaced, and hears of the collection when the write is done), or
+ * `absent`. A chart set's collection is `writing` before its first cells
+ * are in place too, its id being the set's.
+ */
+export function collectionState(id: string): 'ready' | 'writing' | 'absent' {
+  if (!SAFE_ID.test(id)) {
+    return 'absent';
+  }
+  const owner = readRecord(collectionDir(id))?.owner;
+  if (writing.has(owner ?? chartSetOwner(id))) {
+    return 'writing';
+  }
+  return owner === undefined ? 'absent' : 'ready';
+}
+
 /** The owner of the collection of this id, or null. */
 export function collectionOwner(id: string): string | null {
   return SAFE_ID.test(id) ? (readRecord(collectionDir(id))?.owner ?? null) : null;

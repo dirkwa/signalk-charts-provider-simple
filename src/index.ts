@@ -195,7 +195,9 @@ import {
   chartSetCollections,
   chartSetOwner,
   collectionOwner,
+  collectionState,
   detachChartCollection,
+  type EncCollection,
   ENC_STORE_API_VERSION,
   encStoreRoot,
   getCollection,
@@ -242,6 +244,8 @@ import {
   setCatalogProgress
 } from './utils/custom-catalog-manager.js';
 import { downloadAndExtractEncs } from './utils/custom-catalog-download.js';
+import { type AreaBbox, cellBboxes, cellsIn, type EncAreaCell } from './utils/enc-area.js';
+import { createAreaRequester } from './utils/enc-area-request.js';
 
 // JSON import with type attribute (NodeNext ESM). package.json's `version`
 // is what the marker file records so users can confirm the running build.
@@ -251,6 +255,7 @@ import type {
   ChartsProviderEncGlobal,
   ChartsProviderRefreshGlobal,
   DownloadJob,
+  EncCollectionStateInfo,
   ExtendedServerAPI,
   IRouter,
   PluginConfig,
@@ -569,6 +574,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             'in the shared ENC store, as delivered, where other plugins such as signalk-underkeel read them. ' +
             'The cells of ENC Charts sets are always shared, without taking extra space. ' +
             'Kept cells take about as much space as the unzipped download; remove them in the ENC Charts tab.',
+          default: false
+        },
+        encAreaDownloads: {
+          type: 'boolean',
+          title: 'Download the ENC cells around the vessel',
+          description:
+            'When another plugin such as signalk-underkeel asks for the ENC cells around the vessel, add the free ENC units ' +
+            'reaching that area to the chart set "Around the vessel" and download it, so its cells are shared and its chart served. ' +
+            'The set only grows along the voyage; edit or delete it in the ENC Charts tab. ' +
+            'On a metered, offline or captive internet connection the download waits.',
           default: false
         }
       }
@@ -1061,7 +1076,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       root: encStoreRoot(),
       collections: listCollections,
       collection: getCollection,
-      onChange: onEncStoreChange
+      onChange: onEncStoreChange,
+      state: encCollectionState,
+      cellsIn: storedCellsIn,
+      requestArea: (bbox, requester) => requestArea(bbox, requester)
     };
 
     // Wipe any quarantine subdirs left behind by a previous server
@@ -1624,6 +1642,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     type: Type.Union([Type.Literal('s57'), Type.Literal('rnc')]),
     minzoom: Type.Optional(ZoomLevel),
     maxzoom: Type.Optional(ZoomLevel)
+  });
+
+  const EncAreaBody = Type.Object({
+    // [west, south, east, north] in degrees; requestArea checks the ranges.
+    bbox: Type.Array(Type.Number(), { minItems: 4, maxItems: 4 }),
+    requester: Type.Optional(Type.String({ minLength: 1, maxLength: 100 }))
   });
 
   const ConvertLocalBody = Type.Object({
@@ -4585,8 +4609,42 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         apiVersion: ENC_STORE_API_VERSION,
         root: encStoreRoot(),
         keepEncCells: props.keepEncCells === true,
+        encAreaDownloads: props.encAreaDownloads === true,
         collections: listCollections()
       });
+    });
+
+    // The stored cells reaching an area: ?bbox=west,south,east,north.
+    router.get('/enc-area', (req: Request, res: Response) => {
+      const raw = typeof req.query.bbox === 'string' ? req.query.bbox.split(',') : [];
+      const bbox = raw.map(Number);
+      if (
+        bbox.length !== 4 ||
+        !bbox.every(Number.isFinite) ||
+        Math.abs(bbox[0]) > 180 ||
+        Math.abs(bbox[2]) > 180 ||
+        Math.abs(bbox[1]) > 90 ||
+        Math.abs(bbox[3]) > 90 ||
+        bbox[1] > bbox[3]
+      ) {
+        res.status(400).json({ error: 'bbox must be west,south,east,north in degrees' });
+        return;
+      }
+      res.json({ cells: storedCellsIn(bbox as [number, number, number, number]) });
+    });
+
+    // Ask for the cells around an area, as requestArea does.
+    router.post('/enc-area', (req: Request, res: Response) => {
+      const body = parseBody(EncAreaBody, req, res);
+      if (!body) {
+        return;
+      }
+      const result = requestArea(body.bbox, body.requester ?? 'a client');
+      res.status(result.accepted ? 200 : 400).json(result);
+    });
+
+    router.get('/enc-store/:collection/state', (req: Request, res: Response) => {
+      res.json(encCollectionState((req.params as Record<string, string>).collection));
     });
 
     router.get('/enc-store/:collection', (req: Request, res: Response) => {
@@ -5461,6 +5519,79 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     };
   }
+
+  // What a reader of the ENC store finds of a collection: the store's
+  // state, or for a chart set not shared yet whether it is downloading.
+  function encCollectionState(id: string): EncCollectionStateInfo {
+    const state = collectionState(id);
+    if (state !== 'absent') {
+      return { state };
+    }
+    if (isValidCatalogId(id) && getCustomCatalog(id)) {
+      return {
+        state: 'pending',
+        detail: isCatalogBusy(id) ? 'downloading' : 'not downloaded yet'
+      };
+    }
+    return { state: 'absent' };
+  }
+
+  // The cells' extents from the ENC index, worked out again only when the
+  // index changes.
+  let extentsOf: { hash: string; extents: Map<string, AreaBbox> } | null = null;
+  function storedCellsIn(bbox: readonly [number, number, number, number]): EncAreaCell[] {
+    const index = getEncIndex();
+    if (index && extentsOf?.hash !== index.contentHash) {
+      extentsOf = { hash: index.contentHash, extents: cellBboxes(index) };
+    }
+    const collections = listCollections()
+      .map((c) => getCollection(c.id))
+      .filter((c): c is EncCollection => c !== null);
+    return cellsIn(collections, bbox, index ? (extentsOf?.extents ?? new Map()) : new Map());
+  }
+
+  const requestArea = createAreaRequester({
+    enabled: () => props.encAreaDownloads === true,
+    index: getEncIndex,
+    refreshIndex: refreshEncIndexIfStale,
+    mayDownload: () =>
+      internet === null || internet.mayRunBackground()
+        ? true
+        : `it is ${internet.state() ?? 'not known yet'}`,
+    whenAllowed: (task) => {
+      if (internet === null) {
+        task();
+      } else {
+        internet.runWhenBackgroundAllowed(task);
+      }
+    },
+    getSet: (id) => (isValidCatalogId(id) ? getCustomCatalog(id) : null),
+    createSet: (name) => createCustomCatalog(name),
+    saveSet: (set) => {
+      const catalog = getCustomCatalog(set.id);
+      if (catalog) {
+        saveCustomCatalog({
+          ...catalog,
+          selectedBand4ChartIds: set.selectedBand4ChartIds,
+          selectedUnitIds: set.selectedUnitIds,
+          status: set.status as CustomCatalog['status']
+        });
+      }
+    },
+    busy: isCatalogBusy,
+    slotFree: () => getConversionSlotsInUse() < getCpuBudget().maxConcurrentConversions,
+    start: (set) => {
+      const catalog = getCustomCatalog(set.id);
+      if (catalog) {
+        handleCustomCatalogDownloadConvert(catalog);
+      }
+    },
+    stateFile: path.join(app.getDataDirPath(), 'enc-area.json'),
+    now: Date.now,
+    log: (message) => {
+      console.log(`[charts-provider] ${message}`);
+    }
+  });
 
   // Share a chart set's kept cells in the ENC store, hard linked from its
   // cache; a set without cells has no collection. Never fails the caller.

@@ -8,6 +8,8 @@ import type { AreaDownloadLimits, OnlineTileSource } from './utils/online-tile-c
 import type { ChartMask, CustomOnlineChart } from './utils/online-charts.js';
 import type { PluginListEntry } from './utils/internet-state.js';
 import type { ConversionBackend } from './utils/conversion-backend.js';
+import type { EncAreaCell } from './utils/enc-area.js';
+import type { EncAreaRequestResult } from './utils/enc-area-request.js';
 import type { EncCollection, EncCollectionSummary } from './utils/enc-store.js';
 
 // ---- Plugin Configuration ----
@@ -486,6 +488,40 @@ export interface ChartsProviderEncApi {
   collection: (id: string) => EncCollection | null;
   /** Called with a collection's id once it was written or removed. Returns the unsubscribe. */
   onChange: (listener: (collectionId: string) => void) => () => void;
+  /**
+   * What a reader finds of a collection, so it can say why it has no cells.
+   * Added after the API's first release, like `cellsIn` and `requestArea`:
+   * a reader checks they exist.
+   */
+  state: (id: string) => EncCollectionStateInfo;
+  /**
+   * The stored cells reaching an area, one of each name, newest edition
+   * first: `[west, south, east, north]` in degrees. A cell whose extent is
+   * not known reaches every area.
+   */
+  cellsIn: (bbox: readonly [number, number, number, number]) => EncAreaCell[];
+  /**
+   * Ask for the cells around an area to be downloaded, into the chart set
+   * "Around the vessel", when the user turned that on. `requester` names
+   * the asking plugin in the log. Ask again when the area changes, or when
+   * the answer says to.
+   */
+  requestArea: (
+    bbox: readonly [number, number, number, number],
+    requester: string
+  ) => EncAreaRequestResult;
+}
+
+/** What a reader finds of a collection (`ChartsProviderEncApi.state`). */
+export interface EncCollectionStateInfo {
+  /**
+   * `ready` to read; `writing` while its cells are written, after which
+   * readers are told; `pending` for a chart set whose cells are not
+   * downloaded yet (`detail` says whether it is downloading); `absent`
+   * when there is no such collection or chart set.
+   */
+  state: 'ready' | 'writing' | 'pending' | 'absent';
+  detail?: string;
 }
 
 export interface ChartsProviderEncGlobal {

@@ -132,7 +132,9 @@ enc-store/<collection>/<CELL>/<CELL>.000, <CELL>.001, …
 - Every ENC Charts set is a collection, named like the set (`Gulf of Finland` → `Gulf_of_Finland`), kept current by each download & convert. Its cells are hard links to the set's own copy, so they take no extra disk.
 - With **Keep the ENC cells of converted charts** on, an ENC chart converted from an upload, a folder on the server or the Chart Catalog keeps its cells as a collection named after the chart file. Converting the chart again replaces them once the new chart is installed; a cancelled or failed conversion leaves them as they were.
 
-[Under-Keel Awareness](https://www.npmjs.com/package/signalk-underkeel) reads them in place: pick the collection in its **ENC from Charts Provider** setting, and it builds its depth index again when the cells change. Other plugins use the in-process API or the REST routes in [`docs/enc-store.md`](docs/enc-store.md).
+[Under-Keel Awareness](https://www.npmjs.com/package/signalk-underkeel) reads them in place: pick the collection in its **ENC from Charts Provider** setting, or `*` for all of them, and it builds its depth index again when the cells change. Other plugins use the in-process API or the REST routes in [`docs/enc-store.md`](docs/enc-store.md), which also say whether a collection is ready, being written or a chart set not downloaded yet, and which stored cells reach an area.
+
+**ENC around the vessel.** With **Download the ENC cells around the vessel** on (off by default), a plugin can ask for the cells of the area the vessel is in: Under-Keel Awareness does when its **Ask Charts Provider for the ENC around the vessel** is on. The free ENC units reaching that area from the ENC index are added to one chart set, **Around the vessel**, which is downloaded and converted like any other, so its cells are shared and its chart is served. The set only grows along the voyage; edit or delete it in the ENC Charts tab. On a metered, offline or captive connection (see signalk-internet) the download waits until the connection allows.
 
 ### Supported Formats
 

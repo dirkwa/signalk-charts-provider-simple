@@ -16,6 +16,7 @@ import {
   collectionIdFor,
   collectionOf,
   collectionOwner,
+  collectionState,
   detachChartCollection,
   encStoreRoot,
   getCollection,
@@ -362,6 +363,30 @@ describe('removeCollection, twice at once', () => {
     } finally {
       unsubscribe();
     }
+  });
+});
+
+describe('collectionState', () => {
+  it('is writing while its cells are written, the first ones of a chart set too, then ready', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    const writing = storeCollection(
+      request({
+        owner: chartSetOwner('Gulf'),
+        preferredId: 'Gulf',
+        kind: 'chart-set',
+        cells: [{ base: a }]
+      })
+    );
+    assert.strictEqual(collectionState('Gulf'), 'writing');
+    await writing;
+    assert.strictEqual(collectionState('Gulf'), 'ready');
+    const again = storeCollection(
+      request({ owner: chartSetOwner('Gulf'), preferredId: 'Gulf', kind: 'chart-set', cells: [] })
+    );
+    assert.strictEqual(collectionState('Gulf'), 'writing');
+    await again;
+    assert.strictEqual(collectionState('Nope'), 'absent');
+    assert.strictEqual(collectionState('../x'), 'absent');
   });
 });
 

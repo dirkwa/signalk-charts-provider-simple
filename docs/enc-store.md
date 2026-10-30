@@ -55,6 +55,30 @@ collections with their cells, and a change listener. It is published once the
 plugin has started and withdrawn when it stops; a peer plugin that starts
 first waits for it, then reads the layout above under its `root`.
 
+Besides the collections and the change listener, added after the first
+release, so a reader checks they exist:
+
+- `state(id)`: `ready`; `writing` while the collection's cells are written,
+  a chart set's first ones too (readers hear of it when the write is done);
+  `pending` for a chart set whose cells are not shared yet, with `detail`
+  saying whether it is downloading; `absent`. A reader that finds no cells
+  can say which.
+- `cellsIn([west, south, east, north])`: the stored cells reaching an area,
+  one of each name, the newest edition and update first, with the path of
+  each `.000`. A cell's extent comes from the ENC index (its unit's box, or
+  for a NOAA cell the union of the band-4 boxes listing it); a cell the
+  index does not know, or every cell while the index is not loaded, is
+  taken to reach every area.
+- `requestArea([west, south, east, north], requester)`: with **Download
+  the ENC cells around the vessel** on, adds the ENC index units reaching
+  the area (60 at most) to the chart set "Around the vessel", kept by its
+  id in `<dataDir>/enc-area.json`, and downloads it. The answer says
+  whether a download started and, if not, why: the setting is off, the
+  index is not loaded yet, the set is downloading, the internet connection
+  does not allow it yet (the download then starts once it does), or the
+  area is downloaded. A set left out of date by a failed run is not
+  started again for 15 minutes. Ask again when the area changes.
+
 Compatibility: `apiVersion` changes only with a change readers must know
 about, and a reader should not use an API of a version it does not know.
 Everything else grows by addition: new fields and methods, never a changed
@@ -68,9 +92,12 @@ access control:
 
 | Route | Answer |
 | --- | --- |
-| `GET /enc-store` | `{ apiVersion, root, keepEncCells, collections }` |
+| `GET /enc-store` | `{ apiVersion, root, keepEncCells, encAreaDownloads, collections }` |
 | `GET /enc-store/:collection` | the collection with its cells and their files (`name`, `bytes`, `modified`) |
 | `GET /enc-store/:collection/:cell/:file` | one file, e.g. `/enc-store/Gulf_of_Finland/FI5AAAAA/FI5AAAAA.001` |
 | `DELETE /enc-store/:collection` | removes a `conversion` collection; a chart set's answers 409 |
+| `GET /enc-store/:collection/state` | the collection's `state`, as above |
+| `GET /enc-area?bbox=west,south,east,north` | `{ cells }`, as `cellsIn` |
+| `POST /enc-area` | `{ bbox, requester }` asks as `requestArea`; answers 400 when it is not accepted |
 
 A collection's `dir` and each cell's `dir` are paths on the server.
