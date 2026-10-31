@@ -4626,7 +4626,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({ cells: storedCellsIn(bbox) });
     });
 
-    // Ask for the cells around an area, as requestArea does.
     router.post('/enc-area', (req: Request, res: Response) => {
       const body = parseBody(EncAreaBody, req, res);
       if (!body) {

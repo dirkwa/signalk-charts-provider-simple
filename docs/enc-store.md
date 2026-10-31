@@ -55,32 +55,32 @@ collections with their cells, and a change listener. It is published once the
 plugin has started and withdrawn when it stops; a peer plugin that starts
 first waits for it, then reads the layout above under its `root`.
 
-Besides the collections and the change listener, added after the first
-release, so a reader checks they exist:
+A reader checks that these members exist before calling them
+(`ChartsProviderEncApi` in `src/types.ts` gives each call's exact shape):
 
 - `state(id)`: `ready`; `writing` while the collection's cells are written,
   a chart set's first ones too (readers hear of it when the write is done);
   `pending` for a chart set whose cells are not shared yet, with `detail`
   saying whether it is downloading; `absent`. A reader that finds no cells
   can say which.
-- `cellsIn([west, south, east, north])`: the stored cells reaching an area,
-  one of each name, the newest edition and update first, with the path of
-  each `.000`. A cell's extent comes from the ENC index (its unit's box, or
-  for a NOAA cell the union of the band-4 boxes listing it); a cell the
-  index does not know, or every cell while the index is not loaded, is
-  taken to reach every area.
-- `requestArea([west, south, east, north], requester)`: with **Download
-  the ENC cells around the vessel** on, adds the ENC index units reaching
-  the area (60 at most) to the chart set "Around the vessel", kept by its
-  id in `<dataDir>/enc-area.json`, and downloads it. The answer says
-  whether a download started and, if not, why: the setting is off, the
-  index is not loaded yet, the set is downloading, the internet connection
-  does not allow it yet (the download then starts once it does), or the
-  area is downloaded. A set left out of date by a failed run is not
-  started again for 15 minutes. Ask again when the area changes, and after
-  `retryAfterMs` when the answer has one: it says when an answer that
-  depends on something passing (the index loading, conversions or the set
-  running) may differ for the same area.
+- `cellsIn`, given an area as west, south, east, north in degrees: the
+  stored cells reaching it, one of each name, the newest edition and update
+  first, with the path of each `.000`. A cell's extent comes from the ENC
+  index (its unit's box, or for a NOAA cell the union of the band-4 boxes
+  listing it); a cell the index does not know, or every cell while the
+  index is not loaded, is taken to reach every area.
+- `requestArea`, given an area as west, south, east, north and the name of
+  the asking plugin: with **Download the ENC cells around the vessel** on,
+  adds the ENC index units reaching the area (60 at most) to the chart set
+  "Around the vessel", kept by its id in `<dataDir>/enc-area.json`, and
+  downloads it. The answer says whether a download started and, if not,
+  why: the setting is off, the index is not loaded yet, the set is
+  downloading, the internet connection does not allow it yet (the download
+  then starts once it does), or the area is downloaded. A set left out of
+  date by a failed run is not started again for 15 minutes. Ask again when
+  the area changes, and after `retryAfterMs` when the answer has one: it
+  says when an answer that depends on something passing (the index
+  loading, conversions or the set running) may differ for the same area.
 
 Compatibility: `apiVersion` changes only with a change readers must know
 about, and a reader should not use an API of a version it does not know.
