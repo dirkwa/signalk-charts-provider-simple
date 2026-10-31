@@ -22,6 +22,8 @@ export const AREA_SET_NAME = 'Around the vessel';
 export const MAX_AREA_UNITS = 60;
 /** A set left out of date (a failed run) is not downloaded again sooner than this. */
 export const AREA_RETRY_MS = 15 * 60_000;
+/** How often a waiting download looks for a free conversion slot. */
+export const SLOT_RETRY_MS = 60_000;
 
 /** What `requestArea` answers. */
 export interface EncAreaRequestResult {
@@ -54,6 +56,8 @@ export interface AreaRequestDeps {
   mayDownload: () => true | string;
   /** Run `task` once background downloads may run. */
   whenAllowed: (task: () => void) => void;
+  /** Run `task` after `ms`; returns what cancels it. */
+  later: (task: () => void, ms: number) => () => void;
   getSet: (id: string) => AreaChartSet | null;
   createSet: (name: string) => AreaChartSet;
   saveSet: (set: AreaChartSet) => void;
@@ -98,8 +102,9 @@ function writeSetId(file: string, setId: string): void {
 export interface AreaRequester {
   request: (bbox: unknown, requester: string) => EncAreaRequestResult;
   /**
-   * Forget a download waiting for the internet connection: stopping the
-   * plugin drops the gate's held tasks, so the next start queues afresh.
+   * Forget a download waiting for the internet connection or a conversion
+   * slot: stopping the plugin drops the gate's held tasks, so the next start
+   * queues afresh.
    */
   reset: () => void;
 }
@@ -108,6 +113,33 @@ export interface AreaRequester {
 export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
   let lastStart = -Infinity;
   let waiting = false;
+  let cancelRetry: (() => void) | null = null;
+
+  // A waiting download starts once the connection allows and a conversion
+  // slot is free, looking again for a slot every SLOT_RETRY_MS.
+  const runWaiting = (id: string): void => {
+    cancelRetry = null;
+    const set = deps.getSet(id);
+    if (!set || deps.busy(set.id)) {
+      waiting = false;
+      return;
+    }
+    if (deps.mayDownload() !== true) {
+      deps.whenAllowed(() => {
+        runWaiting(id);
+      });
+      return;
+    }
+    if (!deps.slotFree()) {
+      cancelRetry = deps.later(() => {
+        runWaiting(id);
+      }, SLOT_RETRY_MS);
+      return;
+    }
+    waiting = false;
+    lastStart = deps.now();
+    deps.start(set);
+  };
 
   const areaSet = (): AreaChartSet => {
     const kept = readSetId(deps.stateFile);
@@ -126,12 +158,7 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
       if (!waiting) {
         waiting = true;
         deps.whenAllowed(() => {
-          waiting = false;
-          const now = deps.getSet(set.id);
-          if (now && !deps.busy(now.id) && deps.slotFree()) {
-            lastStart = deps.now();
-            deps.start(now);
-          }
+          runWaiting(set.id);
         });
       }
       return {
@@ -226,6 +253,8 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
     request,
     reset: () => {
       waiting = false;
+      cancelRetry?.();
+      cancelRetry = null;
     }
   };
 }

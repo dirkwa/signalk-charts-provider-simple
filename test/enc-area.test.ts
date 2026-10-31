@@ -16,6 +16,7 @@ import {
   AREA_SET_NAME,
   createAreaRequester,
   MAX_AREA_UNITS,
+  SLOT_RETRY_MS,
   type AreaChartSet,
   type AreaRequestDeps
 } from '../dist/utils/enc-area-request.js';
@@ -155,6 +156,7 @@ describe('enc-area-request', () => {
   let sets: Map<string, AreaChartSet>;
   let started: string[];
   let held: (() => void)[];
+  let timers: { task: () => void; ms: number }[];
   let allowed: true | string;
   let clock: number;
   let run = 0;
@@ -167,6 +169,12 @@ describe('enc-area-request', () => {
       refreshIndex: () => {},
       mayDownload: () => allowed,
       whenAllowed: (task) => held.push(task),
+      later: (task, ms) => {
+        timers.push({ task, ms });
+        return () => {
+          timers = timers.filter((t) => t.task !== task);
+        };
+      },
       getSet: (id) => sets.get(id) ?? null,
       createSet: (name) => {
         const set = {
@@ -193,6 +201,7 @@ describe('enc-area-request', () => {
     sets = new Map();
     started = [];
     held = [];
+    timers = [];
     allowed = true;
     clock = 1_000_000;
   });
@@ -268,6 +277,34 @@ describe('enc-area-request', () => {
     allowed = true;
     held[0]();
     assert.deepStrictEqual(started, ['Around_the_vessel']);
+  });
+
+  it('keeps a waiting download until a conversion slot is free', () => {
+    allowed = 'it is metered';
+    let free = false;
+    const requester = createAreaRequester(deps({ slotFree: () => free }));
+    requester.request([20.5, 59.5, 20.6, 59.6], 'u');
+    allowed = true;
+    held[0]();
+    assert.deepStrictEqual(started, []);
+    assert.deepStrictEqual(
+      timers.map((t) => t.ms),
+      [SLOT_RETRY_MS]
+    );
+    timers[0].task();
+    assert.strictEqual(timers.length, 2, 'still no slot: it looks again');
+    free = true;
+    timers[1].task();
+    assert.deepStrictEqual(started, ['Around_the_vessel']);
+    // Stopping cancels a retry still pending.
+    allowed = 'it is metered';
+    free = false;
+    requester.request([20.9, 59.5, 21.5, 59.6], 'u');
+    allowed = true;
+    held[1]();
+    assert.strictEqual(timers.length, 3);
+    requester.reset();
+    assert.strictEqual(timers.length, 2);
   });
 
   it('queues a waiting download again after a restart dropped the one held', () => {

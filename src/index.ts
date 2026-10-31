@@ -5566,6 +5566,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         internet.runWhenBackgroundAllowed(task);
       }
     },
+    later: (task, ms) => {
+      const timer = setTimeout(task, ms);
+      timer.unref();
+      return () => {
+        clearTimeout(timer);
+      };
+    },
     getSet: (id) => (isValidCatalogId(id) ? getCustomCatalog(id) : null),
     createSet: (name) => createCustomCatalog(name),
     saveSet: (set) => {
