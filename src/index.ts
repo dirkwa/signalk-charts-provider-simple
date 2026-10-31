@@ -245,7 +245,11 @@ import {
 } from './utils/custom-catalog-manager.js';
 import { downloadAndExtractEncs } from './utils/custom-catalog-download.js';
 import { type AreaBbox, cellBboxes, cellsIn, type EncAreaCell } from './utils/enc-area.js';
-import { createAreaRequester, validBbox } from './utils/enc-area-request.js';
+import {
+  createAreaRequester,
+  type EncAreaRequestResult,
+  validBbox
+} from './utils/enc-area-request.js';
 
 // JSON import with type attribute (NodeNext ESM). package.json's `version`
 // is what the marker file records so users can confirm the running build.
@@ -5544,7 +5548,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     return cellsIn(collections, bbox, index ? (extentsOf?.extents ?? new Map()) : new Map());
   }
 
-  const { request: requestArea, reset: resetAreaRequests } = createAreaRequester({
+  const { request: requestAnyArea, reset: resetAreaRequests } = createAreaRequester({
     enabled: () => props.encAreaDownloads === true,
     index: getEncIndex,
     refreshIndex: refreshEncIndexIfStale,
@@ -5594,6 +5598,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       console.log(`[charts-provider] ${message}`);
     }
   });
+
+  // A stopped plugin starts no download, though its routes stay mounted and a peer may
+  // still hold the API it published; with the internet gate gone, one would start ungated.
+  function requestArea(bbox: unknown, requester: string): EncAreaRequestResult {
+    if (stopped) {
+      return { accepted: false, started: false, reason: 'Charts Provider is stopped' };
+    }
+    return requestAnyArea(bbox, requester);
+  }
 
   // Share a chart set's kept cells in the ENC store, hard linked from its
   // cache; a set without cells has no collection. Never fails the caller.

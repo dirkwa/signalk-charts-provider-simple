@@ -275,4 +275,53 @@ describe('ENC store routes and global', () => {
       fs.rmSync(configPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
+
+  it('starts no area download once the plugin is stopped', async () => {
+    const configPath = fs.mkdtempSync(path.join(os.tmpdir(), 'enc-store-stopped-'));
+    const dataDir = path.join(configPath, 'plugin-config-data', 'signalk-charts-provider-simple');
+    const chartPath = path.join(configPath, 'charts');
+    fs.mkdirSync(chartPath, { recursive: true });
+    const app = {
+      config: { configPath, ssl: false, version: '2.0.0', getExternalPort: () => 3000 },
+      debug: () => {},
+      error: () => {},
+      setPluginStatus: () => {},
+      setPluginError: () => {},
+      getDataDirPath: () => dataDir,
+      registerResourceProvider: () => {},
+      handleMessage: () => {},
+      subscriptionmanager: { subscribe: () => {}, unsubscribe: () => {} }
+    } as unknown as ExtendedServerAPI;
+    const plugin = pluginFactory(app);
+    const { router, handlers } = createRouterStub();
+    plugin.registerWithRouter?.(router);
+    plugin.start({ chartPath, encAreaDownloads: true }, () => {});
+    const g = globalThis as unknown as ChartsProviderEncGlobal;
+    try {
+      const deadline = Date.now() + 5000;
+      while (!g.__signalk_chartsProviderEnc && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      // A peer that kept the API, and a client of the routes, which stay mounted.
+      const api = g.__signalk_chartsProviderEnc;
+      assert.ok(api?.requestArea, 'the API is published');
+      plugin.stop?.();
+      assert.deepStrictEqual(api.requestArea([20, 59, 21, 60], 'test'), {
+        accepted: false,
+        started: false,
+        reason: 'Charts Provider is stopped'
+      });
+      const ask = makeRes();
+      await handlers.get('post /enc-area')?.(
+        { body: { bbox: [20, 59, 21, 60], requester: 'test' } },
+        ask
+      );
+      assert.strictEqual(ask.statusCode, 400);
+      assert.match((ask.body as { reason: string }).reason, /stopped/);
+      assert.ok(!fs.existsSync(path.join(dataDir, 'enc-area.json')), 'no area set is made');
+    } finally {
+      plugin.stop?.();
+      fs.rmSync(configPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
 });
