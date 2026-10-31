@@ -245,7 +245,7 @@ import {
 } from './utils/custom-catalog-manager.js';
 import { downloadAndExtractEncs } from './utils/custom-catalog-download.js';
 import { type AreaBbox, cellBboxes, cellsIn, type EncAreaCell } from './utils/enc-area.js';
-import { createAreaRequester } from './utils/enc-area-request.js';
+import { createAreaRequester, validBbox } from './utils/enc-area-request.js';
 
 // JSON import with type attribute (NodeNext ESM). package.json's `version`
 // is what the marker file records so users can confirm the running build.
@@ -4619,19 +4619,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     router.get('/enc-area', (req: Request, res: Response) => {
       const raw = typeof req.query.bbox === 'string' ? req.query.bbox.split(',') : [];
       const bbox = raw.map((part) => (part.trim() === '' ? NaN : Number(part)));
-      if (
-        bbox.length !== 4 ||
-        !bbox.every(Number.isFinite) ||
-        Math.abs(bbox[0]) > 180 ||
-        Math.abs(bbox[2]) > 180 ||
-        Math.abs(bbox[1]) > 90 ||
-        Math.abs(bbox[3]) > 90 ||
-        bbox[1] > bbox[3]
-      ) {
+      if (!validBbox(bbox)) {
         res.status(400).json({ error: 'bbox must be west,south,east,north in degrees' });
         return;
       }
-      res.json({ cells: storedCellsIn(bbox as [number, number, number, number]) });
+      res.json({ cells: storedCellsIn(bbox) });
     });
 
     // Ask for the cells around an area, as requestArea does.
@@ -5541,6 +5533,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // index changes.
   let extentsOf: { hash: string; extents: Map<string, AreaBbox> } | null = null;
   function storedCellsIn(bbox: readonly [number, number, number, number]): EncAreaCell[] {
+    // A peer's NaN, out-of-range or upside-down box would quietly leave cells out.
+    if (!validBbox(bbox)) {
+      throw new TypeError('bbox must be [west, south, east, north] in degrees');
+    }
     const index = getEncIndex();
     if (index && extentsOf?.hash !== index.contentHash) {
       extentsOf = { hash: index.contentHash, extents: cellBboxes(index) };
@@ -5592,7 +5588,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         handleCustomCatalogDownloadConvert(catalog);
       }
     },
-    stateFile: path.join(app.getDataDirPath(), 'enc-area.json'),
+    // The data dir is the server's to give from start() on, not while the plugin is built.
+    stateFile: () => path.join(app.getDataDirPath(), 'enc-area.json'),
     now: Date.now,
     log: (message) => {
       console.log(`[charts-provider] ${message}`);

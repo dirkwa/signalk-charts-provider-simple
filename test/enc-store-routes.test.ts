@@ -114,7 +114,15 @@ describe('ENC store routes and global', () => {
       handleMessage: () => {},
       subscriptionmanager: { subscribe: () => {}, unsubscribe: () => {} }
     } as unknown as ExtendedServerAPI;
+    // The data dir is the server's to give from start() on.
+    let started = false;
+    const getDataDirPath = app.getDataDirPath.bind(app);
+    app.getDataDirPath = () => {
+      assert.ok(started, 'the data dir is asked for before start()');
+      return getDataDirPath();
+    };
     const plugin = pluginFactory(app);
+    started = true;
     const { router, handlers } = createRouterStub();
     plugin.registerWithRouter?.(router);
     plugin.start({ chartPath }, () => {});
@@ -201,6 +209,14 @@ describe('ENC store routes and global', () => {
           ['US5MA1AM', 'US5MA1AM', undefined]
         ]
       );
+      // A box the store cannot answer whole is refused, not answered in part.
+      for (const bad of [
+        [NaN, 59, NaN, 60],
+        [190, 59, 200, 60],
+        [20, 61, 21, 60]
+      ] as const) {
+        assert.throws(() => api.cellsIn?.(bad), TypeError);
+      }
       const area = makeRes();
       await handlers.get('get /enc-area')?.({ query: { bbox: '20,59,21,60' } }, area);
       assert.strictEqual((area.body as { cells: unknown[] }).cells.length, 2);

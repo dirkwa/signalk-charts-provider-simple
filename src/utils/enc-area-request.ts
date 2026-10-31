@@ -75,13 +75,14 @@ export interface AreaRequestDeps {
   slotFree: () => boolean;
   /** Download and convert the set. */
   start: (set: AreaChartSet) => void;
-  /** Where the area set's id is kept. */
-  stateFile: string;
+  /** Where the area set's id is kept, asked for only when a request comes. */
+  stateFile: () => string;
   now: () => number;
   log: (message: string) => void;
 }
 
-function validBbox(bbox: unknown): bbox is AreaBbox {
+/** `[west, south, east, north]` in degrees, west > east across the antimeridian. */
+export function validBbox(bbox: unknown): bbox is AreaBbox {
   if (!Array.isArray(bbox) || bbox.length !== 4) {
     return false;
   }
@@ -162,13 +163,14 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
   };
 
   const areaSet = (): AreaChartSet => {
-    const kept = readSetId(deps.stateFile);
+    const stateFile = deps.stateFile();
+    const kept = readSetId(stateFile);
     const set = kept === null ? null : deps.getSet(kept);
     if (set) {
       return set;
     }
     const created = deps.createSet(AREA_SET_NAME);
-    writeSetId(deps.stateFile, created.id);
+    writeSetId(stateFile, created.id);
     return created;
   };
 
