@@ -832,7 +832,8 @@ export function collectionState(id: string): 'ready' | 'writing' | 'absent' {
   if (!SAFE_ID.test(id)) {
     return 'absent';
   }
-  const owner = readRecord(collectionDir(id))?.owner;
+  const record = readRecord(collectionDir(id));
+  const owner = record?.id === id ? record.owner : undefined;
   if (writing.has(owner ?? chartSetOwner(id))) {
     return 'writing';
   }

@@ -94,10 +94,18 @@ function writeSetId(file: string, setId: string): void {
   fs.renameSync(tmp, file);
 }
 
+/** The area requester the plugin keeps from one start to the next. */
+export interface AreaRequester {
+  request: (bbox: unknown, requester: string) => EncAreaRequestResult;
+  /**
+   * Forget a download waiting for the internet connection: stopping the
+   * plugin drops the gate's held tasks, so the next start queues afresh.
+   */
+  reset: () => void;
+}
+
 /** `requestArea(bbox, requester)` over `deps`. */
-export function createAreaRequester(
-  deps: AreaRequestDeps
-): (bbox: unknown, requester: string) => EncAreaRequestResult {
+export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
   let lastStart = -Infinity;
   let waiting = false;
 
@@ -146,7 +154,7 @@ export function createAreaRequester(
     return { accepted: true, started: true, reason: 'downloading the area', setId: set.id };
   };
 
-  return (bbox, requester) => {
+  const request = (bbox: unknown, requester: string): EncAreaRequestResult => {
     if (!deps.enabled()) {
       return {
         accepted: false,
@@ -212,5 +220,12 @@ export function createAreaRequester(
       };
     }
     return startWhenReady(set);
+  };
+
+  return {
+    request,
+    reset: () => {
+      waiting = false;
+    }
   };
 }

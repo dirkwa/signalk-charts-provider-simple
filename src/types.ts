@@ -493,20 +493,20 @@ export interface ChartsProviderEncApi {
    * Added after the API's first release, like `cellsIn` and `requestArea`:
    * a reader checks they exist.
    */
-  state: (id: string) => EncCollectionStateInfo;
+  state?: (id: string) => EncCollectionStateInfo;
   /**
    * The stored cells reaching an area, one of each name, newest edition
    * first: `[west, south, east, north]` in degrees. A cell whose extent is
    * not known reaches every area.
    */
-  cellsIn: (bbox: readonly [number, number, number, number]) => EncAreaCell[];
+  cellsIn?: (bbox: readonly [number, number, number, number]) => EncAreaCell[];
   /**
    * Ask for the cells around an area to be downloaded, into the chart set
    * "Around the vessel", when the user turned that on. `requester` names
    * the asking plugin in the log. Ask again when the area changes, or when
    * the answer says to.
    */
-  requestArea: (
+  requestArea?: (
     bbox: readonly [number, number, number, number],
     requester: string
   ) => EncAreaRequestResult;

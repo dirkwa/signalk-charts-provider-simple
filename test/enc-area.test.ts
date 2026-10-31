@@ -92,6 +92,14 @@ describe('enc-area', () => {
     const extents = cellBboxes(index);
     assert.deepStrictEqual(extents.get('US3EAST1'), [-81, 25, -79, 26]);
     assert.deepStrictEqual(extents.get('FI5AAAAA'), [20, 59, 21, 60]);
+    // A cell listed by a box across the antimeridian keeps every longitude.
+    const across = cellBboxes(
+      lookup([
+        unit('noaa', 'US4AK1', [178, 51, 179, 52], ['US4AK1', 'US3ALEUT']),
+        unit('noaa', 'US4AK2', [179.5, 51, -179.5, 52], ['US4AK2', 'US3ALEUT'])
+      ])
+    );
+    assert.deepStrictEqual(across.get('US3ALEUT'), [-180, 51, 180, 52]);
     assert.deepStrictEqual(unitsIn(index, [-79.5, 25.5, -79.4, 25.6]), {
       noaa: ['US4FL2EP'],
       other: []
@@ -190,11 +198,11 @@ describe('enc-area-request', () => {
   });
 
   it('downloads nothing unless the user turned it on, and only for an area', () => {
-    const off = createAreaRequester(deps({ enabled: () => false }));
+    const off = createAreaRequester(deps({ enabled: () => false })).request;
     const r = off([20, 59, 21, 60], 'underkeel');
     assert.strictEqual(r.accepted, false);
     assert.match(r.reason, /turn on/);
-    const request = createAreaRequester(deps());
+    const request = createAreaRequester(deps()).request;
     assert.strictEqual(request([20, 61, 21, 60], 'underkeel').accepted, false);
     assert.strictEqual(request('somewhere', 'underkeel').accepted, false);
     assert.deepStrictEqual(started, []);
@@ -204,17 +212,17 @@ describe('enc-area-request', () => {
     let refreshed = 0;
     const noIndex = createAreaRequester(
       deps({ index: () => null, refreshIndex: () => (refreshed += 1) })
-    );
+    ).request;
     assert.match(noIndex([20, 59, 21, 60], 'u').reason, /not loaded/);
     assert.strictEqual(refreshed, 1);
-    const request = createAreaRequester(deps());
+    const request = createAreaRequester(deps()).request;
     assert.match(request([0, 0, 1, 1], 'u').reason, /no free ENC/);
     assert.deepStrictEqual(started, []);
   });
 
   it('adds the units reaching the area to one set, which grows along the voyage', () => {
     const d = deps();
-    const request = createAreaRequester(d);
+    const request = createAreaRequester(d).request;
     const first = request([20.5, 59.5, 20.6, 59.6], 'underkeel');
     assert.deepStrictEqual(first, {
       accepted: true,
@@ -242,7 +250,7 @@ describe('enc-area-request', () => {
 
   it('makes a new set when the user deleted it', () => {
     const d = deps();
-    const request = createAreaRequester(d);
+    const request = createAreaRequester(d).request;
     request([20.5, 59.5, 20.6, 59.6], 'u');
     sets.clear();
     request([20.5, 59.5, 20.6, 59.6], 'u');
@@ -251,7 +259,7 @@ describe('enc-area-request', () => {
 
   it('waits for the internet connection, and starts once when it allows', () => {
     allowed = 'it is metered';
-    const request = createAreaRequester(deps());
+    const request = createAreaRequester(deps()).request;
     const r = request([20.5, 59.5, 20.6, 59.6], 'u');
     assert.strictEqual(r.started, false);
     assert.match(r.reason, /internet connection allows: it is metered/);
@@ -262,6 +270,20 @@ describe('enc-area-request', () => {
     assert.deepStrictEqual(started, ['Around_the_vessel']);
   });
 
+  it('queues a waiting download again after a restart dropped the one held', () => {
+    allowed = 'it is offline';
+    const requester = createAreaRequester(deps());
+    requester.request([20.5, 59.5, 20.6, 59.6], 'u');
+    assert.strictEqual(held.length, 1);
+    // The plugin stops: the gate drops what it held.
+    held = [];
+    requester.request([20.5, 59.5, 20.6, 59.6], 'u');
+    assert.strictEqual(held.length, 0, 'still marked as waiting without a reset');
+    requester.reset();
+    requester.request([20.5, 59.5, 20.6, 59.6], 'u');
+    assert.strictEqual(held.length, 1);
+  });
+
   it('refuses a huge area, and waits while the set is busy or slots are taken', () => {
     const many = lookup(
       Array.from({ length: MAX_AREA_UNITS + 1 }, (_, i) =>
@@ -269,18 +291,18 @@ describe('enc-area-request', () => {
       )
     );
     assert.match(
-      createAreaRequester(deps({ index: () => many }))([20, 59, 21, 60], 'u').reason,
+      createAreaRequester(deps({ index: () => many })).request([20, 59, 21, 60], 'u').reason,
       /more than/
     );
-    const busy = createAreaRequester(deps({ busy: () => true }));
+    const busy = createAreaRequester(deps({ busy: () => true })).request;
     assert.match(busy([20.5, 59.5, 20.6, 59.6], 'u').reason, /being downloaded/);
-    const full = createAreaRequester(deps({ slotFree: () => false }));
+    const full = createAreaRequester(deps({ slotFree: () => false })).request;
     assert.match(full([20.5, 59.5, 20.6, 59.6], 'u').reason, /other conversions/);
     assert.deepStrictEqual(started, []);
   });
 
   it('does not start a set left out of date again before the retry time', () => {
-    const request = createAreaRequester(deps());
+    const request = createAreaRequester(deps()).request;
     request([20.5, 59.5, 20.6, 59.6], 'u');
     // The run failed: the set stays out of date.
     assert.match(request([20.5, 59.5, 20.6, 59.6], 'u').reason, /a moment ago/);

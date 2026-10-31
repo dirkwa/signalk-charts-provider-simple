@@ -184,6 +184,7 @@ describe('ENC store routes and global', () => {
       assert.strictEqual(outside.statusCode, 404);
 
       // What a reader finds of a collection, and the cells reaching an area.
+      assert.ok(api.state && api.cellsIn && api.requestArea, 'the additions are published');
       assert.deepStrictEqual(api.state('Gulf'), { state: 'ready' });
       assert.deepStrictEqual(api.state('Nope'), { state: 'absent' });
       const stateRes = makeRes();
@@ -206,6 +207,9 @@ describe('ENC store routes and global', () => {
       const badArea = makeRes();
       await handlers.get('get /enc-area')?.({ query: { bbox: '20,61,21,60' } }, badArea);
       assert.strictEqual(badArea.statusCode, 400);
+      const emptyPart = makeRes();
+      await handlers.get('get /enc-area')?.({ query: { bbox: '20,,21,60' } }, emptyPart);
+      assert.strictEqual(emptyPart.statusCode, 400);
       // Area downloads are off unless the user turns them on.
       assert.strictEqual(api.requestArea([20, 59, 21, 60], 'test').accepted, false);
       const ask = makeRes();

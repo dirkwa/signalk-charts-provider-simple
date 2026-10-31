@@ -51,10 +51,13 @@ export function bboxesMeet(a: AreaBbox, b: AreaBbox): boolean {
 }
 
 function union(a: AreaBbox | undefined, b: AreaBbox): AreaBbox {
-  // A box across the antimeridian is kept as it is: a union of such boxes is
-  // not needed for the few cells that cross it.
-  if (!a || a[0] > a[2] || b[0] > b[2]) {
-    return a ?? b;
+  if (!a) {
+    return b;
+  }
+  // With a box across the antimeridian, every longitude: wider than needed,
+  // but a cell is never left out of an area it reaches.
+  if (a[0] > a[2] || b[0] > b[2]) {
+    return [-180, Math.min(a[1], b[1]), 180, Math.max(a[3], b[3])];
   }
   return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
 }

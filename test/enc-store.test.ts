@@ -387,6 +387,12 @@ describe('collectionState', () => {
     await again;
     assert.strictEqual(collectionState('Nope'), 'absent');
     assert.strictEqual(collectionState('../x'), 'absent');
+    // A folder whose record names another id is no collection, as getCollection reads it.
+    fs.cpSync(path.join(encStoreRoot(), 'Gulf'), path.join(encStoreRoot(), 'Copy'), {
+      recursive: true
+    });
+    assert.strictEqual(getCollection('Copy'), null);
+    assert.strictEqual(collectionState('Copy'), 'absent');
   });
 });
 
