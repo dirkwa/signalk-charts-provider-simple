@@ -727,20 +727,14 @@ function retie(
   return id;
 }
 
-/** A chart's collection move, and the way to undo it. */
+/** A chart's collection move. */
 export interface ChartCollectionMove {
   /** Whether the chart had a collection, which now belongs to its new path. */
   moved: boolean;
-  /**
-   * Put both collections back as they were: the moved one with the old path,
-   * and the one untied from the new path tied to it again. For a chart file
-   * that could not move after all.
-   */
-  undo: () => Promise<void>;
 }
 
 /** Run `fn` inside the turns to write of both owners, taken in a fixed order. */
-function inBothTurns<T>(a: string, b: string, fn: () => T): Promise<T> {
+function inBothTurns<T>(a: string, b: string, fn: () => T | Promise<T>): Promise<T> {
   const [first, second] = [a, b].sort();
   return serially(first, () => serially(second, () => Promise.resolve(fn())));
 }
@@ -761,35 +755,54 @@ function emitEach(ids: (string | null)[]): void {
  * readers may be using, until the user removes them, but is no longer tied
  * to that path.
  *
- * Both owners' writes wait for the whole move, so a conversion committing
- * its cells for `to` meanwhile comes before or after it, never between.
+ * `moveFile` moves the chart file itself once the collections have moved.
+ * When it fails, both collections are put back as they were and its error is
+ * thrown. Both owners' writes wait for the whole move, the file's included,
+ * so a conversion committing its cells for `to` meanwhile comes before or
+ * after it, never between.
  */
-export async function moveChartCollection(from: string, to: string): Promise<ChartCollectionMove> {
+export async function moveChartCollection(
+  from: string,
+  to: string,
+  moveFile: () => Promise<void> = () => Promise.resolve()
+): Promise<ChartCollectionMove> {
   if (from === to) {
-    return { moved: false, undo: () => Promise.resolve() };
+    await moveFile();
+    return { moved: false };
   }
-  const [detached, moved] = await inBothTurns(chartOwner(from), chartOwner(to), () => [
-    retie(chartOwner(to), (id) => `${DETACHED_OWNER}${id}`, undefined),
-    retie(chartOwner(from), () => chartOwner(to), to)
-  ]);
+  const source = chartOwner(from);
+  const target = chartOwner(to);
+  const untied = (id: string): string => `${DETACHED_OWNER}${id}`;
+  const [detached, moved] = await inBothTurns(source, target, async () => {
+    const left = retie(target, untied, undefined);
+    let done: [string | null, string | null];
+    try {
+      done = [left, retie(source, () => target, to)];
+    } catch (err) {
+      if (left !== null) {
+        retie(untied(left), () => target, to);
+      }
+      throw err;
+    }
+    try {
+      await moveFile();
+    } catch (err) {
+      // Nothing else wrote either owner meanwhile, so both go back as they were.
+      try {
+        const back = done[1] === null ? null : retie(target, () => source, from);
+        const retied = left === null ? null : retie(untied(left), () => target, to);
+        emitEach([back, retied]);
+      } catch (back) {
+        console.error(
+          `[charts-provider] Could not move the kept ENC cells of ${to} back: ${back instanceof Error ? back.message : String(back)}`
+        );
+      }
+      throw err;
+    }
+    return done;
+  });
   emitEach([detached, moved]);
-  const undo = async (): Promise<void> => {
-    // Only what the move itself changed goes back: a collection another write gave
-    // `to` since then stays, and the untied one is tied again only while `to` has none.
-    const restored = await inBothTurns(chartOwner(from), chartOwner(to), () => {
-      const back =
-        moved !== null && collectionOf(chartOwner(to)) === moved
-          ? retie(chartOwner(to), () => chartOwner(from), from)
-          : null;
-      const retied =
-        detached !== null && collectionOf(chartOwner(to)) === null
-          ? retie(`${DETACHED_OWNER}${detached}`, () => chartOwner(to), to)
-          : null;
-      return [back, retied];
-    });
-    emitEach(restored);
-  };
-  return { moved: moved !== null, undo };
+  return { moved: moved !== null };
 }
 
 /**

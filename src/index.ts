@@ -5379,26 +5379,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   }
   // Moves a chart file and the ENC cells kept for it together. The cells go first, so a
   // failure to move them leaves both where they were; when the file then cannot move, the
-  // move is undone, cells untied from the destination included, and the route answers the
+  // cells go back, cells untied from the destination included, and the route answers the
   // error either way.
   async function moveChartWithCells(
     basePath: string,
     sourcePath: string,
     targetPath: string
   ): Promise<void> {
-    const from = path.relative(basePath, sourcePath);
-    const to = path.relative(basePath, targetPath);
-    const move = await moveChartCollection(from, to);
-    try {
-      await fs.promises.rename(sourcePath, targetPath);
-    } catch (err) {
-      await move.undo().catch((back: unknown) => {
-        app.error(
-          `Could not move the kept ENC cells of ${to} back: ${back instanceof Error ? back.message : String(back)}`
-        );
-      });
-      throw err;
-    }
+    await moveChartCollection(
+      path.relative(basePath, sourcePath),
+      path.relative(basePath, targetPath),
+      () => fs.promises.rename(sourcePath, targetPath)
+    );
   }
 
   function cellKeeper(

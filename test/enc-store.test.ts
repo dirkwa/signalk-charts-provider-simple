@@ -461,7 +461,7 @@ describe('moveChartCollection', () => {
     assert.strictEqual(getCollection('Old')?.cells.length, 1);
   });
 
-  it('undoes a move, tying both collections to their paths again', async () => {
+  it('puts both collections back when the chart file cannot move', async () => {
     const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
     const b = makeCell(path.join(sourceDir, 'B'), 'FI5BBBBB');
     const from = path.join('F', 'A.mbtiles');
@@ -483,18 +483,68 @@ describe('moveChartCollection', () => {
         cells: [{ base: b }]
       })
     );
-    const move = await moveChartCollection(from, to);
-    assert.strictEqual(move.moved, true);
-    const heard: string[] = [];
-    const unsubscribe = onEncStoreChange((id) => heard.push(id));
-    try {
-      await move.undo();
-      assert.deepStrictEqual(heard.sort(), ['A', 'Old']);
-    } finally {
-      unsubscribe();
-    }
+    const order: string[] = [];
+    let commit: Promise<void> | undefined;
+    const failed = new Error('file busy');
+    await assert.rejects(
+      moveChartCollection(from, to, async () => {
+        // A conversion committing cells for the new path waits for the whole move.
+        commit = storeCollection(
+          request({ owner: chartOwner(to), preferredId: 'New', chart: to, cells: [{ base: b }] })
+        ).then(() => {
+          order.push('commit');
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        order.push('file');
+        throw failed;
+      }),
+      failed
+    );
     assert.strictEqual(collectionOf(chartOwner(from)), 'A');
     assert.strictEqual(getCollection('A')?.chart, from);
+    assert.strictEqual(collectionOf(chartOwner(to)), 'Old');
+    assert.strictEqual(getCollection('Old')?.chart, to);
+    await commit;
+    assert.deepStrictEqual(order, ['file', 'commit']);
+  });
+
+  it('ties the destination collection again when the chart one cannot move', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    const b = makeCell(path.join(sourceDir, 'B'), 'FI5BBBBB');
+    const from = path.join('F', 'A.mbtiles');
+    const to = path.join('G', 'A.mbtiles');
+    await storeCollection(
+      request({
+        owner: chartOwner(from),
+        preferredId: 'A.mbtiles',
+        chart: from,
+        cells: [{ base: a }]
+      })
+    );
+    await storeCollection(
+      request({
+        owner: chartOwner(to),
+        preferredId: 'Old.mbtiles',
+        chart: to,
+        cells: [{ base: b }]
+      })
+    );
+    // The chart's collection record cannot be rewritten.
+    const blocker = path.join(encStoreRoot(), 'A', `.collection.json.${String(process.pid)}.tmp`);
+    fs.mkdirSync(blocker);
+    let moved = false;
+    try {
+      await assert.rejects(
+        moveChartCollection(from, to, () => {
+          moved = true;
+          return Promise.resolve();
+        })
+      );
+    } finally {
+      fs.rmdirSync(blocker);
+    }
+    assert.strictEqual(moved, false);
+    assert.strictEqual(collectionOf(chartOwner(from)), 'A');
     assert.strictEqual(collectionOf(chartOwner(to)), 'Old');
     assert.strictEqual(getCollection('Old')?.chart, to);
   });
