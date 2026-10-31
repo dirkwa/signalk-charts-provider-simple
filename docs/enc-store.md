@@ -77,7 +77,10 @@ release, so a reader checks they exist:
   index is not loaded yet, the set is downloading, the internet connection
   does not allow it yet (the download then starts once it does), or the
   area is downloaded. A set left out of date by a failed run is not
-  started again for 15 minutes. Ask again when the area changes.
+  started again for 15 minutes. Ask again when the area changes, and after
+  `retryAfterMs` when the answer has one: it says when an answer that
+  depends on something passing (the index loading, conversions or the set
+  running) may differ for the same area.
 
 Compatibility: `apiVersion` changes only with a change readers must know
 about, and a reader should not use an API of a version it does not know.

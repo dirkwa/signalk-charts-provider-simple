@@ -24,6 +24,9 @@ export const MAX_AREA_UNITS = 60;
 export const AREA_RETRY_MS = 15 * 60_000;
 /** How often a waiting download looks for a free conversion slot. */
 export const SLOT_RETRY_MS = 60_000;
+/** When to ask again while the ENC index loads, and while conversions or the set run. */
+export const INDEX_RETRY_MS = 60_000;
+export const BUSY_RETRY_MS = 5 * 60_000;
 
 /** What `requestArea` answers. */
 export interface EncAreaRequestResult {
@@ -35,6 +38,12 @@ export interface EncAreaRequestResult {
   reason: string;
   /** The chart set the area's cells go to, once there is one. */
   setId?: string;
+  /**
+   * Ask again after this many milliseconds, with the area unchanged: the answer depends on
+   * something that passes (the index loading, conversions or the set running). Absent when
+   * asking again before the area changes would change nothing.
+   */
+  retryAfterMs?: number;
 }
 
 /** The part of a chart set this module reads and changes. */
@@ -184,7 +193,8 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
         accepted: true,
         started: false,
         reason: 'other conversions are running; ask again later',
-        setId: set.id
+        setId: set.id,
+        retryAfterMs: BUSY_RETRY_MS
       };
     }
     startNow(set);
@@ -209,7 +219,8 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
       return {
         accepted: true,
         started: false,
-        reason: 'the ENC index is not loaded yet; ask again'
+        reason: 'the ENC index is not loaded yet; ask again',
+        retryAfterMs: INDEX_RETRY_MS
       };
     }
     const units = unitsIn(lookup, bbox);
@@ -230,7 +241,8 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
         accepted: true,
         started: false,
         reason: 'the area chart set is being downloaded; ask again when it is done',
-        setId: set.id
+        setId: set.id,
+        retryAfterMs: BUSY_RETRY_MS
       };
     }
     const noaa = units.noaa.filter((id) => !set.selectedBand4ChartIds.includes(id));
@@ -248,12 +260,14 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
     if (set.status === 'converted') {
       return { accepted: true, started: false, reason: 'the area is downloaded', setId: set.id };
     }
-    if (deps.now() - lastStart < AREA_RETRY_MS) {
+    const since = deps.now() - lastStart;
+    if (since < AREA_RETRY_MS) {
       return {
         accepted: true,
         started: false,
         reason: 'the area was downloaded a moment ago and is not ready; ask again later',
-        setId: set.id
+        setId: set.id,
+        retryAfterMs: AREA_RETRY_MS - since
       };
     }
     return startWhenReady(set);

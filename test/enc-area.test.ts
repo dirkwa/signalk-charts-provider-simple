@@ -13,6 +13,8 @@ import type { EncIndexUnitRead } from '../dist/catalog/enc-index-schema.js';
 import { bboxesMeet, cellBboxes, cellsIn, unitsIn } from '../dist/utils/enc-area.js';
 import {
   AREA_RETRY_MS,
+  BUSY_RETRY_MS,
+  INDEX_RETRY_MS,
   AREA_SET_NAME,
   createAreaRequester,
   MAX_AREA_UNITS,
@@ -222,10 +224,14 @@ describe('enc-area-request', () => {
     const noIndex = createAreaRequester(
       deps({ index: () => null, refreshIndex: () => (refreshed += 1) })
     ).request;
-    assert.match(noIndex([20, 59, 21, 60], 'u').reason, /not loaded/);
+    const loading = noIndex([20, 59, 21, 60], 'u');
+    assert.match(loading.reason, /not loaded/);
+    assert.strictEqual(loading.retryAfterMs, INDEX_RETRY_MS);
     assert.strictEqual(refreshed, 1);
     const request = createAreaRequester(deps()).request;
-    assert.match(request([0, 0, 1, 1], 'u').reason, /no free ENC/);
+    const none = request([0, 0, 1, 1], 'u');
+    assert.match(none.reason, /no free ENC/);
+    assert.strictEqual(none.retryAfterMs, undefined, 'asking again changes nothing');
     assert.deepStrictEqual(started, []);
   });
 
@@ -349,9 +355,13 @@ describe('enc-area-request', () => {
       /more than/
     );
     const busy = createAreaRequester(deps({ busy: () => true })).request;
-    assert.match(busy([20.5, 59.5, 20.6, 59.6], 'u').reason, /being downloaded/);
+    const running = busy([20.5, 59.5, 20.6, 59.6], 'u');
+    assert.match(running.reason, /being downloaded/);
+    assert.strictEqual(running.retryAfterMs, BUSY_RETRY_MS);
     const full = createAreaRequester(deps({ slotFree: () => false })).request;
-    assert.match(full([20.5, 59.5, 20.6, 59.6], 'u').reason, /other conversions/);
+    const taken = full([20.5, 59.5, 20.6, 59.6], 'u');
+    assert.match(taken.reason, /other conversions/);
+    assert.strictEqual(taken.retryAfterMs, BUSY_RETRY_MS);
     assert.deepStrictEqual(started, []);
   });
 
@@ -359,7 +369,10 @@ describe('enc-area-request', () => {
     const request = createAreaRequester(deps()).request;
     request([20.5, 59.5, 20.6, 59.6], 'u');
     // The run failed: the set stays out of date.
-    assert.match(request([20.5, 59.5, 20.6, 59.6], 'u').reason, /a moment ago/);
+    clock += 60_000;
+    const soon = request([20.5, 59.5, 20.6, 59.6], 'u');
+    assert.match(soon.reason, /a moment ago/);
+    assert.strictEqual(soon.retryAfterMs, AREA_RETRY_MS - 60_000, 'when it may start again');
     clock += AREA_RETRY_MS;
     assert.strictEqual(request([20.5, 59.5, 20.6, 59.6], 'u').started, true);
     assert.deepStrictEqual(started, ['Around_the_vessel', 'Around_the_vessel']);
