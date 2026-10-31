@@ -613,6 +613,19 @@ export async function processS57Directory(
       }
     }
 
+    // Keep the cells the chart was built from while they are still on disk.
+    if (options.keepCells) {
+      try {
+        appendLog(chartNumber, await options.keepCells(encFiles, outputName));
+      } catch (keepErr) {
+        const message = `WARNING: the ENC cells were not kept: ${
+          keepErr instanceof Error ? keepErr.message : String(keepErr)
+        }`;
+        debug(message);
+        appendLog(chartNumber, message);
+      }
+    }
+
     const size = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
     const doneMsg = `Created ${outputName} (${size} MB)`;
     statusFn('completed', doneMsg);

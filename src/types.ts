@@ -8,6 +8,7 @@ import type { AreaDownloadLimits, OnlineTileSource } from './utils/online-tile-c
 import type { ChartMask, CustomOnlineChart } from './utils/online-charts.js';
 import type { PluginListEntry } from './utils/internet-state.js';
 import type { ConversionBackend } from './utils/conversion-backend.js';
+import type { EncCollection, EncCollectionSummary } from './utils/enc-store.js';
 
 // ---- Plugin Configuration ----
 // Runtime-validated via TypeBox in `utils/plugin-config-schema.ts`.
@@ -378,6 +379,14 @@ export interface S57ConversionOptions {
    * passes the cells it found there and in its archives.
    */
   cells?: readonly string[];
+  /**
+   * Optional: called once the chart is built, with the cells it was built
+   * from (`.000` files, their updates beside them) and the new file's name,
+   * while the cells are still on disk. Keeping them in the shared ENC store
+   * goes here. Returns a line for the conversion log; a failure is logged
+   * and never fails the conversion.
+   */
+  keepCells?: (cells: readonly string[], mbtilesFile: string) => Promise<string>;
 }
 
 export interface RncConversionResult {
@@ -460,4 +469,25 @@ export type { IRouter, Request, Response };
  */
 export interface ChartsProviderRefreshGlobal {
   __signalk_chartsProviderRefresh?: () => Promise<number>;
+}
+
+/**
+ * The shared ENC store, published on `globalThis.__signalk_chartsProviderEnc`
+ * for peer plugins in the same server (signalk-underkeel reads its cells).
+ * Published once the plugin has started and withdrawn when it stops; a
+ * listener stays subscribed across a restart of this plugin. See
+ * `utils/enc-store.ts` for the layout under `root`.
+ */
+export interface ChartsProviderEncApi {
+  apiVersion: number;
+  /** Every collection is a folder here: `<root>/<collection>/<CELL>/<CELL>.000`. */
+  root: string;
+  collections: () => EncCollectionSummary[];
+  collection: (id: string) => EncCollection | null;
+  /** Called with a collection's id once it was written or removed. Returns the unsubscribe. */
+  onChange: (listener: (collectionId: string) => void) => () => void;
+}
+
+export interface ChartsProviderEncGlobal {
+  __signalk_chartsProviderEnc?: ChartsProviderEncApi;
 }

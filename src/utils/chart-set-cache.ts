@@ -200,6 +200,38 @@ export function cachedRawDir(setId: string, cell: string): string {
   return path.join(cellsDir(setId), cell, 'raw');
 }
 
+/**
+ * A set's cached cells as they were delivered: each one's `.000`, every
+ * file beside it, and its version. What the shared ENC store mirrors.
+ */
+export function cachedCellSources(
+  setId: string
+): { base: string; files: string[]; version?: string }[] {
+  const result: { base: string; files: string[]; version?: string }[] = [];
+  for (const [cell, info] of readSetCache(setId)) {
+    const rawDir = cachedRawDir(setId, cell);
+    const base = baseFileIn(rawDir);
+    if (base === null) {
+      continue;
+    }
+    const basePath = path.join(rawDir, base);
+    const files = [
+      basePath,
+      ...fs
+        .readdirSync(rawDir)
+        .filter((f) => f !== base)
+        .sort()
+        .map((f) => path.join(rawDir, f))
+    ];
+    result.push(
+      info.version === undefined
+        ? { base: basePath, files }
+        : { base: basePath, files, version: info.version }
+    );
+  }
+  return result;
+}
+
 export interface CellToCommit {
   name: string;
   /** The staged cell: its `.000` and update files. */

@@ -122,6 +122,11 @@ interface MockState {
   // When set, POST /online-charts answers with this status and an HTML
   // body, like a proxy error page.
   onlineAddFailStatus: number | null;
+  // The shared ENC store: GET /enc-store answers with it, and each
+  // collection's cells by id; DELETEs are recorded.
+  encStore: { root: string; keepEncCells: boolean; collections: { id: string }[] };
+  encStoreCells: Record<string, unknown[]>;
+  encStoreDeleted: string[];
 }
 
 const okStatus: CatalogStatusMock = {
@@ -157,7 +162,10 @@ const initialState: MockState = {
   downloadJobs: [],
   catalogUpdates: [],
   downloadFailStatus: null,
-  onlineAddFailStatus: null
+  onlineAddFailStatus: null,
+  encStore: { root: '/data/enc-store', keepEncCells: false, collections: [] },
+  encStoreCells: {},
+  encStoreDeleted: []
 };
 
 let state: MockState = structuredClone(initialState);
@@ -207,6 +215,36 @@ export function startMockServer(
   // current mock state says; the test sets state ahead of time.
   router.get(`${PLUGIN_BASE}/local-charts`, (_req, res) => {
     res.json(state.localCharts);
+  });
+
+  // ENC Charts tab: no chart sets and no ENC index, so the tab draws an
+  // empty map; the shared ENC store comes from the mock state.
+  router.get(`${PLUGIN_BASE}/custom-catalogs/enc-index`, (_req, res) => {
+    res.json({ status: { status: 'never', message: null }, fetchedAt: null, index: null });
+  });
+  router.get(`${PLUGIN_BASE}/custom-catalogs`, (_req, res) => {
+    res.json([]);
+  });
+  router.get(`${PLUGIN_BASE}/enc-store`, (_req, res) => {
+    res.json({ apiVersion: 1, ...state.encStore });
+  });
+  router.get(`${PLUGIN_BASE}/enc-store/:collection`, (req, res) => {
+    const id = req.params.collection;
+    const collection = state.encStore.collections.find((c) => c.id === id);
+    if (!collection) {
+      res.status(404).json({ error: 'ENC collection not found' });
+      return;
+    }
+    res.json({ ...collection, cells: state.encStoreCells[id] ?? [] });
+  });
+  router.delete(`${PLUGIN_BASE}/enc-store/:collection`, (req, res) => {
+    const id = req.params.collection;
+    state.encStoreDeleted.push(id);
+    state.encStore = {
+      ...state.encStore,
+      collections: state.encStore.collections.filter((c) => c.id !== id)
+    };
+    res.json({ success: true });
   });
 
   // POST /folders/toggle → flip a folder's enabled flag and cascade the

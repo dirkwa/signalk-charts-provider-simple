@@ -11,6 +11,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 - **Online Charts and Satellite imagery**: Add weather radar and satellite, online nautical charts, depth layers, base maps and satellite imagery with one click — no download, no conversion
 - **ENC Charts**: Pick chart areas on a map from every free ENC source (NOAA, the European inland waterways and more); the plugin downloads their ENC cells and converts them into a single vector MBTiles named after your chart set
 - **S-57 ENC Conversion**: Convert IENC/ENC charts to vector MBTiles with full S-52 symbology in Freeboard-SK
+- **Shared ENC cells**: The S-57 cells behind your ENC charts are kept as delivered and served to other plugins, such as [Under-Keel Awareness](https://www.npmjs.com/package/signalk-underkeel), so one download serves both the chart plotter and depth checks
 - **BSB Raster Conversion**: Convert BSB/KAP raster charts and Pilot Charts to raster MBTiles
 - **World Basemaps**: OSM coastline basemaps for offline use
 - **Custom Upload**: Upload your own ZIP files containing S-57 ENC or BSB charts for conversion
@@ -118,6 +119,20 @@ The interface provides seven tabs:
    - Out-of-date detection when a source publishes a new edition or update of a cell, or your selection changes; the set lists the cells that changed
    - Each chart set keeps its downloaded cells, so an update downloads and reads only the cells that changed before building the chart again. The set's details show how much disk they take; deleting the set frees it
    - Chart sets made in the NOAA Charts tab of earlier versions carry over as they are. A set that includes other sources still opens in an earlier version, which shows only its NOAA part and drops the rest if it saves the set
+   - **Shared ENC cells** lists the S-57 cells other plugins can read: every chart set's cells, and, with **Keep the ENC cells of converted charts** on in the plugin settings, the cells of each ENC chart converted in the Convert or Chart Catalog tab. Open a collection to list its cells with their versions and update files, each file downloadable. Remove a converted chart's cells there; a chart set's go with the set. See [Shared ENC cells](#shared-enc-cells-for-other-plugins)
+
+### Shared ENC cells for other plugins
+
+The plugin keeps S-57 cells as delivered, `.000` with its `.001`, `.002`, … updates, in one place other Signal K plugins read from: the `enc-store` folder in the plugin's data directory. Integrations take its location from the API's `root`. Each chart's cells form a **collection**, one folder per cell:
+
+```
+enc-store/<collection>/<CELL>/<CELL>.000, <CELL>.001, …
+```
+
+- Every ENC Charts set is a collection, named like the set (`Gulf of Finland` → `Gulf_of_Finland`), kept current by each download & convert. Its cells are hard links to the set's own copy, so they take no extra disk.
+- With **Keep the ENC cells of converted charts** on, an ENC chart converted from an upload, a folder on the server or the Chart Catalog keeps its cells as a collection named after the chart file. Converting the chart again replaces them once the new chart is installed; a cancelled or failed conversion leaves them as they were.
+
+[Under-Keel Awareness](https://www.npmjs.com/package/signalk-underkeel) reads them in place: pick the collection in its **ENC from Charts Provider** setting, and it builds its depth index again when the cells change. Other plugins use the in-process API or the REST routes in [`docs/enc-store.md`](docs/enc-store.md).
 
 ### Supported Formats
 

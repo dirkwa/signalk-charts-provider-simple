@@ -279,6 +279,91 @@
   color: var(--md-sys-color-error, #ba1a1a);
 }
 
+/* Shared ENC cells, under the chart set's log. */
+.cc-shared-header {
+  margin-top: 16px;
+}
+
+.cc-shared-list {
+  border: 1px solid var(--md-sys-color-outline-variant, #c3c7cf);
+  border-radius: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.cc-shared-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant, #e2e4e9);
+}
+
+.cc-shared-row:last-child {
+  border-bottom: none;
+}
+
+.cc-shared-item {
+  border-bottom: 1px solid var(--md-sys-color-outline-variant, #e2e4e9);
+}
+
+.cc-shared-item:last-child {
+  border-bottom: none;
+}
+
+.cc-shared-item .cc-shared-row {
+  border-bottom: none;
+}
+
+.cc-shared-toggle {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  text-decoration: none;
+  padding: 0;
+  width: 1.2em;
+}
+
+.cc-shared-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cc-shared-meta {
+  font-size: 0.78rem;
+  color: var(--md-sys-color-on-surface-variant, #43474e);
+  overflow-wrap: anywhere;
+}
+
+.cc-shared-cells {
+  padding: 0 12px 8px 32px;
+}
+
+.cc-shared-cell {
+  padding: 4px 0;
+}
+
+.cc-shared-cell-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cc-shared-cell-name {
+  font-size: 0.85rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--md-sys-color-on-surface, #1a1c1e);
+}
+
+.cc-shared-cells a {
+  color: var(--md-sys-color-primary, #1565c0);
+}
+
+.cc-shared code {
+  overflow-wrap: anywhere;
+}
+
 .cc-link-btn {
   border: none;
   background: none;
