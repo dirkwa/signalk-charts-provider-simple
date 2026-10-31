@@ -279,24 +279,31 @@ function toCollection(dir: string, record: CollectionRecord): EncCollection {
   return summary;
 }
 
-/** Every collection, by id. A collection still being written for the first time is left out. */
-export function listCollections(): EncCollectionSummary[] {
+/**
+ * Every collection with its cells, by id. A collection still being written for the first time
+ * is left out.
+ */
+export function listCollectionsWithCells(): EncCollection[] {
   let names: string[];
   try {
     names = fs.readdirSync(rootDir);
   } catch {
     return [];
   }
-  const result: EncCollectionSummary[] = [];
+  const result: EncCollection[] = [];
   for (const name of names.filter((n) => SAFE_ID.test(n)).sort()) {
     const dir = path.join(rootDir, name);
     const record = readRecord(dir);
     if (record?.id === name) {
-      const { cells: _cells, ...summary } = toCollection(dir, record);
-      result.push(summary);
+      result.push(toCollection(dir, record));
     }
   }
   return result;
+}
+
+/** Every collection, by id, as `listCollectionsWithCells` without the cells. */
+export function listCollections(): EncCollectionSummary[] {
+  return listCollectionsWithCells().map(({ cells: _cells, ...summary }) => summary);
 }
 
 export function getCollection(id: string): EncCollection | null {

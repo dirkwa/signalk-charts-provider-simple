@@ -22,6 +22,7 @@ import {
   getCollection,
   initEncStore,
   listCollections,
+  listCollectionsWithCells,
   moveChartCollection,
   onEncStoreChange,
   removeCollection,
@@ -199,6 +200,11 @@ describe('storeCollection', () => {
       listCollections().map((c) => c.id),
       ['Harbour', 'Harbour-2']
     );
+    // The same collections with their cells, as getCollection reads each.
+    assert.deepStrictEqual(listCollectionsWithCells(), [
+      getCollection('Harbour'),
+      getCollection('Harbour-2')
+    ]);
     assert.deepStrictEqual([...chartSetCollections()], [['Harbour', 'Harbour']]);
   });
 

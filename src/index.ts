@@ -197,13 +197,13 @@ import {
   collectionOwner,
   collectionState,
   detachChartCollection,
-  type EncCollection,
   ENC_STORE_API_VERSION,
   encStoreRoot,
   getCollection,
   initEncStore,
   isValidCollectionId,
   listCollections,
+  listCollectionsWithCells,
   moveChartCollection,
   onEncStoreChange,
   removeCollection,
@@ -5545,9 +5545,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     if (index && extentsOf?.hash !== index.contentHash) {
       extentsOf = { hash: index.contentHash, extents: cellBboxes(index) };
     }
-    const collections = listCollections()
-      .map((c) => getCollection(c.id))
-      .filter((c): c is EncCollection => c !== null);
+    const collections = listCollectionsWithCells();
     return cellsIn(collections, bbox, index ? (extentsOf?.extents ?? new Map()) : new Map());
   }
 
