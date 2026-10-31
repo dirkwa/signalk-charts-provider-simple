@@ -307,6 +307,23 @@ describe('enc-area-request', () => {
     assert.strictEqual(timers.length, 2);
   });
 
+  it('drops a pending retry when a request starts the set first', () => {
+    allowed = 'it is metered';
+    let free = false;
+    const requester = createAreaRequester(deps({ slotFree: () => free }));
+    requester.request([20.5, 59.5, 20.6, 59.6], 'u');
+    allowed = true;
+    held[0]();
+    assert.strictEqual(timers.length, 1);
+    free = true;
+    requester.request([20.9, 59.5, 21.5, 59.6], 'u');
+    assert.deepStrictEqual(started, ['Around_the_vessel']);
+    assert.strictEqual(timers.length, 0, 'the retry is cancelled');
+    // A callback the gate still held finds nothing waiting.
+    held[0]();
+    assert.deepStrictEqual(started, ['Around_the_vessel']);
+  });
+
   it('queues a waiting download again after a restart dropped the one held', () => {
     allowed = 'it is offline';
     const requester = createAreaRequester(deps());

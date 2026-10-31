@@ -115,10 +115,23 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
   let waiting = false;
   let cancelRetry: (() => void) | null = null;
 
+  // Starting the set ends any wait, so a retry still pending cannot start it
+  // again once this run is done.
+  const startNow = (set: AreaChartSet): void => {
+    waiting = false;
+    cancelRetry?.();
+    cancelRetry = null;
+    lastStart = deps.now();
+    deps.start(set);
+  };
+
   // A waiting download starts once the connection allows and a conversion
   // slot is free, looking again for a slot every SLOT_RETRY_MS.
   const runWaiting = (id: string): void => {
     cancelRetry = null;
+    if (!waiting) {
+      return;
+    }
     const set = deps.getSet(id);
     if (!set || deps.busy(set.id)) {
       waiting = false;
@@ -136,9 +149,7 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
       }, SLOT_RETRY_MS);
       return;
     }
-    waiting = false;
-    lastStart = deps.now();
-    deps.start(set);
+    startNow(set);
   };
 
   const areaSet = (): AreaChartSet => {
@@ -176,8 +187,7 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
         setId: set.id
       };
     }
-    lastStart = deps.now();
-    deps.start(set);
+    startNow(set);
     return { accepted: true, started: true, reason: 'downloading the area', setId: set.id };
   };
 
