@@ -20,7 +20,7 @@ import type { EncIndexLookup } from './enc-chart-set.js';
 export const AREA_SET_NAME = 'Around the vessel';
 /** More units than this is not an area around a vessel. */
 export const MAX_AREA_UNITS = 60;
-/** A set left out of date (a failed run) is not downloaded again sooner than this. */
+/** A set left out of date (a failed run) is downloaded again no sooner than this after its last start. */
 export const AREA_RETRY_MS = 15 * 60_000;
 /** How often a waiting download looks for a free conversion slot. */
 export const SLOT_RETRY_MS = 60_000;
