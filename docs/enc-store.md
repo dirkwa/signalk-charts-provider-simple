@@ -87,10 +87,10 @@ A reader checks that these members exist before calling them
   - `accepted: true, started: false` with `retryAfterMs`: the answer
     depends on something passing (the index loading, the set downloading,
     other conversions running), and may differ for the same area after
-    that long. A set left out of date by a failed run starts again only
-    once 15 minutes have passed since its last download started, so a run
-    that failed later than that starts again at once; a request that adds
-    units to the set starts it at once too.
+    that long. A set left out of date by a failed run is restarted only
+    15 minutes after its last download started, so one that failed later
+    than that restarts at once; a request that adds units to the set
+    starts it at once too.
 
   Ask again when the area changes, and after `retryAfterMs` when the
   answer has one.
