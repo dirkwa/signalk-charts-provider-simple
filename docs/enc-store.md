@@ -84,17 +84,15 @@ A reader checks that these members exist before calling them
   - `accepted: true, started: true`: the download started.
   - `accepted: true, started: false` and no `retryAfterMs`: no free ENC
     covers the area, the area is downloaded, or the download waits for the
-    internet connection and starts once it allows. Asking again with the
-    same area changes nothing.
-  - `accepted: true, started: false` with `retryAfterMs`: the answer
-    depends on something passing (the index loading, the set downloading,
-    other conversions running), and may differ for the same area after
-    that long. A set left out of date by a failed run is restarted no
-    sooner than 15 minutes after its last download started, so one that
-    failed later than that can restart on the next request; a request that
-    adds units to the set skips this wait. If the area still needs a
-    download, it starts once the internet connection and a free conversion
-    slot allow.
+    internet connection. That wait is kept: once the connection allows,
+    the download starts by itself as soon as a conversion slot is free.
+    Asking again with the same area changes nothing.
+  - `accepted: true, started: false` with `retryAfterMs`: nothing is kept
+    or retried for the caller. The answer depends on something passing
+    (the index loading, the set downloading, other conversions running),
+    so ask again after `retryAfterMs`. A set left out of date by a failed
+    run is restarted no sooner than 15 minutes after its last download
+    started; a request that adds units to the set skips this wait.
 
   Ask again when the area changes, and after `retryAfterMs` when the
   answer has one.
