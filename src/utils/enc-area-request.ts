@@ -30,7 +30,10 @@ export const BUSY_RETRY_MS = 5 * 60_000;
 
 /** What `requestArea` answers. */
 export interface EncAreaRequestResult {
-  /** False when the request cannot be served at all: turned off, or not an area. */
+  /**
+   * False when the request is refused and nothing changes: turned off (or the plugin
+   * stopped), not an area, or an area of more than MAX_AREA_UNITS units.
+   */
   accepted: boolean;
   /** True when a download of the area's cells started. */
   started: boolean;
