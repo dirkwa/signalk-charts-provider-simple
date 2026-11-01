@@ -60,7 +60,8 @@ A reader checks that these members exist before calling them
 
 - `state(id)`: `ready`; `writing` while the collection's cells are written,
   the first ones too (readers hear of it when the write is done, whether it
-  worked or not: a failed write leaves the collection as it was, or absent);
+  worked or not: a failed write leaves the collection as it was, or absent
+  after a first write or when its cells could not all be put back);
   `pending` for a chart set whose cells are not shared yet, with `detail`
   saying whether it is downloading; `absent`. A reader that finds no cells
   can say which.

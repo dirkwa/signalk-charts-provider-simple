@@ -3,7 +3,7 @@
  * written, replaced, read and removed, and what readers are told.
  */
 
-import { describe, it, beforeEach, after } from 'node:test';
+import { describe, it, beforeEach, after, mock } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -255,6 +255,36 @@ describe('storeCollection, failing part way', () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it('drops a collection whose cells could not all be put back', async () => {
+    const a = makeCell(path.join(sourceDir, 'A1'), 'FI5AAAAA', [], 'first');
+    const b = makeCell(path.join(sourceDir, 'B'), 'FI5BBBBB');
+    const first = await storeCollection(request({ cells: [{ base: a }, { base: b }] }));
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    // Putting A's old copy back fails, after B's update could not be read.
+    const rename = fs.renameSync.bind(fs);
+    const failing = mock.method(fs, 'renameSync', (from: fs.PathLike, to: fs.PathLike) => {
+      if (String(from).includes(`${path.sep}.old-`)) {
+        throw new Error('EIO');
+      }
+      rename(from, to);
+    });
+    try {
+      const a2 = makeCell(path.join(sourceDir, 'A2'), 'FI5AAAAA', [], 'second');
+      const missing = path.join(sourceDir, 'gone', 'FI5BBBBB.001');
+      await assert.rejects(
+        storeCollection(request({ cells: [{ base: a2 }, { base: b, files: [b, missing] }] }))
+      );
+    } finally {
+      failing.mock.restore();
+      unsubscribe();
+    }
+    // Neither the old collection nor the new one: it is gone, and readers are told so.
+    assert.deepStrictEqual(heard, [[first.id, 'absent']]);
+    assert.strictEqual(getCollection(first.id), null);
+    assert.ok(!fs.existsSync(path.join(encStoreRoot(), first.id)), 'its folder is removed');
   });
 });
 

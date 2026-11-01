@@ -457,12 +457,14 @@ async function placeFile(from: string, to: string, mode: 'link' | 'copy'): Promi
 /**
  * Put back the cells a failed write changed, newest change first: a cell it
  * placed goes, and the old copy set aside returns. The record was not yet
- * written, so the collection is again as it was.
+ * written, so the collection is again as it was. False when a cell could not
+ * be put back.
  */
 function restoreCells(
   dir: string,
   changed: readonly { name: string; aside: string | null; placed: boolean }[]
-): void {
+): boolean {
+  let restored = true;
   for (const { name, aside, placed } of [...changed].reverse()) {
     const target = path.join(dir, name);
     try {
@@ -473,11 +475,13 @@ function restoreCells(
         fs.renameSync(aside, target);
       }
     } catch (err) {
+      restored = false;
       console.error(
         `[charts-provider] Could not restore ENC cell ${name} in ${dir}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
+  return restored;
 }
 
 async function writeCollection(
@@ -563,7 +567,11 @@ async function writeCollection(
     writeRecord(dir, record);
     return result;
   } catch (err) {
-    restoreCells(dir, changed);
+    if (!restoreCells(dir, changed)) {
+      // Neither the old collection nor the new one: like a first write that failed, it
+      // leaves no half collection, its record going here and its folder below.
+      fs.rmSync(path.join(dir, COLLECTION_FILE), { force: true });
+    }
     throw err;
   } finally {
     writingIds.delete(id);
