@@ -400,6 +400,29 @@ describe('collectionState', () => {
     assert.strictEqual(getCollection('Copy'), null);
     assert.strictEqual(collectionState('Copy'), 'absent');
   });
+
+  it('is writing during the first write of a converted chart, before its record exists', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    const first = storeCollection(
+      request({
+        owner: chartOwner('A.mbtiles'),
+        preferredId: 'A.mbtiles',
+        chart: 'A.mbtiles',
+        cells: [{ base: a }]
+      })
+    );
+    // Only microtasks run here, so the write, which waits on file I/O, is still under way
+    // once its id is taken.
+    const dir = path.join(encStoreRoot(), 'A');
+    for (let i = 0; i < 100 && !fs.existsSync(dir); i++) {
+      await Promise.resolve();
+    }
+    assert.ok(fs.existsSync(dir), 'the id is taken');
+    assert.ok(!fs.existsSync(path.join(dir, 'collection.json')), 'the record is not written yet');
+    assert.strictEqual(collectionState('A'), 'writing');
+    await first;
+    assert.strictEqual(collectionState('A'), 'ready');
+  });
 });
 
 describe('moveChartCollection', () => {

@@ -133,6 +133,8 @@ let debug: DebugFunction = () => {};
 const listeners = new Set<EncStoreListener>();
 // Collections being written, so two writes to one never interleave.
 const writing = new Map<string, Promise<unknown>>();
+// The ids being written, a first write's too before its record exists.
+const writingIds = new Set<string>();
 // Store roots swept in this process; see sweepEncStore.
 const sweptRoots = new Set<string>();
 
@@ -487,6 +489,7 @@ async function writeCollection(request: StoreCollectionRequest): Promise<StoreRe
     `${WORK_PREFIX}staging-${id}-${String(Date.now())}-${String(process.pid)}`
   );
   fs.mkdirSync(work, { recursive: true });
+  writingIds.add(id);
   // Each cell changed so far and where its old copy waits, so a failed write is undone.
   const changed: { name: string; aside: string | null; placed: boolean }[] = [];
   try {
@@ -559,6 +562,7 @@ async function writeCollection(request: StoreCollectionRequest): Promise<StoreRe
     restoreCells(dir, changed);
     throw err;
   } finally {
+    writingIds.delete(id);
     fs.rmSync(work, { recursive: true, force: true });
     // A first write that failed leaves no half collection behind.
     if (readRecord(dir) === null) {
@@ -832,12 +836,16 @@ export async function detachChartCollection(chart: string): Promise<boolean> {
  * What a reader finds of collection `id`: `ready` to read, `writing` while
  * its cells are written (a reader that reads them now may miss one being
  * replaced, and hears of the collection when the write is done), or
- * `absent`. A chart set's collection is `writing` before its first cells
- * are in place too, its id being the set's.
+ * `absent`. A collection is `writing` before its first cells are in place
+ * too: a chart set's from the moment its write is asked for (its id is the
+ * set's), any other once its id is taken.
  */
 export function collectionState(id: string): 'ready' | 'writing' | 'absent' {
   if (!SAFE_ID.test(id)) {
     return 'absent';
+  }
+  if (writingIds.has(id)) {
+    return 'writing';
   }
   const record = readRecord(collectionDir(id));
   const owner = record?.id === id ? record.owner : undefined;
