@@ -69,7 +69,9 @@ A reader checks that these members exist before calling them
   first, with the path of each `.000`. A cell's extent comes from the ENC
   index (its unit's box, or for a NOAA cell the union of the band-4 boxes
   listing it); a cell the index does not know, or every cell while the
-  index is not loaded, is taken to reach every area.
+  index is not loaded, is taken to reach every area. Each call reads the
+  whole store, blocking while it does, so ask again when the area changes
+  or a change listener says a collection changed, not on every position.
 - `requestArea`, given an area as west, south, east, north and the name of
   the asking plugin: with **Download the ENC cells around the vessel** on,
   adds the ENC index units reaching the area to the chart set "Around the
