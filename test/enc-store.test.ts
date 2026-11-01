@@ -244,7 +244,8 @@ describe('storeCollection, failing part way', () => {
         fs.readFileSync(path.join(stored?.dir ?? '', 'FI5AAAAA.000'), 'utf8'),
         'base first'
       );
-      assert.deepStrictEqual(heard, [], 'nothing changed, so no one is told');
+      // Readers that found it writing hear the write is done; they find it as it was.
+      assert.deepStrictEqual(heard, [first.id]);
       assert.deepStrictEqual(
         fs.readdirSync(encStoreRoot()).filter((n) => n.startsWith('.')),
         [],
@@ -422,6 +423,32 @@ describe('collectionState', () => {
     assert.strictEqual(collectionState('A'), 'writing');
     await first;
     assert.strictEqual(collectionState('A'), 'ready');
+  });
+
+  it('tells readers of a first write that failed, which leaves the collection absent', async () => {
+    const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
+    const heard: string[] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push(id));
+    try {
+      const first = storeCollection(
+        request({
+          owner: chartOwner('Z.mbtiles'),
+          preferredId: 'Z.mbtiles',
+          chart: 'Z.mbtiles',
+          cells: [{ base: missing, files: [missing] }]
+        })
+      );
+      const dir = path.join(encStoreRoot(), 'Z');
+      for (let i = 0; i < 100 && !fs.existsSync(dir); i++) {
+        await Promise.resolve();
+      }
+      assert.strictEqual(collectionState('Z'), 'writing');
+      await assert.rejects(first);
+      assert.deepStrictEqual(heard, ['Z']);
+      assert.strictEqual(collectionState('Z'), 'absent');
+    } finally {
+      unsubscribe();
+    }
   });
 });
 

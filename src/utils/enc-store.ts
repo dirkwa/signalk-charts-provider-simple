@@ -480,8 +480,12 @@ function restoreCells(
   }
 }
 
-async function writeCollection(request: StoreCollectionRequest): Promise<StoreResult> {
+async function writeCollection(
+  request: StoreCollectionRequest,
+  claimed: (id: string) => void
+): Promise<StoreResult> {
   const id = claimId(request.owner, request.preferredId);
+  claimed(id);
   const dir = collectionDir(id);
   const result: StoreResult = { id, written: [], removed: [], skipped: [] };
   const work = path.join(
@@ -592,7 +596,22 @@ async function serially<T>(key: string, fn: () => Promise<T>): Promise<T> {
  * is new.
  */
 export async function storeCollection(request: StoreCollectionRequest): Promise<StoreResult> {
-  const result = await serially(request.owner, () => writeCollection(request));
+  let id: string | null = null;
+  let result: StoreResult;
+  try {
+    result = await serially(request.owner, () =>
+      writeCollection(request, (claimed) => {
+        id = claimed;
+      })
+    );
+  } catch (err) {
+    // A reader that found the collection writing hears of it when the write is done, done
+    // or not: it is then as it was before, or absent after a first write.
+    if (id !== null) {
+      emit(id);
+    }
+    throw err;
+  }
   if (result.written.length > 0 || result.removed.length > 0) {
     emit(result.id);
   }

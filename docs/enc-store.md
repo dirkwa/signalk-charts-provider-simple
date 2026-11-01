@@ -59,7 +59,8 @@ A reader checks that these members exist before calling them
 (`ChartsProviderEncApi` in `src/types.ts` gives each call's exact shape):
 
 - `state(id)`: `ready`; `writing` while the collection's cells are written,
-  a chart set's first ones too (readers hear of it when the write is done);
+  the first ones too (readers hear of it when the write is done, whether it
+  worked or not: a failed write leaves the collection as it was, or absent);
   `pending` for a chart set whose cells are not shared yet, with `detail`
   saying whether it is downloading; `absent`. A reader that finds no cells
   can say which.
