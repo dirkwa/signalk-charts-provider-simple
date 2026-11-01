@@ -92,8 +92,9 @@ A reader checks that these members exist before calling them
     that long. A set left out of date by a failed run is restarted no
     sooner than 15 minutes after its last download started, so one that
     failed later than that can restart on the next request; a request that
-    adds units to the set skips this wait. Either way the download starts
-    once the internet connection and a free conversion slot allow.
+    adds units to the set skips this wait. If the area still needs a
+    download, it starts once the internet connection and a free conversion
+    slot allow.
 
   Ask again when the area changes, and after `retryAfterMs` when the
   answer has one.
