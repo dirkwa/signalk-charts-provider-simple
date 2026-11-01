@@ -520,16 +520,14 @@ async function writeCollection(
       for (const [fileName, from] of cell.files) {
         await placeFile(from, path.join(built, fileName), request.mode);
       }
-      // Swap it in: the old copy goes aside first, so a reader never finds half a cell.
-      const change = {
-        name,
-        aside: fs.existsSync(target) ? path.join(work, `${WORK_PREFIX}old-${name}`) : null,
-        placed: false
-      };
-      changed.push(change);
-      if (change.aside !== null) {
-        fs.renameSync(target, change.aside);
+      // Swap it in: the old copy goes aside first, so a reader never finds half a cell. The
+      // change is noted once that is done, so a rollback puts back only what moved.
+      const aside = fs.existsSync(target) ? path.join(work, `${WORK_PREFIX}old-${name}`) : null;
+      if (aside !== null) {
+        fs.renameSync(target, aside);
       }
+      const change = { name, aside, placed: false };
+      changed.push(change);
       fs.renameSync(built, target);
       change.placed = true;
       result.written.push(name);

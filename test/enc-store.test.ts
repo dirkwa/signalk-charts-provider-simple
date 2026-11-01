@@ -286,6 +286,36 @@ describe('storeCollection, failing part way', () => {
     assert.strictEqual(getCollection(first.id), null);
     assert.ok(!fs.existsSync(path.join(encStoreRoot(), first.id)), 'its folder is removed');
   });
+
+  it('keeps the collection when an old cell could not be moved aside at all', async () => {
+    const a = makeCell(path.join(sourceDir, 'A1'), 'FI5AAAAA', [], 'first');
+    const first = await storeCollection(request({ cells: [{ base: a }] }));
+    const before = getCollection(first.id);
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    // Moving A's old copy aside fails, so nothing in the collection changed.
+    const rename = fs.renameSync.bind(fs);
+    const failing = mock.method(fs, 'renameSync', (from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to).includes(`${path.sep}.old-`)) {
+        throw new Error('EIO');
+      }
+      rename(from, to);
+    });
+    try {
+      const a2 = makeCell(path.join(sourceDir, 'A2'), 'FI5AAAAA', [], 'second');
+      await assert.rejects(storeCollection(request({ cells: [{ base: a2 }] })));
+    } finally {
+      failing.mock.restore();
+      unsubscribe();
+    }
+    assert.deepStrictEqual(heard, [[first.id, 'ready']]);
+    assert.deepStrictEqual(getCollection(first.id), before);
+    const stored = getCollection(first.id)?.cells.find((c) => c.name === 'FI5AAAAA');
+    assert.strictEqual(
+      fs.readFileSync(path.join(stored?.dir ?? '', 'FI5AAAAA.000'), 'utf8'),
+      'base first'
+    );
+  });
 });
 
 describe('detachChartCollection', () => {
