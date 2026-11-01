@@ -72,19 +72,28 @@ A reader checks that these members exist before calling them
   index is not loaded, is taken to reach every area.
 - `requestArea`, given an area as west, south, east, north and the name of
   the asking plugin: with **Download the ENC cells around the vessel** on,
-  adds the ENC index units reaching the area (60 at most) to the chart set
-  "Around the vessel", kept by its id in `<dataDir>/enc-area.json`, and
-  downloads it. The answer says whether a download started and, if not,
-  why: the plugin is stopped, the setting is off, the index is not loaded
-  yet, the set is downloading, the internet connection does not allow it
-  yet (the download then starts once it does), or the area is downloaded.
-  A set left out of date by a failed run starts again only once 15 minutes
-  have passed since its last download started, so a run that failed later
-  than that starts again at once; a request that adds units to the set
-  starts it at once too. Ask again when the area changes, and after
-  `retryAfterMs` when the answer has one: it says when an answer that
-  depends on something passing (the index loading, conversions or the set
-  running) may differ for the same area.
+  adds the ENC index units reaching the area to the chart set "Around the
+  vessel", kept by its id in `<dataDir>/enc-area.json`, and downloads it.
+  The answer has `accepted`, `started` and a `reason`, and `setId` and
+  `retryAfterMs` where they apply:
+  - `accepted: false`: refused, and nothing changes. The plugin is
+    stopped, the setting is off, the area is not one, or it takes more
+    than 60 units, of which none is added: ask for a smaller area.
+  - `accepted: true, started: true`: the download started.
+  - `accepted: true, started: false` and no `retryAfterMs`: no free ENC
+    covers the area, the area is downloaded, or the download waits for the
+    internet connection and starts once it allows. Asking again with the
+    same area changes nothing.
+  - `accepted: true, started: false` with `retryAfterMs`: the answer
+    depends on something passing (the index loading, the set downloading,
+    other conversions running), and may differ for the same area after
+    that long. A set left out of date by a failed run starts again only
+    once 15 minutes have passed since its last download started, so a run
+    that failed later than that starts again at once; a request that adds
+    units to the set starts it at once too.
+
+  Ask again when the area changes, and after `retryAfterMs` when the
+  answer has one.
 
 Compatibility: `apiVersion` changes only with a change readers must know
 about, and a reader should not use an API of a version it does not know.

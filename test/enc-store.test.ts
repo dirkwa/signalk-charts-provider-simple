@@ -229,8 +229,9 @@ describe('storeCollection, failing part way', () => {
     const b = makeCell(path.join(sourceDir, 'B'), 'FI5BBBBB');
     const first = await storeCollection(request({ cells: [{ base: a }, { base: b }] }));
     const before = getCollection(first.id);
-    const heard: string[] = [];
-    const unsubscribe = onEncStoreChange((id) => heard.push(id));
+    // What a reader finds when told: the write's cleanup is done by then.
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
     try {
       const a2 = makeCell(path.join(sourceDir, 'A2'), 'FI5AAAAA', [], 'second');
       // B's update cannot be read: the write fails after A is already swapped in.
@@ -245,7 +246,7 @@ describe('storeCollection, failing part way', () => {
         'base first'
       );
       // Readers that found it writing hear the write is done; they find it as it was.
-      assert.deepStrictEqual(heard, [first.id]);
+      assert.deepStrictEqual(heard, [[first.id, 'ready']]);
       assert.deepStrictEqual(
         fs.readdirSync(encStoreRoot()).filter((n) => n.startsWith('.')),
         [],
@@ -427,8 +428,8 @@ describe('collectionState', () => {
 
   it('tells readers of a first write that failed, which leaves the collection absent', async () => {
     const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
-    const heard: string[] = [];
-    const unsubscribe = onEncStoreChange((id) => heard.push(id));
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
     try {
       const first = storeCollection(
         request({
@@ -444,7 +445,7 @@ describe('collectionState', () => {
       }
       assert.strictEqual(collectionState('Z'), 'writing');
       await assert.rejects(first);
-      assert.deepStrictEqual(heard, ['Z']);
+      assert.deepStrictEqual(heard, [['Z', 'absent']]);
       assert.strictEqual(collectionState('Z'), 'absent');
     } finally {
       unsubscribe();
