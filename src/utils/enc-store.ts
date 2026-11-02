@@ -135,6 +135,8 @@ const listeners = new Set<EncStoreListener>();
 const writing = new Map<string, Promise<unknown>>();
 // The ids being written, a first write's too before its record exists.
 const writingIds = new Set<string>();
+// The ids a reader found writing, so it hears when the write is done even if nothing changed.
+const seenWriting = new Set<string>();
 // Store roots swept in this process; see sweepEncStore.
 const sweptRoots = new Set<string>();
 
@@ -599,7 +601,8 @@ async function serially<T>(key: string, fn: () => Promise<T>): Promise<T> {
  * Make `request.owner`'s collection hold exactly `request.cells`: cells new
  * or changed are written, cells left out removed, unchanged cells kept as
  * they are. Listeners hear of it when something changed or the collection
- * is new.
+ * is new, and when a reader found it writing: once the last write of its
+ * owner asked for so far is done, whether it changed anything or not.
  */
 export async function storeCollection(request: StoreCollectionRequest): Promise<StoreResult> {
   let id: string | null = null;
@@ -614,11 +617,16 @@ export async function storeCollection(request: StoreCollectionRequest): Promise<
     // A reader that found the collection writing hears of it when the write is done, done
     // or not: it is then as it was before, or absent after a first write.
     if (id !== null) {
+      if (!writing.has(request.owner)) {
+        seenWriting.delete(id);
+      }
       emit(id);
     }
     throw err;
   }
-  if (result.written.length > 0 || result.removed.length > 0) {
+  // A reader that found it writing hears of it once no other write of this owner is to come.
+  const seen = !writing.has(request.owner) && seenWriting.delete(result.id);
+  if (result.written.length > 0 || result.removed.length > 0 || seen) {
     emit(result.id);
   }
   return result;
@@ -870,11 +878,13 @@ export function collectionState(id: string): 'ready' | 'writing' | 'absent' {
     return 'absent';
   }
   if (writingIds.has(id)) {
+    seenWriting.add(id);
     return 'writing';
   }
   const record = readRecord(collectionDir(id));
   const owner = record?.id === id ? record.owner : undefined;
   if (writing.has(owner ?? chartSetOwner(id))) {
+    seenWriting.add(id);
     return 'writing';
   }
   return owner === undefined ? 'absent' : 'ready';

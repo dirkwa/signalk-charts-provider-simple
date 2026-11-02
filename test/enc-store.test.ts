@@ -486,6 +486,36 @@ describe('collectionState', () => {
     assert.strictEqual(collectionState('A'), 'ready');
   });
 
+  it('tells a reader that found it writing once the last write is done, though nothing changed', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    await storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      // Nobody found it writing: a write that changes nothing stays silent.
+      const quiet = await storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+      assert.deepStrictEqual(quiet.written, []);
+      assert.deepStrictEqual(heard, []);
+
+      // Two such writes asked for at once, found writing before either is done: the
+      // reader hears once, when the second is done.
+      const first = storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+      const second = storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+      assert.strictEqual(collectionState('Harbour'), 'writing');
+      const results = await Promise.all([first, second]);
+      assert.deepStrictEqual(
+        results.map((r) => [r.written, r.removed]),
+        [
+          [[], []],
+          [[], []]
+        ]
+      );
+      assert.deepStrictEqual(heard, [['Harbour', 'ready']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('tells readers of a first write that failed, which leaves the collection absent', async () => {
     const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
     const heard: [string, string][] = [];
