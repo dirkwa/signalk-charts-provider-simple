@@ -133,10 +133,11 @@ let debug: DebugFunction = () => {};
 const listeners = new Set<EncStoreListener>();
 // Collections being written, so two writes to one never interleave.
 const writing = new Map<string, Promise<unknown>>();
-// The ids being written, a first write's too before its record exists.
-const writingIds = new Set<string>();
-// The ids a reader found writing, so it hears when the write is done even if nothing changed.
-const seenWriting = new Set<string>();
+// The ids being written, a first write's too before its record exists, with their owner.
+const writingIds = new Map<string, string>();
+// The ids a reader found writing, with their owner: they hear of it once its last write is
+// done, even if it changed nothing.
+const seenWriting = new Map<string, string>();
 // Store roots swept in this process; see sweepEncStore.
 const sweptRoots = new Set<string>();
 
@@ -499,7 +500,7 @@ async function writeCollection(
     `${WORK_PREFIX}staging-${id}-${String(Date.now())}-${String(process.pid)}`
   );
   fs.mkdirSync(work, { recursive: true });
-  writingIds.add(id);
+  writingIds.set(id, request.owner);
   // Each cell changed so far and where its old copy waits, so a failed write is undone.
   const changed: { name: string; aside: string | null; placed: boolean }[] = [];
   try {
@@ -614,25 +615,52 @@ export async function storeCollection(request: StoreCollectionRequest): Promise<
       })
     );
   } catch (err) {
-    // A reader that found the collection writing hears of it when the write is done, done
-    // or not: it is then as it was before, or absent after a first write. While another
-    // write of this owner is to come, it is still writing: that write tells it.
-    if (id !== null) {
-      if (writing.has(request.owner)) {
-        seenWriting.add(id);
-      } else {
-        seenWriting.delete(id);
-        emit(id);
-      }
-    }
+    // The collection is then as it was before, or absent after a first write.
+    writeDone(request.owner, id, { failed: true });
     throw err;
   }
-  // A reader that found it writing hears of it once no other write of this owner is to come.
-  const seen = !writing.has(request.owner) && seenWriting.delete(result.id);
-  if (result.written.length > 0 || result.removed.length > 0 || seen) {
-    emit(result.id);
-  }
+  writeDone(request.owner, result.id, {
+    changed: result.written.length > 0 || result.removed.length > 0
+  });
   return result;
+}
+
+/**
+ * Tell listeners of a write of `owner` to `id` that is done: of `id` when it
+ * changed something, and once no other write of `owner` is to come, of every
+ * collection of `owner` a reader found writing and of `id` if the write
+ * failed. Until then those still read `writing`: a later write's end tells
+ * them, whatever id it takes, and whether it worked or not.
+ */
+function writeDone(
+  owner: string,
+  id: string | null,
+  how: { changed?: boolean; failed?: boolean }
+): void {
+  const last = !writing.has(owner);
+  const ids = new Set<string>();
+  if (id !== null && how.changed === true) {
+    ids.add(id);
+  }
+  if (id !== null && how.failed === true) {
+    if (last) {
+      seenWriting.delete(id);
+      ids.add(id);
+    } else {
+      seenWriting.set(id, owner);
+    }
+  }
+  if (last) {
+    for (const [seen, of] of seenWriting) {
+      if (of === owner) {
+        seenWriting.delete(seen);
+        ids.add(seen);
+      }
+    }
+  }
+  for (const each of ids) {
+    emit(each);
+  }
 }
 
 /** Cells set aside for a collection until the chart they belong to is installed. */
@@ -880,14 +908,16 @@ export function collectionState(id: string): 'ready' | 'writing' | 'absent' {
   if (!SAFE_ID.test(id)) {
     return 'absent';
   }
-  if (writingIds.has(id)) {
-    seenWriting.add(id);
+  const writer = writingIds.get(id);
+  if (writer !== undefined) {
+    seenWriting.set(id, writer);
     return 'writing';
   }
   const record = readRecord(collectionDir(id));
   const owner = record?.id === id ? record.owner : undefined;
-  if (writing.has(owner ?? chartSetOwner(id))) {
-    seenWriting.add(id);
+  const queued = owner ?? chartSetOwner(id);
+  if (writing.has(queued)) {
+    seenWriting.set(id, queued);
     return 'writing';
   }
   return owner === undefined ? 'absent' : 'ready';

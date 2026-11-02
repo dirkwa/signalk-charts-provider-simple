@@ -537,6 +537,30 @@ describe('collectionState', () => {
     }
   });
 
+  it('tells readers of a failed first write once the next write is done, though it takes another id', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
+    const owner = chartOwner('X.mbtiles');
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      const failing = storeCollection(
+        request({ owner, preferredId: 'P1', cells: [{ base: missing, files: [missing] }] })
+      );
+      const next = storeCollection(request({ owner, preferredId: 'P2', cells: [{ base: a }] }));
+      await assert.rejects(failing);
+      assert.strictEqual((await next).id, 'P2');
+      // P1 read writing until the owner's last write was done; then it is absent.
+      assert.deepStrictEqual(heard, [
+        ['P2', 'ready'],
+        ['P1', 'absent']
+      ]);
+      assert.strictEqual(collectionState('P1'), 'absent');
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('tells readers of a first write that failed, which leaves the collection absent', async () => {
     const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
     const heard: [string, string][] = [];
