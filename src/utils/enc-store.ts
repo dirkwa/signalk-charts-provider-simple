@@ -627,30 +627,47 @@ export async function storeCollection(request: StoreCollectionRequest): Promise<
 
 /**
  * Tell listeners of a write of `owner` to `id` that is done: of `id` when it
- * changed something, and once no other write of `owner` is to come, of every
- * collection of `owner` a reader found writing and of `id` if the write
- * failed. Until then those still read `writing`: a later write's end tells
- * them, whatever id it takes, and whether it worked or not.
+ * changed something, and once no other write of `owner` is to come, of `id`
+ * if the write failed. Until then a failed write's collection still reads
+ * `writing`, so it is kept with the collections a reader found writing,
+ * which the owner's last turn tells of (see tellDone).
  */
 function writeDone(
   owner: string,
   id: string | null,
   how: { changed?: boolean; failed?: boolean }
 ): void {
-  const last = !writing.has(owner);
-  const ids = new Set<string>();
+  const told: string[] = [];
   if (id !== null && how.changed === true) {
-    ids.add(id);
+    told.push(id);
   }
   if (id !== null && how.failed === true) {
-    if (last) {
-      seenWriting.delete(id);
-      ids.add(id);
-    } else {
+    if (writing.has(owner)) {
       seenWriting.set(id, owner);
+    } else {
+      told.push(id);
     }
   }
-  if (last) {
+  tellDone([owner], told);
+}
+
+/**
+ * After a turn of `owners`: tell listeners of the collections in `told`, and
+ * of each owner no other turn of which is to come, of every collection of it
+ * a reader found writing or a failed write left, each once. Every turn taken
+ * in an owner's queue ends here, so the last one tells them, whatever it did.
+ */
+function tellDone(owners: readonly string[], told: readonly (string | null)[]): void {
+  const ids = new Set<string>();
+  for (const id of told) {
+    if (id !== null) {
+      ids.add(id);
+    }
+  }
+  for (const owner of owners) {
+    if (writing.has(owner)) {
+      continue;
+    }
     for (const [seen, of] of seenWriting) {
       if (of === owner) {
         seenWriting.delete(seen);
@@ -658,8 +675,8 @@ function writeDone(
       }
     }
   }
-  for (const each of ids) {
-    emit(each);
+  for (const id of ids) {
+    emit(id);
   }
 }
 
@@ -752,18 +769,20 @@ export async function removeCollection(id: string): Promise<boolean> {
     return false;
   }
   // Read again once earlier writes and removals are done: another may have removed it.
-  const removed = await serially(record.owner, async () => {
-    if (readRecord(dir) === null) {
-      return false;
-    }
-    // Renamed aside first, so readers find it whole or not at all.
-    const gone = path.join(rootDir, `${WORK_PREFIX}removed-${id}-${String(Date.now())}`);
-    fs.renameSync(dir, gone);
-    await fs.promises.rm(gone, { recursive: true, force: true });
-    return true;
-  });
-  if (removed) {
-    emit(id);
+  let removed = false;
+  try {
+    removed = await serially(record.owner, async () => {
+      if (readRecord(dir) === null) {
+        return false;
+      }
+      // Renamed aside first, so readers find it whole or not at all.
+      const gone = path.join(rootDir, `${WORK_PREFIX}removed-${id}-${String(Date.now())}`);
+      fs.renameSync(dir, gone);
+      await fs.promises.rm(gone, { recursive: true, force: true });
+      return true;
+    });
+  } finally {
+    tellDone([record.owner], [removed ? id : null]);
   }
   return removed;
 }
@@ -848,36 +867,40 @@ export async function moveChartCollection(
   const source = chartOwner(from);
   const target = chartOwner(to);
   const untied = (id: string): string => `${DETACHED_OWNER}${id}`;
-  const [detached, moved] = await inBothTurns(source, target, async () => {
-    const left = retie(target, untied, undefined);
-    let done: [string | null, string | null];
-    try {
-      done = [left, retie(source, () => target, to)];
-    } catch (err) {
-      if (left !== null) {
-        retie(untied(left), () => target, to);
-      }
-      throw err;
-    }
-    try {
-      await moveFile();
-    } catch (err) {
-      // Nothing else wrote either owner meanwhile, so both go back as they were.
+  let result: [string | null, string | null] = [null, null];
+  try {
+    result = await inBothTurns(source, target, async () => {
+      const left = retie(target, untied, undefined);
+      let done: [string | null, string | null];
       try {
-        const back = done[1] === null ? null : retie(target, () => source, from);
-        const retied = left === null ? null : retie(untied(left), () => target, to);
-        emitEach([back, retied]);
-      } catch (back) {
-        console.error(
-          `[charts-provider] Could not move the kept ENC cells of ${to} back: ${back instanceof Error ? back.message : String(back)}`
-        );
+        done = [left, retie(source, () => target, to)];
+      } catch (err) {
+        if (left !== null) {
+          retie(untied(left), () => target, to);
+        }
+        throw err;
       }
-      throw err;
-    }
-    return done;
-  });
-  emitEach([detached, moved]);
-  return { moved: moved !== null };
+      try {
+        await moveFile();
+      } catch (err) {
+        // Nothing else wrote either owner meanwhile, so both go back as they were.
+        try {
+          const back = done[1] === null ? null : retie(target, () => source, from);
+          const retied = left === null ? null : retie(untied(left), () => target, to);
+          emitEach([back, retied]);
+        } catch (back) {
+          console.error(
+            `[charts-provider] Could not move the kept ENC cells of ${to} back: ${back instanceof Error ? back.message : String(back)}`
+          );
+        }
+        throw err;
+      }
+      return done;
+    });
+  } finally {
+    tellDone([source, target], result);
+  }
+  return { moved: result[1] !== null };
 }
 
 /**
@@ -887,11 +910,13 @@ export async function moveChartCollection(
  */
 export async function detachChartCollection(chart: string): Promise<boolean> {
   const owner = chartOwner(chart);
-  const id = await serially(owner, () =>
-    Promise.resolve(retie(owner, (was) => `${DETACHED_OWNER}${was}`, undefined))
-  );
-  if (id !== null) {
-    emit(id);
+  let id: string | null = null;
+  try {
+    id = await serially(owner, () =>
+      Promise.resolve(retie(owner, (was) => `${DETACHED_OWNER}${was}`, undefined))
+    );
+  } finally {
+    tellDone([owner], [id]);
   }
   return id !== null;
 }

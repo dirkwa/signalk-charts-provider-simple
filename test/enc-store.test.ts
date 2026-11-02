@@ -561,6 +561,30 @@ describe('collectionState', () => {
     }
   });
 
+  it('tells readers of a failed first write when a detach queued after it is done', async () => {
+    const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      const failing = storeCollection(
+        request({
+          owner: chartOwner('Z.mbtiles'),
+          preferredId: 'Z.mbtiles',
+          chart: 'Z.mbtiles',
+          cells: [{ base: missing, files: [missing] }]
+        })
+      );
+      // Queued behind the write, the detach finds no collection: its turn still tells
+      // readers of the one the failed write left absent.
+      const detach = detachChartCollection('Z.mbtiles');
+      await assert.rejects(failing);
+      assert.strictEqual(await detach, false);
+      assert.deepStrictEqual(heard, [['Z', 'absent']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('tells readers of a first write that failed, which leaves the collection absent', async () => {
     const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
     const heard: [string, string][] = [];
