@@ -615,12 +615,15 @@ export async function storeCollection(request: StoreCollectionRequest): Promise<
     );
   } catch (err) {
     // A reader that found the collection writing hears of it when the write is done, done
-    // or not: it is then as it was before, or absent after a first write.
+    // or not: it is then as it was before, or absent after a first write. While another
+    // write of this owner is to come, it is still writing: that write tells it.
     if (id !== null) {
-      if (!writing.has(request.owner)) {
+      if (writing.has(request.owner)) {
+        seenWriting.add(id);
+      } else {
         seenWriting.delete(id);
+        emit(id);
       }
-      emit(id);
     }
     throw err;
   }

@@ -516,6 +516,27 @@ describe('collectionState', () => {
     }
   });
 
+  it('tells readers of a failed write once the write after it is done', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    await storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+    const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      // The failed write ends while the next is still to come: the collection is still
+      // writing then, so only the next write's end tells readers, though it changed nothing.
+      const failing = storeCollection(
+        request({ cells: [{ base: missing, files: [missing] }], mode: 'copy' })
+      );
+      const next = storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+      await assert.rejects(failing);
+      assert.deepStrictEqual((await next).written, []);
+      assert.deepStrictEqual(heard, [['Harbour', 'ready']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('tells readers of a first write that failed, which leaves the collection absent', async () => {
     const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
     const heard: [string, string][] = [];
