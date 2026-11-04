@@ -504,6 +504,18 @@ describe('collectionState', () => {
     assert.notStrictEqual(stored.id, 'Harbour');
     assert.strictEqual(collectionState(stored.id), 'ready');
     assert.strictEqual(getCollection('Harbour')?.kind, 'conversion');
+    // With both collections in place, a write of the chart set leaves Harbour ready too.
+    const again = storeCollection(
+      request({
+        owner: chartSetOwner('Harbour'),
+        preferredId: 'Harbour',
+        kind: 'chart-set',
+        cells: [{ base: a }]
+      })
+    );
+    assert.strictEqual(collectionState(stored.id), 'writing');
+    assert.strictEqual(collectionState('Harbour'), 'ready');
+    await again;
   });
 
   it('is writing during the first write of a converted chart, before its record exists', async () => {

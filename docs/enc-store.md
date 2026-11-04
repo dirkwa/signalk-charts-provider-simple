@@ -92,9 +92,11 @@ A reader checks that these members exist before calling them
   vessel", kept by its id in `<dataDir>/enc-area.json`, and downloads it.
   The answer has `accepted`, `started` and a `reason`, and `setId` and
   `retryAfterMs` where they apply:
-  - `accepted: false`: refused, and nothing changes. The plugin is
-    stopped, the setting is off, the area is not one, or it takes more
-    than 60 units, of which none is added: ask for a smaller area.
+  - `accepted: false`: refused, and nothing changes; `reason` says why.
+    The plugin is stopped, the setting is off, or the area is not one:
+    asking again helps only once the plugin runs, the setting is on, or
+    the area is a valid one. Or the area takes more than 60 units, of
+    which none is added: ask for a smaller area.
   - `accepted: true, started: true`: the download started.
   - `accepted: true, started: false` and no `retryAfterMs`: no free ENC
     covers the area, the area is downloaded, or the download waits for the
