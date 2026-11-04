@@ -963,6 +963,21 @@ export function collectionState(id: string): 'ready' | 'writing' | 'absent' {
   return owner === undefined ? 'absent' : 'ready';
 }
 
+/**
+ * The id the collection that `id` names is stored under: `id` itself when a
+ * collection holds it, else the collection of the chart set of that id,
+ * which may have taken another; null when there is none.
+ */
+export function storedCollectionId(id: string): string | null {
+  if (!SAFE_ID.test(id)) {
+    return null;
+  }
+  if (readRecord(collectionDir(id))?.id === id) {
+    return id;
+  }
+  return collectionOf(chartSetOwner(id));
+}
+
 /** The owner of the collection of this id, or null. */
 export function collectionOwner(id: string): string | null {
   return SAFE_ID.test(id) ? (readRecord(collectionDir(id))?.owner ?? null) : null;

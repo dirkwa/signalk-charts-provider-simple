@@ -14,7 +14,7 @@ import type { Plugin } from '@signalk/server-api';
 import type { ChartsProviderEncGlobal, ExtendedServerAPI } from '../dist/types.js';
 import pluginFactoryDefault from '../dist/index.js';
 import { downloadManager } from '../dist/utils/download-manager.js';
-import { chartOwner, storeCollection } from '../dist/utils/enc-store.js';
+import { chartOwner, chartSetOwner, storeCollection } from '../dist/utils/enc-store.js';
 
 const pluginFactory = pluginFactoryDefault as unknown as (app: ExtendedServerAPI) => Plugin;
 
@@ -269,6 +269,22 @@ describe('ENC store routes and global', () => {
       await handlers.get('post /custom-catalogs')?.({ body: { name: 'Archipelago' } }, created);
       const setId = (created.body as { id: string }).id;
       assert.deepStrictEqual(api.state(setId), { state: 'pending', detail: 'not downloaded yet' });
+
+      // A chart set whose id no collection id holds whole: state names the collection to read.
+      const longId = `${'L'.repeat(76)}-set`;
+      const stored = await storeCollection({
+        owner: chartSetOwner(longId),
+        preferredId: longId,
+        name: 'Long',
+        kind: 'chart-set',
+        source: 'chart-set',
+        cells: [{ base: writeCell(path.join(configPath, 'long', 'ENC_ROOT'), 'FI5LLLLL') }],
+        mode: 'link'
+      });
+      assert.notStrictEqual(stored.id, longId);
+      assert.deepStrictEqual(api.state(longId), { state: 'ready', collection: stored.id });
+      assert.deepStrictEqual(api.state(stored.id), { state: 'ready' });
+      assert.strictEqual(api.collection(stored.id)?.cells.length, 1);
     } finally {
       plugin.stop?.();
       assert.strictEqual(g.__signalk_chartsProviderEnc, undefined, 'withdrawn on stop');

@@ -528,6 +528,13 @@ export interface EncCollectionStateInfo {
    */
   state: 'ready' | 'writing' | 'pending' | 'absent';
   detail?: string;
+  /**
+   * The id the collection is stored and read under, when it is not the id
+   * asked about: a chart set whose collection took another id. Its cells
+   * are under `<root>/<collection>`, and `collection()` and the routes
+   * take that id.
+   */
+  collection?: string;
 }
 
 export interface ChartsProviderEncGlobal {

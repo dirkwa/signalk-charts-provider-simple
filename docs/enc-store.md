@@ -70,7 +70,9 @@ A reader checks that these members exist before calling them
   collection holds that id: a chart set whose id another collection had
   taken (a converted chart of the same name, say) keeps its collection
   under another id, which `collections` lists with its `kind`, and that id
-  is the one to read and ask about.
+  is the one to read and ask about. Asked by a chart set's id whose
+  collection is stored under another, `state` answers for that collection
+  and names it in `collection`: read the cells there.
 - `cellsIn`, given an area as west, south, east, north in degrees: the
   stored cells reaching it, one of each name, in cell name order, with the
   path of each `.000`. Of the copies of a name, the newest edition and
@@ -85,7 +87,9 @@ A reader checks that these members exist before calling them
   `requestArea` answers `accepted: false`: check the position first. Each
   call reads the whole store, blocking while it does, so ask again when the
   area changes or a change listener says a collection changed, not on
-  every position.
+  every position. A new ENC index can change a cell's extent with no
+  change to the store and no listener told, so a reader that keeps an
+  answer also asks again now and then, every few hours say.
 - `requestArea`, given an area as west, south, east, north and the name of
   the asking plugin: with **Download the ENC cells around the vessel** on,
   adds the ENC index units reaching the area to the chart set "Around the

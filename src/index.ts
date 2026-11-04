@@ -196,6 +196,7 @@ import {
   chartSetOwner,
   collectionOwner,
   collectionState,
+  storedCollectionId,
   detachChartCollection,
   ENC_STORE_API_VERSION,
   encStoreRoot,
@@ -5521,7 +5522,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   function encCollectionState(id: string): EncCollectionStateInfo {
     const state = collectionState(id);
     if (state !== 'absent') {
-      return { state };
+      // A chart set whose collection took another id is read under that one.
+      const stored = storedCollectionId(id);
+      return stored !== null && stored !== id ? { state, collection: stored } : { state };
     }
     if (isValidCatalogId(id) && getCustomCatalog(id)) {
       return {
