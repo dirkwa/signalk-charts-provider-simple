@@ -67,10 +67,13 @@ A reader checks that these members exist before calling them
   saying whether it is downloading; `absent`. A reader that finds no cells
   can say which.
 - `cellsIn`, given an area as west, south, east, north in degrees: the
-  stored cells reaching it, one of each name (its newest edition and
-  update), in cell name order, with the path of each `.000`. A cell's
-  extent comes from the ENC index (its unit's box, or for a NOAA cell the
-  union of the band-4 boxes listing it); a cell the index does not know,
+  stored cells reaching it, one of each name, in cell name order, with the
+  path of each `.000`. Of the copies of a name, the newest edition and
+  update is chosen. A copy whose version is not known ranks below any whose
+  version is, so it is the newest only as far as versions say; ties,
+  unversioned copies among them, go to the first collection in id order. A
+  cell's extent comes from the ENC index (its unit's box, or for a NOAA cell
+  the union of the band-4 boxes listing it); a cell the index does not know,
   or every cell while the index is not loaded, is taken to reach every
   area. A box that is not an area (a `NaN`, out of range, or south above
   north, as from a lost position fix) throws a `TypeError`, where
