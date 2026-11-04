@@ -111,8 +111,9 @@ A reader checks that these members exist before calling them
     Asking again with the same area changes nothing.
   - `accepted: true, started: false` with `retryAfterMs`: nothing is kept
     or retried for the caller. The answer depends on something passing
-    (the index loading, the set downloading, other conversions running),
-    so ask again after `retryAfterMs`. A set left out of date by a failed
+    (the index loading, which a request starts only while background
+    downloads may run, the set downloading, other conversions running), so
+    ask again after `retryAfterMs`. A set left out of date by a failed
     run is restarted no sooner than 15 minutes after its last download
     started; a request that adds units to the set skips this wait.
 

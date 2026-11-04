@@ -62,7 +62,7 @@ export interface AreaRequestDeps {
   enabled: () => boolean;
   /** The ENC index, or null while it is not loaded. */
   index: () => Pick<EncIndexLookup, 'noaaUnits' | 'otherUnits'> | null;
-  /** Load the ENC index when it is missing or stale. */
+  /** Load the ENC index when it is missing or stale; called only while `mayDownload`. */
   refreshIndex: () => void;
   /** Whether background downloads may run now; else why not. */
   mayDownload: () => true | string;
@@ -220,11 +220,19 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
     }
     const lookup = deps.index();
     if (!lookup) {
-      deps.refreshIndex();
+      // A peer's request is background work: on a metered or offline connection the
+      // index is not downloaded for it either.
+      const allowed = deps.mayDownload();
+      if (allowed === true) {
+        deps.refreshIndex();
+      }
       return {
         accepted: true,
         started: false,
-        reason: 'the ENC index is not loaded yet; ask again',
+        reason:
+          allowed === true
+            ? 'the ENC index is not loaded yet; ask again'
+            : `the ENC index is not loaded yet, and is not downloaded while ${allowed}; ask again`,
         retryAfterMs: INDEX_RETRY_MS
       };
     }
