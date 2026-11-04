@@ -530,9 +530,9 @@ export interface EncCollectionStateInfo {
   detail?: string;
   /**
    * The id the collection is stored and read under, when it is not the id
-   * asked about: a chart set whose collection took another id. Its cells
-   * are under `<root>/<collection>`, and `collection()` and the routes
-   * take that id.
+   * asked about: only where no collection holds that id and it is a chart
+   * set's whose collection took another. Its cells are under
+   * `<root>/<collection>`, and `collection()` and the routes take that id.
    */
   collection?: string;
 }

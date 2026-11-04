@@ -70,9 +70,11 @@ A reader checks that these members exist before calling them
   collection holds that id: a chart set whose id another collection had
   taken (a converted chart of the same name, say) keeps its collection
   under another id, which `collections` lists with its `kind`, and that id
-  is the one to read and ask about. Asked by a chart set's id whose
-  collection is stored under another, `state` answers for that collection
-  and names it in `collection`: read the cells there.
+  is the one to read and ask about. Only where no collection holds the id
+  asked, and it is a chart set's whose collection is stored under another,
+  does `state` answer for that collection and name it in `collection`:
+  read the cells there. Where a collection holds the id, `state` answers
+  for that collection and gives no `collection`.
 - `cellsIn`, given an area as west, south, east, north in degrees: the
   stored cells reaching it, one of each name, in cell name order, with the
   path of each `.000`. Of the copies of a name, the newest edition and
