@@ -219,6 +219,20 @@ describe('enc-area-request', () => {
     assert.deepStrictEqual(started, []);
   });
 
+  it('logs neither the area nor the raw requester', () => {
+    const lines: string[] = [];
+    const request = createAreaRequester(deps({ log: (line) => lines.push(line) })).request;
+    const r = request([20, 59, 21, 60], 'peer\nforged line');
+    assert.strictEqual(r.accepted, true);
+    assert.strictEqual(lines.length, 1);
+    const line = lines[0] ?? '';
+    assert.ok(!line.includes('\n'), 'one line');
+    assert.ok(line.startsWith('"peer\\nforged line" asked'), line);
+    for (const coordinate of ['20', '59', '21', '60']) {
+      assert.ok(!new RegExp(`\\b${coordinate}\\b`).test(line), `no ${coordinate} in ${line}`);
+    }
+  });
+
   it('loads the ENC index first, and says when no free ENC covers the area', () => {
     let refreshed = 0;
     const noIndex = createAreaRequester(

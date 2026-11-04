@@ -495,10 +495,11 @@ export interface ChartsProviderEncApi {
    */
   state?: (id: string) => EncCollectionStateInfo;
   /**
-   * The stored cells reaching an area, one of each name, newest edition
-   * first: `[west, south, east, north]` in degrees. A cell whose extent is
-   * not known reaches every area. Throws a `TypeError` for a box that is not
-   * an area (a `NaN`, out of range, south above north).
+   * The stored cells reaching an area, `[west, south, east, north]` in
+   * degrees: one of each name, its newest edition and update, in cell name
+   * order. A cell whose extent is not known reaches every area. Throws a
+   * `TypeError` for a box that is not an area (a `NaN`, out of range, south
+   * above north).
    */
   cellsIn?: (bbox: readonly [number, number, number, number]) => EncAreaCell[];
   /**

@@ -257,8 +257,10 @@ export function createAreaRequester(deps: AreaRequestDeps): AreaRequester {
       set.selectedUnitIds = [...set.selectedUnitIds, ...other];
       set.status = 'out_of_date';
       deps.saveSet(set);
+      // Not the area, which is where the vessel is, and the requester quoted: a peer's
+      // string goes into the log as one line of at most 100 characters.
       deps.log(
-        `${requester} asked for the ENC around [${bbox.join(', ')}]: added ${String(noaa.length + other.length)} chart unit(s) to "${AREA_SET_NAME}"`
+        `${JSON.stringify(requester.slice(0, 100))} asked for the ENC around the vessel: added ${String(noaa.length + other.length)} chart unit(s) to "${AREA_SET_NAME}"`
       );
       return startWhenReady(set);
     }
