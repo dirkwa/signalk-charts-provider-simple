@@ -938,8 +938,23 @@ export function collectionState(id: string): 'ready' | 'writing' | 'absent' {
     seenWriting.set(id, writer);
     return 'writing';
   }
-  const record = readRecord(collectionDir(id));
-  const owner = record?.id === id ? record.owner : undefined;
+  let collectionId = id;
+  let record = readRecord(collectionDir(id));
+  if (record?.id !== id) {
+    // A chart set whose id no collection id holds whole (one longer than a collection
+    // id may be, or one already taken) keeps its collection under another: find it.
+    const other = collectionOf(chartSetOwner(id));
+    if (other !== null) {
+      collectionId = other;
+      record = readRecord(collectionDir(other));
+      const otherWriter = writingIds.get(other);
+      if (otherWriter !== undefined) {
+        seenWriting.set(id, otherWriter);
+        return 'writing';
+      }
+    }
+  }
+  const owner = record?.id === collectionId ? record.owner : undefined;
   const queued = owner ?? chartSetOwner(id);
   if (writing.has(queued)) {
     seenWriting.set(id, queued);

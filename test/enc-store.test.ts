@@ -463,6 +463,23 @@ describe('collectionState', () => {
     assert.strictEqual(collectionState('Copy'), 'absent');
   });
 
+  it('is ready for a chart set whose collection took another id', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    // A set id may be 80 characters long, a collection id only 72 of them.
+    const setId = `${'S'.repeat(76)}-two`;
+    const stored = await storeCollection(
+      request({
+        owner: chartSetOwner(setId),
+        preferredId: setId,
+        kind: 'chart-set',
+        cells: [{ base: a }]
+      })
+    );
+    assert.notStrictEqual(stored.id, setId);
+    assert.strictEqual(collectionState(stored.id), 'ready');
+    assert.strictEqual(collectionState(setId), 'ready');
+  });
+
   it('is writing during the first write of a converted chart, before its record exists', async () => {
     const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
     const first = storeCollection(
