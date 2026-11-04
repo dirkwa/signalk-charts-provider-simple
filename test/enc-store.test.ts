@@ -480,6 +480,32 @@ describe('collectionState', () => {
     assert.strictEqual(collectionState(setId), 'ready');
   });
 
+  it('answers for the collection an id names, before a chart set of that id', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    // A converted chart holds the id first, so the chart set of that name takes another.
+    await storeCollection(
+      request({
+        owner: chartOwner('Harbour.mbtiles'),
+        preferredId: 'Harbour',
+        cells: [{ base: a }]
+      })
+    );
+    const setCells = storeCollection(
+      request({
+        owner: chartSetOwner('Harbour'),
+        preferredId: 'Harbour',
+        kind: 'chart-set',
+        cells: [{ base: a }]
+      })
+    );
+    // A reader of Harbour reads the converted chart's folder, which is ready meanwhile.
+    assert.strictEqual(collectionState('Harbour'), 'ready');
+    const stored = await setCells;
+    assert.notStrictEqual(stored.id, 'Harbour');
+    assert.strictEqual(collectionState(stored.id), 'ready');
+    assert.strictEqual(getCollection('Harbour')?.kind, 'conversion');
+  });
+
   it('is writing during the first write of a converted chart, before its record exists', async () => {
     const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
     const first = storeCollection(

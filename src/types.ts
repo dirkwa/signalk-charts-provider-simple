@@ -490,8 +490,10 @@ export interface ChartsProviderEncApi {
   onChange: (listener: (collectionId: string) => void) => () => void;
   /**
    * What a reader finds of a collection, so it can say why it has no cells.
-   * Added after the API's first release, like `cellsIn` and `requestArea`:
-   * a reader checks they exist.
+   * `id` names a collection, the folder under `root`; a chart set's id stands
+   * for its collection only where no collection holds that id. Added after
+   * the API's first release, like `cellsIn` and `requestArea`: a reader
+   * checks they exist.
    */
   state?: (id: string) => EncCollectionStateInfo;
   /**

@@ -65,7 +65,12 @@ A reader checks that these members exist before calling them
   put back);
   `pending` for a chart set whose cells are not shared yet, with `detail`
   saying whether it is downloading; `absent`. A reader that finds no cells
-  can say which.
+  can say which. `id` names a collection, the folder under `root` a reader
+  reads. A chart set's id names its collection too, but only where no
+  collection holds that id: a chart set whose id another collection had
+  taken (a converted chart of the same name, say) keeps its collection
+  under another id, which `collections` lists with its `kind`, and that id
+  is the one to read and ask about.
 - `cellsIn`, given an area as west, south, east, north in degrees: the
   stored cells reaching it, one of each name, in cell name order, with the
   path of each `.000`. Of the copies of a name, the newest edition and
