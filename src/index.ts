@@ -5554,30 +5554,35 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const { request: requestAnyArea, reset: resetAreaRequests } = createAreaRequester({
     enabled: () => props.encAreaDownloads === true,
     index: getEncIndex,
-    // A peer's request is background work: while the link's state is still being
-    // worked out, the index loads once it is known and allows it.
-    refreshIndex: () => {
+    refreshIndex: refreshEncIndexIfStale,
+    // A peer's request is background work: neither the index nor the area's cells are
+    // downloaded while the link's state is still being worked out, as on a metered,
+    // offline or captive link.
+    mayDownload: () => {
+      if (internet === null) {
+        return true;
+      }
+      if (internet.deciding()) {
+        return 'the connection is not known yet';
+      }
+      return internet.mayRunBackground() ? true : `it is ${internet.state() ?? 'not known yet'}`;
+    },
+    // The task asks mayDownload again, so a state that does not allow it waits once more.
+    whenAllowed: (task) => {
       const gate = internet;
-      if (gate?.deciding() === true) {
+      if (gate === null) {
+        task();
+        return;
+      }
+      if (gate.deciding()) {
         void gate.firstStateKnown().then(() => {
-          if (!stopped && internet === gate && gate.mayRunBackground()) {
-            refreshEncIndexIfStale();
+          if (!stopped && internet === gate) {
+            task();
           }
         });
         return;
       }
-      refreshEncIndexIfStale();
-    },
-    mayDownload: () =>
-      internet === null || internet.mayRunBackground()
-        ? true
-        : `it is ${internet.state() ?? 'not known yet'}`,
-    whenAllowed: (task) => {
-      if (internet === null) {
-        task();
-      } else {
-        internet.runWhenBackgroundAllowed(task);
-      }
+      gate.runWhenBackgroundAllowed(task);
     },
     later: (task, ms) => {
       const timer = setTimeout(task, ms);
