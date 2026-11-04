@@ -242,7 +242,6 @@ describe('enc-area-request', () => {
     assert.match(loading.reason, /not loaded/);
     assert.strictEqual(loading.retryAfterMs, INDEX_RETRY_MS);
     assert.strictEqual(refreshed, 1);
-    // On a metered connection a peer's request downloads no index either.
     allowed = 'it is metered';
     const metered = noIndex([20, 59, 21, 60], 'u');
     assert.match(metered.reason, /not loaded yet, and is not downloaded while it is metered/);

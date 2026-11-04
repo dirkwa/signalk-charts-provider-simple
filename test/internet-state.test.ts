@@ -111,6 +111,7 @@ describe('InternetGate', () => {
     for (const plugins of [[], disabled, null]) {
       const { gate } = setup({ plugins });
       assert.strictEqual(await isSettled(gate.firstStateKnown()), true);
+      assert.strictEqual(gate.deciding(), false);
     }
   });
 
@@ -264,10 +265,15 @@ describe('InternetGate', () => {
 
   it('waits at startup for an enabled signalk-internet to publish its first state', async () => {
     const { gate, publish } = setup({ plugins: enabled });
+    assert.strictEqual(gate.deciding(), false);
     const waiting = gate.firstStateKnown();
     assert.strictEqual(await isSettled(waiting), false);
+    // Allowed until the state is known, but still being decided.
+    assert.strictEqual(gate.mayRunBackground(), true);
+    assert.strictEqual(gate.deciding(), true);
     publish('metered');
     assert.strictEqual(await isSettled(waiting), true);
+    assert.strictEqual(gate.deciding(), false);
     assert.strictEqual(gate.mayRunBackground(), false);
   });
 

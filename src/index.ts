@@ -5554,7 +5554,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const { request: requestAnyArea, reset: resetAreaRequests } = createAreaRequester({
     enabled: () => props.encAreaDownloads === true,
     index: getEncIndex,
-    refreshIndex: refreshEncIndexIfStale,
+    // A peer's request is background work: while the link's state is still being
+    // worked out, the index loads once it is known and allows it.
+    refreshIndex: () => {
+      const gate = internet;
+      if (gate?.deciding() === true) {
+        void gate.firstStateKnown().then(() => {
+          if (!stopped && internet === gate && gate.mayRunBackground()) {
+            refreshEncIndexIfStale();
+          }
+        });
+        return;
+      }
+      refreshEncIndexIfStale();
+    },
     mayDownload: () =>
       internet === null || internet.mayRunBackground()
         ? true
