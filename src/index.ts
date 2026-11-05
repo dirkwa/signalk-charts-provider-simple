@@ -258,6 +258,7 @@ import packageJson from '../package.json' with { type: 'json' };
 import type { DatasetDefinition } from './utils/multihelm/api.js';
 import { chartsDataset } from './utils/multihelm/charts-dataset.js';
 import { encDataset } from './utils/multihelm/enc-dataset.js';
+import { ChartRefreshQueue } from './utils/multihelm/chart-refresh.js';
 import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import type {
   ChartProvider,
@@ -6228,29 +6229,48 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // keyed by the platform's own.
   const nativeRelPath = (relPath: string): string => relPath.split('/').join(path.sep);
 
-  const reannounceCharts = async (relPaths: string[]): Promise<void> => {
-    await refreshChartProviders();
-    for (const relPath of relPaths) {
-      const chartId = chartIdFromFilename(path.basename(relPath));
-      const provider = chartProviders[chartId] as ChartProvider | undefined;
-      emitChartDelta(chartId, provider ? sanitizeProvider(provider, 2) : null);
-    }
-  };
+  let chartRefresh: ChartRefreshQueue | null = null;
+
+  const newChartRefresh = (): ChartRefreshQueue =>
+    new ChartRefreshQueue({
+      refresh: () => refreshChartProviders(),
+      announce: (relPaths) => {
+        for (const relPath of relPaths) {
+          const chartId = chartIdFromFilename(path.basename(relPath));
+          const provider = chartProviders[chartId] as ChartProvider | undefined;
+          emitChartDelta(chartId, provider ? sanitizeProvider(provider, 2) : null);
+        }
+      },
+      drop: (relPath) => {
+        const chartId = chartIdFromFilename(path.basename(relPath));
+        const provider = chartProviders[chartId] as ChartProvider | undefined;
+        if (provider) {
+          Reflect.deleteProperty(chartProviders, chartId);
+          closeProviderHandles([provider]);
+        }
+        emitChartDelta(chartId, null);
+      }
+    });
 
   const startMultihelm = (chartPath: string): void => {
     // Test harnesses and very old servers have no PropertyValues.
     if (typeof (app as Partial<ExtendedServerAPI>).onPropertyValues !== 'function') {
       return;
     }
+    chartRefresh = newChartRefresh();
     const datasets = (): DatasetDefinition[] => [
       chartsDataset({
         chartPath: () => chartPath,
         isEnabled: isChartEnabled,
         setEnabled: setChartEnabled,
-        chartsChanged: reannounceCharts,
-        chartDeleted: async (relPath) => {
-          await reannounceCharts([relPath]);
+        chartsChanged: (relPaths) => {
+          chartRefresh?.changed(relPaths);
+          return Promise.resolve();
+        },
+        chartDeleted: (relPath) => {
+          chartRefresh?.deleted(relPath);
           removeInstallByFilename(nativeRelPath(relPath));
+          return Promise.resolve();
         }
       }),
       encDataset(
@@ -6284,6 +6304,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     unsubscribeEncForMultihelm = null;
     multihelm?.stop();
     multihelm = null;
+    chartRefresh?.stop();
+    chartRefresh = null;
   };
 
   const refreshChartProviders = async (): Promise<boolean> => {
