@@ -6231,7 +6231,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
   let chartRefresh: ChartRefreshQueue | null = null;
 
-  const newChartRefresh = (): ChartRefreshQueue =>
+  const newChartRefresh = (chartPath: string): ChartRefreshQueue =>
     new ChartRefreshQueue({
       refresh: () => refreshChartProviders(),
       announce: (relPaths) => {
@@ -6244,10 +6244,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       drop: (relPath) => {
         const chartId = chartIdFromFilename(path.basename(relPath));
         const provider = chartProviders[chartId] as ChartProvider | undefined;
-        if (provider) {
-          Reflect.deleteProperty(chartProviders, chartId);
-          closeProviderHandles([provider]);
+        // Chart ids are file stems, so another folder's file of the same name
+        // may be the one served: that one stays.
+        if (
+          provider === undefined ||
+          path.resolve(provider._filePath) !== path.resolve(chartPath, nativeRelPath(relPath))
+        ) {
+          return;
         }
+        Reflect.deleteProperty(chartProviders, chartId);
+        closeProviderHandles([provider]);
         emitChartDelta(chartId, null);
       }
     });
@@ -6257,18 +6263,19 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     if (typeof (app as Partial<ExtendedServerAPI>).onPropertyValues !== 'function') {
       return;
     }
-    chartRefresh = newChartRefresh();
+    const refresh = newChartRefresh(chartPath);
+    chartRefresh = refresh;
     const datasets = (): DatasetDefinition[] => [
       chartsDataset({
         chartPath: () => chartPath,
         isEnabled: isChartEnabled,
         setEnabled: setChartEnabled,
         chartsChanged: (relPaths) => {
-          chartRefresh?.changed(relPaths);
+          refresh.changed(relPaths);
           return Promise.resolve();
         },
         chartDeleted: (relPath) => {
-          chartRefresh?.deleted(relPath);
+          refresh.deleted(relPath);
           removeInstallByFilename(nativeRelPath(relPath));
           return Promise.resolve();
         }

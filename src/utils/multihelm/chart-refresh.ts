@@ -34,6 +34,9 @@ export class ChartRefreshQueue {
 
   /** A chart was deleted: it is no longer served from now on, and the list follows. */
   deleted(relPath: string): void {
+    if (this.stopped) {
+      return;
+    }
     this.host.drop(relPath);
     this.add([relPath], REFRESH_DELAY_MS);
   }
@@ -89,7 +92,13 @@ export class ChartRefreshQueue {
       return;
     }
     if (!ok) {
-      this.add(relPaths, RETRY_DELAY_MS);
+      for (const relPath of relPaths) {
+        this.pending.add(relPath);
+      }
+      // A change that arrived meanwhile keeps its shorter wait.
+      if (!this.timer) {
+        this.schedule(RETRY_DELAY_MS);
+      }
       return;
     }
     this.host.announce(relPaths);
