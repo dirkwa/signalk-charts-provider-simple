@@ -260,6 +260,39 @@ describe('the charts dataset', () => {
     assert.strictEqual(fs.readFileSync(file, 'utf-8'), 'greek tiles');
   });
 
+  it('fails the listing when a folder cannot be read, rather than missing its charts', async () => {
+    const locked = path.join(chartDir, 'Locked');
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, 'hidden-from-us.mbtiles'), 'tiles');
+    fs.chmodSync(locked, 0o000);
+    try {
+      let readable = true;
+      try {
+        fs.readdirSync(locked);
+      } catch {
+        readable = false;
+      }
+      if (readable) {
+        return; // Running as root: permissions do not apply.
+      }
+      await assert.rejects(dataset.list());
+    } finally {
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(locked, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the listing when the chart folder is gone', async () => {
+    const gone = chartsDataset({
+      chartPath: () => path.join(tmp, 'no-such-folder'),
+      isEnabled: () => true,
+      setEnabled: () => {},
+      chartsChanged: () => Promise.resolve(),
+      chartDeleted: () => Promise.resolve()
+    });
+    await assert.rejects(gone.list());
+  });
+
   it('deletes a chart a peer deleted', async () => {
     assert.strictEqual(await dataset.remove('Med/greece.pmtiles'), true);
     assert.strictEqual(fs.existsSync(path.join(chartDir, 'Med', 'greece.pmtiles')), false);
@@ -364,12 +397,27 @@ describe('the enc dataset', () => {
   });
 
   it('treats a key such as constructor as plain data', async () => {
+    const files = cellFiles(path.join(tmp, 'constructor-cells'), 'US5CON01', {
+      'US5CON01.000': 'cell'
+    });
+    await storeCollection({
+      owner: 'chart:constructor.mbtiles',
+      preferredId: 'constructor',
+      name: 'Constructor',
+      kind: 'conversion',
+      chart: 'constructor.mbtiles',
+      source: 'upload',
+      cells: [{ base: files[0], files }],
+      mode: 'copy'
+    });
     const keyed = encDataset(host, dataDir);
-    assert.strictEqual(await keyed.remove('constructor'), true);
     assert.deepStrictEqual((await keyed.list()).map((e) => e.key).sort(), [
       'boston',
-      'boston-local'
+      'boston-local',
+      'constructor'
     ]);
+    assert.strictEqual(await keyed.remove('constructor'), true);
+    assert.strictEqual(getCollection('constructor'), null);
   });
 
   it('never removes a chart set because a peer deleted its collection', async () => {

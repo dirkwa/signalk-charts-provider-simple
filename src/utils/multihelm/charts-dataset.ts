@@ -50,14 +50,27 @@ function isEnabledMeta(meta: unknown): boolean {
   return (meta as { enabled?: unknown } | null)?.enabled !== false;
 }
 
+function isGone(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/**
+ * Every chart file under `chartPath`. A folder or file that cannot be read
+ * fails the whole listing: listing it as missing would make Multihelm
+ * offer its charts to the peers as deleted. Only what vanished while
+ * scanning is left out.
+ */
 async function scan(chartPath: string): Promise<{ key: string; full: string; stat: fs.Stats }[]> {
   const found: { key: string; full: string; stat: fs.Stats }[] = [];
   const walk = async (dir: string, rel: string): Promise<void> => {
     let entries: fs.Dirent[];
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
+    } catch (error) {
+      if (rel !== '' && isGone(error)) {
+        return;
+      }
+      throw error;
     }
     for (const entry of entries) {
       if (entry.name.startsWith('.')) {
@@ -70,8 +83,10 @@ async function scan(chartPath: string): Promise<{ key: string; full: string; sta
       } else if (entry.isFile() && isChartKey(key)) {
         try {
           found.push({ key, full, stat: await fs.promises.stat(full) });
-        } catch {
-          // Removed while scanning.
+        } catch (error) {
+          if (!isGone(error)) {
+            throw error;
+          }
         }
       }
     }
