@@ -57,32 +57,39 @@ function isEncMeta(meta: unknown): meta is EncMeta {
   );
 }
 
-/** Local collection id → the key it is replicated under, where the two differ. */
+/**
+ * Local collection id → the key it is replicated under, where the two differ.
+ * A Map, so a key such as `constructor` from a peer is only ever data.
+ */
 class KeyMap {
-  private map: Record<string, string>;
+  private readonly map = new Map<string, string>();
 
   constructor(private readonly file: string) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
-      this.map =
-        typeof raw === 'object' && raw !== null && !Array.isArray(raw)
-          ? Object.fromEntries(
-              Object.entries(raw).filter(
-                (e): e is [string, string] => SAFE_ID.test(e[0]) && typeof e[1] === 'string'
-              )
-            )
-          : {};
+      if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+        for (const [id, key] of Object.entries(raw)) {
+          if (SAFE_ID.test(id) && typeof key === 'string' && SAFE_ID.test(key)) {
+            this.map.set(id, key);
+          }
+        }
+      }
     } catch {
-      this.map = {};
+      // No map yet.
     }
   }
 
   keyOf(id: string): string {
-    return this.map[id] ?? id;
+    return this.map.get(id) ?? id;
   }
 
   idOf(key: string): string {
-    return Object.entries(this.map).find(([, k]) => k === key)?.[0] ?? key;
+    for (const [id, k] of this.map) {
+      if (k === key) {
+        return id;
+      }
+    }
+    return key;
   }
 
   set(id: string, key: string): void {
@@ -90,31 +97,33 @@ class KeyMap {
       this.delete(id);
       return;
     }
-    this.map[id] = key;
+    this.map.set(id, key);
     this.save();
   }
 
   delete(id: string): void {
-    if (id in this.map) {
-      Reflect.deleteProperty(this.map, id);
+    if (this.map.delete(id)) {
       this.save();
     }
   }
 
-  /** Forget ids whose collection is gone. */
-  prune(ids: ReadonlySet<string>): void {
-    const gone = Object.keys(this.map).filter((id) => !ids.has(id));
-    for (const id of gone) {
-      Reflect.deleteProperty(this.map, id);
+  /** Forget ids for which `exists` says there is no collection, ready or not. */
+  prune(exists: (id: string) => boolean): void {
+    let changed = false;
+    for (const id of [...this.map.keys()]) {
+      if (!exists(id)) {
+        this.map.delete(id);
+        changed = true;
+      }
     }
-    if (gone.length > 0) {
+    if (changed) {
       this.save();
     }
   }
 
   private save(): void {
     const tmp = `${this.file}.${String(process.pid)}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.map));
+    fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.map)));
     fs.renameSync(tmp, this.file);
   }
 }
@@ -146,7 +155,8 @@ export function encDataset(host: EncHost, dataDir: string): DatasetDefinition {
 
     list: async (): Promise<DatasetEntry[]> => {
       const collections = host.ready();
-      keys.prune(new Set(collections.map((c) => c.id)));
+      // A collection being rewritten is not ready but keeps its key.
+      keys.prune((id) => host.owner(id) !== null);
       const entries: DatasetEntry[] = [];
       for (const collection of collections) {
         const meta: EncMeta = { name: collection.name, source: collection.source, cells: [] };

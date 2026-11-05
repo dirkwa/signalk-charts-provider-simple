@@ -56,7 +56,10 @@ export function linkMultihelm(
       return;
     }
     try {
-      handles = datasets().map((definition) => register(definition));
+      // Each handle is kept as soon as it exists, so a later failure still releases it.
+      for (const definition of datasets()) {
+        handles.push(register(definition));
+      }
       registerOf = register;
       log.debug('Multihelm: chart datasets registered');
     } catch (error) {

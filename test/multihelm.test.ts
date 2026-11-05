@@ -100,6 +100,47 @@ describe('following Multihelm', () => {
     assert.strictEqual(listener, null);
   });
 
+  it('releases the datasets registered before one that fails', () => {
+    const unregistered: string[] = [];
+    const errors: string[] = [];
+    const link = linkMultihelm(
+      {
+        onPropertyValues: (_name, cb) => {
+          cb([
+            undefined,
+            {
+              value: {
+                apiVersion: 1,
+                registerDataset: (d: DatasetDefinition): DatasetHandle => {
+                  if (d.id === 'x/bad') {
+                    throw new Error('refused');
+                  }
+                  return {
+                    changed: () => {},
+                    unregister: () => {
+                      unregistered.push(d.id);
+                    }
+                  };
+                }
+              }
+            }
+          ]);
+          return () => {};
+        }
+      },
+      () => [{ id: 'x/good' } as DatasetDefinition, { id: 'x/bad' } as DatasetDefinition],
+      {
+        debug: () => {},
+        error: (msg) => {
+          errors.push(msg);
+        }
+      }
+    );
+    assert.deepStrictEqual(unregistered, ['x/good']);
+    assert.strictEqual(link.connected(), false);
+    assert.strictEqual(errors.length, 1);
+  });
+
   it('ignores an API version it does not know', () => {
     const registered: string[] = [];
     linkMultihelm(
@@ -313,6 +354,22 @@ describe('the enc dataset', () => {
       (await dataset.list()).find((e) => e.key === 'boston')?.files[0]?.name,
       'US5BOS01.000'
     );
+  });
+
+  it('keeps the key of a collection that is not ready while it is rewritten', async () => {
+    const notReady = encDataset({ ...host, ready: () => [] }, dataDir);
+    await notReady.list();
+    const keys = (await dataset.list()).map((e) => e.key).sort();
+    assert.deepStrictEqual(keys, ['boston', 'boston-local']);
+  });
+
+  it('treats a key such as constructor as plain data', async () => {
+    const keyed = encDataset(host, dataDir);
+    assert.strictEqual(await keyed.remove('constructor'), true);
+    assert.deepStrictEqual((await keyed.list()).map((e) => e.key).sort(), [
+      'boston',
+      'boston-local'
+    ]);
   });
 
   it('never removes a chart set because a peer deleted its collection', async () => {
