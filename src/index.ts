@@ -573,15 +573,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             'Offline or behind a sign-in page nothing is fetched either way; downloads you start yourself always run.',
           default: false
         },
-        multihelm: {
+        multihelmLocalCopy: {
           type: 'boolean',
-          title: 'Keep charts in step with the other servers of this boat (Multihelm)',
+          title: 'Keep a copy of the charts of the other servers of this boat (Multihelm)',
           description:
-            'For boats with several Signal K servers, one per nav station: while the Multihelm plugin runs, ' +
-            'charts and shared ENC cells added, changed, enabled, disabled or deleted on one server follow on the others ' +
-            'it is paired with, and a server that was off catches up when it starts. Every server keeps its own copy. ' +
-            'Pair the servers in the Multihelm plugin. Without Multihelm this setting does nothing.',
-          default: true
+            'For boats with several Signal K servers, one per nav station, paired in the Multihelm plugin: this server ' +
+            'keeps its own copy of the charts and shared ENC cells of the servers that do the same, and changes, ' +
+            'enabled states and deletions on one follow on the others, also on a server that was off. A station with a ' +
+            'copy keeps its charts when the others are off, at the cost of the disk space. Off by default. ' +
+            'Without Multihelm this setting does nothing.',
+          default: false
         },
         _encStoreHeader: {
           type: 'null',
@@ -1073,7 +1074,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
 
     stopMultihelm();
-    if (props.multihelm !== false) {
+    if (props.multihelmLocalCopy === true) {
       startMultihelm(chartPath);
     }
 
