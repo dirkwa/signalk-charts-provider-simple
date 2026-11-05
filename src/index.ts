@@ -255,6 +255,10 @@ import {
 // JSON import with type attribute (NodeNext ESM). package.json's `version`
 // is what the marker file records so users can confirm the running build.
 import packageJson from '../package.json' with { type: 'json' };
+import type { DatasetDefinition } from './utils/multihelm/api.js';
+import { chartsDataset } from './utils/multihelm/charts-dataset.js';
+import { encDataset } from './utils/multihelm/enc-dataset.js';
+import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import type {
   ChartProvider,
   ChartsProviderEncGlobal,
@@ -448,6 +452,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // signalk-internet's view of the link; null while the plugin is stopped.
   let internet: InternetGate | null = null;
   let pluginDataDir = '';
+  let multihelm: MultihelmLink | null = null;
+  let unsubscribeEncForMultihelm: (() => void) | null = null;
   let onlineTileStore: OnlineTileStore | null = null;
   let onlineTileProxy: OnlineTileProxy | null = null;
   let maskedTiles: MaskedTiles | null = null;
@@ -567,6 +573,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             'Offline or behind a sign-in page nothing is fetched either way; downloads you start yourself always run.',
           default: false
         },
+        multihelm: {
+          type: 'boolean',
+          title: 'Keep charts in step with the other servers of this boat (Multihelm)',
+          description:
+            'For boats with several Signal K servers, one per nav station: while the Multihelm plugin runs, ' +
+            'charts and shared ENC cells added, changed, enabled, disabled or deleted on one server follow on the others ' +
+            'it is paired with, and a server that was off catches up when it starts. Every server keeps its own copy. ' +
+            'Pair the servers in the Multihelm plugin. Without Multihelm this setting does nothing.',
+          default: true
+        },
         _encStoreHeader: {
           type: 'null',
           title: 'Shared ENC cells'
@@ -622,6 +638,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         sweepTimer = null;
       }
       setCatalogChangedListener(null);
+      stopMultihelm();
       internet?.stop();
       internet = null;
       resetAreaRequests();
@@ -1053,6 +1070,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // (loadChartProviders sets one).
     if (loadOk) {
       app.setPluginStatus('Started');
+    }
+
+    stopMultihelm();
+    if (props.multihelm !== false) {
+      startMultihelm(chartPath);
     }
 
     // Publish the in-process refresh hook for peer plugins (same pattern
@@ -6201,6 +6223,68 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // directory must not drop every served chart — and false is returned so
   // the refresh hook / POST /refresh can report the failure. Never rejects:
   // fire-and-forget callers (download completion) rely on that.
+  // Multihelm speaks in `/`-separated paths; chart and install state are
+  // keyed by the platform's own.
+  const nativeRelPath = (relPath: string): string => relPath.split('/').join(path.sep);
+
+  const reannounceCharts = async (relPaths: string[]): Promise<void> => {
+    await refreshChartProviders();
+    for (const relPath of relPaths) {
+      const chartId = chartIdFromFilename(path.basename(relPath));
+      const provider = chartProviders[chartId] as ChartProvider | undefined;
+      emitChartDelta(chartId, provider ? sanitizeProvider(provider, 2) : null);
+    }
+  };
+
+  const startMultihelm = (chartPath: string): void => {
+    // Test harnesses and very old servers have no PropertyValues.
+    if (typeof (app as Partial<ExtendedServerAPI>).onPropertyValues !== 'function') {
+      return;
+    }
+    const datasets = (): DatasetDefinition[] => [
+      chartsDataset({
+        chartPath: () => chartPath,
+        isEnabled: isChartEnabled,
+        setEnabled: setChartEnabled,
+        chartsChanged: reannounceCharts,
+        chartDeleted: async (relPath) => {
+          await reannounceCharts([relPath]);
+          removeInstallByFilename(nativeRelPath(relPath));
+        }
+      }),
+      encDataset(
+        {
+          ready: () => listCollectionsWithCells().filter((c) => collectionState(c.id) === 'ready'),
+          filePath: storedFilePath,
+          owner: collectionOwner,
+          ownerFor: (id, chart) => (chart !== undefined ? chartOwner(chart) : `detached:${id}`),
+          store: storeCollection,
+          remove: removeCollection
+        },
+        pluginDataDir
+      )
+    ];
+    const link = linkMultihelm(app, datasets, {
+      debug: (msg) => {
+        app.debug(msg);
+      },
+      error: (msg) => {
+        app.error(msg);
+      }
+    });
+    multihelm = link;
+    unsubscribeEncForMultihelm = onEncStoreChange(() => {
+      link.changed();
+    });
+  };
+
+  const stopMultihelm = (): void => {
+    unsubscribeEncForMultihelm?.();
+    unsubscribeEncForMultihelm = null;
+    multihelm?.stop();
+    multihelm = null;
+  };
+
   const refreshChartProviders = async (): Promise<boolean> => {
     onlineAddedCache = null;
     onlineAddedGeneration++;
@@ -6224,6 +6308,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       syncOnlineTime();
 
       app.debug(`Chart providers refreshed: ${Object.keys(chartProviders).length} enabled charts`);
+      multihelm?.changed();
       return true;
     } catch (error) {
       app.error(

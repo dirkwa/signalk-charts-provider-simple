@@ -28,7 +28,8 @@ export const PluginConfigSchema = Type.Object({
   disableUpdateNotifications: Type.Optional(Type.Boolean()),
   allowMeteredChartDownloads: Type.Optional(Type.Boolean()),
   keepEncCells: Type.Optional(Type.Boolean()),
-  encAreaDownloads: Type.Optional(Type.Boolean())
+  encAreaDownloads: Type.Optional(Type.Boolean()),
+  multihelm: Type.Optional(Type.Boolean())
 });
 
 export type CpuBudgetPreset = Static<typeof CpuBudgetPresetSchema>;
