@@ -154,7 +154,7 @@ enc-store/<collection>/<CELL>/<CELL>.000, <CELL>.001, …
 
 ## Requirements
 
-- **Node.js >= 22.5** — uses the built-in `node:sqlite` module, no native compilation needed
+- **Node.js >= 24** — uses the built-in `node:sqlite` module, no native compilation needed
 - **Not supported on Cerbo GX** — Venus OS ships Node.js 20, which lacks the `node:sqlite` module. Use v1.6.x if you need Cerbo support.
 
 ### Recommended for metered connections: `signalk-internet` plugin

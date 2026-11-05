@@ -244,7 +244,7 @@ function startBuild(): void {
       finish(message.message);
     }
   });
-  worker.on('error', (err) => {
+  worker.on('error', (err: Error) => {
     finish(err.message);
   });
   worker.on('exit', (code) => {

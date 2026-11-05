@@ -15,7 +15,7 @@ Per project convention: `npm run format` → `npm run test` (its `pretest` build
 - `npm run format` — Prettier on `**/*.ts` under `src`, `test`, `e2e`, and `public/js` (plus `playwright.config.ts`), then `eslint --fix`
 - `npm run format:check` — non-mutating CI check
 
-Node ≥ 22.5 is required: the plugin reads MBTiles via the built-in `node:sqlite` module (no native compile). The `pretest` step regenerates the MBTiles test fixture; if a test reports "fixture missing", run `npm run test:fixtures`. The fixture scripts are TypeScript run directly by Node, which needs Node 22.18 or later for development (type stripping); the plugin itself still runs on 22.5.
+Node ≥ 24 is required: the plugin reads MBTiles via the built-in `node:sqlite` module (no native compile). The `pretest` step regenerates the MBTiles test fixture; if a test reports "fixture missing", run `npm run test:fixtures`. The fixture scripts are TypeScript run directly by Node (type stripping).
 
 ## Architecture
 

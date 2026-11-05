@@ -27,7 +27,7 @@ export default defineConfig({
   publicDir: false,
   build: {
     ssr: true,
-    target: 'node22',
+    target: 'node24',
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: true,
