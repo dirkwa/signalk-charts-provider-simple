@@ -3,7 +3,7 @@
  * written, replaced, read and removed, and what readers are told.
  */
 
-import { describe, it, beforeEach, after } from 'node:test';
+import { describe, it, beforeEach, after, mock } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,11 +16,13 @@ import {
   collectionIdFor,
   collectionOf,
   collectionOwner,
+  collectionState,
   detachChartCollection,
   encStoreRoot,
   getCollection,
   initEncStore,
   listCollections,
+  listCollectionsWithCells,
   moveChartCollection,
   onEncStoreChange,
   removeCollection,
@@ -198,6 +200,11 @@ describe('storeCollection', () => {
       listCollections().map((c) => c.id),
       ['Harbour', 'Harbour-2']
     );
+    // The same collections with their cells, as getCollection reads each.
+    assert.deepStrictEqual(listCollectionsWithCells(), [
+      getCollection('Harbour'),
+      getCollection('Harbour-2')
+    ]);
     assert.deepStrictEqual([...chartSetCollections()], [['Harbour', 'Harbour']]);
   });
 
@@ -222,8 +229,9 @@ describe('storeCollection, failing part way', () => {
     const b = makeCell(path.join(sourceDir, 'B'), 'FI5BBBBB');
     const first = await storeCollection(request({ cells: [{ base: a }, { base: b }] }));
     const before = getCollection(first.id);
-    const heard: string[] = [];
-    const unsubscribe = onEncStoreChange((id) => heard.push(id));
+    // What a reader finds when told: the write's cleanup is done by then.
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
     try {
       const a2 = makeCell(path.join(sourceDir, 'A2'), 'FI5AAAAA', [], 'second');
       // B's update cannot be read: the write fails after A is already swapped in.
@@ -237,7 +245,8 @@ describe('storeCollection, failing part way', () => {
         fs.readFileSync(path.join(stored?.dir ?? '', 'FI5AAAAA.000'), 'utf8'),
         'base first'
       );
-      assert.deepStrictEqual(heard, [], 'nothing changed, so no one is told');
+      // Readers that found it writing hear the write is done; they find it as it was.
+      assert.deepStrictEqual(heard, [[first.id, 'ready']]);
       assert.deepStrictEqual(
         fs.readdirSync(encStoreRoot()).filter((n) => n.startsWith('.')),
         [],
@@ -246,6 +255,66 @@ describe('storeCollection, failing part way', () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it('drops a collection whose cells could not all be put back', async () => {
+    const a = makeCell(path.join(sourceDir, 'A1'), 'FI5AAAAA', [], 'first');
+    const b = makeCell(path.join(sourceDir, 'B'), 'FI5BBBBB');
+    const first = await storeCollection(request({ cells: [{ base: a }, { base: b }] }));
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    // Putting A's old copy back fails, after B's update could not be read.
+    const rename = fs.renameSync.bind(fs);
+    const failing = mock.method(fs, 'renameSync', (from: fs.PathLike, to: fs.PathLike) => {
+      if (String(from).includes(`${path.sep}.old-`)) {
+        throw new Error('EIO');
+      }
+      rename(from, to);
+    });
+    try {
+      const a2 = makeCell(path.join(sourceDir, 'A2'), 'FI5AAAAA', [], 'second');
+      const missing = path.join(sourceDir, 'gone', 'FI5BBBBB.001');
+      await assert.rejects(
+        storeCollection(request({ cells: [{ base: a2 }, { base: b, files: [b, missing] }] }))
+      );
+    } finally {
+      failing.mock.restore();
+      unsubscribe();
+    }
+    // Neither the old collection nor the new one: it is gone, and readers are told so.
+    assert.deepStrictEqual(heard, [[first.id, 'absent']]);
+    assert.strictEqual(getCollection(first.id), null);
+    assert.ok(!fs.existsSync(path.join(encStoreRoot(), first.id)), 'its folder is removed');
+  });
+
+  it('keeps the collection when an old cell could not be moved aside at all', async () => {
+    const a = makeCell(path.join(sourceDir, 'A1'), 'FI5AAAAA', [], 'first');
+    const first = await storeCollection(request({ cells: [{ base: a }] }));
+    const before = getCollection(first.id);
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    // Moving A's old copy aside fails, so nothing in the collection changed.
+    const rename = fs.renameSync.bind(fs);
+    const failing = mock.method(fs, 'renameSync', (from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to).includes(`${path.sep}.old-`)) {
+        throw new Error('EIO');
+      }
+      rename(from, to);
+    });
+    try {
+      const a2 = makeCell(path.join(sourceDir, 'A2'), 'FI5AAAAA', [], 'second');
+      await assert.rejects(storeCollection(request({ cells: [{ base: a2 }] })));
+    } finally {
+      failing.mock.restore();
+      unsubscribe();
+    }
+    assert.deepStrictEqual(heard, [[first.id, 'ready']]);
+    assert.deepStrictEqual(getCollection(first.id), before);
+    const stored = getCollection(first.id)?.cells.find((c) => c.name === 'FI5AAAAA');
+    assert.strictEqual(
+      fs.readFileSync(path.join(stored?.dir ?? '', 'FI5AAAAA.000'), 'utf8'),
+      'base first'
+    );
   });
 });
 
@@ -359,6 +428,239 @@ describe('removeCollection, twice at once', () => {
       const results = await Promise.all([removeCollection('Harbour'), removeCollection('Harbour')]);
       assert.deepStrictEqual(results.sort(), [false, true]);
       assert.deepStrictEqual(heard, ['Harbour']);
+    } finally {
+      unsubscribe();
+    }
+  });
+});
+
+describe('collectionState', () => {
+  it('is writing while its cells are written, the first ones of a chart set too, then ready', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    const writing = storeCollection(
+      request({
+        owner: chartSetOwner('Gulf'),
+        preferredId: 'Gulf',
+        kind: 'chart-set',
+        cells: [{ base: a }]
+      })
+    );
+    assert.strictEqual(collectionState('Gulf'), 'writing');
+    await writing;
+    assert.strictEqual(collectionState('Gulf'), 'ready');
+    const again = storeCollection(
+      request({ owner: chartSetOwner('Gulf'), preferredId: 'Gulf', kind: 'chart-set', cells: [] })
+    );
+    assert.strictEqual(collectionState('Gulf'), 'writing');
+    await again;
+    assert.strictEqual(collectionState('Nope'), 'absent');
+    assert.strictEqual(collectionState('../x'), 'absent');
+    // A folder whose record names another id is no collection, as getCollection reads it.
+    fs.cpSync(path.join(encStoreRoot(), 'Gulf'), path.join(encStoreRoot(), 'Copy'), {
+      recursive: true
+    });
+    assert.strictEqual(getCollection('Copy'), null);
+    assert.strictEqual(collectionState('Copy'), 'absent');
+  });
+
+  it('is ready for a chart set whose collection took another id', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    // A set id may be 80 characters long, a collection id only 72 of them.
+    const setId = `${'S'.repeat(76)}-two`;
+    const stored = await storeCollection(
+      request({
+        owner: chartSetOwner(setId),
+        preferredId: setId,
+        kind: 'chart-set',
+        cells: [{ base: a }]
+      })
+    );
+    assert.notStrictEqual(stored.id, setId);
+    assert.strictEqual(collectionState(stored.id), 'ready');
+    assert.strictEqual(collectionState(setId), 'ready');
+  });
+
+  it('answers for the collection an id names, before a chart set of that id', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    // A converted chart holds the id first, so the chart set of that name takes another.
+    await storeCollection(
+      request({
+        owner: chartOwner('Harbour.mbtiles'),
+        preferredId: 'Harbour',
+        cells: [{ base: a }]
+      })
+    );
+    const setCells = storeCollection(
+      request({
+        owner: chartSetOwner('Harbour'),
+        preferredId: 'Harbour',
+        kind: 'chart-set',
+        cells: [{ base: a }]
+      })
+    );
+    // A reader of Harbour reads the converted chart's folder, which is ready meanwhile.
+    assert.strictEqual(collectionState('Harbour'), 'ready');
+    const stored = await setCells;
+    assert.notStrictEqual(stored.id, 'Harbour');
+    assert.strictEqual(collectionState(stored.id), 'ready');
+    assert.strictEqual(getCollection('Harbour')?.kind, 'conversion');
+    // With both collections in place, a write of the chart set leaves Harbour ready too.
+    const again = storeCollection(
+      request({
+        owner: chartSetOwner('Harbour'),
+        preferredId: 'Harbour',
+        kind: 'chart-set',
+        cells: [{ base: a }]
+      })
+    );
+    assert.strictEqual(collectionState(stored.id), 'writing');
+    assert.strictEqual(collectionState('Harbour'), 'ready');
+    await again;
+  });
+
+  it('is writing during the first write of a converted chart, before its record exists', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    const first = storeCollection(
+      request({
+        owner: chartOwner('A.mbtiles'),
+        preferredId: 'A.mbtiles',
+        chart: 'A.mbtiles',
+        cells: [{ base: a }]
+      })
+    );
+    // Only microtasks run here, so the write, which waits on file I/O, is still under way
+    // once its id is taken.
+    const dir = path.join(encStoreRoot(), 'A');
+    for (let i = 0; i < 100 && !fs.existsSync(dir); i++) {
+      await Promise.resolve();
+    }
+    assert.ok(fs.existsSync(dir), 'the id is taken');
+    assert.ok(!fs.existsSync(path.join(dir, 'collection.json')), 'the record is not written yet');
+    assert.strictEqual(collectionState('A'), 'writing');
+    await first;
+    assert.strictEqual(collectionState('A'), 'ready');
+  });
+
+  it('tells a reader that found it writing once the last write is done, though nothing changed', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    await storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      // Nobody found it writing: a write that changes nothing stays silent.
+      const quiet = await storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+      assert.deepStrictEqual(quiet.written, []);
+      assert.deepStrictEqual(heard, []);
+
+      // Two such writes asked for at once, found writing before either is done: the
+      // reader hears once, when the second is done.
+      const first = storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+      const second = storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+      assert.strictEqual(collectionState('Harbour'), 'writing');
+      const results = await Promise.all([first, second]);
+      assert.deepStrictEqual(
+        results.map((r) => [r.written, r.removed]),
+        [
+          [[], []],
+          [[], []]
+        ]
+      );
+      assert.deepStrictEqual(heard, [['Harbour', 'ready']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('tells readers of a failed write once the write after it is done', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    await storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+    const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      // The failed write ends while the next is still to come: the collection is still
+      // writing then, so only the next write's end tells readers, though it changed nothing.
+      const failing = storeCollection(
+        request({ cells: [{ base: missing, files: [missing] }], mode: 'copy' })
+      );
+      const next = storeCollection(request({ cells: [{ base: a }], mode: 'copy' }));
+      await assert.rejects(failing);
+      assert.deepStrictEqual((await next).written, []);
+      assert.deepStrictEqual(heard, [['Harbour', 'ready']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('tells readers of a failed first write once the next write is done, though it takes another id', async () => {
+    const a = makeCell(path.join(sourceDir, 'A'), 'FI5AAAAA');
+    const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
+    const owner = chartOwner('X.mbtiles');
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      const failing = storeCollection(
+        request({ owner, preferredId: 'P1', cells: [{ base: missing, files: [missing] }] })
+      );
+      const next = storeCollection(request({ owner, preferredId: 'P2', cells: [{ base: a }] }));
+      await assert.rejects(failing);
+      assert.strictEqual((await next).id, 'P2');
+      // P1 read writing until the owner's last write was done; then it is absent.
+      assert.deepStrictEqual(heard, [
+        ['P2', 'ready'],
+        ['P1', 'absent']
+      ]);
+      assert.strictEqual(collectionState('P1'), 'absent');
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('tells readers of a failed first write when a detach queued after it is done', async () => {
+    const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      const failing = storeCollection(
+        request({
+          owner: chartOwner('Z.mbtiles'),
+          preferredId: 'Z.mbtiles',
+          chart: 'Z.mbtiles',
+          cells: [{ base: missing, files: [missing] }]
+        })
+      );
+      // Queued behind the write, the detach finds no collection: its turn still tells
+      // readers of the one the failed write left absent.
+      const detach = detachChartCollection('Z.mbtiles');
+      await assert.rejects(failing);
+      assert.strictEqual(await detach, false);
+      assert.deepStrictEqual(heard, [['Z', 'absent']]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('tells readers of a first write that failed, which leaves the collection absent', async () => {
+    const missing = path.join(sourceDir, 'gone', 'FI5ZZZZZ.000');
+    const heard: [string, string][] = [];
+    const unsubscribe = onEncStoreChange((id) => heard.push([id, collectionState(id)]));
+    try {
+      const first = storeCollection(
+        request({
+          owner: chartOwner('Z.mbtiles'),
+          preferredId: 'Z.mbtiles',
+          chart: 'Z.mbtiles',
+          cells: [{ base: missing, files: [missing] }]
+        })
+      );
+      const dir = path.join(encStoreRoot(), 'Z');
+      for (let i = 0; i < 100 && !fs.existsSync(dir); i++) {
+        await Promise.resolve();
+      }
+      assert.strictEqual(collectionState('Z'), 'writing');
+      await assert.rejects(first);
+      assert.deepStrictEqual(heard, [['Z', 'absent']]);
+      assert.strictEqual(collectionState('Z'), 'absent');
     } finally {
       unsubscribe();
     }

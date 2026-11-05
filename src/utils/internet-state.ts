@@ -148,6 +148,14 @@ export class InternetGate {
   }
 
   /**
+   * Whether a wait for a state (see firstStateKnown) is running, so that what
+   * `mayRunBackground` says now may not hold once the state is known.
+   */
+  deciding(): boolean {
+    return this.endWait !== null;
+  }
+
+  /**
    * Run `task` now when background work may run, otherwise once a new state
    * (or signalk-internet stopping) allows it.
    */

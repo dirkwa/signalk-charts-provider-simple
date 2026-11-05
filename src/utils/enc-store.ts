@@ -133,6 +133,11 @@ let debug: DebugFunction = () => {};
 const listeners = new Set<EncStoreListener>();
 // Collections being written, so two writes to one never interleave.
 const writing = new Map<string, Promise<unknown>>();
+// The ids being written, a first write's too before its record exists, with their owner.
+const writingIds = new Map<string, string>();
+// The ids a reader found writing, with their owner: they hear of it once its last write is
+// done, even if it changed nothing.
+const seenWriting = new Map<string, string>();
 // Store roots swept in this process; see sweepEncStore.
 const sweptRoots = new Set<string>();
 
@@ -279,24 +284,31 @@ function toCollection(dir: string, record: CollectionRecord): EncCollection {
   return summary;
 }
 
-/** Every collection, by id. A collection still being written for the first time is left out. */
-export function listCollections(): EncCollectionSummary[] {
+/**
+ * Every collection with its cells, by id. A collection still being written for the first time
+ * is left out.
+ */
+export function listCollectionsWithCells(): EncCollection[] {
   let names: string[];
   try {
     names = fs.readdirSync(rootDir);
   } catch {
     return [];
   }
-  const result: EncCollectionSummary[] = [];
+  const result: EncCollection[] = [];
   for (const name of names.filter((n) => SAFE_ID.test(n)).sort()) {
     const dir = path.join(rootDir, name);
     const record = readRecord(dir);
     if (record?.id === name) {
-      const { cells: _cells, ...summary } = toCollection(dir, record);
-      result.push(summary);
+      result.push(toCollection(dir, record));
     }
   }
   return result;
+}
+
+/** Every collection, by id, as `listCollectionsWithCells` without the cells. */
+export function listCollections(): EncCollectionSummary[] {
+  return listCollectionsWithCells().map(({ cells: _cells, ...summary }) => summary);
 }
 
 export function getCollection(id: string): EncCollection | null {
@@ -448,12 +460,14 @@ async function placeFile(from: string, to: string, mode: 'link' | 'copy'): Promi
 /**
  * Put back the cells a failed write changed, newest change first: a cell it
  * placed goes, and the old copy set aside returns. The record was not yet
- * written, so the collection is again as it was.
+ * written, so the collection is again as it was. False when a cell could not
+ * be put back.
  */
 function restoreCells(
   dir: string,
   changed: readonly { name: string; aside: string | null; placed: boolean }[]
-): void {
+): boolean {
+  let restored = true;
   for (const { name, aside, placed } of [...changed].reverse()) {
     const target = path.join(dir, name);
     try {
@@ -464,15 +478,21 @@ function restoreCells(
         fs.renameSync(aside, target);
       }
     } catch (err) {
+      restored = false;
       console.error(
         `[charts-provider] Could not restore ENC cell ${name} in ${dir}: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
+  return restored;
 }
 
-async function writeCollection(request: StoreCollectionRequest): Promise<StoreResult> {
+async function writeCollection(
+  request: StoreCollectionRequest,
+  claimed: (id: string) => void
+): Promise<StoreResult> {
   const id = claimId(request.owner, request.preferredId);
+  claimed(id);
   const dir = collectionDir(id);
   const result: StoreResult = { id, written: [], removed: [], skipped: [] };
   const work = path.join(
@@ -480,6 +500,7 @@ async function writeCollection(request: StoreCollectionRequest): Promise<StoreRe
     `${WORK_PREFIX}staging-${id}-${String(Date.now())}-${String(process.pid)}`
   );
   fs.mkdirSync(work, { recursive: true });
+  writingIds.set(id, request.owner);
   // Each cell changed so far and where its old copy waits, so a failed write is undone.
   const changed: { name: string; aside: string | null; placed: boolean }[] = [];
   try {
@@ -502,16 +523,14 @@ async function writeCollection(request: StoreCollectionRequest): Promise<StoreRe
       for (const [fileName, from] of cell.files) {
         await placeFile(from, path.join(built, fileName), request.mode);
       }
-      // Swap it in: the old copy goes aside first, so a reader never finds half a cell.
-      const change = {
-        name,
-        aside: fs.existsSync(target) ? path.join(work, `${WORK_PREFIX}old-${name}`) : null,
-        placed: false
-      };
-      changed.push(change);
-      if (change.aside !== null) {
-        fs.renameSync(target, change.aside);
+      // Swap it in: the old copy goes aside first, so a reader never finds half a cell. The
+      // change is noted once that is done, so a rollback puts back only what moved.
+      const aside = fs.existsSync(target) ? path.join(work, `${WORK_PREFIX}old-${name}`) : null;
+      if (aside !== null) {
+        fs.renameSync(target, aside);
       }
+      const change = { name, aside, placed: false };
+      changed.push(change);
       fs.renameSync(built, target);
       change.placed = true;
       result.written.push(name);
@@ -549,9 +568,14 @@ async function writeCollection(request: StoreCollectionRequest): Promise<StoreRe
     writeRecord(dir, record);
     return result;
   } catch (err) {
-    restoreCells(dir, changed);
+    if (!restoreCells(dir, changed)) {
+      // Neither the old collection nor the new one: like a first write that failed, it
+      // leaves no half collection, its record going here and its folder below.
+      fs.rmSync(path.join(dir, COLLECTION_FILE), { force: true });
+    }
     throw err;
   } finally {
+    writingIds.delete(id);
     fs.rmSync(work, { recursive: true, force: true });
     // A first write that failed leaves no half collection behind.
     if (readRecord(dir) === null) {
@@ -578,14 +602,82 @@ async function serially<T>(key: string, fn: () => Promise<T>): Promise<T> {
  * Make `request.owner`'s collection hold exactly `request.cells`: cells new
  * or changed are written, cells left out removed, unchanged cells kept as
  * they are. Listeners hear of it when something changed or the collection
- * is new.
+ * is new, and when a reader found it writing: once the last write of its
+ * owner asked for so far is done, whether it changed anything or not.
  */
 export async function storeCollection(request: StoreCollectionRequest): Promise<StoreResult> {
-  const result = await serially(request.owner, () => writeCollection(request));
-  if (result.written.length > 0 || result.removed.length > 0) {
-    emit(result.id);
+  let id: string | null = null;
+  let result: StoreResult;
+  try {
+    result = await serially(request.owner, () =>
+      writeCollection(request, (claimed) => {
+        id = claimed;
+      })
+    );
+  } catch (err) {
+    // The collection is then as it was before, or absent after a first write.
+    writeDone(request.owner, id, { failed: true });
+    throw err;
   }
+  writeDone(request.owner, result.id, {
+    changed: result.written.length > 0 || result.removed.length > 0
+  });
   return result;
+}
+
+/**
+ * Tell listeners of a write of `owner` to `id` that is done: of `id` when it
+ * changed something, and once no other write of `owner` is to come, of `id`
+ * if the write failed. Until then a failed write's collection still reads
+ * `writing`, so it is kept with the collections a reader found writing,
+ * which the owner's last turn tells of (see tellDone).
+ */
+function writeDone(
+  owner: string,
+  id: string | null,
+  how: { changed?: boolean; failed?: boolean }
+): void {
+  const told: string[] = [];
+  if (id !== null && how.changed === true) {
+    told.push(id);
+  }
+  if (id !== null && how.failed === true) {
+    if (writing.has(owner)) {
+      seenWriting.set(id, owner);
+    } else {
+      told.push(id);
+    }
+  }
+  tellDone([owner], told);
+}
+
+/**
+ * After a turn of `owners`: tell listeners of the collections in `told`, and
+ * of each owner no other turn of which is to come, of every collection of it
+ * a reader found writing or a failed write left, each once. Every turn taken
+ * in an owner's queue ends here, so the last one tells them, whatever it did.
+ */
+function tellDone(owners: readonly string[], told: readonly (string | null)[]): void {
+  const ids = new Set<string>();
+  for (const id of told) {
+    if (id !== null) {
+      ids.add(id);
+    }
+  }
+  for (const owner of owners) {
+    if (writing.has(owner)) {
+      continue;
+    }
+    for (const [seen, of] of seenWriting) {
+      if (of === owner) {
+        seenWriting.delete(seen);
+        ids.add(seen);
+      }
+    }
+  }
+  for (const id of ids) {
+    emit(id);
+  }
 }
 
 /** Cells set aside for a collection until the chart they belong to is installed. */
@@ -677,18 +769,20 @@ export async function removeCollection(id: string): Promise<boolean> {
     return false;
   }
   // Read again once earlier writes and removals are done: another may have removed it.
-  const removed = await serially(record.owner, async () => {
-    if (readRecord(dir) === null) {
-      return false;
-    }
-    // Renamed aside first, so readers find it whole or not at all.
-    const gone = path.join(rootDir, `${WORK_PREFIX}removed-${id}-${String(Date.now())}`);
-    fs.renameSync(dir, gone);
-    await fs.promises.rm(gone, { recursive: true, force: true });
-    return true;
-  });
-  if (removed) {
-    emit(id);
+  let removed = false;
+  try {
+    removed = await serially(record.owner, async () => {
+      if (readRecord(dir) === null) {
+        return false;
+      }
+      // Renamed aside first, so readers find it whole or not at all.
+      const gone = path.join(rootDir, `${WORK_PREFIX}removed-${id}-${String(Date.now())}`);
+      fs.renameSync(dir, gone);
+      await fs.promises.rm(gone, { recursive: true, force: true });
+      return true;
+    });
+  } finally {
+    tellDone([record.owner], [removed ? id : null]);
   }
   return removed;
 }
@@ -773,36 +867,40 @@ export async function moveChartCollection(
   const source = chartOwner(from);
   const target = chartOwner(to);
   const untied = (id: string): string => `${DETACHED_OWNER}${id}`;
-  const [detached, moved] = await inBothTurns(source, target, async () => {
-    const left = retie(target, untied, undefined);
-    let done: [string | null, string | null];
-    try {
-      done = [left, retie(source, () => target, to)];
-    } catch (err) {
-      if (left !== null) {
-        retie(untied(left), () => target, to);
-      }
-      throw err;
-    }
-    try {
-      await moveFile();
-    } catch (err) {
-      // Nothing else wrote either owner meanwhile, so both go back as they were.
+  let result: [string | null, string | null] = [null, null];
+  try {
+    result = await inBothTurns(source, target, async () => {
+      const left = retie(target, untied, undefined);
+      let done: [string | null, string | null];
       try {
-        const back = done[1] === null ? null : retie(target, () => source, from);
-        const retied = left === null ? null : retie(untied(left), () => target, to);
-        emitEach([back, retied]);
-      } catch (back) {
-        console.error(
-          `[charts-provider] Could not move the kept ENC cells of ${to} back: ${back instanceof Error ? back.message : String(back)}`
-        );
+        done = [left, retie(source, () => target, to)];
+      } catch (err) {
+        if (left !== null) {
+          retie(untied(left), () => target, to);
+        }
+        throw err;
       }
-      throw err;
-    }
-    return done;
-  });
-  emitEach([detached, moved]);
-  return { moved: moved !== null };
+      try {
+        await moveFile();
+      } catch (err) {
+        // Nothing else wrote either owner meanwhile, so both go back as they were.
+        try {
+          const back = done[1] === null ? null : retie(target, () => source, from);
+          const retied = left === null ? null : retie(untied(left), () => target, to);
+          emitEach([back, retied]);
+        } catch (back) {
+          console.error(
+            `[charts-provider] Could not move the kept ENC cells of ${to} back: ${back instanceof Error ? back.message : String(back)}`
+          );
+        }
+        throw err;
+      }
+      return done;
+    });
+  } finally {
+    tellDone([source, target], result);
+  }
+  return { moved: result[1] !== null };
 }
 
 /**
@@ -812,13 +910,72 @@ export async function moveChartCollection(
  */
 export async function detachChartCollection(chart: string): Promise<boolean> {
   const owner = chartOwner(chart);
-  const id = await serially(owner, () =>
-    Promise.resolve(retie(owner, (was) => `${DETACHED_OWNER}${was}`, undefined))
-  );
-  if (id !== null) {
-    emit(id);
+  let id: string | null = null;
+  try {
+    id = await serially(owner, () =>
+      Promise.resolve(retie(owner, (was) => `${DETACHED_OWNER}${was}`, undefined))
+    );
+  } finally {
+    tellDone([owner], [id]);
   }
   return id !== null;
+}
+
+/**
+ * What a reader finds of collection `id`: `ready` to read, `writing` while
+ * its cells are written (a reader that reads them now may miss one being
+ * replaced, and hears of the collection when the write is done), or
+ * `absent`. A collection is `writing` before its first cells are in place
+ * too: a chart set's from the moment its write is asked for (its id is the
+ * set's), any other once its id is taken.
+ */
+export function collectionState(id: string): 'ready' | 'writing' | 'absent' {
+  if (!SAFE_ID.test(id)) {
+    return 'absent';
+  }
+  const writer = writingIds.get(id);
+  if (writer !== undefined) {
+    seenWriting.set(id, writer);
+    return 'writing';
+  }
+  let collectionId = id;
+  let record = readRecord(collectionDir(id));
+  if (record?.id !== id) {
+    // A chart set whose id no collection id holds whole (one longer than a collection
+    // id may be, or one already taken) keeps its collection under another: find it.
+    const other = collectionOf(chartSetOwner(id));
+    if (other !== null) {
+      collectionId = other;
+      record = readRecord(collectionDir(other));
+      const otherWriter = writingIds.get(other);
+      if (otherWriter !== undefined) {
+        seenWriting.set(id, otherWriter);
+        return 'writing';
+      }
+    }
+  }
+  const owner = record?.id === collectionId ? record.owner : undefined;
+  const queued = owner ?? chartSetOwner(id);
+  if (writing.has(queued)) {
+    seenWriting.set(id, queued);
+    return 'writing';
+  }
+  return owner === undefined ? 'absent' : 'ready';
+}
+
+/**
+ * The id the collection that `id` names is stored under: `id` itself when a
+ * collection holds it, else the collection of the chart set of that id,
+ * which may have taken another; null when there is none.
+ */
+export function storedCollectionId(id: string): string | null {
+  if (!SAFE_ID.test(id)) {
+    return null;
+  }
+  if (readRecord(collectionDir(id))?.id === id) {
+    return id;
+  }
+  return collectionOf(chartSetOwner(id));
 }
 
 /** The owner of the collection of this id, or null. */
