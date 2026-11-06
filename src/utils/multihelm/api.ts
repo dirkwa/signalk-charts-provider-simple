@@ -53,6 +53,7 @@ export interface MultihelmProperty {
   registerDataset?: (definition: DatasetDefinition) => DatasetHandle;
 }
 
+/** Whether a `multihelm` PropertyValue has the shape this plugin understands. */
 export function isMultihelmProperty(value: unknown): value is MultihelmProperty {
   return (
     typeof value === 'object' &&

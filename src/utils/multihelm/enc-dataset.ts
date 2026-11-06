@@ -64,6 +64,7 @@ function isEncMeta(meta: unknown): meta is EncMeta {
 class KeyMap {
   private readonly map = new Map<string, string>();
 
+  /** Loads the map from `file`, keeping only safe ids. */
   constructor(private readonly file: string) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
@@ -79,10 +80,12 @@ class KeyMap {
     }
   }
 
+  /** The key a local collection is replicated under. */
   keyOf(id: string): string {
     return this.map.get(id) ?? id;
   }
 
+  /** The local collection id a replicated key stands for. */
   idOf(key: string): string {
     for (const [id, k] of this.map) {
       if (k === key) {
@@ -92,6 +95,7 @@ class KeyMap {
     return key;
   }
 
+  /** Records that `id` is replicated under `key`. */
   set(id: string, key: string): void {
     if (id === key) {
       this.delete(id);
@@ -101,6 +105,7 @@ class KeyMap {
     this.save();
   }
 
+  /** Forgets the key of `id`. */
   delete(id: string): void {
     if (this.map.delete(id)) {
       this.save();
@@ -142,8 +147,9 @@ async function linkOrCopy(from: string, to: string): Promise<void> {
 }
 
 /**
- * `dataDir` holds the key map and, while a collection is stored, its
- * files under their names.
+ * The `enc` dataset: each ready ENC store collection, kept in step between
+ * servers. `dataDir` holds the key map and, while a collection is stored,
+ * its files under their names.
  */
 export function encDataset(host: EncHost, dataDir: string): DatasetDefinition {
   const keyMapFile = path.join(dataDir, 'multihelm-enc-keys.json');

@@ -114,6 +114,7 @@ async function moveInto(from: string, to: string): Promise<void> {
   }
 }
 
+/** The `charts` dataset: every chart file in the chart folder, with its enabled state as meta. */
 export function chartsDataset(host: ChartsHost): DatasetDefinition {
   const target = (key: string): string => path.join(host.chartPath(), ...key.split('/'));
   return {

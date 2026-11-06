@@ -26,9 +26,14 @@ export interface MultihelmLink {
   changed: () => void;
   /** Whether the datasets are registered now. */
   connected: () => boolean;
+  /** Withdraws the datasets and stops following Multihelm. */
   stop: () => void;
 }
 
+/**
+ * Follows Multihelm's PropertyValue and registers the datasets with each
+ * Multihelm that appears, withdrawing them when it stops.
+ */
 export function linkMultihelm(
   app: PropertyValueSource,
   datasets: () => DatasetDefinition[],

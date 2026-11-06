@@ -29,6 +29,7 @@ export interface ChartRefreshHost {
   drop: (relPath: string) => void;
 }
 
+/** Debounces, spaces and retries the chart list refreshes Multihelm's changes need. */
 export class ChartRefreshQueue {
   private readonly pending = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -56,6 +57,7 @@ export class ChartRefreshQueue {
     this.add([relPath], REFRESH_DELAY_MS);
   }
 
+  /** Cancels what is pending; a stopped queue ignores later changes. */
   stop(): void {
     this.stopped = true;
     if (this.timer) {
@@ -142,6 +144,7 @@ export class DeletedCharts {
     this.deleted.set(path.resolve(filePath), this.generation);
   }
 
+  /** A scan is about to read the chart folder; pass the token to `finish` or `release`. */
   begin(): symbol {
     const scan = Symbol('scan');
     this.scans.set(scan, this.generation);
@@ -169,6 +172,7 @@ export class DeletedCharts {
     return removed;
   }
 
+  /** Ends a scan without installing its result, and forgets deletions no scan needs. */
   release(scan: symbol): void {
     this.scans.delete(scan);
     // A deletion only matters to scans that began before it.
