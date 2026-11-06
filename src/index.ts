@@ -258,7 +258,7 @@ import packageJson from '../package.json' with { type: 'json' };
 import type { DatasetDefinition } from './utils/multihelm/api.js';
 import { chartsDataset } from './utils/multihelm/charts-dataset.js';
 import { encDataset } from './utils/multihelm/enc-dataset.js';
-import { ChartRefreshQueue, removeVanishedCharts } from './utils/multihelm/chart-refresh.js';
+import { ChartRefreshQueue, DeletedCharts } from './utils/multihelm/chart-refresh.js';
 import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import type {
   ChartProvider,
@@ -6230,6 +6230,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const nativeRelPath = (relPath: string): string => relPath.split('/').join(path.sep);
 
   let chartRefresh: ChartRefreshQueue | null = null;
+  const deletedCharts = new DeletedCharts();
 
   const newChartRefresh = (chartPath: string): ChartRefreshQueue =>
     new ChartRefreshQueue({
@@ -6242,6 +6243,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         }
       },
       drop: (relPath) => {
+        deletedCharts.mark(path.resolve(chartPath, nativeRelPath(relPath)));
         const chartId = chartIdFromFilename(path.basename(relPath));
         const provider = chartProviders[chartId] as ChartProvider | undefined;
         // Chart ids are file stems, so another folder's file of the same name
@@ -6323,12 +6325,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // before start() has run still resolves the computed default path.
       const chartPath = props.chartPath || getDefaultChartsPath();
       const started = lifecycle;
-      const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
-      closeProviderHandles(await removeVanishedCharts(charts));
+      const scan = deletedCharts.begin();
+      let charts: Record<string, ChartProvider>;
+      try {
+        charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
+      } catch (error) {
+        deletedCharts.release(scan);
+        throw error;
+      }
       if (stopped || lifecycle !== started) {
+        deletedCharts.release(scan);
         closeProviderHandles(Object.values(charts));
         return false;
       }
+      closeProviderHandles(deletedCharts.finish(scan, charts));
       pruneRasterTileCacheFor(charts);
 
       // Close the handles of the map being replaced — findCharts reopened

@@ -5,16 +5,13 @@
 
 import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 
 import {
   ChartRefreshQueue,
   MIN_INTERVAL_MS,
   REFRESH_DELAY_MS,
   RETRY_DELAY_MS,
-  removeVanishedCharts
+  DeletedCharts
 } from '../dist/utils/multihelm/chart-refresh.js';
 import type { ChartProvider } from '../dist/types.js';
 
@@ -25,19 +22,25 @@ interface Recorder {
   dropped: string[];
 }
 
+// mock.timers moves Date but not performance.now().
+const mockedClock = (): number => Date.now();
+
 function queue(rec: Recorder): ChartRefreshQueue {
-  return new ChartRefreshQueue({
-    refresh: () => {
-      rec.refreshes++;
-      return Promise.resolve(rec.results.shift() ?? true);
+  return new ChartRefreshQueue(
+    {
+      refresh: () => {
+        rec.refreshes++;
+        return Promise.resolve(rec.results.shift() ?? true);
+      },
+      announce: (relPaths) => {
+        rec.announced.push([...relPaths].sort());
+      },
+      drop: (relPath) => {
+        rec.dropped.push(relPath);
+      }
     },
-    announce: (relPaths) => {
-      rec.announced.push([...relPaths].sort());
-    },
-    drop: (relPath) => {
-      rec.dropped.push(relPath);
-    }
-  });
+    mockedClock
+  );
 }
 
 async function advance(ms: number): Promise<void> {
@@ -112,21 +115,24 @@ describe('ChartRefreshQueue', () => {
 
   it('keeps the short wait of a change that arrived during a failed refresh', async () => {
     let finish: (ok: boolean) => void = () => undefined;
-    const q = new ChartRefreshQueue({
-      refresh: () => {
-        rec.refreshes++;
-        if (rec.refreshes === 1) {
-          return new Promise<boolean>((resolve) => {
-            finish = resolve;
-          });
-        }
-        return Promise.resolve(true);
+    const q = new ChartRefreshQueue(
+      {
+        refresh: () => {
+          rec.refreshes++;
+          if (rec.refreshes === 1) {
+            return new Promise<boolean>((resolve) => {
+              finish = resolve;
+            });
+          }
+          return Promise.resolve(true);
+        },
+        announce: (relPaths) => {
+          rec.announced.push([...relPaths].sort());
+        },
+        drop: () => undefined
       },
-      announce: (relPaths) => {
-        rec.announced.push([...relPaths].sort());
-      },
-      drop: () => undefined
-    });
+      mockedClock
+    );
     q.changed(['a.mbtiles']);
     await advance(REFRESH_DELAY_MS);
     assert.strictEqual(rec.refreshes, 1);
@@ -166,25 +172,39 @@ describe('ChartRefreshQueue', () => {
   });
 });
 
-describe('removeVanishedCharts', () => {
-  it('takes out the charts whose file is gone and keeps the rest', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chart-refresh-'));
-    try {
-      const kept = path.join(dir, 'kept.mbtiles');
-      fs.writeFileSync(kept, '');
-      const provider = (filePath: string): ChartProvider =>
-        ({ _filePath: filePath }) as unknown as ChartProvider;
-      const deleted = provider(path.join(dir, 'deleted.mbtiles'));
-      const charts: Record<string, ChartProvider> = {
-        kept: provider(kept),
-        deleted,
-        online: provider('')
-      };
-      const removed = await removeVanishedCharts(charts);
-      assert.deepStrictEqual(removed, [deleted]);
-      assert.deepStrictEqual(Object.keys(charts).sort(), ['kept', 'online']);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+describe('DeletedCharts', () => {
+  const provider = (filePath: string): ChartProvider =>
+    ({ _filePath: filePath }) as unknown as ChartProvider;
+
+  it('keeps a chart deleted during a scan out of that scan', () => {
+    const guard = new DeletedCharts();
+    const a = provider('/charts/a.mbtiles');
+    const b = provider('/charts/b.mbtiles');
+    const scan = guard.begin();
+    // The scan has loaded both charts; then a is deleted before it installs.
+    const charts: Record<string, ChartProvider> = { a, b, online: provider('') };
+    guard.mark('/charts/a.mbtiles');
+    assert.deepStrictEqual(guard.finish(scan, charts), [a]);
+    assert.deepStrictEqual(Object.keys(charts).sort(), ['b', 'online']);
+  });
+
+  it('serves a chart that came back after its deletion', () => {
+    const guard = new DeletedCharts();
+    guard.mark('/charts/a.mbtiles');
+    const scan = guard.begin();
+    const charts: Record<string, ChartProvider> = { a: provider('/charts/a.mbtiles') };
+    assert.deepStrictEqual(guard.finish(scan, charts), []);
+    assert.deepStrictEqual(Object.keys(charts), ['a']);
+  });
+
+  it('applies a deletion to every scan that began before it', () => {
+    const guard = new DeletedCharts();
+    const first = guard.begin();
+    const second = guard.begin();
+    guard.mark('/charts/a.mbtiles');
+    guard.release(first);
+    const charts: Record<string, ChartProvider> = { a: provider('/charts/a.mbtiles') };
+    assert.strictEqual(guard.finish(second, charts).length, 1);
+    assert.deepStrictEqual(charts, {});
   });
 });
