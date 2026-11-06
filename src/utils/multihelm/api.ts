@@ -48,9 +48,30 @@ export interface DatasetHandle {
   unregister: () => void;
 }
 
+export type Role = 'master' | 'member';
+
+export interface MasterRouteHandle {
+  unregister: () => void;
+}
+
+export interface MasterResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
 export interface MultihelmProperty {
   apiVersion: number;
   registerDataset?: (definition: DatasetDefinition) => DatasetHandle;
+  role?: () => Role;
+  /** The peer that is the master; null when this server is it or there is none. */
+  master?: () => unknown;
+  onRoleChanged?: (cb: (role: Role) => void) => () => void;
+  /** Serve the master's GET answers under `prefix` (ending in `/`) at `masterPath(...)`. */
+  registerMasterRoute?: (prefix: string) => MasterRouteHandle;
+  masterPath?: (path: string) => string;
+  /** Rejects while no other server is the master. */
+  fetchMaster?: (path: string) => Promise<MasterResponse>;
 }
 
 /** Whether a `multihelm` PropertyValue has the shape this plugin understands. */
