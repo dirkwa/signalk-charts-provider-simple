@@ -5,10 +5,19 @@
  * catch-up is not left unserved, or a deleted one left advertised.
  */
 
+import fs from 'node:fs';
+
+import type { ChartProvider } from '../../types.js';
+
 /** A burst of changes ends this long after its last one. */
 export const REFRESH_DELAY_MS = 2_000;
 /** A failed refresh is tried again after this long. */
 export const RETRY_DELAY_MS = 30_000;
+/**
+ * Refreshes start at least this far apart, so a catch-up whose charts arrive
+ * a few seconds apart still rescans the folder only now and then.
+ */
+export const MIN_INTERVAL_MS = 15_000;
 
 export interface ChartRefreshHost {
   /** Rescan the chart folder; false when the scan failed and nothing changed. */
@@ -24,6 +33,7 @@ export class ChartRefreshQueue {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private stopped = false;
+  private lastStart = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly host: ChartRefreshHost) {}
 
@@ -64,10 +74,11 @@ export class ChartRefreshQueue {
     if (this.timer) {
       clearTimeout(this.timer);
     }
+    const wait = Math.max(delay, this.lastStart + MIN_INTERVAL_MS - Date.now());
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.run();
-    }, delay);
+    }, wait);
   }
 
   private async run(): Promise<void> {
@@ -82,6 +93,7 @@ export class ChartRefreshQueue {
     const relPaths = [...this.pending];
     this.pending.clear();
     this.running = true;
+    this.lastStart = Date.now();
     let ok: boolean;
     try {
       ok = await this.host.refresh();
@@ -103,4 +115,32 @@ export class ChartRefreshQueue {
     }
     this.host.announce(relPaths);
   }
+}
+
+/**
+ * Takes out of a scan's result the charts whose file was removed while the
+ * scan ran, so a scan that started before a deletion cannot serve the
+ * deleted chart again. Returns the removed providers, whose handles the
+ * caller closes.
+ */
+export async function removeVanishedCharts(
+  charts: Record<string, ChartProvider>
+): Promise<ChartProvider[]> {
+  const entries = Object.entries(charts).filter(([, provider]) => provider._filePath !== '');
+  const present = await Promise.all(
+    entries.map(([, provider]) =>
+      fs.promises.access(provider._filePath).then(
+        () => true,
+        () => false
+      )
+    )
+  );
+  const removed: ChartProvider[] = [];
+  entries.forEach(([chartId, provider], i) => {
+    if (!present[i]) {
+      Reflect.deleteProperty(charts, chartId);
+      removed.push(provider);
+    }
+  });
+  return removed;
 }

@@ -258,7 +258,7 @@ import packageJson from '../package.json' with { type: 'json' };
 import type { DatasetDefinition } from './utils/multihelm/api.js';
 import { chartsDataset } from './utils/multihelm/charts-dataset.js';
 import { encDataset } from './utils/multihelm/enc-dataset.js';
-import { ChartRefreshQueue } from './utils/multihelm/chart-refresh.js';
+import { ChartRefreshQueue, removeVanishedCharts } from './utils/multihelm/chart-refresh.js';
 import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import type {
   ChartProvider,
@@ -6324,6 +6324,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       const chartPath = props.chartPath || getDefaultChartsPath();
       const started = lifecycle;
       const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
+      closeProviderHandles(await removeVanishedCharts(charts));
       if (stopped || lifecycle !== started) {
         closeProviderHandles(Object.values(charts));
         return false;
