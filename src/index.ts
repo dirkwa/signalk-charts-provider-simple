@@ -255,6 +255,11 @@ import {
 // JSON import with type attribute (NodeNext ESM). package.json's `version`
 // is what the marker file records so users can confirm the running build.
 import packageJson from '../package.json' with { type: 'json' };
+import type { DatasetDefinition } from './utils/multihelm/api.js';
+import { chartsDataset } from './utils/multihelm/charts-dataset.js';
+import { encDataset } from './utils/multihelm/enc-dataset.js';
+import { ChartRefreshQueue, DeletedCharts } from './utils/multihelm/chart-refresh.js';
+import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import type {
   ChartProvider,
   ChartsProviderEncGlobal,
@@ -448,6 +453,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // signalk-internet's view of the link; null while the plugin is stopped.
   let internet: InternetGate | null = null;
   let pluginDataDir = '';
+  let multihelm: MultihelmLink | null = null;
+  let unsubscribeEncForMultihelm: (() => void) | null = null;
   let onlineTileStore: OnlineTileStore | null = null;
   let onlineTileProxy: OnlineTileProxy | null = null;
   let maskedTiles: MaskedTiles | null = null;
@@ -567,6 +574,17 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             'Offline or behind a sign-in page nothing is fetched either way; downloads you start yourself always run.',
           default: false
         },
+        multihelmLocalCopy: {
+          type: 'boolean',
+          title: 'Keep a copy of the charts of the other servers of this boat (Multihelm)',
+          description:
+            'For boats with several Signal K servers, one per nav station, paired in the Multihelm plugin: this server ' +
+            'keeps its own copy of the charts and shared ENC cells of the servers that do the same, and changes, ' +
+            'enabled states and deletions on one follow on the others, also on a server that was off. A station with a ' +
+            'copy keeps its charts when the others are off, at the cost of the disk space. Off by default. ' +
+            'Without Multihelm this setting does nothing.',
+          default: false
+        },
         _encStoreHeader: {
           type: 'null',
           title: 'Shared ENC cells'
@@ -622,6 +640,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         sweepTimer = null;
       }
       setCatalogChangedListener(null);
+      stopMultihelm();
       internet?.stop();
       internet = null;
       resetAreaRequests();
@@ -1053,6 +1072,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // (loadChartProviders sets one).
     if (loadOk) {
       app.setPluginStatus('Started');
+    }
+
+    stopMultihelm();
+    if (props.multihelmLocalCopy === true) {
+      startMultihelm(chartPath);
     }
 
     // Publish the in-process refresh hook for peer plugins (same pattern
@@ -6201,6 +6225,98 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // directory must not drop every served chart — and false is returned so
   // the refresh hook / POST /refresh can report the failure. Never rejects:
   // fire-and-forget callers (download completion) rely on that.
+  // Multihelm speaks in `/`-separated paths; chart and install state are
+  // keyed by the platform's own.
+  const nativeRelPath = (relPath: string): string => relPath.split('/').join(path.sep);
+
+  let chartRefresh: ChartRefreshQueue | null = null;
+  const deletedCharts = new DeletedCharts();
+
+  const newChartRefresh = (chartPath: string): ChartRefreshQueue =>
+    new ChartRefreshQueue({
+      refresh: () => refreshChartProviders(),
+      announce: (relPaths) => {
+        for (const relPath of relPaths) {
+          const chartId = chartIdFromFilename(path.basename(relPath));
+          const provider = chartProviders[chartId] as ChartProvider | undefined;
+          emitChartDelta(chartId, provider ? sanitizeProvider(provider, 2) : null);
+        }
+      },
+      drop: (relPath) => {
+        deletedCharts.mark(path.resolve(chartPath, nativeRelPath(relPath)));
+        const chartId = chartIdFromFilename(path.basename(relPath));
+        const provider = chartProviders[chartId] as ChartProvider | undefined;
+        // Chart ids are file stems, so another folder's file of the same name
+        // may be the one served: that one stays.
+        if (
+          provider === undefined ||
+          path.resolve(provider._filePath) !== path.resolve(chartPath, nativeRelPath(relPath))
+        ) {
+          return;
+        }
+        Reflect.deleteProperty(chartProviders, chartId);
+        closeProviderHandles([provider]);
+        emitChartDelta(chartId, null);
+      }
+    });
+
+  const startMultihelm = (chartPath: string): void => {
+    // Test harnesses and very old servers have no PropertyValues.
+    if (typeof (app as Partial<ExtendedServerAPI>).onPropertyValues !== 'function') {
+      return;
+    }
+    const refresh = newChartRefresh(chartPath);
+    chartRefresh = refresh;
+    const datasets = (): DatasetDefinition[] => [
+      chartsDataset({
+        chartPath: () => chartPath,
+        isEnabled: isChartEnabled,
+        setEnabled: setChartEnabled,
+        chartsChanged: (relPaths) => {
+          refresh.changed(relPaths);
+          return Promise.resolve();
+        },
+        chartDeleted: (relPath) => {
+          refresh.deleted(relPath);
+          removeInstallByFilename(nativeRelPath(relPath));
+          return Promise.resolve();
+        }
+      }),
+      encDataset(
+        {
+          ready: () => listCollectionsWithCells().filter((c) => collectionState(c.id) === 'ready'),
+          filePath: storedFilePath,
+          owner: collectionOwner,
+          ownerFor: (id, chart) => (chart !== undefined ? chartOwner(chart) : `detached:${id}`),
+          store: storeCollection,
+          remove: removeCollection
+        },
+        pluginDataDir
+      )
+    ];
+    const link = linkMultihelm(app, datasets, {
+      debug: (msg) => {
+        app.debug(msg);
+      },
+      error: (msg) => {
+        app.error(msg);
+      }
+    });
+    multihelm = link;
+    unsubscribeEncForMultihelm = onEncStoreChange(() => {
+      link.changed();
+    });
+  };
+
+  const stopMultihelm = (): void => {
+    unsubscribeEncForMultihelm?.();
+    unsubscribeEncForMultihelm = null;
+    multihelm?.stop();
+    multihelm = null;
+    chartRefresh?.stop();
+    chartRefresh = null;
+  };
+
   const refreshChartProviders = async (): Promise<boolean> => {
     onlineAddedCache = null;
     onlineAddedGeneration++;
@@ -6209,11 +6325,20 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       // before start() has run still resolves the computed default path.
       const chartPath = props.chartPath || getDefaultChartsPath();
       const started = lifecycle;
-      const charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
+      const scan = deletedCharts.begin();
+      let charts: Record<string, ChartProvider>;
+      try {
+        charts = await findCharts(chartPath, resolveOnlineChart, getLandIndex() !== null);
+      } catch (error) {
+        deletedCharts.release(scan);
+        throw error;
+      }
       if (stopped || lifecycle !== started) {
+        deletedCharts.release(scan);
         closeProviderHandles(Object.values(charts));
         return false;
       }
+      closeProviderHandles(deletedCharts.finish(scan, charts));
       pruneRasterTileCacheFor(charts);
 
       // Close the handles of the map being replaced — findCharts reopened
@@ -6224,6 +6349,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       syncOnlineTime();
 
       app.debug(`Chart providers refreshed: ${Object.keys(chartProviders).length} enabled charts`);
+      multihelm?.changed();
       return true;
     } catch (error) {
       app.error(
