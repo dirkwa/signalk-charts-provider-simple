@@ -6475,8 +6475,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   };
 
   const emitChartDelta = (chartId: string, localValue: SanitizedChart | null): void => {
-    // A chart gone here may still be served from the master.
-    const chartValue = localValue ?? masterCharts?.chart(chartId) ?? null;
+    // A chart gone here may still be served by another file with its id, or by the master.
+    const remaining = chartProviders[chartId] as ChartProvider | undefined;
+    const chartValue =
+      localValue ??
+      (remaining ? sanitizeProvider(remaining, 2) : masterCharts?.chart(chartId)) ??
+      null;
     try {
       app.handleMessage(
         PLUGIN_ID,
