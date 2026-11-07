@@ -33,7 +33,7 @@ if (process.send) {
   });
   // 'exit' follows 'error'; the process waits for the reason to be written.
   let failed = false;
-  worker.on('error', (err) => {
+  worker.on('error', (err: Error) => {
     failed = true;
     process.stderr.write(`${err.message}\n`, () => process.exit(1));
   });

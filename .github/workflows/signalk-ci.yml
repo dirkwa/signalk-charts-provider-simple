@@ -16,4 +16,5 @@ jobs:
     uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@master
     with:
       enable-armv7: false
+      node-versions: '["24", "26"]'
       enable-signalk-integration: true
