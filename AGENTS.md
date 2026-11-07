@@ -4,12 +4,12 @@ Guidance for AI coding agents and human contributors working in this repository.
 
 ## Commands
 
-Per project convention: `npm run format` → `npm run build` → `npm run test`.
+Per project convention: `npm run format` → `npm run test` (its `pretest` builds first).
 
 - `npm run build` — `vite build` to `dist/` (`vite.config.ts`), one output file per source module so the worker processes and threads, the catalog CLIs and the tests can load single modules; dependencies stay external. `vite-plugin-checker` runs `tsc` inside the build and fails it on the first type error, and `vite-plugin-dts` writes the `.d.ts` files. Then `build:public` compiles the webapp scripts with `tsc`.
 - `npm run build:watch` — `vite build --watch`
 - `npm run test` — runs `pretest` (build + `build:tests` + regenerate `test/fixtures/test-chart.mbtiles`), then `node --test --test-force-exit dist-test/**/*.test.js`
-- Run a single test file: `npm run build && npm run build:tests && node --test --test-force-exit dist-test/<name>.test.js`
+- Run a single test file: `npm run build && npm run build:tests && npm run test:fixtures && node --test --test-force-exit dist-test/<name>.test.js`
 - Run a single test by name: append `--test-name-pattern "<regex>"` to the node command
 - `npm run lint` / `npm run lint:fix` — ESLint (typescript-eslint `strictTypeChecked` over `src`, `test`, `e2e`, `public/js`, `playwright.config.ts`)
 - `npm run format` — Prettier on `**/*.ts` under `src`, `test`, `e2e`, and `public/js` (plus `playwright.config.ts`), then `eslint --fix`
