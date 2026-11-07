@@ -260,6 +260,7 @@ import { chartsDataset } from './utils/multihelm/charts-dataset.js';
 import { encDataset } from './utils/multihelm/enc-dataset.js';
 import { ChartRefreshQueue, DeletedCharts } from './utils/multihelm/chart-refresh.js';
 import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
+import { MasterCharts } from './utils/multihelm/master-charts.js';
 import type {
   ChartProvider,
   ChartsProviderEncGlobal,
@@ -454,6 +455,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let internet: InternetGate | null = null;
   let pluginDataDir = '';
   let multihelm: MultihelmLink | null = null;
+  let masterCharts: MasterCharts | null = null;
   let unsubscribeEncForMultihelm: (() => void) | null = null;
   let onlineTileStore: OnlineTileStore | null = null;
   let onlineTileProxy: OnlineTileProxy | null = null;
@@ -584,6 +586,16 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             'copy keeps its charts when the others are off, at the cost of the disk space. Off by default. ' +
             'Without Multihelm this setting does nothing.',
           default: false
+        },
+        multihelmFromMaster: {
+          type: 'boolean',
+          title: "Show the master's charts (Multihelm)",
+          description:
+            "On a server that is not the boat's master in the Multihelm plugin: list the master's charts next to this " +
+            "server's own, without a copy here. Tiles are read from the master while it is there, through this server, " +
+            'so a browser at this station needs no access to the master. A chart this server also has is served from ' +
+            'its own copy. On by default; without Multihelm this setting does nothing.',
+          default: true
         },
         _encStoreHeader: {
           type: 'null',
@@ -1077,6 +1089,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     stopMultihelm();
     if (props.multihelmLocalCopy === true) {
       startMultihelm(chartPath);
+    }
+    if (props.multihelmFromMaster !== false) {
+      startMasterCharts();
     }
 
     // Publish the in-process refresh hook for peer plugins (same pattern
@@ -6188,23 +6203,30 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             app.debug(`** listResources() ${JSON.stringify(params)}`);
             touchOnlineTime(Object.values(chartProviders));
             return Promise.resolve(
-              Object.fromEntries(
-                Object.entries(chartProviders).map(([k, provider]) => [
-                  k,
-                  sanitizeProvider(provider, 2)
-                ])
-              )
+              // A chart this server has is served from its own copy.
+              {
+                ...masterCharts?.charts(),
+                ...Object.fromEntries(
+                  Object.entries(chartProviders).map(([k, provider]) => [
+                    k,
+                    sanitizeProvider(provider, 2)
+                  ])
+                )
+              }
             );
           },
           getResource: (id) => {
             app.debug(`** getResource() ${id}`);
-            const provider = chartProviders[id];
+            const provider = Object.hasOwn(chartProviders, id) ? chartProviders[id] : undefined;
             if (provider) {
               touchOnlineTime([provider]);
               return Promise.resolve(sanitizeProvider(provider, 2));
-            } else {
-              throw new Error('Chart not found!');
             }
+            const fromMaster = masterCharts?.chart(id);
+            if (fromMaster) {
+              return Promise.resolve(fromMaster);
+            }
+            throw new Error('Chart not found!');
           },
           setResource: (id, value) => {
             throw new Error(`Not implemented!\n Cannot set ${id} to ${JSON.stringify(value)}`);
@@ -6308,7 +6330,31 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
   };
 
+  const startMasterCharts = (): void => {
+    if (typeof (app as Partial<ExtendedServerAPI>).onPropertyValues !== 'function') {
+      return;
+    }
+    masterCharts = new MasterCharts(
+      app,
+      (chartId, chart) => {
+        if (!Object.hasOwn(chartProviders, chartId)) {
+          emitChartDelta(chartId, chart);
+        }
+      },
+      {
+        debug: (msg) => {
+          app.debug(msg);
+        },
+        error: (msg) => {
+          app.error(msg);
+        }
+      }
+    );
+  };
+
   const stopMultihelm = (): void => {
+    masterCharts?.stop();
+    masterCharts = null;
     unsubscribeEncForMultihelm?.();
     unsubscribeEncForMultihelm = null;
     multihelm?.stop();
@@ -6428,7 +6474,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     }
   };
 
-  const emitChartDelta = (chartId: string, chartValue: SanitizedChart | null): void => {
+  const emitChartDelta = (chartId: string, localValue: SanitizedChart | null): void => {
+    // A chart gone here may still be served by another file with its id, or by the master.
+    const remaining = Object.hasOwn(chartProviders, chartId) ? chartProviders[chartId] : undefined;
+    const chartValue =
+      localValue ??
+      (remaining ? sanitizeProvider(remaining, 2) : masterCharts?.chart(chartId)) ??
+      null;
     try {
       app.handleMessage(
         PLUGIN_ID,
