@@ -35,6 +35,12 @@ reviews:
     - '!**/test/fixtures/*.mbtiles'
     - '!**/cr-review*.txt'
 
+  # Code explains itself; comments say why, not what. Docstrings on every
+  # function would be the echo comments AGENTS.md rules out.
+  pre_merge_checks:
+    docstrings:
+      mode: 'off'
+
   high_level_summary_instructions: |
     Write summaries in present tense. Describe what the code does, not what
     it did. Skip filler like "This PR" — go straight to the change.
@@ -240,7 +246,7 @@ reviews:
 
         ## Documentation drift risk
 
-        Flag any `.md` file (including `README.md`, `CLAUDE.md`) that
+        Flag any `.md` file (including `README.md`, `AGENTS.md`) that
         contains:
 
         - Specific code snippets, function signatures, or config
@@ -252,7 +258,7 @@ reviews:
           descriptions, not in repo docs.
 
         Architecture decisions and conceptual design rationale are
-        fine — `CLAUDE.md` intentionally captures these.
+        fine — `AGENTS.md` intentionally captures these.
 
         ## Leftover crumbs from intermediate commits
 
@@ -300,6 +306,10 @@ reviews:
         ## What NOT to flag
 
         These are intentional:
+
+        - Functions, classes and modules without docstrings or JSDoc.
+          Code explains itself; don't ask for docstrings or docstring
+          coverage.
 
         - Two responsibilities (serve + convert) in one plugin —
           shipping them together is on purpose; the App Store entry
