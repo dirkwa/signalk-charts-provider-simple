@@ -6217,7 +6217,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           },
           getResource: (id) => {
             app.debug(`** getResource() ${id}`);
-            const provider = chartProviders[id];
+            const provider = Object.hasOwn(chartProviders, id) ? chartProviders[id] : undefined;
             if (provider) {
               touchOnlineTime([provider]);
               return Promise.resolve(sanitizeProvider(provider, 2));
@@ -6476,7 +6476,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
   const emitChartDelta = (chartId: string, localValue: SanitizedChart | null): void => {
     // A chart gone here may still be served by another file with its id, or by the master.
-    const remaining = chartProviders[chartId] as ChartProvider | undefined;
+    const remaining = Object.hasOwn(chartProviders, chartId) ? chartProviders[chartId] : undefined;
     const chartValue =
       localValue ??
       (remaining ? sanitizeProvider(remaining, 2) : masterCharts?.chart(chartId)) ??
