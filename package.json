@@ -75,7 +75,8 @@
     "displayName": "Charts Provider Simple",
     "recommends": [
       "signalk-container",
-      "@meri-imperiumi/signalk-internet"
+      "@meri-imperiumi/signalk-internet",
+      "signalk-multihelm"
     ],
     "screenshots": [
       "./docs/screenshots/1_charts-provider-simple.png",
