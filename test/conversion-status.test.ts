@@ -270,7 +270,7 @@ describe('Conversion availability', () => {
 
     const catalog = createCustomCatalog('Status without logs');
     setCatalogProgress(catalog.id, 'downloading', 'Fetching cells');
-    appendCatalogLog(catalog.id, '/home/node/.signalk/charts/cell.000');
+    appendCatalogLog(catalog.id, 'charts/cell.000');
     const setStatus = handlers.get('get /custom-catalogs/:id/status');
     assert.ok(setStatus);
     const setRes = makeRes();
