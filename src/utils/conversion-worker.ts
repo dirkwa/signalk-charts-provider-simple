@@ -11,6 +11,7 @@ import path from 'node:path';
 import { parentPort } from 'node:worker_threads';
 import { loadGdalWasm, GdalError, type GdalSource, type GdalWasm } from './gdal-wasm.js';
 import { composeRasterTile } from './raster-compose.js';
+import { retryWhenLocked } from './gdal-retry.js';
 import {
   bucketFeatures,
   mergeTiles,
@@ -185,15 +186,16 @@ async function runTask(id: number, task: ConversionTask): Promise<TaskResult> {
       const g = await getGdal();
       g.drainLog();
       fs.rmSync(task.dst, { force: true });
+      const { dst, source, args } = task;
       switch (task.op) {
         case 'gdal-translate':
-          g.translate(task.dst, task.source, task.args);
+          await retryWhenLocked(dst, () => g.translate(dst, source, args));
           return { op: task.op, log: g.drainLog() };
         case 'gdal-rasterize':
-          g.rasterize(task.dst, task.source, task.args);
+          await retryWhenLocked(dst, () => g.rasterize(dst, source, args));
           return { op: task.op, log: g.drainLog() };
         case 'gdal-vector-translate':
-          g.vectorTranslate(task.dst, task.source, task.args);
+          await retryWhenLocked(dst, () => g.vectorTranslate(dst, source, args));
           return { op: task.op, log: g.drainLog() };
       }
       break;
