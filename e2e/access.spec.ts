@@ -44,6 +44,8 @@ test.describe('access levels', () => {
     await expect(downloadButton).toBeVisible();
     await expect(downloadButton).toHaveCSS('opacity', '0.45');
     await expect(downloadButton).toHaveAttribute('aria-disabled', 'true');
+    await page.locator('#downloadUrl').fill('https://example.com/chart.mbtiles', { force: true });
+    await page.locator('#downloadChartName').fill('Example', { force: true });
     await downloadButton.click({ force: true });
     expect(changes).toEqual([]);
   });

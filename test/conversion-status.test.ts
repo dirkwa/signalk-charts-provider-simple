@@ -21,6 +21,12 @@ import {
   _resetContainerManagerForTests,
   type ContainerManagerApi
 } from '../dist/utils/container-manager.js';
+import { setConversionFailed } from '../dist/utils/s57-converter.js';
+import {
+  appendCatalogLog,
+  createCustomCatalog,
+  setCatalogProgress
+} from '../dist/utils/custom-catalog-manager.js';
 
 declare global {
   var __signalk_containerManager: ContainerManagerApi | undefined;
@@ -237,5 +243,41 @@ describe('Conversion availability', () => {
     // Orphans are reaped at most once per process; an earlier test file may
     // have used the one reap already.
     assert.ok(reaps <= 1);
+  });
+
+  it('sends conversion status without logs, which only readwrite users may read', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'conversion-status-'));
+    tempDirs.push(tempDir);
+    const chartPath = path.join(tempDir, 'charts');
+    fs.mkdirSync(chartPath, { recursive: true });
+    const recording = createRecordingApp(tempDir);
+    const plugin = pluginFactory(recording.app);
+    plugins.push(plugin);
+    const { router, handlers } = createRouterStub();
+    plugin.registerWithRouter?.(router);
+    plugin.start({ chartPath }, () => {});
+    await waitFor(() => recording.statuses.includes('Started'), 'startup');
+
+    setConversionFailed('US5LOGS1', 'GDAL failed');
+    const conversions = handlers.get('get /catalog-s57-status');
+    assert.ok(conversions);
+    const conversionsRes = makeRes();
+    await conversions({}, conversionsRes);
+    const entry = (conversionsRes.body as { conversions: Record<string, unknown> }).conversions[
+      'US5LOGS1'
+    ];
+    assert.deepStrictEqual(entry, { status: 'failed', message: 'GDAL failed' });
+
+    const catalog = createCustomCatalog('Status without logs');
+    setCatalogProgress(catalog.id, 'downloading', 'Fetching cells');
+    appendCatalogLog(catalog.id, '/home/node/.signalk/charts/cell.000');
+    const setStatus = handlers.get('get /custom-catalogs/:id/status');
+    assert.ok(setStatus);
+    const setRes = makeRes();
+    await setStatus({ params: { id: catalog.id } }, setRes);
+    assert.deepStrictEqual((setRes.body as { progress: unknown }).progress, {
+      status: 'downloading',
+      message: 'Fetching cells'
+    });
   });
 });
