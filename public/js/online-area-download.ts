@@ -379,13 +379,13 @@ async function showOfflineArea(
           <div id="areaEstimate" class="area-estimate"></div>
           <div id="areaProgress"></div>
           <div class="area-kept"><span id="areaKept"></span>
-            <button class="btn btn-sm btn-danger" id="areaClear" onclick="clearKeptTiles()" disabled>Delete kept tiles</button>
+            <button class="btn btn-sm btn-danger" data-needs="admin" id="areaClear" onclick="clearKeptTiles()" disabled>Delete kept tiles</button>
           </div>
         </div>
         <div class="delete-modal-actions">
           <button class="btn btn-secondary" onclick="closeAreaDialog()">Close</button>
-          <button class="btn btn-danger" id="areaCancel" onclick="cancelAreaDownload()" hidden>Stop</button>
-          <button class="btn btn-primary" id="areaStart" onclick="startAreaDownload()">Download area</button>
+          <button class="btn btn-danger" data-needs="readwrite" id="areaCancel" onclick="cancelAreaDownload()" hidden>Stop</button>
+          <button class="btn btn-primary" data-needs="readwrite" id="areaStart" onclick="startAreaDownload()">Download area</button>
         </div>
       </div>
     </div>`
@@ -450,7 +450,7 @@ function showKeptTiles(chartId: string, name: string, minzoom: number, maxzoom: 
         <div class="delete-modal-body">
           <p class="area-help">The server keeps every tile of this chart a chart plotter shows, so areas you have already looked at work without internet until the server's space for online charts is full and the oldest of them make room. Its provider does not allow downloading areas in advance.</p>
           <div class="area-kept"><span id="areaKept"></span>
-            <button class="btn btn-sm btn-danger" id="areaClear" onclick="clearKeptTiles()" disabled>Delete kept tiles</button>
+            <button class="btn btn-sm btn-danger" data-needs="admin" id="areaClear" onclick="clearKeptTiles()" disabled>Delete kept tiles</button>
           </div>
         </div>
         <div class="delete-modal-actions">

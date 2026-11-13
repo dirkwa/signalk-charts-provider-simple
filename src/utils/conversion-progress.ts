@@ -26,3 +26,22 @@ export function setConversionResult(
     }
   }, RESULT_RETENTION_MS).unref();
 }
+
+export type ProgressSummary = Omit<ConversionProgress, 'log'>;
+
+// Status routes are open to read-only users; the log, with its server
+// paths, is served only by the readwrite log routes.
+export function withoutLog(progress: ConversionProgress | null): ProgressSummary | null {
+  return progress && { status: progress.status, message: progress.message };
+}
+
+export function progressWithoutLogs(
+  progress: ConversionProgressMap
+): Record<string, ProgressSummary> {
+  return Object.fromEntries(
+    Object.entries(progress).map(([chartNumber, entry]) => [
+      chartNumber,
+      { status: entry.status, message: entry.message }
+    ])
+  );
+}

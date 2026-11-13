@@ -966,3 +966,34 @@ tbody tr:last-child td {
         max-width: none;
     }
 }
+
+/* Controls the signed-in user may not use stay visible, greyed out. */
+.access-banner {
+    padding: var(--md-sys-spacing-2) var(--md-sys-spacing-4);
+    border-radius: var(--md-sys-shape-corner-medium);
+    margin-bottom: var(--md-sys-spacing-4);
+    font-size: 13px;
+    background: var(--md-sys-color-tertiary-container);
+    color: var(--md-sys-color-on-tertiary-container);
+}
+
+.access-banner a {
+    color: inherit;
+    font-weight: 600;
+}
+
+body[data-access="none"] [data-needs],
+body[data-access="readonly"] [data-needs],
+body[data-access="readwrite"] [data-needs="admin"] {
+    opacity: 0.45;
+    filter: grayscale(1);
+}
+
+body[data-access="none"] [data-needs],
+body[data-access="none"] [data-needs] *,
+body[data-access="readonly"] [data-needs],
+body[data-access="readonly"] [data-needs] *,
+body[data-access="readwrite"] [data-needs="admin"],
+body[data-access="readwrite"] [data-needs="admin"] * {
+    cursor: not-allowed;
+}

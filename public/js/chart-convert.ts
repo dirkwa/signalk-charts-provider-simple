@@ -8,11 +8,10 @@ interface ConvertJob {
   fileName: string;
   type: 's57' | 'rnc';
   chartNumber?: string;
-  log?: string[];
 }
 
 interface S57StatusResponse {
-  conversions?: Record<string, { status: string; message?: string; log?: string[] }>;
+  conversions?: Record<string, { status: string; message?: string }>;
   conversionAvailable?: boolean;
   conversionEngine?: 'container' | 'wasm';
   conversionEnginePreference?: 'auto' | 'container' | 'wasm';
@@ -68,7 +67,7 @@ function initConvertTab(): void {
           WebAssembly (<a href="https://gdal3.js.org/" target="_blank" rel="noopener">gdal3.js</a>),
           which needs no container runtime.
         </p>
-        <div class="convert-upload-area" id="s57DropZone">
+        <div class="convert-upload-area" data-needs="readwrite" id="s57DropZone">
           <div class="convert-upload-icon">
             <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor" opacity="0.3">
               <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
@@ -77,7 +76,7 @@ function initConvertTab(): void {
           <div class="convert-upload-text">Drop S-57 ENC ZIP files here or click to select</div>
           <input type="file" id="s57FileInput" accept=".zip" multiple style="display:none" data-convert-type="s57">
         </div>
-        <div class="convert-local">
+        <div class="convert-local" data-needs="readwrite">
           <label for="s57LocalPath">Or convert charts already on the Signal K server</label>
           <div class="convert-local-row">
             <input type="text" id="s57LocalPath" class="input-field" placeholder="~/charts/ENC_ROOT"
@@ -89,7 +88,7 @@ function initConvertTab(): void {
             ~ is the server's home folder. The folder is only read.
           </div>
         </div>
-        <div class="convert-upload-options">
+        <div class="convert-upload-options" data-needs="readwrite">
           <label>Zoom levels:</label>
           <select class="catalog-zoom-select" id="convertS57Minzoom">
             ${[4, 5, 6, 7, 8, 9, 10, 11, 12]
@@ -114,7 +113,7 @@ function initConvertTab(): void {
           <a href="https://gdal.org/" target="_blank" rel="noopener">GDAL</a>, in a helper container
           when one is available, or inside Signal K with GDAL compiled to WebAssembly.
         </p>
-        <div class="convert-upload-area" id="rncDropZone">
+        <div class="convert-upload-area" data-needs="readwrite" id="rncDropZone">
           <div class="convert-upload-icon">
             <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor" opacity="0.3">
               <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
@@ -123,7 +122,7 @@ function initConvertTab(): void {
           <div class="convert-upload-text">Drop BSB/RNC ZIP here or click to select</div>
           <input type="file" id="rncFileInput" accept=".zip" style="display:none" data-convert-type="rnc">
         </div>
-        <div class="convert-local">
+        <div class="convert-local" data-needs="readwrite">
           <label for="rncLocalPath">Or convert charts already on the Signal K server</label>
           <div class="convert-local-row">
             <input type="text" id="rncLocalPath" class="input-field" placeholder="~/charts/BSB_ROOT"
@@ -487,7 +486,6 @@ async function pollConvertJobs(): Promise<void> {
           job.message = progress.message ?? 'Conversion failed';
         } else {
           job.message = progress.message ?? 'Converting...';
-          job.log = progress.log;
         }
       } else if (job.chartNumber) {
         // Conversion finished (progress tracking was cleaned up on success)
@@ -569,10 +567,10 @@ function renderConvertJobs(): void {
               : 'status-downloading';
         const running = job.status === 'converting' && job.chartNumber;
         const logsBtn = running
-          ? `<button class="btn-catalog-log" data-convert-log-chart="${convertEscapeAttr(job.chartNumber)}">Logs</button>`
+          ? `<button class="btn-catalog-log" data-needs="readwrite" data-convert-log-chart="${convertEscapeAttr(job.chartNumber)}">Logs</button>`
           : '';
         const cancelBtn = running
-          ? `<button class="btn btn-danger btn-sm" data-convert-cancel-chart="${convertEscapeAttr(job.chartNumber)}">Cancel</button>`
+          ? `<button class="btn btn-danger btn-sm" data-needs="readwrite" data-convert-cancel-chart="${convertEscapeAttr(job.chartNumber)}">Cancel</button>`
           : '';
         return `
           <div class="download-job ${statusClass}" id="convert-job-${convertEscapeAttr(id)}">
