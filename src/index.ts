@@ -1,4 +1,4 @@
-import type { Path, Plugin } from '@signalk/server-api';
+import type { Path, Plugin, PluginRouter } from '@signalk/server-api';
 import { ALARM_METHOD, ALARM_STATE, SKVersion } from '@signalk/server-api';
 import { Type } from 'typebox';
 import Busboy from 'busboy';
@@ -42,6 +42,7 @@ import {
 import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { capabilitiesUrlFor } from './utils/time-dimension.js';
 import { readVesselPosition } from './utils/vessel-position.js';
+import { accessRouter } from './utils/route-access.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import { InternetGate, subscribeInternetState } from './utils/internet-state.js';
 import {
@@ -268,7 +269,6 @@ import type {
   DownloadJob,
   EncCollectionStateInfo,
   ExtendedServerAPI,
-  IRouter,
   PluginConfig,
   Request,
   Response,
@@ -1703,10 +1703,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     maxzoom: Type.Optional(ZoomLevel)
   });
 
-  const registerRoutes = (router: IRouter): void => {
+  const registerRoutes = (router: PluginRouter): void => {
     app.debug('** Registering API paths via registerWithRouter **');
+    const readonly = accessRouter(router, 'readonly');
+    const readwrite = accessRouter(router, 'readwrite');
 
-    router.post('/download-chart-locker', (req: Request, res: Response) => {
+    readwrite.post('/download-chart-locker', (req: Request, res: Response) => {
       const bb = Busboy({ headers: req.headers });
 
       const fields: Record<string, string> = {};
@@ -1841,7 +1843,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       req.pipe(bb);
     });
 
-    router.get('/download-job/:jobId', (req: Request, res: Response) => {
+    readonly.get('/download-job/:jobId', (req: Request, res: Response) => {
       const jobId = (req.params as Record<string, string>).jobId;
       const job = downloadManager.getJob(jobId);
 
@@ -1853,12 +1855,12 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json(job);
     });
 
-    router.get('/download-jobs', (_req: Request, res: Response) => {
+    readonly.get('/download-jobs', (_req: Request, res: Response) => {
       const jobs = downloadManager.getAllJobs();
       res.json(jobs);
     });
 
-    router.post('/cancel-download/:jobId', (req: Request, res: Response) => {
+    readwrite.post('/cancel-download/:jobId', (req: Request, res: Response) => {
       const { jobId } = req.params as Record<string, string>;
 
       if (!jobId) {
@@ -1929,7 +1931,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     };
 
-    router.get('/local-charts', async (_req: Request, res: Response) => {
+    readonly.get('/local-charts', async (_req: Request, res: Response) => {
       try {
         const chartPath = props.chartPath || defaultChartsPath;
         const charts = await scanChartsRecursively(chartPath);
@@ -2179,7 +2181,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.post('/folders', async (req: Request, res: Response) => {
+    readwrite.post('/folders', async (req: Request, res: Response) => {
       const body = parseBody(FolderCreateBody, req, res);
       if (!body) {
         return;
@@ -2554,7 +2556,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // but that have a valid tile pyramid — the Manage UI surfaces these
     // with a Repair action. Mirrors /local-charts' base-path resolution and
     // error shape.
-    router.get('/repairable-charts', async (_req: Request, res: Response) => {
+    readonly.get('/repairable-charts', async (_req: Request, res: Response) => {
       try {
         const basePath = props.chartPath || defaultChartsPath;
         const repairable = await findRepairableCharts(basePath);
@@ -2745,7 +2747,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/chart-metadata/:chartPath', async (req: Request, res: Response) => {
+    readonly.get('/chart-metadata/:chartPath', async (req: Request, res: Response) => {
       const chartPathParam = decodeURIComponent((req.params as Record<string, string>).chartPath);
 
       try {
@@ -2855,7 +2857,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.post('/upload', (req: Request, res: Response) => {
+    readwrite.post('/upload', (req: Request, res: Response) => {
       try {
         const bb = Busboy({ headers: req.headers });
         const basePath = props.chartPath || defaultChartsPath;
@@ -3032,7 +3034,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // Same quarantine discipline as `/upload`: an aborted or malformed
     // request leaves bytes only in the quarantine dir, never in the live
     // chart library, and the startup sweep reclaims whatever a crash left.
-    router.post('/upload-zip', (req: Request, res: Response) => {
+    readwrite.post('/upload-zip', (req: Request, res: Response) => {
       try {
         const bb = Busboy({
           headers: req.headers,
@@ -3190,7 +3192,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     // Chunked upload for large files — each chunk is a short-lived request that
     // stays well within Node's server.requestTimeout (default 300s in Node 18+).
-    router.put('/upload-chunk', (req: Request, res: Response) => {
+    readwrite.put('/upload-chunk', (req: Request, res: Response) => {
       try {
         // Headers are pulled from req.headers as a plain object; node
         // already lowercases the names, so picking the four we care
@@ -3301,7 +3303,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // client-supplied upload id; only the final chunk triggers extraction
     // and promotion, so an interrupted upload leaves nothing in the chart
     // library and the startup sweep reclaims the partial archive.
-    router.put('/upload-zip-chunk', (req: Request, res: Response) => {
+    readwrite.put('/upload-zip-chunk', (req: Request, res: Response) => {
       try {
         const headerFields = {
           'x-upload-id': req.headers['x-upload-id'],
@@ -3502,7 +3504,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // .mbtiles written after startup (no file watcher exists) becomes
     // visible to clients. The in-process `__signalk_chartsProviderRefresh`
     // global does the same without an HTTP round-trip for peer plugins.
-    router.post('/refresh', async (_req: Request, res: Response) => {
+    readwrite.post('/refresh', async (_req: Request, res: Response) => {
       // refreshChartProviders never rejects; false means the scan failed
       // (details already logged) and must surface as 500, not as a
       // success response with a stale chart count.
@@ -3522,7 +3524,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // Polled by the Chart Catalog so "Near me" follows a GPS fix that
     // arrives (or is lost) after the tab opened, without reloading the
     // whole catalog.
-    router.get('/vessel-position', (_req: Request, res: Response) => {
+    readonly.get('/vessel-position', (_req: Request, res: Response) => {
       res.json({ position: vesselPosition() });
     });
 
@@ -3556,7 +3558,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       };
     };
 
-    router.get('/catalog-registry', (_req: Request, res: Response) => {
+    readonly.get('/catalog-registry', (_req: Request, res: Response) => {
       void (async () => {
         try {
           // On a first run there is no cached catalog yet, and the UI does
@@ -3580,7 +3582,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // Re-download the merged chart catalog (the Refresh button). Awaited so
     // the response reflects the attempt; refreshCatalog never rejects, and
     // catalogStatus carries the reason when it fails.
-    router.post('/catalog-registry/refresh', (_req: Request, res: Response) => {
+    readwrite.post('/catalog-registry/refresh', (_req: Request, res: Response) => {
       void (async () => {
         try {
           await refreshCatalog();
@@ -3594,7 +3596,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     // Add an online chart from the catalog: write its .onlinechart.json into
     // the chosen folder, where Manage Charts and chart serving pick it up.
-    router.post('/online-charts', (req: Request, res: Response) => {
+    readwrite.post('/online-charts', (req: Request, res: Response) => {
       const body = parseBody(AddOnlineChartBody, req, res);
       if (!body) {
         return;
@@ -3664,7 +3666,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     };
 
     // Add an online chart by URL, for a service the catalog does not list.
-    router.post('/online-charts/custom', (req: Request, res: Response) => {
+    readwrite.post('/online-charts/custom', (req: Request, res: Response) => {
       const body = parseBody(AddCustomOnlineChartBody, req, res);
       if (!body) {
         return;
@@ -3712,7 +3714,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // chart file beside the chart's, sharing its kept tiles. It is served once
     // the land index is built, which this never starts: the user agrees to
     // that download separately (POST /land-index/download).
-    router.post('/online-charts/masked-version', (req: Request, res: Response) => {
+    readwrite.post('/online-charts/masked-version', (req: Request, res: Response) => {
       const body = parseBody(MaskedVersionBody, req, res);
       if (!body) {
         return;
@@ -3781,7 +3783,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
 
     // The shoreline data masked versions need: its state, and what the
     // one-time download takes, for the confirmation before it starts.
-    router.get('/land-index', (_req: Request, res: Response) => {
+    readonly.get('/land-index', (_req: Request, res: Response) => {
       void (async () => {
         try {
           const basePath = props.chartPath || defaultChartsPath;
@@ -3803,7 +3805,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     // Start the one-time download, once the user has agreed to it.
-    router.post('/land-index/download', (_req: Request, res: Response) => {
+    readwrite.post('/land-index/download', (_req: Request, res: Response) => {
       void (async () => {
         try {
           await requestLandIndex();
@@ -3863,7 +3865,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       };
     };
 
-    router.post('/online-charts/:chartId/area-download', (req: Request, res: Response) => {
+    readwrite.post('/online-charts/:chartId/area-download', (req: Request, res: Response) => {
       const body = parseBody(AreaDownloadBody, req, res);
       if (!body) {
         return;
@@ -3911,11 +3913,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     // Not under /online-charts/, where a job id could be taken for a chart id.
-    router.get('/online-area-downloads', (_req: Request, res: Response) => {
+    readonly.get('/online-area-downloads', (_req: Request, res: Response) => {
       res.json({ jobs: areaDownloader?.list() ?? [] });
     });
 
-    router.delete('/online-area-downloads/:jobId', (req: Request, res: Response) => {
+    readwrite.delete('/online-area-downloads/:jobId', (req: Request, res: Response) => {
       if (!areaDownloader?.cancel(String(req.params.jobId))) {
         res.status(404).json({ success: false, error: 'No such download running' });
         return;
@@ -3923,7 +3925,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({ success: true });
     });
 
-    router.get('/online-charts/:chartId/offline', (req: Request, res: Response) => {
+    readonly.get('/online-charts/:chartId/offline', (req: Request, res: Response) => {
       const chart = offlineChart(String(req.params.chartId), res);
       if (!chart) {
         return;
@@ -3947,7 +3949,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({ success: true });
     });
 
-    router.get('/catalog-s57-status', (_req: Request, res: Response) => {
+    readonly.get('/catalog-s57-status', (_req: Request, res: Response) => {
       // Conversion is always available: the container toolchain when
       // signalk-container has a runtime, the built-in GDAL (WebAssembly)
       // otherwise. `containerRuntime*` report the runtime itself;
@@ -3975,7 +3977,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     });
 
-    router.get('/catalog-s57-log/:chartNumber', (req: Request, res: Response) => {
+    readwrite.get('/catalog-s57-log/:chartNumber', (req: Request, res: Response) => {
       const progress =
         getS57Progress((req.params as Record<string, string>).chartNumber) ||
         getRncProgress((req.params as Record<string, string>).chartNumber);
@@ -3992,7 +3994,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     });
 
-    router.get('/catalog-updates', (_req: Request, res: Response) => {
+    readonly.get('/catalog-updates', (_req: Request, res: Response) => {
       try {
         const updates = checkForUpdates();
         res.json(updates);
@@ -4002,7 +4004,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/catalog/:catalogFile', (req: Request, res: Response) => {
+    readonly.get('/catalog/:catalogFile', (req: Request, res: Response) => {
       try {
         const catalogFile = (req.params as Record<string, string>).catalogFile;
         const data = getCatalogData(catalogFile);
@@ -4071,7 +4073,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       (isS57 ? setS57Failed : setRncFailed)(chartNumber, CONVERSION_ABORTED_MESSAGE);
     };
 
-    router.post('/convert-cancel/:chartNumber', (req: Request, res: Response) => {
+    readwrite.post('/convert-cancel/:chartNumber', (req: Request, res: Response) => {
       const { chartNumber } = req.params as Record<string, string>;
       const controller = conversionAborts.get(chartNumber);
       if (!controller) {
@@ -4082,7 +4084,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({ success: true, message: 'Cancellation requested' });
     });
 
-    router.post('/convert-upload', (req: Request, res: Response) => {
+    readwrite.post('/convert-upload', (req: Request, res: Response) => {
       const bb = Busboy({ headers: req.headers, limits: { fileSize: 500 * 1024 * 1024 } });
       const chartPath = props.chartPath || defaultChartsPath;
 
@@ -4245,7 +4247,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // Convert charts already on the server's disk: a folder of S-57 cells or
     // BSB charts, loose or in ZIP files, or one ZIP. The source is only read;
     // its archives are extracted into a work folder in the data dir.
-    router.post('/convert-local', (req: Request, res: Response) => {
+    readwrite.post('/convert-local', (req: Request, res: Response) => {
       const body = parseBody(ConvertLocalBody, req, res);
       if (!body) {
         return;
@@ -4394,7 +4396,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       })();
     });
 
-    router.post('/catalog/download', (req: Request, res: Response) => {
+    readwrite.post('/catalog/download', (req: Request, res: Response) => {
       const body = parseBody(CatalogDownloadBody, req, res);
       if (!body) {
         return;
@@ -4649,7 +4651,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // plugins in this server use `globalThis.__signalk_chartsProviderEnc`;
     // these routes serve the same to clients elsewhere, and to the UI.
 
-    router.get('/enc-store', (_req: Request, res: Response) => {
+    readonly.get('/enc-store', (_req: Request, res: Response) => {
       res.json({
         apiVersion: ENC_STORE_API_VERSION,
         root: encStoreRoot(),
@@ -4660,7 +4662,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     // The stored cells reaching an area: ?bbox=west,south,east,north.
-    router.get('/enc-area', (req: Request, res: Response) => {
+    readonly.get('/enc-area', (req: Request, res: Response) => {
       const raw = typeof req.query.bbox === 'string' ? req.query.bbox.split(',') : [];
       const bbox = raw.map((part) => (part.trim() === '' ? NaN : Number(part)));
       if (!validBbox(bbox)) {
@@ -4670,7 +4672,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({ cells: storedCellsIn(bbox) });
     });
 
-    router.post('/enc-area', (req: Request, res: Response) => {
+    readwrite.post('/enc-area', (req: Request, res: Response) => {
       const body = parseBody(EncAreaBody, req, res);
       if (!body) {
         return;
@@ -4679,11 +4681,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.status(result.accepted ? 200 : 400).json(result);
     });
 
-    router.get('/enc-store/:collection/state', (req: Request, res: Response) => {
+    readonly.get('/enc-store/:collection/state', (req: Request, res: Response) => {
       res.json(encCollectionState((req.params as Record<string, string>).collection));
     });
 
-    router.get('/enc-store/:collection', (req: Request, res: Response) => {
+    readonly.get('/enc-store/:collection', (req: Request, res: Response) => {
       const collection = getCollection((req.params as Record<string, string>).collection);
       if (!collection) {
         res.status(404).json({ error: 'ENC collection not found' });
@@ -4692,7 +4694,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json(collection);
     });
 
-    router.get('/enc-store/:collection/:cell/:file', (req: Request, res: Response) => {
+    readonly.get('/enc-store/:collection/:cell/:file', (req: Request, res: Response) => {
       const { collection, cell, file } = req.params as Record<string, string>;
       const full = storedFilePath(collection, cell, file);
       if (full === null) {
@@ -4766,7 +4768,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // later visits answer from memory and refresh a stale index in the
     // background. Registered BEFORE '/custom-catalogs/:id' so the literal
     // path wins over the param.
-    router.get('/custom-catalogs/enc-index', (req: Request, res: Response) => {
+    readonly.get('/custom-catalogs/enc-index', (req: Request, res: Response) => {
       const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
       void (async () => {
         if (forceRefresh || !getEncIndex()) {
@@ -4784,11 +4786,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       })();
     });
 
-    router.get('/custom-catalogs', (_req: Request, res: Response) => {
+    readonly.get('/custom-catalogs', (_req: Request, res: Response) => {
       res.json(listCustomCatalogs().map((c) => decorateCatalog(c)));
     });
 
-    router.post('/custom-catalogs', (req: Request, res: Response) => {
+    readwrite.post('/custom-catalogs', (req: Request, res: Response) => {
       const body = parseBody(CustomCatalogCreateBody, req, res);
       if (!body) {
         return;
@@ -4804,7 +4806,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     });
 
-    router.get('/custom-catalogs/:id', (req: Request, res: Response) => {
+    readonly.get('/custom-catalogs/:id', (req: Request, res: Response) => {
       const catalog = getCustomCatalog((req.params as Record<string, string>).id);
       if (!catalog) {
         res.status(404).json({ error: 'Custom catalog not found' });
@@ -4813,7 +4815,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json(decorateCatalog(catalog));
     });
 
-    router.put('/custom-catalogs/:id', (req: Request, res: Response) => {
+    readwrite.put('/custom-catalogs/:id', (req: Request, res: Response) => {
       const id = (req.params as Record<string, string>).id;
       const catalog = getCustomCatalog(id);
       if (!catalog) {
@@ -4876,7 +4878,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({ success: true });
     });
 
-    router.post('/custom-catalogs/:id/download-convert', (req: Request, res: Response) => {
+    readwrite.post('/custom-catalogs/:id/download-convert', (req: Request, res: Response) => {
       const id = (req.params as Record<string, string>).id;
       const catalog = getCustomCatalog(id);
       if (!catalog) {
@@ -4904,7 +4906,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({ success: true, message: 'Download and conversion started' });
     });
 
-    router.get('/custom-catalogs/:id/status', (req: Request, res: Response) => {
+    readonly.get('/custom-catalogs/:id/status', (req: Request, res: Response) => {
       const id = (req.params as Record<string, string>).id;
       const catalog = getCustomCatalog(id);
       if (!catalog) {
@@ -4919,7 +4921,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       });
     });
 
-    router.post('/custom-catalogs/:id/cancel', (req: Request, res: Response) => {
+    readwrite.post('/custom-catalogs/:id/cancel', (req: Request, res: Response) => {
       const id = (req.params as Record<string, string>).id;
       if (!isValidCatalogId(id)) {
         res.status(400).json({ success: false, error: 'Invalid catalog id' });
@@ -4945,7 +4947,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({ success: true, message: 'Cancellation requested' });
     });
 
-    router.get('/custom-catalogs/:id/log', (req: Request, res: Response) => {
+    readwrite.get('/custom-catalogs/:id/log', (req: Request, res: Response) => {
       const id = (req.params as Record<string, string>).id;
       if (!isValidCatalogId(id)) {
         res.status(400).json({ log: [], status: null });
