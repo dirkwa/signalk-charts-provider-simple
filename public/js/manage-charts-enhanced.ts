@@ -1512,7 +1512,7 @@ function initTouchDragDrop(): void {
       }
 
       const chartCard = target.closest<HTMLElement>('.chart-card, .chart-list-item');
-      if (!chartCard) {
+      if (!chartCard || !window.canChange('admin')) {
         return;
       }
 
