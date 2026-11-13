@@ -33,8 +33,9 @@ test.describe('access levels', () => {
         changes.push(`${request.method()} ${request.url()}`);
       }
     });
-    await card.getByRole('button', { name: 'Delete' }).click();
-    await card.locator('.btn-toggle').click();
+    // force: the controls are aria-disabled, which Playwright would wait out.
+    await card.getByRole('button', { name: 'Delete' }).click({ force: true });
+    await card.locator('.btn-toggle').click({ force: true });
     await expect(page.locator('.delete-modal')).toHaveCount(0);
 
     await page.getByRole('button', { name: /Download from URL/i }).click();
@@ -42,16 +43,21 @@ test.describe('access levels', () => {
     const downloadButton = page.getByRole('button', { name: 'Download Chart' });
     await expect(downloadButton).toBeVisible();
     await expect(downloadButton).toHaveCSS('opacity', '0.45');
-    await downloadButton.click();
+    await expect(downloadButton).toHaveAttribute('aria-disabled', 'true');
+    await downloadButton.click({ force: true });
     expect(changes).toEqual([]);
   });
 
   test('a readwrite user can add charts but not remove them', async ({ page }) => {
-    await openAs(page, { status: 'loggedIn', userLevel: 'readwrite', authenticationRequired: true });
+    await openAs(page, {
+      status: 'loggedIn',
+      userLevel: 'readwrite',
+      authenticationRequired: true
+    });
 
     await expect(page.locator('.access-banner')).toContainText('needs an administrator');
     const card = page.locator('.chart-card', { hasText: 'Foo Chart' });
-    await card.getByRole('button', { name: 'Delete' }).click();
+    await card.getByRole('button', { name: 'Delete' }).click({ force: true });
     await expect(page.locator('.delete-modal')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Upload', exact: true })).toHaveCSS(
       'opacity',

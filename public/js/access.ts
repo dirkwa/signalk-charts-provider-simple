@@ -32,12 +32,39 @@ function canChange(needs: 'readwrite' | 'admin'): boolean {
   return ACCESS_RANK[accessLevel] >= ACCESS_RANK[needs];
 }
 
+function allowed(control: HTMLElement): boolean {
+  return canChange(control.dataset['needs'] === 'admin' ? 'admin' : 'readwrite');
+}
+
 function blockedControl(target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof Element)) {
     return null;
   }
   const control = target.closest<HTMLElement>('[data-needs]');
-  return control && !canChange(control.dataset['needs'] === 'admin' ? 'admin' : 'readwrite') ? control : null;
+  return control && !allowed(control) ? control : null;
+}
+
+function markRestricted(root: Element): void {
+  const controls = root.matches('[data-needs]') ? [root] : [];
+  controls.push(...root.querySelectorAll('[data-needs]'));
+  for (const control of controls) {
+    if (control instanceof HTMLElement && !allowed(control)) {
+      control.setAttribute('aria-disabled', 'true');
+    }
+  }
+}
+
+function followRestricted(): void {
+  markRestricted(document.body);
+  new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node instanceof Element) {
+          markRestricted(node);
+        }
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
 }
 
 function showAccessBanner(): void {
@@ -93,7 +120,10 @@ async function loadAccessLevel(): Promise<void> {
     return;
   }
   document.body.dataset['access'] = accessLevel;
-  showAccessBanner();
+  if (accessLevel !== 'admin') {
+    showAccessBanner();
+    followRestricted();
+  }
 }
 
 window.canChange = canChange;
