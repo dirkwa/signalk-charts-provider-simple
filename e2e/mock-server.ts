@@ -127,6 +127,8 @@ interface MockState {
   encStore: { root: string; keepEncCells: boolean; collections: { id: string }[] };
   encStoreCells: Record<string, unknown[]>;
   encStoreDeleted: string[];
+  // What /skServer/loginStatus answers: who the page thinks is signed in.
+  loginStatus: Record<string, unknown>;
 }
 
 const okStatus: CatalogStatusMock = {
@@ -165,7 +167,8 @@ const initialState: MockState = {
   onlineAddFailStatus: null,
   encStore: { root: '/data/enc-store', keepEncCells: false, collections: [] },
   encStoreCells: {},
-  encStoreDeleted: []
+  encStoreDeleted: [],
+  loginStatus: { status: 'notLoggedIn', authenticationRequired: false }
 };
 
 let state: MockState = structuredClone(initialState);
@@ -211,6 +214,10 @@ export function startMockServer(
   });
 
   // ---- Frontend REST stubs ---------------------------------------------
+  router.get('/skServer/loginStatus', (_req, res) => {
+    res.json(state.loginStatus);
+  });
+
   // The frontend hits these at API_BASE.  Each returns whatever the
   // current mock state says; the test sets state ahead of time.
   router.get(`${PLUGIN_BASE}/local-charts`, (_req, res) => {

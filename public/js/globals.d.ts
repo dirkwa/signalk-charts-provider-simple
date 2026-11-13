@@ -20,6 +20,9 @@ declare global {
   }
 
   interface Window {
+    // access.ts
+    canChange(needs: 'readwrite' | 'admin'): boolean;
+
     // tabs.ts
     openTab(evt: MouseEvent | null, tabName: string): void;
 

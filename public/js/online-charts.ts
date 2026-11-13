@@ -529,10 +529,10 @@ class OnlineChartPanel {
     } else {
       action = `
         <label class="catalog-folder-label" for="${rowId}-folder">Save to</label>
-        <select class="catalog-folder-select" id="${rowId}-folder">
+        <select class="catalog-folder-select" data-needs="readwrite" id="${rowId}-folder">
           ${this.folderOptions()}
         </select>
-        <button class="btn-catalog-download" data-online-add="${onlineEscape(chart.id)}" ${adding ? 'disabled' : ''}>
+        <button class="btn-catalog-download" data-needs="readwrite" data-online-add="${onlineEscape(chart.id)}" ${adding ? 'disabled' : ''}>
           ${adding ? 'Adding…' : 'Add'}
         </button>`;
     }
@@ -633,12 +633,12 @@ const onlineChartsPanel = new OnlineChartPanel({
           catalog chart.
         </p>
 
-        <div class="form-group">
+        <div class="form-group" data-needs="readwrite">
           <label for="onlineChartName">Chart Name</label>
           <input type="text" id="onlineChartName" placeholder="e.g. Harbour charts" class="input-field" />
         </div>
 
-        <div class="form-group">
+        <div class="form-group" data-needs="readwrite">
           <label for="onlineChartType">Service Type</label>
           <select id="onlineChartType" class="input-field" onchange="onlineChartTypeChanged()">
             <option value="tilelayer">Tile URL</option>
@@ -646,7 +646,7 @@ const onlineChartsPanel = new OnlineChartPanel({
           </select>
         </div>
 
-        <div class="form-group">
+        <div class="form-group" data-needs="readwrite">
           <label for="onlineChartUrl">URL</label>
           <input
             type="text"
@@ -661,12 +661,12 @@ const onlineChartsPanel = new OnlineChartPanel({
           </p>
         </div>
 
-        <div class="form-group" id="onlineChartLayersGroup" style="display: none;">
+        <div class="form-group" data-needs="readwrite" id="onlineChartLayersGroup" style="display: none;">
           <label for="onlineChartLayers">Layers</label>
           <input type="text" id="onlineChartLayers" placeholder="layer1, layer2" class="input-field" />
         </div>
 
-        <div class="form-row">
+        <div class="form-row" data-needs="readwrite">
           <div class="form-group">
             <label for="onlineChartMinzoom">Lowest Zoom</label>
             <input type="number" id="onlineChartMinzoom" min="0" max="24" placeholder="0" class="input-field" />
@@ -677,12 +677,12 @@ const onlineChartsPanel = new OnlineChartPanel({
           </div>
         </div>
 
-        <div class="form-group">
+        <div class="form-group" data-needs="readwrite">
           <label for="onlineChartFolder">Target Folder</label>
           <select id="onlineChartFolder" class="input-field"></select>
         </div>
 
-        <div class="form-group">
+        <div class="form-group" data-needs="readwrite">
           <label class="checkbox-label">
             <input type="checkbox" id="onlineChartKeep" />
             Keep tiles for offline use
@@ -693,7 +693,7 @@ const onlineChartsPanel = new OnlineChartPanel({
           </p>
         </div>
 
-        <button onclick="addOnlineChartByUrl()" class="btn btn-primary">Add Online Chart</button>
+        <button data-needs="readwrite" onclick="addOnlineChartByUrl()" class="btn btn-primary">Add Online Chart</button>
 
         <div id="onlineChartStatus" class="download-status"></div>
       </div>

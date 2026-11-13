@@ -87,11 +87,11 @@ function landIndexPercent(info: LandIndexInfo): string {
  */
 function maskWaitingState(): { badge: string; action: string } {
   const info = landIndexInfo;
-  const cancel = `<button class="btn btn-sm btn-secondary" onclick="cancelShorelineDownload()">Cancel</button>`;
+  const cancel = `<button class="btn btn-sm btn-secondary" data-needs="admin" onclick="cancelShorelineDownload()">Cancel</button>`;
   if (info?.status === 'failed') {
     return {
       badge: `<span class="folder-off-badge" title="${masksEscape(info.error ?? 'The download failed')}">Shoreline data download failed</span>`,
-      action: `<button class="btn btn-sm btn-primary" onclick="startShorelineDownload()">Retry download</button> ${cancel}`
+      action: `<button class="btn btn-sm btn-primary" data-needs="readwrite" onclick="startShorelineDownload()">Retry download</button> ${cancel}`
     };
   }
   if (info?.status === 'building') {
@@ -102,7 +102,7 @@ function maskWaitingState(): { badge: string; action: string } {
   }
   return {
     badge: `<span class="folder-off-badge" title="Needs the shoreline data, which is not downloaded">Needs shoreline data</span>`,
-    action: `<button class="btn btn-sm btn-primary" onclick="askShorelineDownload()">Download</button>`
+    action: `<button class="btn btn-sm btn-primary" data-needs="readwrite" onclick="askShorelineDownload()">Download</button>`
   };
 }
 
@@ -170,14 +170,14 @@ function renderMaskRows(masks: Record<string, boolean> | undefined, editing: boo
   let shorelineValue = '';
   if (info?.status === 'ready') {
     shorelineValue = `${approxSize(info.diskBytes ?? 0)} on disk
-          ${info.maskedVersions === 0 ? '<button class="btn btn-sm btn-danger" onclick="deleteShorelineData()">Delete</button>' : ''}`;
+          ${info.maskedVersions === 0 ? '<button class="btn btn-sm btn-danger" data-needs="admin" onclick="deleteShorelineData()">Delete</button>' : ''}`;
   } else if (info?.status === 'building') {
     shorelineValue = `Downloading${landIndexPercent(info)}
-          <button class="btn btn-sm btn-secondary" onclick="cancelShorelineDownload()">Cancel</button>`;
+          <button class="btn btn-sm btn-secondary" data-needs="admin" onclick="cancelShorelineDownload()">Cancel</button>`;
   } else if (info?.status === 'failed') {
     shorelineValue = `Download failed: ${masksEscape(info.error ?? '')}
-          <button class="btn btn-sm btn-primary" onclick="startShorelineDownload()">Retry</button>
-          <button class="btn btn-sm btn-secondary" onclick="cancelShorelineDownload()">Cancel</button>`;
+          <button class="btn btn-sm btn-primary" data-needs="readwrite" onclick="startShorelineDownload()">Retry</button>
+          <button class="btn btn-sm btn-secondary" data-needs="admin" onclick="cancelShorelineDownload()">Cancel</button>`;
   }
   const shoreline =
     !editing && shorelineValue

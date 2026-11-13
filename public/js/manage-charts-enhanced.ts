@@ -297,7 +297,7 @@ function renderRepairableCard(rc: RepairableChart): string {
         ${tileSizeNote}
       </div>
       <div class="chart-card-actions">
-        <button class="btn btn-primary" onclick="showRepairDialog('${attrPath}', '${attrName}')" ${
+        <button class="btn btn-primary" data-needs="admin" onclick="showRepairDialog('${attrPath}', '${attrName}')" ${
           d ? '' : 'disabled'
         }>
           Repair
@@ -414,10 +414,10 @@ function renderChartsUI(): void {
           <button class="btn btn-primary" onclick="openTab(event, 'download')" style="padding: 12px 24px;">
             Download Charts
           </button>
-          <button class="btn btn-secondary" onclick="triggerUploadEmpty()" style="padding: 12px 24px;">
+          <button class="btn btn-secondary" data-needs="readwrite" onclick="triggerUploadEmpty()" style="padding: 12px 24px;">
             Upload from Computer
           </button>
-          <button class="btn btn-secondary" onclick="triggerZipUploadEmpty()" style="padding: 12px 24px;">
+          <button class="btn btn-secondary" data-needs="readwrite" onclick="triggerZipUploadEmpty()" style="padding: 12px 24px;">
             Upload ZIP
           </button>
         </div>
@@ -438,12 +438,12 @@ function renderChartsUI(): void {
         <span class="chart-count">${chartsData.length} chart${chartsData.length !== 1 ? 's' : ''}</span>
       </div>
       <div class="toolbar-right">
-        <button class="btn btn-secondary" onclick="showCreateFolderDialog()" title="Create New Folder">
+        <button class="btn btn-secondary" data-needs="readwrite" onclick="showCreateFolderDialog()" title="Create New Folder">
           + New Folder
         </button>
-        ${selectedFolder && selectedFolder !== '/' ? `<button class="btn btn-danger" onclick="deleteSelectedFolder()" title="Delete Selected Folder">Delete Folder</button>` : ''}
-        <button class="btn btn-primary" onclick="triggerUpload()" title="Upload charts to ${manageEscapeAttr(selectedFolder ?? '/')}">Upload</button>
-        <button class="btn btn-secondary" onclick="triggerZipUpload()" title="Upload a ZIP archive to ${manageEscapeAttr(selectedFolder ?? '/')} — every .mbtiles inside is extracted into the folder">Upload ZIP</button>
+        ${selectedFolder && selectedFolder !== '/' ? `<button class="btn btn-danger" data-needs="admin" onclick="deleteSelectedFolder()" title="Delete Selected Folder">Delete Folder</button>` : ''}
+        <button class="btn btn-primary" data-needs="readwrite" onclick="triggerUpload()" title="Upload charts to ${manageEscapeAttr(selectedFolder ?? '/')}">Upload</button>
+        <button class="btn btn-secondary" data-needs="readwrite" onclick="triggerZipUpload()" title="Upload a ZIP archive to ${manageEscapeAttr(selectedFolder ?? '/')} — every .mbtiles inside is extracted into the folder">Upload ZIP</button>
         <button class="btn btn-icon ${viewMode === 'grid' ? 'active' : ''}" onclick="setViewMode('grid')" title="Grid View">
           <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>
         </button>
@@ -470,7 +470,7 @@ function renderChartsUI(): void {
       const folderToggle =
         folder === '/'
           ? ''
-          : `<span class="folder-toggle ${state.enabled ? 'enabled' : 'disabled'}" role="button" tabindex="0" title="${state.enabled ? 'Disable' : 'Enable'} all charts in this folder" onclick="toggleFolderEnabled(event, '${manageEscapeAttr(folder)}')" onkeydown="toggleFolderKeydown(event, '${manageEscapeAttr(folder)}')">
+          : `<span class="folder-toggle ${state.enabled ? 'enabled' : 'disabled'}" data-needs="admin" role="button" tabindex="0" title="${state.enabled ? 'Disable' : 'Enable'} all charts in this folder" onclick="toggleFolderEnabled(event, '${manageEscapeAttr(folder)}')" onkeydown="toggleFolderKeydown(event, '${manageEscapeAttr(folder)}')">
               ${state.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
             </span>`;
       html += `<button class="folder-btn ${isActive ? 'active' : ''} ${state.effectiveEnabled ? '' : 'folder-disabled'}" onclick="selectFolder('${manageEscapeAttr(folder)}')" ondragover="handleFolderDragOver(event)" ondrop="handleDropOnFolder(event, '${manageEscapeAttr(folder)}')" ondragleave="handleFolderDragLeave(event)">
@@ -596,7 +596,7 @@ function renderChartCard(chart: ManageChart): string {
       <div class="chart-card ${chart.enabled ? '' : 'disabled'} ${folderOff ? 'folder-off' : ''} ${chart.downloading || chart.converting ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${attrPath}')" ondragover="handleDragOver(event)" ondrop="handleDrop(event, '${attrFolder}')" data-chart-path="${attrPath}">
         <div class="chart-card-header">
           <div class="chart-status">
-            <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" onclick="toggleChart('${attrPath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
+            <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" data-needs="admin" onclick="toggleChart('${attrPath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
               ${chart.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
             </button>
           </div>
@@ -656,13 +656,13 @@ function renderChartCard(chart: ManageChart): string {
           ${
             isPmtiles
               ? ''
-              : `<button class="btn btn-sm btn-secondary" onclick="${renameAction}" title="Rename chart">
+              : `<button class="btn btn-sm btn-secondary" data-needs="admin" onclick="${renameAction}" title="Rename chart">
             Rename
           </button>`
           }`
               : ''
           }
-          <button class="btn btn-sm btn-danger" onclick="deleteChart('${attrPath}', '${attrName}')">
+          <button class="btn btn-sm btn-danger" data-needs="admin" onclick="deleteChart('${attrPath}', '${attrName}')">
             Delete
           </button>
         </div>
@@ -672,7 +672,7 @@ function renderChartCard(chart: ManageChart): string {
     return `
       <div class="chart-list-item ${chart.enabled ? '' : 'disabled'} ${folderOff ? 'folder-off' : ''} ${chart.downloading || chart.converting ? 'downloading' : ''}" draggable="true" ondragstart="handleDragStart(event, '${attrPath}')" data-chart-path="${attrPath}">
         <div class="chart-list-status">
-          <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" onclick="toggleChart('${attrPath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
+          <button class="btn-toggle ${chart.enabled ? 'enabled' : 'disabled'}" data-needs="admin" onclick="toggleChart('${attrPath}')" title="${chart.enabled ? 'Disable' : 'Enable'} chart">
             ${chart.enabled ? window.getIcon('checkmark') : window.getIcon('cross')}
           </button>
         </div>
@@ -696,13 +696,13 @@ function renderChartCard(chart: ManageChart): string {
           ${
             isPmtiles
               ? ''
-              : `<button class="btn btn-sm btn-secondary" onclick="${renameAction}" title="Rename chart">
+              : `<button class="btn btn-sm btn-secondary" data-needs="admin" onclick="${renameAction}" title="Rename chart">
             Rename
           </button>`
           }`
               : ''
           }
-          <button class="btn btn-sm btn-danger" onclick="deleteChart('${attrPath}', '${attrName}')">
+          <button class="btn btn-sm btn-danger" data-needs="admin" onclick="deleteChart('${attrPath}', '${attrName}')">
             Delete
           </button>
         </div>
@@ -1390,6 +1390,10 @@ function updateUploadProgress(loaded: number, total: number): void {
 let draggedChartPath: string | null = null;
 
 function handleDragStart(event: DragEvent, chartPath: string): void {
+  if (!window.canChange('admin')) {
+    event.preventDefault();
+    return;
+  }
   draggedChartPath = chartPath;
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
@@ -2533,7 +2537,7 @@ function renderMetadataModal(metadata: ChartMetadata): void {
           ${
             isEditMode
               ? '<button class="btn btn-secondary" onclick="cancelEditMetadata()">Cancel</button><button class="btn btn-primary" onclick="saveChartMetadata()">Save</button>'
-              : `${metadata.readOnly ? '' : '<button class="btn btn-secondary" onclick="editChartMetadata()">Edit</button>'}<button class="btn btn-primary" onclick="closeChartInfoModal()">Close</button>`
+              : `${metadata.readOnly ? '' : '<button class="btn btn-secondary" data-needs="admin" onclick="editChartMetadata()">Edit</button>'}<button class="btn btn-primary" onclick="closeChartInfoModal()">Close</button>`
           }
         </div>
       </div>

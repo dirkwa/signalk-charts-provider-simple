@@ -211,7 +211,7 @@ async function initCustomCatalogsTab(): Promise<void> {
       <div class="cc-left">
         <div class="cc-list-header">Chart sets</div>
         <div id="ccList" class="cc-list"></div>
-        <div id="ccNewForm" class="cc-new-form" style="display:none;">
+        <div id="ccNewForm" class="cc-new-form" data-needs="readwrite" style="display:none;">
           <input type="text" id="ccNewName" class="cc-input" placeholder="Chart set name" maxlength="120" />
           <div class="cc-new-form-actions">
             <button class="cc-btn cc-btn-primary" data-cc-action="create">Create</button>
@@ -219,9 +219,9 @@ async function initCustomCatalogsTab(): Promise<void> {
           </div>
         </div>
         <div class="cc-actions">
-          <button class="cc-btn cc-btn-primary" data-cc-action="new">New</button>
-          <button class="cc-btn cc-btn-primary" id="ccDownloadBtn" data-cc-action="download" disabled>Download &amp; Convert</button>
-          <button class="cc-btn cc-btn-danger" id="ccDeleteBtn" data-cc-action="delete" disabled>Delete</button>
+          <button class="cc-btn cc-btn-primary" data-needs="readwrite" data-cc-action="new">New</button>
+          <button class="cc-btn cc-btn-primary" data-needs="readwrite" id="ccDownloadBtn" data-cc-action="download" disabled>Download &amp; Convert</button>
+          <button class="cc-btn cc-btn-danger" data-needs="admin" id="ccDeleteBtn" data-cc-action="delete" disabled>Delete</button>
         </div>
         <div id="ccDetail" class="cc-detail"></div>
         <div id="ccProgress" class="cc-progress"></div>
@@ -677,7 +677,7 @@ function onHover(drawn: CcDrawnUnit | null, latlng: L.LatLng | null): void {
 
 /** Whether the open set takes changes now; a set being built does not. */
 function ccCanSelect(): boolean {
-  return ccActiveCatalog() !== null && !ccBusy;
+  return ccActiveCatalog() !== null && !ccBusy && window.canChange('readwrite');
 }
 
 function ccDragSelects(): boolean {
@@ -708,7 +708,9 @@ function updateMapMode(): void {
   if (!hint || ccSetHintTimer !== null) {
     return;
   }
-  if (!ccActiveCatalog()) {
+  if (!window.canChange('readwrite')) {
+    hint.textContent = 'Picking chart areas needs read/write access.';
+  } else if (!ccActiveCatalog()) {
     hint.textContent = 'Click New to start a chart set, then pick its chart areas on the map.';
   } else if (ccBusy) {
     hint.textContent = 'Chart areas can be changed again once this chart set is done.';
@@ -894,6 +896,9 @@ function wireDragSelect(el: HTMLElement): void {
 // Adds every unit the box touches. A box over units that are all in the set
 // already takes them out again, so a mistaken box can be undone the same way.
 async function addUnitsInBox(bounds: L.LatLngBounds): Promise<void> {
+  if (!window.canChange('readwrite')) {
+    return;
+  }
   const cat = ccActiveCatalog();
   if (!cat) {
     showSetHint();
@@ -1226,7 +1231,7 @@ async function loadSharedCells(): Promise<void> {
           </span>
           ${
             c.kind === 'conversion'
-              ? `<button class="cc-link-btn" data-cc-action="shared-delete" data-cc-collection="${ccEscAttr(
+              ? `<button class="cc-link-btn" data-needs="admin" data-cc-action="shared-delete" data-cc-collection="${ccEscAttr(
                   c.id
                 )}" title="Remove these cells; the chart stays">Remove</button>`
               : ''
@@ -1407,7 +1412,7 @@ function renderDetail(): void {
     ${
       cat.missingUnitIds.length > 0
         ? `<div class="cc-missing">${cat.missingUnitIds.length} selected area(s) no longer published.
-            <button class="cc-link-btn" data-cc-action="drop-missing" ${ccBusy ? 'disabled' : ''}>Remove from set</button></div>`
+            <button class="cc-link-btn" data-needs="readwrite" data-cc-action="drop-missing" ${ccBusy ? 'disabled' : ''}>Remove from set</button></div>`
         : ''
     }
     ${
@@ -1488,7 +1493,7 @@ function renderProgress(): void {
   } else if (ccBusy) {
     // Every phase — including the combine — is cancellable: the cancel
     // route aborts the in-flight download, container job or conversion.
-    cancelHtml = `<button class="cc-btn cc-btn-danger cc-cancel-btn" data-cc-action="cancel">Cancel</button>`;
+    cancelHtml = `<button class="cc-btn cc-btn-danger cc-cancel-btn" data-needs="readwrite" data-cc-action="cancel">Cancel</button>`;
   }
 
   el.innerHTML = `
@@ -1544,6 +1549,9 @@ function replaceCatalog(updated: CustomCatalog): void {
 }
 
 async function onAreaClick(unit: CcUnit): Promise<void> {
+  if (!window.canChange('readwrite')) {
+    return;
+  }
   const cat = ccActiveCatalog();
   if (!cat) {
     showSetHint();

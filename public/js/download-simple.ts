@@ -68,7 +68,7 @@ function initDownloadInterface(): void {
           Download chart files directly from URLs. Supports .mbtiles and .pmtiles files, and .zip archives containing .mbtiles files.
         </p>
 
-        <div class="form-group">
+        <div class="form-group" data-needs="readwrite">
           <label for="downloadUrl">Chart URL</label>
           <input
             type="text"
@@ -78,7 +78,7 @@ function initDownloadInterface(): void {
           />
         </div>
 
-        <div class="form-group">
+        <div class="form-group" data-needs="readwrite">
           <label for="downloadChartName">Chart Name</label>
           <input
             type="text"
@@ -88,14 +88,14 @@ function initDownloadInterface(): void {
           />
         </div>
 
-        <div class="form-group">
+        <div class="form-group" data-needs="readwrite">
           <label for="downloadFolder">Target Folder</label>
           <select id="downloadFolder" class="input-field">
             <option value="/">/</option>
           </select>
         </div>
 
-        <button onclick="startDownload()" class="btn btn-primary">
+        <button data-needs="readwrite" onclick="startDownload()" class="btn btn-primary">
           Download Chart
         </button>
 
@@ -391,7 +391,7 @@ function renderDownloadJob(job: DownloadJob): string {
   // escape downloadEscapeHtml's protection.
   const cancelButton =
     job.status === 'queued' || job.status === 'downloading' || job.status === 'extracting'
-      ? `<button class="btn btn-danger btn-sm" data-cancel-job-id="${downloadEscapeHtml(job.id)}">Cancel</button>`
+      ? `<button class="btn btn-danger btn-sm" data-needs="readwrite" data-cancel-job-id="${downloadEscapeHtml(job.id)}">Cancel</button>`
       : '';
 
   const urlFilename = job.url.split('/').pop()?.split('?')[0] || 'Download';

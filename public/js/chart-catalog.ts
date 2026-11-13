@@ -231,7 +231,7 @@ async function initCatalogTab(): Promise<void> {
       <div id="catalogSourceNote" class="catalog-source-note">${sourceNoteHtml(null)}</div>
       <div id="catalogUpdatesSection"></div>
       <div id="catalogToolbar" class="catalog-toolbar">
-        <button type="button" class="btn-catalog-refresh" data-catalog-refresh title="Download the latest chart catalog">
+        <button type="button" class="btn-catalog-refresh" data-needs="readwrite" data-catalog-refresh title="Download the latest chart catalog">
           <span class="btn-catalog-refresh-label">Refresh catalog index</span>
         </button>
       </div>
@@ -733,7 +733,7 @@ function renderUpdatesSection(): void {
         actionHtml = `
           <div class="catalog-conversion-error">
             <span class="conversion-error-text">${catalogEscapeHtml(conversionError)}</span>
-            <button class="btn-catalog-log" data-catalog-log="${catalogEscapeAttr(update.chartNumber)}">Logs</button>
+            <button class="btn-catalog-log" data-needs="readwrite" data-catalog-log="${catalogEscapeAttr(update.chartNumber)}">Logs</button>
             <button class="btn-catalog-dismiss" data-catalog-dismiss="${catalogEscapeAttr(update.chartNumber)}">Dismiss</button>
           </div>`;
       } else if (isWaiting) {
@@ -755,14 +755,14 @@ function renderUpdatesSection(): void {
           <div class="catalog-conversion-progress" id="catalog-conversion-${escapedNum}">
             <div class="spinner" style="width:16px;height:16px;border-width:2px;"></div>
             <span>${catalogEscapeHtml(progressMsg)}</span>
-            <button class="btn-catalog-log" data-catalog-log="${catalogEscapeAttr(update.chartNumber)}">Logs</button>
+            <button class="btn-catalog-log" data-needs="readwrite" data-catalog-log="${catalogEscapeAttr(update.chartNumber)}">Logs</button>
           </div>`;
       } else {
         actionHtml = `<label class="catalog-folder-label" for="catalog-update-folder-${escapedNum}">Save to</label>
-           <select class="catalog-folder-select catalog-update-folder-select" id="catalog-update-folder-${escapedNum}">
+           <select class="catalog-folder-select catalog-update-folder-select" data-needs="readwrite" id="catalog-update-folder-${escapedNum}">
             ${buildFolderOptions(update.installedFolder)}
            </select>
-           <button class="btn-catalog-download"
+           <button class="btn-catalog-download" data-needs="readwrite"
                    data-catalog-update="${catalogEscapeAttr(update.chartNumber)}"
                    data-catalog-update-file="${catalogEscapeAttr(update.catalogFile)}"
                    data-catalog-update-url="${catalogEscapeAttr(update.downloadUrl)}"
@@ -808,7 +808,7 @@ function renderUpdatesSection(): void {
         <span class="catalog-updates-title">
           ${catalogUpdates.length} chart update${catalogUpdates.length !== 1 ? 's' : ''} available
         </span>
-        <button class="btn-catalog-download" ${updateAllDisabled ? 'disabled' : ''}
+        <button class="btn-catalog-download" data-needs="readwrite" ${updateAllDisabled ? 'disabled' : ''}
                 data-catalog-update-all>
           ${updateAllButtonText}
         </button>
@@ -1422,7 +1422,7 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
         actionHtml = `
           <div class="catalog-conversion-error">
             <span class="conversion-error-text">${catalogEscapeHtml(conversionError)}</span>
-            <button class="btn-catalog-log" data-catalog-log="${catalogEscapeAttr(chart.number)}">Logs</button>
+            <button class="btn-catalog-log" data-needs="readwrite" data-catalog-log="${catalogEscapeAttr(chart.number)}">Logs</button>
             <button class="btn-catalog-dismiss" data-catalog-dismiss="${catalogEscapeAttr(chart.number)}">Dismiss</button>
           </div>`;
       } else if (isDownloading) {
@@ -1438,7 +1438,7 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
           <div class="catalog-conversion-progress" id="catalog-conversion-${catalogEscapeId(chart.number)}">
             <div class="spinner" style="width:16px;height:16px;border-width:2px;"></div>
             <span>${catalogEscapeHtml(progressMsg)}</span>
-            <button class="btn-catalog-log" data-catalog-log="${catalogEscapeAttr(chart.number)}">Logs</button>
+            <button class="btn-catalog-log" data-needs="readwrite" data-catalog-log="${catalogEscapeAttr(chart.number)}">Logs</button>
           </div>`;
       } else if (hasUpdate) {
         actionHtml = `
@@ -1461,13 +1461,13 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
         const zoomHtml = showZoomSelector
           ? `
           <span class="catalog-zoom-label">Zoom</span>
-          <select class="catalog-zoom-select" id="catalog-minzoom-${downloadRowId(catalogFile, chart.number)}">
+          <select class="catalog-zoom-select" data-needs="readwrite" id="catalog-minzoom-${downloadRowId(catalogFile, chart.number)}">
             ${[4, 5, 6, 7, 8, 9, 10, 11, 12]
               .map((z) => `<option value="${z}" ${z === 4 ? 'selected' : ''}>${z}</option>`)
               .join('')}
           </select>
           <span class="catalog-zoom-dash">-</span>
-          <select class="catalog-zoom-select" id="catalog-maxzoom-${downloadRowId(catalogFile, chart.number)}">
+          <select class="catalog-zoom-select" data-needs="readwrite" id="catalog-maxzoom-${downloadRowId(catalogFile, chart.number)}">
             ${[12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
               .map((z) => `<option value="${z}" ${z === 18 ? 'selected' : ''}>${z}</option>`)
               .join('')}
@@ -1478,10 +1478,10 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
         actionHtml = `
           ${zoomHtml}
           <label class="catalog-folder-label" for="catalog-folder-${downloadRowId(catalogFile, chart.number)}">Save to</label>
-          <select class="catalog-folder-select" id="catalog-folder-${downloadRowId(catalogFile, chart.number)}">
+          <select class="catalog-folder-select" data-needs="readwrite" id="catalog-folder-${downloadRowId(catalogFile, chart.number)}">
             ${buildFolderOptions(defaultFolder)}
           </select>
-          <button class="btn-catalog-download"
+          <button class="btn-catalog-download" data-needs="readwrite"
                   data-catalog-download="${catalogEscapeAttr(chart.number)}"
                   data-catalog-file="${catalogEscapeAttr(catalogFile)}"
                   data-catalog-url="${catalogEscapeAttr(chart.zipfile_location)}"
