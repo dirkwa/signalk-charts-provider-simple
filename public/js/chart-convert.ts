@@ -8,11 +8,10 @@ interface ConvertJob {
   fileName: string;
   type: 's57' | 'rnc';
   chartNumber?: string;
-  log?: string[];
 }
 
 interface S57StatusResponse {
-  conversions?: Record<string, { status: string; message?: string; log?: string[] }>;
+  conversions?: Record<string, { status: string; message?: string }>;
   conversionAvailable?: boolean;
   conversionEngine?: 'container' | 'wasm';
   conversionEnginePreference?: 'auto' | 'container' | 'wasm';
@@ -487,7 +486,6 @@ async function pollConvertJobs(): Promise<void> {
           job.message = progress.message ?? 'Conversion failed';
         } else {
           job.message = progress.message ?? 'Converting...';
-          job.log = progress.log;
         }
       } else if (job.chartNumber) {
         // Conversion finished (progress tracking was cleaned up on success)

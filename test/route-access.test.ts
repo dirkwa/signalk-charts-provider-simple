@@ -7,6 +7,7 @@ import type { ExtendedServerAPI } from '../dist/types.js';
 import pluginFactoryDefault from '../dist/index.js';
 import { downloadManager } from '../dist/utils/download-manager.js';
 import { accessRouter } from '../dist/utils/route-access.js';
+import { progressWithoutLogs, withoutLog } from '../dist/utils/conversion-progress.js';
 
 const pluginFactory = pluginFactoryDefault as unknown as (app: ExtendedServerAPI) => Plugin;
 
@@ -100,6 +101,7 @@ describe('route access levels', () => {
       'POST /charts/:chartPath/toggle',
       'POST /rename-chart',
       'POST /move-chart',
+      'POST /online-charts/masked-version',
       'DELETE /custom-catalogs/:id',
       'GET /download'
     ]) {
@@ -121,5 +123,16 @@ describe('accessRouter', () => {
         ['POST /b', 'admin']
       ]
     );
+  });
+});
+
+describe('conversion status for read-only users', () => {
+  it('leaves the log out and keeps the status and message', () => {
+    const entry = { status: 'converting', message: 'Tiling', log: ['/data/charts/x.000'] };
+    assert.deepStrictEqual(withoutLog(entry), { status: 'converting', message: 'Tiling' });
+    assert.strictEqual(withoutLog(null), null);
+    assert.deepStrictEqual(progressWithoutLogs({ US5: entry }), {
+      US5: { status: 'converting', message: 'Tiling' }
+    });
   });
 });

@@ -89,7 +89,6 @@ interface CustomCatalog {
 interface CatalogProgress {
   status: string;
   message: string;
-  log: string[];
 }
 
 type CatalogPhase =

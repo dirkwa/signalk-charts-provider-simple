@@ -43,6 +43,7 @@ import { cleanCatalogTitle } from './utils/catalog-title.js';
 import { capabilitiesUrlFor } from './utils/time-dimension.js';
 import { readVesselPosition } from './utils/vessel-position.js';
 import { accessRouter } from './utils/route-access.js';
+import { progressWithoutLogs, withoutLog } from './utils/conversion-progress.js';
 import { TimeDimensionPoller, type PollTarget } from './utils/time-poller.js';
 import { InternetGate, subscribeInternetState } from './utils/internet-state.js';
 import {
@@ -3714,7 +3715,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     // chart file beside the chart's, sharing its kept tiles. It is served once
     // the land index is built, which this never starts: the user agrees to
     // that download separately (POST /land-index/download).
-    readwrite.post('/online-charts/masked-version', (req: Request, res: Response) => {
+    router.post('/online-charts/masked-version', (req: Request, res: Response) => {
       const body = parseBody(MaskedVersionBody, req, res);
       if (!body) {
         return;
@@ -3973,7 +3974,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         containerRuntimeSocketPath: null,
         podmanAvailable: preference !== 'container' || rt !== null,
         podmanVersion: version,
-        conversions: { ...getAllS57Progress(), ...getAllRncProgress() }
+        conversions: progressWithoutLogs({ ...getAllS57Progress(), ...getAllRncProgress() })
       });
     });
 
@@ -4916,7 +4917,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       res.json({
         ...decorateCatalog(catalog),
         busy: isCatalogBusy(id),
-        progress: getCatalogProgress(id),
+        progress: withoutLog(getCatalogProgress(id)),
         detail: getCatalogDetail(id)
       });
     });

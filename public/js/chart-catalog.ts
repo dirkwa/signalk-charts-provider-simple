@@ -74,7 +74,6 @@ interface S57StatusCatalogResponse {
 interface ConversionProgress {
   status: string;
   message?: string;
-  log?: string[];
 }
 
 interface CatalogUpdate {
@@ -1442,7 +1441,7 @@ function renderChartList(catalogFile: string, catalogLabel: string): string {
           </div>`;
       } else if (hasUpdate) {
         actionHtml = `
-          <span class="update-badge"
+          <span class="update-badge" data-needs="readwrite"
                 data-catalog-download="${catalogEscapeAttr(chart.number)}"
                 data-catalog-file="${catalogEscapeAttr(catalogFile)}"
                 data-catalog-url="${catalogEscapeAttr(chart.zipfile_location)}"
