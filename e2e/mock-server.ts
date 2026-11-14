@@ -12,12 +12,13 @@
  * empty list, …) directly from a test without coordinating with a
  * real conversion pipeline.
  *
- * Mounted at the same `/plugins/signalk-charts-provider-simple/` path
- * the real SignalK uses, so the frontend's `API_BASE` URLs resolve
- * unchanged.  No frontend code changes needed for tests.
+ * Serves the page and the API at the same paths the real SignalK does
+ * (`PAGE_PATH` and `/plugins/signalk-charts-provider-simple/`), so the
+ * frontend's `API_BASE` URLs resolve unchanged.
  */
 
 import express from 'express';
+import { PAGE_PATH } from './page-path.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { Request, Response } from 'express';
@@ -493,8 +494,8 @@ export function startMockServer(
   app.use(router);
 
   // ---- Static assets ----------------------------------------------------
-  // The frontend's index.html links css/js relative to the plugin root.
-  app.use(PLUGIN_BASE, express.static(publicDir));
+  // The frontend's index.html links css/js relative to the page.
+  app.use(PAGE_PATH, express.static(publicDir));
   // Some files are referenced without the plugin prefix (legacy).
   app.use(express.static(publicDir));
 

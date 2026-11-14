@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { PAGE_PATH } from './page-path.js';
 
 test.describe('tabs', () => {
   test('app loads with Manage Charts tab active by default', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
 
     await expect(page.getByRole('button', { name: /Manage Charts/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /Download from URL/i })).toBeVisible();
@@ -18,7 +19,7 @@ test.describe('tabs', () => {
   });
 
   test('clicking the Chart Catalog tab activates it', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
 
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
 

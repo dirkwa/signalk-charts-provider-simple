@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { setMockState } from './helpers.js';
+import { PAGE_PATH } from './page-path.js';
 
 const charts = {
   basePath: '/tmp/charts',
@@ -10,7 +11,7 @@ const charts = {
 
 async function openAs(page: Page, loginStatus: Record<string, unknown>): Promise<void> {
   await setMockState(page, { localCharts: charts, loginStatus });
-  await page.goto('/plugins/signalk-charts-provider-simple/');
+  await page.goto(PAGE_PATH);
   await expect(page.locator('#manageOutput')).toContainText('Foo Chart', { timeout: 5000 });
 }
 

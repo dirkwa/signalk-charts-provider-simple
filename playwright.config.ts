@@ -1,7 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
+import { PAGE_PATH } from './e2e/page-path.js';
 
 const PORT = 4567;
-const BASE_URL = `http://127.0.0.1:${PORT}/plugins/signalk-charts-provider-simple/`;
+const BASE_URL = `http://127.0.0.1:${PORT}${PAGE_PATH}`;
 
 export default defineConfig({
   testDir: './e2e',

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { setMockState } from './helpers.js';
+import { PAGE_PATH } from './page-path.js';
 
 async function openEncChartsTab(page: Page): Promise<void> {
   await page.locator('#customCatalogsTabBtn').click();
@@ -37,7 +38,7 @@ const file = (name: string, bytes: number) => ({
 
 test.describe('ENC Charts tab: shared ENC cells', () => {
   test('lists the shared collections and their cells on request', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       encStore: { root: '/data/enc-store', keepEncCells: false, collections },
       encStoreCells: {
@@ -94,7 +95,7 @@ test.describe('ENC Charts tab: shared ENC cells', () => {
   });
 
   test('removes a converted chart’s cells after confirming', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       encStore: { root: '/data/enc-store', keepEncCells: true, collections }
     });

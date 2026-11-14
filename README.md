@@ -58,7 +58,7 @@ Conversion runs in a helper container or in worker processes, never on Signal K'
 
 ### Web Interface
 
-Access the plugin's web interface through your Signal K server:
+Open the plugin's web interface from the Webapps list in the Signal K admin UI, or directly at:
 
 ```
 http://[your-server]:3000/signalk-charts-provider-simple/
