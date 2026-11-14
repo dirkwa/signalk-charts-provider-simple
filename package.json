@@ -97,7 +97,7 @@
     "webapp": {
       "name": "Charts Provider Simple",
       "description": "Simple Signal K chart provider for local MBTiles with web and download management",
-      "location": "/plugins/signalk-charts-provider-simple/"
+      "location": "/signalk-charts-provider-simple/"
     }
   },
   "devDependencies": {

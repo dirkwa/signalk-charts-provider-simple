@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test';
 import { setMockState } from './helpers.js';
+import { PAGE_PATH } from './page-path.js';
 
 test.describe('convert charts already on the server', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {});
     await page.getByRole('button', { name: /^Convert$/i }).click();
   });

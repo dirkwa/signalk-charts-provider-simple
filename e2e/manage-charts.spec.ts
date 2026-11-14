@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test';
 import { setMockState } from './helpers.js';
+import { PAGE_PATH } from './page-path.js';
 
 test.describe('Manage Charts tab', () => {
   test('renders the configured charts from /local-charts', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       localCharts: {
         basePath: '/tmp/charts',
@@ -50,7 +51,7 @@ test.describe('Manage Charts tab', () => {
   });
 
   test('remembers the chosen view across reloads', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       localCharts: {
         basePath: '/tmp/charts',
@@ -70,7 +71,7 @@ test.describe('Manage Charts tab', () => {
   });
 
   test('renders empty state when /local-charts returns no charts', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       localCharts: {
         basePath: '/tmp/charts',
@@ -101,7 +102,7 @@ test.describe('Manage Charts tab', () => {
   });
 
   test('renders a disabled folder and its charts grayed out', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       localCharts: {
         basePath: '/tmp/charts',
@@ -137,7 +138,7 @@ test.describe('Manage Charts tab', () => {
   });
 
   test('folder toggle POSTs to /folders/toggle without selecting the folder', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       localCharts: {
         basePath: '/tmp/charts',
@@ -185,7 +186,7 @@ test.describe('Manage Charts tab', () => {
   });
 
   test('offers a ZIP upload control wired to a .zip file input', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       localCharts: {
         basePath: '/tmp/charts',
@@ -227,7 +228,7 @@ test.describe('Manage Charts tab', () => {
   });
 
   test('offers ZIP upload from the empty state too', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       localCharts: { basePath: '/tmp/charts', folders: ['/'], charts: [] }
     });
@@ -256,7 +257,7 @@ test.describe('Manage Charts tab', () => {
     expect(clicked).toBe(true);
   });
   test('shows online charts by name with their badges', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       localCharts: {
         basePath: '/tmp/charts',
@@ -360,7 +361,7 @@ test.describe('Manage Charts tab', () => {
   });
 
   test('downloads an area of a chart kept offline', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       position: { latitude: -17.7, longitude: 177.9 },
       keptTiles: { tiles: 1234, bytes: 5 * 1024 * 1024 },
@@ -510,7 +511,7 @@ test.describe('Manage Charts tab', () => {
   });
 
   test('refuses an offline area with too many tiles', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       position: null,
       localCharts: {
@@ -554,7 +555,7 @@ test.describe('Manage Charts tab', () => {
     await expect(dialog.locator('#areaEstimate')).toContainText('must not be above');
   });
   test("holds an offline area to its provider's limits", async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       position: null,
       localCharts: {

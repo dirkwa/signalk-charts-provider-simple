@@ -1,16 +1,17 @@
 import { test, expect } from '@playwright/test';
 import { setMockState, patchMockState } from './helpers.js';
+import { PAGE_PATH } from './page-path.js';
 
 test.describe('Chart Catalog tab', () => {
   test('shows "No catalogs in this category" on an empty registry', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, { registry: [] });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
     await expect(page.locator('#catalogList')).toContainText(/No catalogs/i);
   });
 
   test('renders catalog cards from the registry', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -37,7 +38,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('lists no ENC source, not even one a chart was installed from', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -87,7 +88,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('keeps an ENC source the catalog has not indexed yet', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -106,7 +107,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('points to ENC Charts when the catalog lists only ENC sources', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -131,7 +132,7 @@ test.describe('Chart Catalog tab', () => {
   test('pollConversions updates the in-flight message without recreating the row (regression for shimmer/scrollbar/progress reset bugs)', async ({
     page
   }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
 
     // Set up: one expanded catalog with a single chart that is
     // currently being converted.  The conversion pill carries a
@@ -212,7 +213,7 @@ test.describe('Chart Catalog tab', () => {
     // POST failed: downloadUpdateChart must record catalogConversionErrors
     // so the failure shows in the panel (and the queue stops on it) rather
     // than the chart vanishing with no trace.
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -267,7 +268,7 @@ test.describe('Chart Catalog tab', () => {
     // "update available" until the user left and re-entered the tab.
     // pollConversions must call refreshUpdateBadge() on a just-finished
     // conversion so the row clears live.
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -309,7 +310,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('shows a Refresh button in the catalog toolbar', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, { registry: [] });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
     await expect(page.locator('[data-catalog-refresh]')).toBeVisible();
@@ -318,7 +319,7 @@ test.describe('Chart Catalog tab', () => {
   test('an empty catalog that failed to download shows a connectivity message', async ({
     page
   }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [],
       catalogStatus: {
@@ -335,7 +336,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('an incompatible catalog tells the user to update the plugin', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [],
       catalogStatus: {
@@ -352,7 +353,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('a failed refresh keeps the cached cards and shows a banner', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     // The server keeps serving the last good catalog when a download fails.
     await setMockState(page, {
       registry: [
@@ -385,7 +386,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('a refresh that cannot reach the Signal K server blames the server', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -411,7 +412,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('a successful refresh populates the list and clears any banner', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [],
       catalogStatus: {
@@ -450,7 +451,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('credits chartcatalogs with its issue tracker', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, { registry: [] });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
     const note = page.locator('#catalogSourceNote');
@@ -459,7 +460,7 @@ test.describe('Chart Catalog tab', () => {
     ).toBeVisible();
   });
   test('uses catalog-provided source links, but never a non-https one', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [],
       sources: {
@@ -478,7 +479,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('an incompatible catalog over a populated list shows a banner', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -504,7 +505,7 @@ test.describe('Chart Catalog tab', () => {
     await expect(banner).toContainText(/Update the plugin/i);
   });
   test('two catalogs listing the same chart number keep their own folders', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     const catalog = (file: string) => ({
       fetchedAt: '2026-05-07T10:00:00Z',
       catalogFile: file,
@@ -546,7 +547,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('filters by category, type and position, and lists no online charts', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -632,7 +633,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('points to the Online Charts tab', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, { registry: [] });
     await page.getByRole('button', { name: /Chart Catalog/i }).click();
     await page.locator('#catalogSourceNote').getByRole('link', { name: 'Online Charts' }).click();
@@ -644,7 +645,7 @@ test.describe('Chart Catalog tab', () => {
     await page.addInitScript(() => {
       localStorage.setItem('chartCatalogFilters', JSON.stringify({ use: 'stream' }));
     });
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -662,7 +663,7 @@ test.describe('Chart Catalog tab', () => {
   });
 
   test('disables Near me when the server has no position', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -682,7 +683,7 @@ test.describe('Chart Catalog tab', () => {
     await page.addInitScript(() => {
       localStorage.setItem('chartCatalogFilters', JSON.stringify({ nearMe: true }));
     });
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {
@@ -707,7 +708,7 @@ test.describe('Chart Catalog tab', () => {
         JSON.stringify({ categories: null, use: 'bogus', formats: 'enc' })
       );
     });
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     const registry = [
       {
         file: 'X_Catalog.xml',
@@ -729,7 +730,7 @@ test.describe('Chart Catalog tab', () => {
     await page.addInitScript(() => {
       localStorage.setItem('chartCatalogFilters', JSON.stringify({ categories: ['depth'] }));
     });
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       registry: [
         {

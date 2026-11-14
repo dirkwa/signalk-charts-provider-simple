@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { setMockState } from './helpers.js';
+import { PAGE_PATH } from './page-path.js';
 
 async function openOnlineTab(page: Page): Promise<void> {
   await page.locator('#onlineChartsTabBtn').click();
@@ -13,7 +14,7 @@ test.describe('Online Charts tab', () => {
   test('credits the online charts with their issue tracker, never a non-https one', async ({
     page
   }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {});
     await openOnlineTab(page);
     const note = page.locator('#onlineSourceNote');
@@ -41,7 +42,7 @@ test.describe('Online Charts tab', () => {
   });
 
   test('lists online charts by category and adds one to a folder', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       online: [
         {
@@ -113,7 +114,7 @@ test.describe('Online Charts tab', () => {
   test('reports the HTTP status when adding an online chart gets an error page', async ({
     page
   }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       online: [
         {
@@ -141,7 +142,7 @@ test.describe('Online Charts tab', () => {
   });
 
   test("uses a satellite's useful coverage, not its full disk, for Near me", async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       online: [
         {
@@ -164,7 +165,7 @@ test.describe('Online Charts tab', () => {
   });
 
   test('Near me reaches across the antimeridian', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       online: [
         {
@@ -188,7 +189,7 @@ test.describe('Online Charts tab', () => {
   test('filters by section and position, and leaves satellite imagery to its own tab', async ({
     page
   }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     const online = (id: string, category: string, bbox: number[]) => ({
       id,
       name: id,
@@ -255,7 +256,7 @@ test.describe('Online Charts tab', () => {
   test("opens the offline area of added satellite imagery with its provider's limits", async ({
     page
   }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       online: [
         {
@@ -312,7 +313,7 @@ test.describe('Online Charts tab', () => {
   test('offers kept tiles, not an area, where the provider allows only keeping viewed tiles', async ({
     page
   }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {
       online: [
         {
@@ -381,7 +382,7 @@ test.describe('Online Charts tab', () => {
   });
 
   test('offers no offline area for a chart switched off with its folder', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     const chart = {
       id: 'kept',
       name: 'Kept Chart',
@@ -442,7 +443,7 @@ test.describe('Online Charts tab', () => {
   });
 
   test('keeps the folder picked on one row while another is added', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     const chart = (id: string) => ({
       id,
       name: id,
@@ -474,7 +475,7 @@ test.describe('Online Charts tab', () => {
 
 test.describe('add an online chart by URL', () => {
   test('adds an online chart by URL', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {});
     await openOnlineTab(page);
 
@@ -507,7 +508,7 @@ test.describe('add an online chart by URL', () => {
   });
 
   test("shows the server's reason when it refuses a chart", async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {});
     await openOnlineTab(page);
     await expect(page.locator('#onlineChartUrlHint')).toBeVisible();
@@ -522,7 +523,7 @@ test.describe('add an online chart by URL', () => {
   });
 
   test('asks for the layers of a WMS chart before adding it', async ({ page }) => {
-    await page.goto('/plugins/signalk-charts-provider-simple/');
+    await page.goto(PAGE_PATH);
     await setMockState(page, {});
     await openOnlineTab(page);
     await page.locator('#onlineChartType').selectOption('WMS');
