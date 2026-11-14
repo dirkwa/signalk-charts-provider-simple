@@ -61,7 +61,7 @@ Conversion runs in a helper container or in worker processes, never on Signal K'
 Access the plugin's web interface through your Signal K server:
 
 ```
-http://[your-server]:3000/plugins/signalk-charts-provider-simple/
+http://[your-server]:3000/signalk-charts-provider-simple/
 ```
 
 The interface provides seven tabs:
