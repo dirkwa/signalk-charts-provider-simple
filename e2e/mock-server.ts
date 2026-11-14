@@ -508,7 +508,7 @@ export function startMockServer(
       server.off('error', reject);
       const addr = server.address();
       const actualPort = typeof addr === 'object' && addr ? addr.port : port;
-      const url = `http://127.0.0.1:${actualPort}${PLUGIN_BASE}/`;
+      const url = `http://127.0.0.1:${actualPort}${PAGE_PATH}`;
       resolve({
         url,
         close: () =>
