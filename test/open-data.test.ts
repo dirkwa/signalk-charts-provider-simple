@@ -366,6 +366,31 @@ describe('planning a set', () => {
     );
     assert.deepStrictEqual(afterPlan(set, plan).overviews, { 'new-caledonia': 'o1' });
   });
+
+  it('reports a new overview version as an update', () => {
+    const set = { ...emptySet([a1.id], { [a1.id]: 'v1' }), overviews: { 'new-caledonia': 'o1' } };
+    const index = indexOf([a1]);
+    const overview = {
+      url: 'https://example.com/o.mbtiles',
+      sha256: 'b'.repeat(64),
+      size: 10,
+      version: 'o1',
+      minzoom: 0,
+      maxzoom: 8
+    };
+    index.regions[0].overview = overview;
+    assert.strictEqual(setState(set, index, true).status, 'up_to_date');
+    index.regions[0].overview = { ...overview, version: 'o2' };
+    assert.strictEqual(setState(set, index, true).status, 'update_available');
+  });
+
+  it('counts a unit the index dropped as missing once the chart is gone', () => {
+    const set = emptySet([a1.id, 'z9-1-1'], { [a1.id]: 'v1', 'z9-1-1': 'v0' });
+    const index = indexOf([a1]);
+    assert.deepStrictEqual(setState(set, index, true).missing, []);
+    assert.deepStrictEqual(setState(set, index, false).missing, ['z9-1-1']);
+    assert.deepStrictEqual(planSet(set, index, false).missing, ['z9-1-1']);
+  });
 });
 
 describe('assembling a chart', () => {
@@ -662,6 +687,7 @@ describe('unit cache', () => {
 
     assert.deepStrictEqual(cache.prune(new Set()), ['z9-1-1.v1.mbtiles']);
   });
+
 });
 
 describe('building a set from a local index', () => {

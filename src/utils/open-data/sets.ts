@@ -95,13 +95,29 @@ function wantedOverviews(set: OpenDataSet, index: OpenDataIndex): OverviewToAdd[
   return out;
 }
 
+function overviewsDiffer(set: OpenDataSet, wanted: readonly OverviewToAdd[]): boolean {
+  return (
+    wanted.length !== Object.keys(set.overviews).length ||
+    wanted.some((o) => set.overviews[o.region] !== o.version)
+  );
+}
+
+/** Selected units the index does not list and the chart does not hold. */
+function missingUnits(
+  set: OpenDataSet,
+  units: Map<string, OpenDataUnit>,
+  chartExists: boolean
+): string[] {
+  return set.unitIds.filter((id) => !units.has(id) && !(chartExists && id in set.built));
+}
+
 export function setState(
   set: OpenDataSet,
   index: OpenDataIndex | null,
   chartExists: boolean
 ): SetState {
   const units = unitsById(index);
-  const missing = index ? set.unitIds.filter((id) => !units.has(id) && !(id in set.built)) : [];
+  const missing = index ? missingUnits(set, units, chartExists) : [];
   const updates: UnitUpdate[] = [];
   for (const id of set.unitIds) {
     const unit = units.get(id);
@@ -120,7 +136,10 @@ export function setState(
     status = set.unitIds.length === 0 ? 'empty' : 'not_built';
   } else if (!sameKeys(set.unitIds, set.built)) {
     status = 'changed';
-  } else if (updates.length > 0) {
+  } else if (
+    updates.length > 0 ||
+    (index !== null && overviewsDiffer(set, wantedOverviews(set, index)))
+  ) {
     status = 'update_available';
   } else {
     status = 'up_to_date';
@@ -131,7 +150,7 @@ export function setState(
 export function planSet(set: OpenDataSet, index: OpenDataIndex, chartExists: boolean): SetPlan {
   const units = unitsById(index);
   const selected = new Set(set.unitIds);
-  const missing = set.unitIds.filter((id) => !units.has(id) && !(id in set.built));
+  const missing = missingUnits(set, units, chartExists);
   const wanted = wantedOverviews(set, index);
   if (!chartExists) {
     return {
@@ -160,10 +179,13 @@ export function planSet(set: OpenDataSet, index: OpenDataIndex, chartExists: boo
       remove.push(id);
     }
   }
-  const overviewsChanged =
-    wanted.length !== Object.keys(set.overviews).length ||
-    wanted.some((o) => set.overviews[o.region] !== o.version);
-  return { fresh: false, add, remove, overviews: overviewsChanged ? wanted : null, missing };
+  return {
+    fresh: false,
+    add,
+    remove,
+    overviews: overviewsDiffer(set, wanted) ? wanted : null,
+    missing
+  };
 }
 
 /** The set as the chart will hold it once `plan` is applied. */
