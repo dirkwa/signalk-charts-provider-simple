@@ -437,7 +437,7 @@ function odcHint(text: string | null): void {
     hint.textContent = 'Drag to move the map. Turn off Move map to pick areas again.';
   } else {
     hint.textContent =
-      'Tap an area to add or remove it, or drag across areas to add them all (drag again to remove). To pan, use two fingers or';
+      'Tap an area to add or remove it, or drag across areas to add them all (drag again to remove). To pan, use two fingers or the Move map button.';
   }
 }
 
