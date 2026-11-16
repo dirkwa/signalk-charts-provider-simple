@@ -1,0 +1,66 @@
+/* Open Data Charts tab; the layout and controls reuse the ENC Charts classes. */
+
+.odc-banner {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border-left: 4px solid #e65100;
+  background: rgba(230, 81, 0, 0.12);
+  color: inherit;
+  font-size: 0.9rem;
+}
+
+.odc-units-wrap {
+  overflow-x: auto;
+}
+
+.odc-units {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.odc-units th,
+.odc-units td {
+  padding: 3px 4px;
+  text-align: left;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant, #c3c7cf);
+}
+
+.odc-units td:first-child,
+.odc-units td:nth-child(3),
+.odc-units td:nth-child(4) {
+  white-space: nowrap;
+}
+
+.odc-units em {
+  color: #e65100;
+  font-style: normal;
+}
+
+.odc-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 5px;
+  border-radius: 2px;
+}
+
+.odc-swatch-selected {
+  background: transparent;
+  border: 3px solid #102a43;
+}
+
+.odc-swatch-update {
+  background: transparent;
+  border: 3px dashed #e65100;
+}
+
+.odc-region-label {
+  background: rgba(255, 255, 255, 0.85);
+  border: none;
+  box-shadow: none;
+  font-weight: 600;
+  color: #37474f;
+}

@@ -12,6 +12,7 @@ test.describe('tabs', () => {
     await expect(page.getByRole('button', { name: /Online Charts/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /Satellite/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /ENC Charts/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Open Data Charts/i })).toBeVisible();
 
     // Manage tab content area should be the active one on first load.
     await expect(page.locator('#manage')).toHaveClass(/active/);
