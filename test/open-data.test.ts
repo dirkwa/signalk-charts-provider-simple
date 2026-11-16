@@ -688,6 +688,29 @@ describe('unit cache', () => {
     assert.deepStrictEqual(cache.prune(new Set()), ['z9-1-1.v1.mbtiles']);
   });
 
+  it('shares one download between callers, and keeps a partial download prune is told to', async () => {
+    const body = crypto.randomBytes(64 * 1024);
+    server.files.set('/shared.mbtiles', body);
+    const before = server.requests.filter((r) => r.startsWith('/shared.mbtiles')).length;
+    const dataDir = tmpDir('cache-shared');
+    const target = { url: `${server.url}/shared.mbtiles`, size: body.length, sha256: sha256(body) };
+    const files = await Promise.all([
+      new UnitCache(dataDir).ensure('units', 'z9-2-2', 'v1', target),
+      new UnitCache(dataDir).ensure('units', 'z9-2-2', 'v1', target)
+    ]);
+    assert.strictEqual(files[0], files[1]);
+    assert.deepStrictEqual(fs.readFileSync(files[0]), body);
+    assert.strictEqual(
+      server.requests.filter((r) => r.startsWith('/shared.mbtiles')).length - before,
+      1
+    );
+
+    const cache = new UnitCache(dataDir);
+    fs.writeFileSync(`${cache.file('units', 'z9-2-3', 'v1')}.part`, 'partial');
+    const removed = cache.prune(new Set([UnitCache.partKey('units', 'z9-2-3', 'v1')]));
+    assert.deepStrictEqual(removed, ['z9-2-2.v1.mbtiles']);
+    assert.ok(fs.existsSync(`${cache.file('units', 'z9-2-3', 'v1')}.part`));
+  });
 });
 
 describe('building a set from a local index', () => {

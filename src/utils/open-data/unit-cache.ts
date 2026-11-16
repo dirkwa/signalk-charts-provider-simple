@@ -38,6 +38,10 @@ export interface DownloadOptions {
   onBytes?: (bytes: number) => void;
 }
 
+// Keyed by destination, shared by every cache instance: two sets' builds
+// that need the same file wait for one download instead of both writing it.
+const inflight = new Map<string, Promise<string>>();
+
 export class UnitCache {
   readonly root: string;
 
@@ -75,9 +79,35 @@ export class UnitCache {
     options: DownloadOptions = {}
   ): Promise<string> {
     const dest = this.file(kind, id, version);
-    if (fs.existsSync(dest)) {
-      return dest;
+    for (;;) {
+      if (fs.existsSync(dest)) {
+        return dest;
+      }
+      const pending = inflight.get(dest);
+      if (!pending) {
+        break;
+      }
+      // Another build's download; if it fails or is cancelled, this one tries itself.
+      await untilAborted(
+        pending.catch(() => undefined),
+        options.signal
+      );
     }
+    const download = this.download(dest, id, target, options);
+    inflight.set(dest, download);
+    try {
+      return await download;
+    } finally {
+      inflight.delete(dest);
+    }
+  }
+
+  private async download(
+    dest: string,
+    id: string,
+    target: DownloadTarget,
+    options: DownloadOptions
+  ): Promise<string> {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     this.writeTag();
     const part = `${dest}${PART_SUFFIX}`;
@@ -140,6 +170,11 @@ export class UnitCache {
     return path.join(kind, `${id}.${version}.mbtiles`);
   }
 
+  /** The `prune` key of a cached file's partial download. */
+  static partKey(kind: CacheKind, id: string, version: string): string {
+    return `${UnitCache.key(kind, id, version)}${PART_SUFFIX}`;
+  }
+
   private writeTag(): void {
     const tag = path.join(this.root, 'CACHEDIR.TAG');
     if (!fs.existsSync(tag)) {
@@ -154,6 +189,22 @@ function fileSize(file: string): number {
   } catch {
     return 0;
   }
+}
+
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason as Error);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
 }
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {

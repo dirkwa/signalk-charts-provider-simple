@@ -82,6 +82,15 @@ export type DecoratedSet = OpenDataSet &
 // Runs outlive a plugin restart (a config save), like the ENC chart sets'.
 const runs = new Map<string, Run>();
 const FINISHED_RUN_LINGER_MS = 10_000;
+// Sets being renamed; like a run, a rename holds its set until it is done.
+const renaming = new Set<string>();
+// Chart files being written, by absolute path, to the id of the set writing them:
+// two sets of the same name must not build into one file.
+const claimedTargets = new Map<string, string>();
+
+function working(): boolean {
+  return renaming.size > 0 || [...runs.values()].some((r) => !r.finished);
+}
 
 const NOT_FOR_NAVIGATION = '(not for navigation)';
 
@@ -107,7 +116,7 @@ export class OpenDataCharts {
 
   /** Leftovers of a build cut short, while nothing runs. */
   sweep(): void {
-    if ([...runs.values()].some((r) => !r.finished)) {
+    if (working()) {
       return;
     }
     for (const set of this.sets.list()) {
@@ -120,7 +129,15 @@ export class OpenDataCharts {
       }
       for (const name of names) {
         if (name.startsWith('.') && name.endsWith(TEMP_SUFFIX)) {
-          fs.rmSync(path.join(dir, name), { force: true });
+          try {
+            fs.rmSync(path.join(dir, name), { force: true });
+          } catch (error) {
+            this.deps.error(
+              `Open Data Charts: could not remove ${path.join(dir, name)}: ${
+                error instanceof Error ? error.message : String(error)
+              }`
+            );
+          }
         }
       }
     }
@@ -189,7 +206,7 @@ export class OpenDataCharts {
         .reduce((sum, u) => sum + u.size, 0),
       freeBytes: freeDiskBytes(this.existingFolder(set)),
       units: decorated,
-      busy: run !== undefined && !run.finished,
+      busy: this.isBusy(set.id),
       progress: run?.progress ?? null
     };
   }
@@ -225,7 +242,24 @@ export class OpenDataCharts {
 
   isBusy(id: string): boolean {
     const run = runs.get(id);
-    return run !== undefined && !run.finished;
+    return renaming.has(id) || (run !== undefined && !run.finished);
+  }
+
+  /** Reserves `target` for the set until `release` is called. */
+  private claim(target: string, setId: string): () => void {
+    const owner = claimedTargets.get(target);
+    if (owner !== undefined && owner !== setId) {
+      throw new UserError(
+        `Another chart set is writing ${path.basename(target)}. Rename one of the sets, then try again.`,
+        409
+      );
+    }
+    claimedTargets.set(target, setId);
+    return () => {
+      if (claimedTargets.get(target) === setId) {
+        claimedTargets.delete(target);
+      }
+    };
   }
 
   /** Starts building the set's chart; the run reports through `decorate`. */
@@ -310,6 +344,21 @@ export class OpenDataCharts {
         409
       );
     }
+    const release = this.claim(target, set.id);
+    try {
+      return await this.buildInto(set, index, relative, target, run);
+    } finally {
+      release();
+    }
+  }
+
+  private async buildInto(
+    set: OpenDataSet,
+    index: OpenDataIndex,
+    relative: string,
+    target: string,
+    run: Run
+  ): Promise<string> {
     let plan = planSet(set, index, fs.existsSync(target));
     if (plan.add.length === 0 && plan.remove.length === 0 && plan.overviews === null) {
       return 'Nothing changed; the chart is up to date';
@@ -327,7 +376,7 @@ export class OpenDataCharts {
       await this.download(plan, run);
       await runAssembly(this.assemblyInput(set, index, plan, target));
     }
-    const latest = this.sets.get(id) ?? set;
+    const latest = this.sets.get(set.id) ?? set;
     const now = new Date().toISOString();
     this.sets.save({
       ...latest,
@@ -447,6 +496,18 @@ export class OpenDataCharts {
 
   /** Gives the set a new name, and its chart the matching file name and title. */
   async rename(set: OpenDataSet, name: string): Promise<OpenDataSet> {
+    if (this.isBusy(set.id)) {
+      throw new UserError('The set is busy; try again when it is done', 409);
+    }
+    renaming.add(set.id);
+    try {
+      return await this.renameChart(set, name);
+    } finally {
+      renaming.delete(set.id);
+    }
+  }
+
+  private async renameChart(set: OpenDataSet, name: string): Promise<OpenDataSet> {
     const renamed = { ...set, name, updatedAt: new Date().toISOString() };
     if (set.chartFile === null || !this.chartExists(set)) {
       this.sets.save(renamed);
@@ -458,52 +519,63 @@ export class OpenDataCharts {
     if (to !== from && fs.existsSync(to)) {
       throw new UserError(`A chart named ${path.basename(to)} already exists`, 409);
     }
-    await runAssembly({
-      target: to,
-      base: from,
-      remove: [],
-      add: [],
-      overviews: null,
-      units: Object.keys(set.built)
-        .map(parseUnitId)
-        .filter((t) => t !== null),
-      ...this.chartLabels(name, this.index.index()),
-      setId: set.id
-    });
-    if (to !== from) {
-      fs.rmSync(from, { force: true });
+    const oldFile = set.chartFile;
+    const release = this.claim(to, set.id);
+    try {
+      await runAssembly({
+        target: to,
+        base: from,
+        remove: [],
+        add: [],
+        overviews: null,
+        units: Object.keys(set.built)
+          .map(parseUnitId)
+          .filter((t) => t !== null),
+        ...this.chartLabels(name, this.index.index()),
+        setId: set.id
+      });
+      if (to !== from) {
+        fs.rmSync(from, { force: true });
+      }
+    } finally {
+      release();
     }
     const saved = { ...renamed, chartFile: relative };
     this.sets.save(saved);
     await this.deps.chartsChanged({
       written: relative,
-      ...(to !== from ? { removed: set.chartFile } : {})
+      ...(to !== from ? { removed: oldFile } : {})
     });
     return saved;
   }
 
   /** Removes cached files no set uses: neither in its chart nor at the index's version. */
   pruneCache(): void {
-    if ([...runs.values()].some((r) => !r.finished)) {
+    if (working()) {
       return;
     }
     const index = this.index.index();
     const units = new Map((index?.units ?? []).map((u) => [u.id, u]));
     const keep = new Set<string>();
+    // A partial download of a version still in use is resumed by the next build.
+    const keepFile = (kind: 'units' | 'overviews', id: string, version: string): void => {
+      keep.add(UnitCache.key(kind, id, version));
+      keep.add(UnitCache.partKey(kind, id, version));
+    };
     for (const set of this.sets.list()) {
       for (const [id, version] of Object.entries(set.built)) {
-        keep.add(UnitCache.key('units', id, version));
+        keepFile('units', id, version);
       }
       for (const [region, version] of Object.entries(set.overviews)) {
-        keep.add(UnitCache.key('overviews', region, version));
+        keepFile('overviews', region, version);
       }
       for (const id of set.unitIds) {
         const unit = units.get(id);
         if (unit) {
-          keep.add(UnitCache.key('units', id, unit.version));
+          keepFile('units', id, unit.version);
           const overview = index?.regions.find((r) => r.id === unit.region)?.overview;
           if (overview) {
-            keep.add(UnitCache.key('overviews', unit.region, overview.version));
+            keepFile('overviews', unit.region, overview.version);
           }
         }
       }
