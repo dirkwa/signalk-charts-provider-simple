@@ -607,13 +607,24 @@ function odcHover(latlng: L.LatLng | null): void {
 
 // ---- Sets ----
 
+let odcSaveQueue: Promise<void> = Promise.resolve();
+let odcPendingSaves = 0;
+let odcSavesStarted = 0;
+
 async function odcLoadSets(): Promise<void> {
+  const savesBefore = odcSavesStarted;
   try {
     const resp = await fetch(`${ODC_API}/sets`);
     if (!resp.ok) {
       throw new Error(`HTTP ${String(resp.status)}`);
     }
-    odcSets = (await resp.json()) as OdcSet[];
+    const sets = (await resp.json()) as OdcSet[];
+    // A save started before or during this read may not be in its answer; the
+    // read after the last save brings the sets instead.
+    if (odcPendingSaves > 0 || odcSavesStarted !== savesBefore) {
+      return;
+    }
+    odcSets = sets;
     odcLoadError = null;
   } catch (error) {
     // The last sets stay on screen, and polling goes on, until a read succeeds.
@@ -826,14 +837,13 @@ async function odcRequest(
   return body;
 }
 
-let odcSaveQueue: Promise<void> = Promise.resolve();
-let odcPendingSaves = 0;
 
 // The server takes unitIds as sent, so saves go one at a time in call order,
 // and the sets are read back only once none is pending: an earlier read could
 // bring back a selection older than the one on screen.
 function odcPut(id: string, change: { unitIds?: string[]; name?: string }): Promise<void> {
   odcPendingSaves++;
+  odcSavesStarted++;
   odcSaveQueue = odcSaveQueue.then(async () => {
     try {
       await odcRequest(`${ODC_API}/sets/${encodeURIComponent(id)}`, { method: 'PUT', json: change });
@@ -910,6 +920,9 @@ async function odcBuild(): Promise<void> {
       return;
     }
   }
+  // A selection change still being saved would otherwise reach the server
+  // after the build has started, and be refused while the set is busy.
+  await odcSaveQueue;
   try {
     await odcRequest(`${ODC_API}/sets/${encodeURIComponent(set.id)}/build`, { method: 'POST' });
   } catch (error) {
