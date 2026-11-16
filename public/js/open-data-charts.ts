@@ -101,6 +101,7 @@ let odcActiveId: string | null = null;
 let odcAcknowledged = false;
 let odcPanMode = false;
 let odcPoll: ReturnType<typeof setInterval> | null = null;
+let odcLoadError: string | null = null;
 let odcHoverTip: L.Tooltip | null = null;
 
 window.handleOpenDataTabActive = function (): void {
@@ -613,8 +614,10 @@ async function odcLoadSets(): Promise<void> {
       throw new Error(`HTTP ${String(resp.status)}`);
     }
     odcSets = (await resp.json()) as OdcSet[];
-  } catch {
-    odcSets = [];
+    odcLoadError = null;
+  } catch (error) {
+    // The last sets stay on screen, and polling goes on, until a read succeeds.
+    odcLoadError = error instanceof Error ? error.message : String(error);
   }
   if (odcActiveId === null || !odcSets.some((s) => s.id === odcActiveId)) {
     odcActiveId = odcSets[0]?.id ?? null;
@@ -627,7 +630,7 @@ function odcRenderAll(): void {
   odcRenderDetail();
   odcRestyle();
   odcUpdateMapMode();
-  const busy = odcSets.some((s) => s.busy);
+  const busy = odcSets.some((s) => s.busy) || (odcLoadError !== null && odcPoll !== null);
   if (busy && odcPoll === null) {
     odcPoll = setInterval(() => void odcLoadSets(), ODC_POLL_MS);
   } else if (!busy && odcPoll !== null) {
@@ -659,19 +662,27 @@ function odcRenderList(): void {
   if (!list) {
     return;
   }
+  const error =
+    odcLoadError !== null
+      ? `<div class="cc-empty">Could not read the chart sets: ${odcEsc(odcLoadError)}</div>`
+      : '';
   list.innerHTML =
-    odcSets.length === 0
-      ? '<div class="cc-empty">No chart sets yet. Click “New” to create one.</div>'
+    error +
+    (odcSets.length === 0
+      ? error
+        ? ''
+        : '<div class="cc-empty">No chart sets yet. Click “New” to create one.</div>'
       : odcSets
           .map(
             (set) => `
-      <div class="cc-list-row${set.id === odcActiveId ? ' active' : ''}" data-odc-select="${odcEsc(set.id)}">
+      <div class="cc-list-row${set.id === odcActiveId ? ' active' : ''}" role="button" tabindex="0"
+        aria-pressed="${set.id === odcActiveId ? 'true' : 'false'}" data-odc-select="${odcEsc(set.id)}">
         <span class="cc-status-dot cc-dot-${odcStatusText(set).dot}"></span>
         <span class="cc-list-name">${odcEsc(set.name)}</span>
         <span class="cc-list-meta">${String(set.unitIds.length)}</span>
       </div>`
           )
-          .join('');
+          .join(''));
 }
 
 function odcSelectedBytes(set: OdcSet): number {
@@ -815,13 +826,26 @@ async function odcRequest(
   return body;
 }
 
-async function odcPut(id: string, change: { unitIds?: string[]; name?: string }): Promise<void> {
-  try {
-    await odcRequest(`${ODC_API}/sets/${encodeURIComponent(id)}`, { method: 'PUT', json: change });
-  } catch (error) {
-    alert(`Could not save the set: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  await odcLoadSets();
+let odcSaveQueue: Promise<void> = Promise.resolve();
+let odcPendingSaves = 0;
+
+// The server takes unitIds as sent, so saves go one at a time in call order,
+// and the sets are read back only once none is pending: an earlier read could
+// bring back a selection older than the one on screen.
+function odcPut(id: string, change: { unitIds?: string[]; name?: string }): Promise<void> {
+  odcPendingSaves++;
+  odcSaveQueue = odcSaveQueue.then(async () => {
+    try {
+      await odcRequest(`${ODC_API}/sets/${encodeURIComponent(id)}`, { method: 'PUT', json: change });
+    } catch (error) {
+      alert(`Could not save the set: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    odcPendingSaves--;
+    if (odcPendingSaves === 0) {
+      await odcLoadSets();
+    }
+  });
+  return odcSaveQueue;
 }
 
 /** The one-time statement that these charts are not for navigation. */
@@ -894,14 +918,22 @@ async function odcBuild(): Promise<void> {
   await odcLoadSets();
 }
 
+function odcSelectRow(target: HTMLElement): boolean {
+  const id = target.closest<HTMLElement>('[data-odc-select]')?.dataset['odcSelect'];
+  if (!id) {
+    return false;
+  }
+  odcActiveId = id;
+  odcRenderAll();
+  odcFitActive();
+  document.querySelector<HTMLElement>(`#odcList [data-odc-select="${CSS.escape(id)}"]`)?.focus();
+  return true;
+}
+
 function odcWireHandlers(output: HTMLElement): void {
   output.addEventListener('click', (ev) => {
     const target = ev.target as HTMLElement;
-    const row = target.closest<HTMLElement>('[data-odc-select]');
-    if (row?.dataset['odcSelect']) {
-      odcActiveId = row.dataset['odcSelect'];
-      odcRenderAll();
-      odcFitActive();
+    if (odcSelectRow(target)) {
       return;
     }
     const action = target.closest<HTMLElement>('[data-odc-action]')?.dataset['odcAction'];
@@ -949,7 +981,11 @@ function odcWireHandlers(output: HTMLElement): void {
         if (set) {
           void odcRequest(`${ODC_API}/sets/${encodeURIComponent(set.id)}/cancel`, {
             method: 'POST'
-          }).then(() => odcLoadSets());
+          })
+            .catch((error: unknown) => {
+              alert(`Could not cancel: ${error instanceof Error ? error.message : String(error)}`);
+            })
+            .then(() => odcLoadSets());
         }
         break;
       case 'refresh-index':
@@ -964,8 +1000,14 @@ function odcWireHandlers(output: HTMLElement): void {
     }
   });
   output.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter' && (ev.target as HTMLElement).id === 'odcNewName') {
+    const target = ev.target as HTMLElement;
+    if (ev.key === 'Enter' && target.id === 'odcNewName') {
       void odcCreate();
+      return;
+    }
+    if ((ev.key === 'Enter' || ev.key === ' ') && target.matches('[data-odc-select]')) {
+      ev.preventDefault();
+      odcSelectRow(target);
     }
   });
 }

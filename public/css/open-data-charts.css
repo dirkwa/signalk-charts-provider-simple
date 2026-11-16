@@ -64,3 +64,8 @@
   font-weight: 600;
   color: #37474f;
 }
+
+#odcList .cc-list-row:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary, #3b6ea5);
+  outline-offset: -2px;
+}
