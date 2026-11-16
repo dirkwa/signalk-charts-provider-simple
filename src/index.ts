@@ -139,6 +139,8 @@ import {
 } from './utils/quarantine.js';
 import { serialQueue } from './utils/serial-queue.js';
 import { parseBody, parseShape } from './utils/rest-validation.js';
+import { DEFAULT_OPEN_DATA_INDEX_URL } from './utils/open-data/index-manager.js';
+import { OpenDataCharts, registerOpenDataRoutes } from './utils/open-data/service.js';
 import {
   getAllConversionProgress as getAllRncProgress,
   getConversionProgress as getRncProgress,
@@ -452,6 +454,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   };
 
   let catalogUpdateInterval: ReturnType<typeof setInterval> | null = null;
+  let openData: OpenDataCharts | null = null;
+  let openDataCheckInterval: ReturnType<typeof setInterval> | null = null;
   // signalk-internet's view of the link; null while the plugin is stopped.
   let internet: InternetGate | null = null;
   let pluginDataDir = '';
@@ -663,6 +667,11 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         clearInterval(catalogUpdateInterval);
         catalogUpdateInterval = null;
       }
+      if (openDataCheckInterval) {
+        clearInterval(openDataCheckInterval);
+        openDataCheckInterval = null;
+      }
+      openData = null;
       // Withdraw the peer-plugin refresh hook and ENC store (see doStartup).
       delete (globalThis as unknown as ChartsProviderRefreshGlobal).__signalk_chartsProviderRefresh;
       delete (globalThis as unknown as ChartsProviderEncGlobal).__signalk_chartsProviderEnc;
@@ -999,10 +1008,32 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     if (savedSetIds !== null) {
       void shareChartSets(savedSetIds);
     }
+    const odc = new OpenDataCharts({
+      dataDir,
+      indexUrl: process.env.OPEN_DATA_INDEX_URL || DEFAULT_OPEN_DATA_INDEX_URL,
+      chartPath: () => props.chartPath || defaultChartsPath,
+      debug: app.debug.bind(app),
+      error: app.error.bind(app),
+      mayRunBackground: () => gate.mayRunBackground() && !gate.deciding(),
+      chartsChanged: (change) => openDataChartsChanged(change)
+    });
+    openData = odc;
+    odc.sweep();
+    if (openDataCheckInterval) {
+      clearInterval(openDataCheckInterval);
+    }
+    openDataCheckInterval = setInterval(
+      () => {
+        odc.refreshIndexInBackground();
+      },
+      24 * 60 * 60 * 1000
+    );
+    openDataCheckInterval.unref();
     // The startup round waits for signalk-internet's first state, when that
     // plugin is enabled, so a restart on a metered link downloads nothing.
     void gate.firstStateKnown().then(() => {
       gate.runWhenBackgroundAllowed(() => {
+        odc.refreshIndexInBackground();
         void refreshCatalog();
         // Saved chart sets need a current index for their update status; a
         // device without any waits until the ENC Charts tab is opened.
@@ -4746,6 +4777,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       );
     });
 
+    registerOpenDataRoutes(() => openData, readonly, readwrite, router);
+
     // ---- Chart sets (the ENC Charts tab) ----
     // Build a named bundle of ENC units picked on a map of the ENC index
     // (NOAA band-4 boxes and every other source's cells), then download
@@ -6195,6 +6228,26 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       }
     })();
   }
+
+  // An Open Data Charts set's chart was built, renamed or removed.
+  const openDataChartsChanged = async (change: {
+    written?: string;
+    removed?: string;
+  }): Promise<void> => {
+    if (change.written !== undefined) {
+      setChartEnabled(change.written, true);
+    }
+    await refreshChartProviders();
+    if (change.removed !== undefined) {
+      emitChartDelta(chartIdFromFilename(path.basename(change.removed)), null);
+    }
+    if (change.written !== undefined) {
+      const chartId = chartIdFromFilename(path.basename(change.written));
+      if (chartProviders[chartId]) {
+        emitChartDelta(chartId, sanitizeProvider(chartProviders[chartId], 2));
+      }
+    }
+  };
 
   const registerAsProvider = (): void => {
     app.debug('** Registering as Resource Provider for `charts` **');
