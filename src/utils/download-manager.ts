@@ -25,8 +25,8 @@ export class TransientDownloadError extends Error {
 // advance the .part file rearms the budget, so a throttled multi-GB source
 // (mediafire stalls mid-transfer, NOAA rate-caps) can be resumed through
 // any number of interruptions as long as bytes keep arriving.
-const MAX_DOWNLOAD_ATTEMPTS = 3;
-const RETRY_BACKOFF_MS = 2000;
+export const MAX_DOWNLOAD_ATTEMPTS = 3;
+export const RETRY_BACKOFF_MS = 2000;
 
 // Redirect ceiling per attempt — guards against a redirect loop from a
 // misbehaving chart source.

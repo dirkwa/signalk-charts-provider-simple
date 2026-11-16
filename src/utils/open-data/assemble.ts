@@ -1,0 +1,273 @@
+/**
+ * Puts a set's units together into one MBTiles. A unit's rows are the tiles
+ * at z >= 9 whose z9 ancestor is the unit, so they can be added, replaced
+ * and removed one unit at a time; the rows below z9 are the region
+ * overviews, replaced as a whole.
+ *
+ * The chart is written to a temporary file in the target folder, starting
+ * from a copy of the current chart when there is one, and renamed into
+ * place, so a plotter keeps reading a complete chart while it is updated
+ * and a power cut leaves the old one.
+ */
+
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { DatabaseSync } from 'node:sqlite';
+import { Worker } from 'worker_threads';
+import { UNIT_ROWS_SQL, UNIT_ZOOM, unionBounds, type UnitTile } from './tiles.js';
+
+export const TEMP_SUFFIX = '.odc-tmp';
+
+export interface VectorLayerInfo {
+  id: string;
+  description?: string;
+  minzoom?: number;
+  maxzoom?: number;
+  fields?: Record<string, string>;
+}
+
+export interface AssemblyInput {
+  target: string;
+  /** The chart to start from, or null to start from an empty MBTiles. */
+  base: string | null;
+  /** Units whose rows are taken out before any are added. */
+  remove: UnitTile[];
+  add: { tile: UnitTile; file: string }[];
+  /** Overview files whose rows below z9 replace those of the base, or null to keep them. */
+  overviews: string[] | null;
+  /** Every unit the finished chart holds, for its bounds. */
+  units: UnitTile[];
+  name: string;
+  description: string;
+  attribution: string | null;
+  setId: string;
+}
+
+/** The base is not a chart this module wrote; build a new one instead. */
+export class NotPatchableError extends Error {}
+
+const SCHEMA = `
+  CREATE TABLE metadata (name TEXT, value TEXT);
+  CREATE UNIQUE INDEX name ON metadata (name);
+  CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);
+  CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row);
+`;
+
+export function tempPathFor(target: string): string {
+  return path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.${crypto.randomBytes(4).toString('hex')}${TEMP_SUFFIX}`
+  );
+}
+
+export function mergeVectorLayers(lists: readonly VectorLayerInfo[][]): VectorLayerInfo[] {
+  const byId = new Map<string, VectorLayerInfo>();
+  for (const list of lists) {
+    for (const layer of list) {
+      const seen = byId.get(layer.id);
+      if (!seen) {
+        byId.set(layer.id, { ...layer, fields: { ...layer.fields } });
+        continue;
+      }
+      seen.fields = { ...layer.fields, ...seen.fields };
+      if (layer.minzoom !== undefined) {
+        seen.minzoom = Math.min(seen.minzoom ?? layer.minzoom, layer.minzoom);
+      }
+      if (layer.maxzoom !== undefined) {
+        seen.maxzoom = Math.max(seen.maxzoom ?? layer.maxzoom, layer.maxzoom);
+      }
+      if (!seen.description && layer.description) {
+        seen.description = layer.description;
+      }
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function isVectorLayer(value: unknown): value is VectorLayerInfo {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as { id?: unknown }).id === 'string'
+  );
+}
+
+function readVectorLayers(db: DatabaseSync, schema: string): VectorLayerInfo[] {
+  const row = db.prepare(`SELECT value FROM ${schema}.metadata WHERE name = 'json'`).get() as
+    { value: unknown } | undefined;
+  if (typeof row?.value !== 'string') {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(row.value) as { vector_layers?: unknown };
+    return Array.isArray(parsed.vector_layers) ? parsed.vector_layers.filter(isVectorLayer) : [];
+  } catch {
+    return [];
+  }
+}
+
+function isPatchable(db: DatabaseSync): boolean {
+  const rows = db
+    .prepare("SELECT type, name FROM sqlite_master WHERE name IN ('tiles', 'tile_index')")
+    .all() as { type: string; name: string }[];
+  return (
+    rows.some((r) => r.name === 'tiles' && r.type === 'table') &&
+    rows.some((r) => r.name === 'tile_index')
+  );
+}
+
+function fsyncFile(file: string): void {
+  const fd = fs.openSync(file, 'r+');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function fsyncDir(dir: string): void {
+  try {
+    const fd = fs.openSync(dir, 'r');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    // Not every platform opens a directory; the rename stays atomic either way.
+  }
+}
+
+/** Writes the chart `input` describes to `input.target`. */
+export function assembleChart(input: AssemblyInput): void {
+  fs.mkdirSync(path.dirname(input.target), { recursive: true });
+  const tmp = tempPathFor(input.target);
+  try {
+    if (input.base !== null) {
+      fs.copyFileSync(input.base, tmp, fs.constants.COPYFILE_FICLONE);
+    }
+    const db = new DatabaseSync(tmp);
+    try {
+      // A temporary file: a crash discards it, so no journal is needed.
+      db.exec('PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;');
+      if (input.base === null) {
+        // Set before any table exists, so rows taken out later give their space back.
+        db.exec('PRAGMA auto_vacuum = INCREMENTAL;');
+        db.exec(SCHEMA);
+      } else if (!isPatchable(db)) {
+        throw new NotPatchableError(`${input.base} was not built by Open Data Charts`);
+      }
+      writeRows(db, input);
+      db.exec('PRAGMA incremental_vacuum;');
+    } finally {
+      db.close();
+    }
+    fsyncFile(tmp);
+    fs.renameSync(tmp, input.target);
+    fsyncDir(path.dirname(input.target));
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+function writeRows(db: DatabaseSync, input: AssemblyInput): void {
+  const layers: VectorLayerInfo[][] = [];
+  if (input.base !== null) {
+    layers.push(readVectorLayers(db, 'main'));
+  }
+  const deleteUnit = db.prepare(`DELETE FROM tiles WHERE ${UNIT_ROWS_SQL}`);
+  for (const tile of input.remove) {
+    deleteUnit.run({ ux: tile.x, uy: tile.y });
+  }
+  if (input.overviews !== null) {
+    db.prepare('DELETE FROM tiles WHERE zoom_level < ?').run(UNIT_ZOOM);
+  }
+  // ATTACH cannot run inside a transaction, so each copy commits on its own;
+  // the file is not in place before every copy is done.
+  const copyFrom = (file: string, where: string, params: Record<string, number>): void => {
+    db.prepare('ATTACH DATABASE ? AS src').run(file);
+    try {
+      db.prepare(
+        `INSERT OR REPLACE INTO main.tiles (zoom_level, tile_column, tile_row, tile_data)
+         SELECT zoom_level, tile_column, tile_row, tile_data FROM src.tiles WHERE ${where}`
+      ).run(params);
+      layers.push(readVectorLayers(db, 'src'));
+    } finally {
+      db.exec('DETACH DATABASE src');
+    }
+  };
+  for (const file of input.overviews ?? []) {
+    copyFrom(file, 'zoom_level < :uz', { uz: UNIT_ZOOM });
+  }
+  // A unit's file may hold tiles of its neighbours (a tiler's buffer); only
+  // its own go in, so units never overwrite each other.
+  for (const { tile, file } of input.add) {
+    copyFrom(file, UNIT_ROWS_SQL, { ux: tile.x, uy: tile.y });
+  }
+  writeMetadata(db, input, mergeVectorLayers(layers));
+}
+
+function writeMetadata(db: DatabaseSync, input: AssemblyInput, layers: VectorLayerInfo[]): void {
+  const zooms = db
+    .prepare('SELECT MIN(zoom_level) AS lo, MAX(zoom_level) AS hi FROM tiles')
+    .get() as { lo: number | null; hi: number | null };
+  const bounds = unionBounds(input.units);
+  const rows: [string, string][] = [
+    ['name', input.name],
+    ['description', input.description],
+    ['type', 'S-57'],
+    ['format', 'pbf'],
+    ['version', '1'],
+    ['minzoom', String(zooms.lo ?? UNIT_ZOOM)],
+    ['maxzoom', String(zooms.hi ?? UNIT_ZOOM)],
+    ['json', JSON.stringify({ vector_layers: layers })],
+    ['x-odc-set', input.setId]
+  ];
+  if (bounds) {
+    rows.push(['bounds', bounds.map((v) => v.toFixed(6)).join(',')]);
+  }
+  if (input.attribution) {
+    rows.push(['attribution', input.attribution]);
+  }
+  db.exec('DELETE FROM metadata');
+  const insert = db.prepare('INSERT INTO metadata (name, value) VALUES (?, ?)');
+  for (const [name, value] of rows) {
+    insert.run(name, value);
+  }
+}
+
+interface WorkerAnswer {
+  ok: boolean;
+  notPatchable?: boolean;
+  message?: string;
+}
+
+/**
+ * `assembleChart` on a worker thread: copying a unit's rows takes seconds
+ * on a Raspberry Pi, and the server's event loop must keep serving tiles.
+ */
+export function runAssembly(input: AssemblyInput): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./assemble-worker.js', import.meta.url), {
+      workerData: input
+    });
+    let answered = false;
+    worker.once('message', (answer: WorkerAnswer) => {
+      answered = true;
+      if (answer.ok) {
+        resolve();
+      } else if (answer.notPatchable) {
+        reject(new NotPatchableError(answer.message));
+      } else {
+        reject(new Error(answer.message ?? 'Building the chart failed'));
+      }
+    });
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (!answered) {
+        reject(new Error(`Building the chart stopped (exit code ${String(code)})`));
+      }
+    });
+  });
+}
