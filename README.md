@@ -64,7 +64,7 @@ Open the plugin's web interface from the Webapps list in the Signal K admin UI, 
 http://[your-server]:3000/signalk-charts-provider-simple/
 ```
 
-The interface provides seven tabs:
+The interface provides eight tabs:
 
 1. **Manage Charts**:
    - View all charts with metadata (name, bounds, zoom levels, size)
@@ -120,6 +120,14 @@ The interface provides seven tabs:
    - Each chart set keeps its downloaded cells, so an update downloads and reads only the cells that changed before building the chart again. The set's details show how much disk they take; deleting the set frees it
    - Chart sets made in the NOAA Charts tab of earlier versions carry over as they are. A set that includes other sources still opens in an earlier version, which shows only its NOAA part and drops the rest if it saves the set
    - **Shared ENC cells** lists the S-57 cells other plugins can read: every chart set's cells, and, with **Keep the ENC cells of converted charts** on in the plugin settings, the cells of each ENC chart converted in the Convert or Chart Catalog tab. Open a collection to list its cells with their versions and update files, each file downloadable. Remove a converted chart's cells there; a chart set's go with the set. See [Shared ENC cells](#shared-enc-cells-for-other-plugins)
+
+8. **Open Data Charts** (not for navigation):
+   - Vector charts built from open data, such as Shom surveys and models and OpenStreetMap, by the [Open Data Charts](https://github.com/dirkwa/open-data-charts) project, in regions without free official ENCs. They are **not for navigation**, and you are asked to acknowledge that once before the first download
+   - The map shows each region and its areas (squares of about 0.7°), coloured by the best depth data they hold: multibeam survey, survey since 1990, survey before 1990, or model only
+   - Build a named chart set the same way as in ENC Charts: click an area to add or remove it, drag a box to add every area it touches (or remove them when all are in the set already), and **Move map** to pan. The set shows its download size and the free space in the chart folder
+   - **Download** builds one chart per set in the chart folder's "Open Data Charts" folder, named after the set. The set's details list each area with its version, size, quality and the disk its download takes
+   - When an area is republished the set shows **Update available** with the areas that changed; **Update** downloads only those and replaces just their part of the chart. Taking areas out of the set and applying removes them from the chart
+   - The plugin checks the index for updates on its own only when a set exists and the connection allows it (see signalk-internet); downloads start only when you press the button. `OPEN_DATA_INDEX_URL` points a development server at another index
 
 ### Shared ENC cells for other plugins
 
