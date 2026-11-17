@@ -275,6 +275,8 @@ async function initCustomCatalogsTab(): Promise<void> {
     } else {
       showStartView({ animate: false });
     }
+    // Tests wait for this: until now the map shows its placeholder world view.
+    document.getElementById('ccMap')?.setAttribute('data-framed', '');
   }, 0);
 }
 

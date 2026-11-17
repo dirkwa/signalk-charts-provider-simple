@@ -75,16 +75,14 @@ function showVesselOnMap(
   const VesselControl = L.Control.extend({
     onAdd(): HTMLElement {
       const bar = L.DomUtil.create('div', 'leaflet-bar');
-      const button = L.DomUtil.create('a', 'vessel-button', bar);
-      button.href = '#';
+      const button = L.DomUtil.create('button', 'vessel-button', bar);
+      button.type = 'button';
       button.title = 'Go to vessel';
-      button.setAttribute('role', 'button');
       button.setAttribute('aria-label', 'Go to vessel');
       button.innerHTML =
         '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="#d81b60" stroke="#fff" stroke-width="2"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4" stroke="currentColor" stroke-width="2"/></svg>';
       L.DomEvent.disableClickPropagation(bar);
-      L.DomEvent.on(button, 'click', (event) => {
-        L.DomEvent.preventDefault(event);
+      L.DomEvent.on(button, 'click', () => {
         goToVessel();
       });
       return bar;

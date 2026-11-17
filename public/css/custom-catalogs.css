@@ -552,9 +552,21 @@
 }
 
 /* "Go to vessel" on the ENC Charts and Open Data Charts maps */
-.leaflet-bar a.vessel-button {
+.leaflet-bar button.vessel-button {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background-color: #fff;
   color: #333;
+  cursor: pointer;
+}
+
+.leaflet-bar button.vessel-button:hover,
+.leaflet-bar button.vessel-button:focus-visible {
+  background-color: #f4f4f4;
 }

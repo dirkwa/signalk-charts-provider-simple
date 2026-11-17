@@ -31,6 +31,15 @@ test.describe('ENC Charts tab: the boat on the map', () => {
     });
     await goTo.click();
     await expect.poll(async () => (await mapCenter(page)).lat).toBeCloseTo(NOUMEA.latitude, 1);
+
+    await page.evaluate(() => {
+      (window as unknown as { eval(code: string): void }).eval(
+        'ccMap.setView([20, 0], 2, { animate: false })'
+      );
+    });
+    await goTo.focus();
+    await page.keyboard.press('Space');
+    await expect.poll(async () => (await mapCenter(page)).lat).toBeCloseTo(NOUMEA.latitude, 1);
   });
 
   test('shows the whole world without a position', async ({ page }) => {
@@ -38,8 +47,13 @@ test.describe('ENC Charts tab: the boat on the map', () => {
     await setMockState(page, { position: null });
     await page.locator('#customCatalogsTabBtn').click();
 
-    await expect(page.locator('#ccMap')).toBeVisible();
-    await expect.poll(async () => (await mapCenter(page)).lat).toBeCloseTo(20, 0);
+    await expect(page.locator('#ccMap[data-framed]')).toBeAttached();
+    expect((await mapCenter(page)).lat).toBeCloseTo(20, 0);
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as { eval(code: string): number }).eval('ccMap.getZoom()')
+      )
+    ).toBe(2);
     await expect(page.getByRole('button', { name: 'Go to vessel' })).toHaveCount(0);
   });
 });
