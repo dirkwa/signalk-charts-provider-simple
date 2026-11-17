@@ -32,6 +32,12 @@ declare global {
       bbox: number[] | undefined,
       position: { latitude: number; longitude: number } | null
     ): boolean;
+    fetchVesselPosition(): Promise<{ latitude: number; longitude: number } | null>;
+    showVesselOnMap(
+      map: L.Map,
+      position: { latitude: number; longitude: number },
+      goToVessel: () => void
+    ): void;
 
     // emoji-utils.ts
     detectEmojiSupport(): boolean;
