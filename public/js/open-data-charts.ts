@@ -12,7 +12,9 @@ const ODC_QUALITY_COLORS: Record<string, string> = {
   multibeam: '#2166ac',
   'survey-recent': '#67a9cf',
   'survey-old': '#f4a259',
-  model: '#d7191c'
+  model: '#d7191c',
+  'model-coarse': '#762a83',
+  none: '#252525'
 };
 const ODC_OTHER_COLOR = '#8c8c8c';
 
