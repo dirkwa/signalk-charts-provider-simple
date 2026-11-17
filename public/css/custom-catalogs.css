@@ -550,3 +550,11 @@
     min-height: 360px;
   }
 }
+
+/* "Go to vessel" on the ENC Charts and Open Data Charts maps */
+.leaflet-bar a.vessel-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #333;
+}

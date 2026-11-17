@@ -94,6 +94,10 @@ let odcMap: L.Map | null = null;
 let odcUnitLayer: L.LayerGroup | null = null;
 let odcRenderer: L.Renderer | null = null;
 const odcUnits = new Map<string, OdcUnit>();
+const odcRegions = new Map<string, [number, number, number, number]>();
+let odcVesselPosition: { latitude: number; longitude: number } | null = null;
+// About one unit around the boat.
+const ODC_VESSEL_ZOOM = 9;
 const odcRects = new Map<string, L.Rectangle>();
 let odcQualities: OdcQuality[] = [];
 let odcSets: OdcSet[] = [];
@@ -162,7 +166,13 @@ async function odcInit(): Promise<void> {
     </div>`;
   odcWireHandlers(output);
   odcInitMap();
-  await Promise.all([odcLoadIndex(), odcLoadSets()]);
+  const [position] = await Promise.all([window.fetchVesselPosition(), odcLoadIndex(), odcLoadSets()]);
+  odcVesselPosition = position;
+  if (odcMap && position) {
+    window.showVesselOnMap(odcMap, position, () => {
+      odcMap?.setView([position.latitude, position.longitude], ODC_VESSEL_ZOOM);
+    });
+  }
   window.setTimeout(() => {
     odcMap?.invalidateSize();
     odcFitActive();
@@ -235,6 +245,10 @@ async function odcLoadIndex(refresh = false): Promise<void> {
     odcUnits.clear();
     for (const unit of data.index.units) {
       odcUnits.set(unit.id, unit);
+    }
+    odcRegions.clear();
+    for (const region of data.index.regions) {
+      odcRegions.set(region.id, region.bbox);
     }
     odcDrawIndex(data.index);
     const attribution = document.getElementById('odcAttribution');
@@ -340,12 +354,19 @@ function odcRenderLegend(): void {
   legend.innerHTML = items.join('');
 }
 
+// Before a set has units: the region the boat is in, or every unit there is.
+function odcStartUnits(): string[] {
+  const all = [...odcUnits.values()];
+  const here = all.filter((u) => window.isNearPosition(odcRegions.get(u.region), odcVesselPosition));
+  return (here.length > 0 ? here : all).map((u) => u.id);
+}
+
 function odcFitActive(): void {
   if (!odcMap) {
     return;
   }
   const set = odcActive();
-  const ids = set && set.unitIds.length > 0 ? set.unitIds : [...odcUnits.keys()];
+  const ids = set && set.unitIds.length > 0 ? set.unitIds : odcStartUnits();
   const units = ids.map((id) => odcUnits.get(id)).filter((u) => u !== undefined);
   if (units.length === 0) {
     return;

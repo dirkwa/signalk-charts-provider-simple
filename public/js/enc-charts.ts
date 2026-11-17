@@ -21,6 +21,8 @@ const CC_BOX_CONFIRM_ABOVE = 50;
 const CC_DRAG_THRESHOLD_PX = 6;
 const CC_WORLD_CENTER: L.LatLngExpression = [20, 0];
 const CC_WORLD_ZOOM = 2;
+// Around the boat: the units of the surrounding coast, before one is picked.
+const CC_VESSEL_ZOOM = 8;
 // How long the "create a chart set first" hint stays up.
 const CC_SET_HINT_MS = 5000;
 
@@ -164,6 +166,7 @@ interface CcDrawnUnit {
 
 let ccInitialized = false;
 let ccMap: L.Map | null = null;
+let ccVesselPosition: { latitude: number; longitude: number } | null = null;
 let ccFootprintLayer: L.LayerGroup | null = null;
 // Markers for selected units too small to see at the current zoom.
 let ccSmallLayer: L.LayerGroup | null = null;
@@ -252,7 +255,13 @@ async function initCustomCatalogsTab(): Promise<void> {
   wireCustomCatalogHandlers();
   initCustomCatalogMap();
   updateMapMode();
-  await Promise.all([loadCatalogs(), loadEncIndex()]);
+  const [position] = await Promise.all([window.fetchVesselPosition(), loadCatalogs(), loadEncIndex()]);
+  ccVesselPosition = position;
+  if (ccMap && position) {
+    window.showVesselOnMap(ccMap, position, () => {
+      showVessel();
+    });
+  }
   // Both the chart-set list (auto-selects the first) and the units are now
   // loaded. The map was created the instant this tab became visible, so Leaflet
   // may have cached a stale (zero) container size; recompute it, then frame the
@@ -264,7 +273,7 @@ async function initCustomCatalogsTab(): Promise<void> {
     if (cat && ccSelectedIds(cat).size > 0) {
       fitMapToActiveCatalog({ animate: false });
     } else {
-      showWholeWorld({ animate: false });
+      showStartView({ animate: false });
     }
   }, 0);
 }
@@ -1702,6 +1711,23 @@ function showWholeWorld(opts: { animate?: boolean } = {}): void {
   ccMap?.setView(CC_WORLD_CENTER, CC_WORLD_ZOOM, { animate: opts.animate ?? true });
 }
 
+function showVessel(opts: { animate?: boolean } = {}): void {
+  if (ccVesselPosition) {
+    ccMap?.setView([ccVesselPosition.latitude, ccVesselPosition.longitude], CC_VESSEL_ZOOM, {
+      animate: opts.animate ?? true
+    });
+  }
+}
+
+// Before a set has units: the boat's waters when Signal K has its position.
+function showStartView(opts: { animate?: boolean } = {}): void {
+  if (ccVesselPosition) {
+    showVessel(opts);
+  } else {
+    showWholeWorld(opts);
+  }
+}
+
 function showNewForm(show: boolean): void {
   const form = document.getElementById('ccNewForm');
   const input = document.getElementById('ccNewName') as HTMLInputElement | null;
@@ -1736,8 +1762,8 @@ async function createCatalog(): Promise<void> {
     showNewForm(false);
     ccActiveId = cat.id;
     replaceCatalog(cat);
-    // A new set starts empty: show every area there is to pick from.
-    showWholeWorld();
+    // A new set starts empty: show the boat's waters, or every area there is.
+    showStartView();
   } catch {
     alert('Could not create chart set. Check your connection.');
   }
