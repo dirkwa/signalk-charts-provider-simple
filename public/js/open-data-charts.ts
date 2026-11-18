@@ -13,6 +13,7 @@ const ODC_QUALITY_COLORS: Record<string, string> = {
   'survey-recent': '#67a9cf',
   'survey-old': '#f4a259',
   model: '#d7191c',
+  satellite: '#01665e',
   'model-coarse': '#762a83',
   none: '#252525'
 };
