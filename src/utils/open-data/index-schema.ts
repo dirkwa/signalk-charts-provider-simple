@@ -19,6 +19,7 @@ export const QUALITY_CATEGORIES = [
   { id: 'survey-recent', label: 'Survey since 1990' },
   { id: 'survey-old', label: 'Survey before 1990' },
   { id: 'model', label: 'Model only' },
+  { id: 'satellite', label: 'Satellite-derived' },
   { id: 'model-coarse', label: 'Deep water, coarse model' },
   { id: 'none', label: 'No depth data' }
 ] as const;
