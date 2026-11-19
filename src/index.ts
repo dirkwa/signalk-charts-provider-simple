@@ -91,7 +91,7 @@ import { MAX_CONVERSION_LOG_LINES, resolveLogTail } from './utils/conversion-log
 import { downloadManager } from './utils/download-manager.js';
 import { scanAllFolders, scanChartsRecursively } from './utils/file-scanner.js';
 import { repairMbtilesMetadata, setMbtilesDisplayName } from './utils/mbtiles-metadata.js';
-import { open as openMbtilesReader } from './utils/mbtiles-reader.js';
+import { open as openMbtilesReader, type MBTilesReader } from './utils/mbtiles-reader.js';
 import { PMTilesReader, pmtilesBounds } from './utils/pmtiles-reader.js';
 import { writeChartPathMarker } from './utils/path-marker.js';
 import { getBlankTileReplacement, getOverzoomedTile } from './utils/tile-overzoom.js';
@@ -268,6 +268,7 @@ import { MasterCharts } from './utils/multihelm/master-charts.js';
 import type {
   ChartProvider,
   ChartsProviderEncGlobal,
+  ChartTiles,
   ChartsProviderRefreshGlobal,
   DownloadJob,
   EncCollectionStateInfo,
@@ -328,6 +329,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // stop()); its charts are closed too. False before the first start, where
   // a refresh must still work.
   let stopped = false;
+  // See doStartup: offered once per server process.
+  let chartTilesOffered = false;
   const resolveOnlineChart: OnlineChartResolver = (catalogId) => getOnlineCatalogChart(catalogId);
   // catalogId → chart-folder paths of its .onlinechart.json files, for the
   // Chart Catalog's "Added" state. The catalog tab polls often, so this is
@@ -1158,6 +1161,27 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       cellsIn: storedCellsIn,
       requestArea: (bbox, requester) => requestArea(bbox, requester)
     };
+
+    // Chart tiles for peer plugins, such as signalk-collision-alerts, which
+    // reads the land on S-57 charts. A PropertyValue is kept for good and
+    // capped server-wide, while Signal K restarts the plugin on every config
+    // save, so it is offered once per server process, and not again after a
+    // failed emit; until a start has loaded its charts there are none to
+    // read. Test harnesses and very old servers have no PropertyValues.
+    if (
+      !chartTilesOffered &&
+      typeof (app as Partial<ExtendedServerAPI>).emitPropertyValue === 'function'
+    ) {
+      chartTilesOffered = true;
+      try {
+        app.emitPropertyValue(
+          CHART_TILES_PROPERTY,
+          chartTilesOf(() => chartProviders)
+        );
+      } catch (err) {
+        app.error(`Could not offer chart tiles to other plugins: ${String(err)}`);
+      }
+    }
 
     // Wipe any quarantine subdirs left behind by a previous server
     // lifecycle. Conversions write into <dataDir>/in-progress/<chartNumber>/
@@ -6565,6 +6589,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   return plugin;
 };
 
+const CHART_TILES_PROPERTY = 'chartTiles';
+// What `res.sendFile` answers 404 for: no such tile file.
+const MISSING_FILE_CODES = new Set(['ENOENT', 'ENOTDIR', 'ENAMETOOLONG', 'EISDIR']);
+
 const responseHttpOptions = {
   headers: {
     'Cache-Control': 'public, max-age=7776000'
@@ -6663,6 +6691,12 @@ const cleanupDir = (dirPath: string): void => {
   }
 };
 
+const tileFilePath = (provider: ChartProvider, z: number, x: number, y: number): string => {
+  const { format, _flipY, _filePath } = provider;
+  const flippedY = Math.pow(2, z) - 1 - y;
+  return _filePath ? path.resolve(_filePath, `${z}/${x}/${_flipY ? flippedY : y}.${format}`) : '';
+};
+
 const serveTileFromFilesystem = (
   res: Response,
   provider: ChartProvider,
@@ -6670,11 +6704,7 @@ const serveTileFromFilesystem = (
   x: number,
   y: number
 ): void => {
-  const { format, _flipY, _filePath } = provider;
-  const flippedY = Math.pow(2, z) - 1 - y;
-  const file = _filePath
-    ? path.resolve(_filePath, `${z}/${x}/${_flipY ? flippedY : y}.${format}`)
-    : '';
+  const file = tileFilePath(provider, z, x, y);
   res.sendFile(file, responseHttpOptions, (err?: Error) => {
     if (err && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
       res.sendStatus(404);
@@ -6746,6 +6776,30 @@ const serveMaskedTile = async (
   }
 };
 
+/**
+ * An MBTiles vector chart's tile as served: the stored one, or a gzipped one
+ * synthesized in place of a coverage hole or a stored blank tile; without
+ * headers when synthesized.
+ */
+const mbtilesVectorTile = (
+  handle: MBTilesReader,
+  z: number,
+  x: number,
+  y: number
+): { data: Buffer; headers?: Record<string, string> } | null => {
+  const stored = handle.getTile(z, x, y);
+  // Combined NOAA chart sets have spatially varying max zoom (each IHO band
+  // tiled to its own zoom range), so clients legitimately request tiles in
+  // coverage holes the advertised zoom range implies should exist: the
+  // nearest ancestor is re-sliced instead. A stored cell-edge tile whose
+  // features all sit outside its visible extent renders blank and would mask
+  // lower-band content, so it is replaced too.
+  const synthesized = stored
+    ? getBlankTileReplacement(handle, z, x, y, stored.data)
+    : getOverzoomedTile(handle, z, x, y);
+  return synthesized ? { data: synthesized } : stored;
+};
+
 // Exported for tests (the Express route registration is not separately
 // constructible without a full server).
 export const serveTileFromMbtiles = (
@@ -6756,25 +6810,26 @@ export const serveTileFromMbtiles = (
   y: number
 ): void => {
   try {
+    if (provider.format === 'pbf' && provider._mbtilesHandle) {
+      const tile = mbtilesVectorTile(provider._mbtilesHandle, z, x, y);
+      if (!tile) {
+        res.sendStatus(404);
+        return;
+      }
+      res.writeHead(200, {
+        ...(tile.headers ?? {
+          'Content-Type': 'application/x-protobuf',
+          'Content-Encoding': 'gzip'
+        }),
+        'Cache-Control': responseHttpOptions.headers['Cache-Control']
+      });
+      res.end(tile.data);
+      return;
+    }
     const result = provider._mbtilesHandle?.getTile(z, x, y) ?? null;
 
     if (!result) {
-      // Combined NOAA chart sets have spatially varying max zoom (each IHO
-      // band tiled to its own zoom range), so clients legitimately
-      // request tiles in coverage holes the advertised zoom range implies
-      // should exist. Re-slice the nearest ancestor instead of 404ing black.
-      if (provider.format === 'pbf' && provider._mbtilesHandle) {
-        const synthesized = getOverzoomedTile(provider._mbtilesHandle, z, x, y);
-        if (synthesized) {
-          res.writeHead(200, {
-            'Content-Type': 'application/x-protobuf',
-            'Content-Encoding': 'gzip',
-            'Cache-Control': responseHttpOptions.headers['Cache-Control']
-          });
-          res.end(synthesized);
-          return;
-        }
-      } else if (provider._mbtilesHandle) {
+      if (provider._mbtilesHandle) {
         // Raster exports skip whole zoom levels or leave ragged edges per
         // level; fill the hole from the stored tiles above and below it.
         void getRasterOverzoomedTile(provider._mbtilesHandle, z, x, y).then((synthesized) => {
@@ -6792,21 +6847,6 @@ export const serveTileFromMbtiles = (
       }
       res.sendStatus(404);
     } else {
-      // A stored cell-edge tile whose features all sit outside its visible
-      // extent renders blank and would mask lower-band content; serve a
-      // synthesized replacement instead.
-      if (provider.format === 'pbf' && provider._mbtilesHandle) {
-        const replacement = getBlankTileReplacement(provider._mbtilesHandle, z, x, y, result.data);
-        if (replacement) {
-          res.writeHead(200, {
-            'Content-Type': 'application/x-protobuf',
-            'Content-Encoding': 'gzip',
-            'Cache-Control': responseHttpOptions.headers['Cache-Control']
-          });
-          res.end(replacement);
-          return;
-        }
-      }
       const headers = {
         ...result.headers,
         'Cache-Control': responseHttpOptions.headers['Cache-Control']
@@ -6871,5 +6911,62 @@ export const serveTileFromPmtiles = async (
     }
   }
 };
+
+/**
+ * A local chart's tile body as the tile route serves it, for peer plugins;
+ * null where there is none. Online charts' tiles come over the internet and
+ * are not read here.
+ */
+export const readLocalTile = async (
+  provider: ChartProvider,
+  z: number,
+  x: number,
+  y: number
+): Promise<Uint8Array | null> => {
+  if (![z, x, y].every((n) => Number.isInteger(n) && n >= 0)) {
+    return null;
+  }
+  switch (provider._fileFormat) {
+    case 'mbtiles': {
+      const handle = provider._mbtilesHandle;
+      if (!handle) {
+        return null;
+      }
+      if (provider.format === 'pbf') {
+        return mbtilesVectorTile(handle, z, x, y)?.data ?? null;
+      }
+      return (
+        handle.getTile(z, x, y)?.data ??
+        (await getRasterOverzoomedTile(handle, z, x, y))?.data ??
+        null
+      );
+    }
+    case 'pmtiles':
+      return (await provider._pmtilesHandle?.getTile(z, x, y))?.data ?? null;
+    case 'directory': {
+      const file = tileFilePath(provider, z, x, y);
+      try {
+        return file ? await fs.promises.readFile(file) : null;
+      } catch (err) {
+        if (MISSING_FILE_CODES.has((err as NodeJS.ErrnoException).code ?? '')) {
+          return null;
+        }
+        throw err;
+      }
+    }
+    default:
+      return null;
+  }
+};
+
+/** The `chartTiles` offer over the charts served at the time of each read. */
+export const chartTilesOf = (charts: () => Record<string, ChartProvider>): ChartTiles => ({
+  getTile: (chartId, z, x, y) => {
+    const provider = Object.hasOwn(charts(), chartId) ? charts()[chartId] : undefined;
+    return provider && provider._fileFormat !== 'online'
+      ? readLocalTile(provider, z, x, y)
+      : Promise.resolve(undefined);
+  }
+});
 
 export default pluginConstructor;
