@@ -18,6 +18,8 @@ export interface FeatureQuery {
   startIndex: number;
   /** The page size asked for; undefined for every feature at once. */
   count: number | undefined;
+  /** The ordering asked for, as written. */
+  sortBy: string | undefined;
 }
 
 export interface WfsFeature {
@@ -98,7 +100,8 @@ export function featureQuery(params: URLSearchParams): FeatureQuery | null {
   }
   const box = parseBox(boxText);
   const srs = p.get('srsname');
-  if (box === undefined || (srs !== undefined && srs !== 'EPSG:4326')) {
+  // Without srsName the reply is in the feature type's own system (Traficom's: metres).
+  if (box === undefined || srs !== 'EPSG:4326') {
     return null;
   }
   const hits = p.get('resulttype')?.toLowerCase() === 'hits';
@@ -113,7 +116,7 @@ export function featureQuery(params: URLSearchParams): FeatureQuery | null {
   if (startIndex === undefined || (p.has('count') && (count === undefined || count === 0))) {
     return null;
   }
-  return { typeName, box, boxText, hits, startIndex, count };
+  return { typeName, box, boxText, hits, startIndex, count, sortBy: p.get('sortby') };
 }
 
 /** A feature's identity across requests: its `id`, else its `IDENTIFIER`; undefined without one. */
@@ -150,7 +153,9 @@ export function featureBox(f: WfsFeature): Box | undefined {
     }
   };
   walk(f.geometry?.coordinates);
-  return w <= e && s <= n ? [w, s, e, n] : undefined;
+  // Coordinates past longitude and latitude are in another system: not a box this store places.
+  const inRange = w >= -180 && e <= 180 && s >= -90 && n <= 90;
+  return w <= e && s <= n && inRange ? [w, s, e, n] : undefined;
 }
 
 /**

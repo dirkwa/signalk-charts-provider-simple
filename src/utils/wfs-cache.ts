@@ -36,6 +36,8 @@ export class WfsCache {
   private readonly coverPrune: StatementSync;
   private readonly matching: StatementSync;
   private readonly dataOf: StatementSync;
+  private readonly unseenIn: StatementSync;
+  private readonly featureDelete: StatementSync;
 
   constructor(readonly file: string) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -100,6 +102,12 @@ export class WfsCache {
       ORDER BY f.fid
     `);
     this.dataOf = this.db.prepare('SELECT data FROM features WHERE id = ?');
+    this.unseenIn = this.db.prepare(`
+      SELECT f.id AS id FROM feature_box b JOIN features f ON f.id = b.id
+      WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at < ?
+        AND b.minx >= ? AND b.maxx <= ? AND b.miny >= ? AND b.maxy <= ?
+    `);
+    this.featureDelete = this.db.prepare('DELETE FROM features WHERE id = ?');
   }
 
   /**
@@ -140,6 +148,33 @@ export class WfsCache {
     const [w, s, e, n] = box;
     const r = this.coverInsert.run(layer.upstream, layer.typeName, w, s, e, n, at);
     this.coverPrune.run(layer.upstream, layer.typeName, at, w, s, e, n, Number(r.lastInsertRowid));
+  }
+
+  /**
+   * Drops the features of `layer` lying wholly inside `box` that were fetched before `since`:
+   * a whole read of `box` begun then returned every feature inside it, so these are gone
+   * upstream. A feature reaching past `box` stays, as other boxes may need it.
+   */
+  pruneUnseen(layer: Layer, box: Box, since: number): number {
+    const [w, s, e, n] = box;
+    const ids = (
+      this.unseenIn.all(layer.upstream, layer.typeName, since, w, e, s, n) as { id: number }[]
+    ).map((r) => r.id);
+    if (ids.length === 0) {
+      return 0;
+    }
+    this.db.exec('BEGIN');
+    try {
+      for (const id of ids) {
+        this.featureDelete.run(id);
+        this.boxDelete.run(id);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    return ids.length;
   }
 
   /** Whether boxes fetched at `since` or later hold every feature of `layer` reaching `box`. */

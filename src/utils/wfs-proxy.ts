@@ -7,9 +7,9 @@
  * A request the cache can answer (`wfs-query.ts`) for an area it holds whole
  * and fresh is answered from the store. Any other is passed to the upstream
  * server and its reply streamed back as it arrives; the features of its pages
- * are kept, and once every page of an area has passed, the area is held. An
- * area keeps the way its read began, from the store or upstream, until the
- * read has been idle a while, so its pages come from one ordering.
+ * are kept, and once every page of an area has passed, the area is held. A
+ * read keeps the way it began, from the store or upstream, until it has been
+ * idle a while, so its pages come from one ordering; a count begins a read.
  *
  * It listens on 127.0.0.1 only, under a path holding a random token only
  * this server's plugins learn (`proxyUrl`): it is no open proxy, and needs no
@@ -32,8 +32,6 @@ import {
 
 /** An area's read keeps its way this long after its last request, ms. */
 export const READ_IDLE_MS = 10 * 60_000;
-/** Answers from the store kept for their next pages, at most. */
-const KEPT_ANSWERS = 32;
 
 export interface WfsProxyOptions {
   cache: WfsCache;
@@ -49,14 +47,17 @@ export interface WfsProxyOptions {
 }
 
 interface AreaRead {
-  way: 'store' | 'upstream';
   lastUsed: number;
   /** Upstream: the pages passed, as [start, end) of the features' indexes. */
   ranges: [number, number][];
   matched?: number;
   /** Upstream: a page could not be kept, so the area is not held. */
   spoilt: boolean;
+  /** Upstream: every page has passed and the area is held. */
+  held: boolean;
   startedAt: number;
+  /** Store: the features answered, fixed for the read so its pages share one ordering. */
+  ids?: number[];
 }
 
 /** A process-wide token: a plugin restarted by a config save keeps its URLs. */
@@ -99,7 +100,8 @@ export class WfsProxy {
   private server: http.Server | null = null;
   private port = 0;
   private readonly reads = new Map<string, AreaRead>();
-  private readonly answers = new Map<string, number[]>();
+  /** The count each area's last upstream count gave, for the reads of its pages. */
+  private readonly counts = new Map<string, { at: number; matched: number | undefined }>();
   private readonly fetchUpstream: typeof fetch;
   private readonly now: () => number;
 
@@ -190,56 +192,112 @@ export class WfsProxy {
       return;
     }
     const layer: Layer = { upstream, typeName: q.typeName };
-    const key = `${upstream}\n${q.typeName}\n${q.boxText}`;
-    const read = this.readOf(key, layer, q);
-    if (read.way === 'store') {
-      this.answer(key, layer, q, res);
+    const area = `${upstream}\n${q.typeName}\n${q.boxText}`;
+    this.sweep();
+    const fromStore = this.storeRead(area, layer, q);
+    if (fromStore) {
+      this.answer(fromStore, layer, q, res);
       return;
     }
+    if (q.hits) {
+      // A count begins a read upstream: the area's finished reads end, so its pages are kept again.
+      for (const [k, r] of this.reads) {
+        if (k.startsWith(`${area}\nupstream\n`) && r.held) {
+          this.reads.delete(k);
+        }
+      }
+      const startedAt = this.now();
+      await this.pass(target, req, res, (text) => {
+        const matched = matchedIn(text);
+        this.counts.set(area, { at: this.now(), matched });
+        // An area with none is whole at once: no page of it will come.
+        if (matched === 0) {
+          this.options.cache.markCovered(layer, q.box, startedAt);
+        }
+      });
+      return;
+    }
+    const read = this.upstreamRead(area, q);
     await this.pass(target, req, res, (text) => {
-      this.keep(key, layer, q, read, text);
+      this.keep(layer, q, read, text);
     });
   }
 
-  /** The area's read: going on, else begun now, from the store when it holds the area. */
-  private readOf(key: string, layer: Layer, q: FeatureQuery): AreaRead {
+  private sweep(): void {
     const now = this.now();
     for (const [k, r] of this.reads) {
       if (now - r.lastUsed > READ_IDLE_MS) {
         this.reads.delete(k);
-        this.answers.delete(k);
       }
     }
+    for (const [k, c] of this.counts) {
+      if (now - c.at > READ_IDLE_MS) {
+        this.counts.delete(k);
+      }
+    }
+  }
+
+  /**
+   * The area's read from the store: going on, else begun now when the store holds the area
+   * and no read of it is going on upstream, else undefined. One read serves every ordering
+   * of the area, as the store keeps one; it keeps its features until idle.
+   */
+  private storeRead(area: string, layer: Layer, q: FeatureQuery): AreaRead | undefined {
+    const now = this.now();
+    const key = `${area}\nstore`;
     const going = this.reads.get(key);
     if (going) {
       going.lastUsed = now;
       return going;
     }
+    // A page of a read going on upstream stays there, finished or not.
+    if (!q.hits && this.reads.has(`${area}\nupstream\n${q.sortBy ?? ''}`)) {
+      return undefined;
+    }
     const fresh = this.options.cache.covers(layer, q.box, now - this.options.maxAgeMs());
     const held =
       fresh || (!this.options.mayRefresh() && this.options.cache.covers(layer, q.box, 0));
+    if (!held) {
+      return undefined;
+    }
     const read: AreaRead = {
-      way: held ? 'store' : 'upstream',
       lastUsed: now,
       ranges: [],
       spoilt: false,
+      held: true,
       startedAt: now
     };
     this.reads.set(key, read);
     return read;
   }
 
-  private answer(key: string, layer: Layer, q: FeatureQuery, res: http.ServerResponse): void {
-    let ids = this.answers.get(key);
-    if (ids === undefined) {
-      // As much as the upstream would answer, and the features past the box it adds.
-      ids = this.options.cache.idsIn(layer, answerBox(q.box));
-      this.answers.set(key, ids);
-      while (this.answers.size > KEPT_ANSWERS) {
-        const oldest = this.answers.keys().next().value as string;
-        this.answers.delete(oldest);
-      }
+  /**
+   * The area's read upstream in the request's ordering: each ordering is its own, as pages of
+   * two orderings do not make up an area. A new one takes the area's count, when one passed.
+   */
+  private upstreamRead(area: string, q: FeatureQuery): AreaRead {
+    const now = this.now();
+    const key = `${area}\nupstream\n${q.sortBy ?? ''}`;
+    const going = this.reads.get(key);
+    if (going) {
+      going.lastUsed = now;
+      return going;
     }
+    const read: AreaRead = {
+      lastUsed: now,
+      ranges: [],
+      matched: this.counts.get(area)?.matched,
+      spoilt: false,
+      held: false,
+      startedAt: now
+    };
+    this.reads.set(key, read);
+    return read;
+  }
+
+  private answer(read: AreaRead, layer: Layer, q: FeatureQuery, res: http.ServerResponse): void {
+    // As much as the upstream would answer, and the features past the box it adds.
+    const ids = (read.ids ??= this.options.cache.idsIn(layer, answerBox(q.box)));
     if (q.hits) {
       res.writeHead(200, { 'content-type': 'application/xml' }).end(hitsReply(ids.length));
       return;
@@ -254,14 +312,10 @@ export class WfsProxy {
   }
 
   /** The features of an upstream page kept; the area held once every page of it has passed. */
-  private keep(key: string, layer: Layer, q: FeatureQuery, read: AreaRead, text: string): void {
+  private keep(layer: Layer, q: FeatureQuery, read: AreaRead, text: string): void {
     const matched = matchedIn(text);
     if (matched !== undefined) {
       read.matched = matched;
-    }
-    if (q.hits) {
-      this.settle(key, layer, q, read);
-      return;
     }
     let features: WfsFeature[];
     try {
@@ -284,16 +338,23 @@ export class WfsProxy {
     if (q.count === undefined || features.length < q.count) {
       read.matched ??= q.startIndex + features.length;
     }
-    this.settle(key, layer, q, read);
+    this.settle(layer, q, read);
   }
 
-  private settle(key: string, layer: Layer, q: FeatureQuery, read: AreaRead): void {
-    if (read.spoilt || read.matched === undefined || !coversFromZero(read.ranges, read.matched)) {
+  private settle(layer: Layer, q: FeatureQuery, read: AreaRead): void {
+    if (
+      read.held ||
+      read.spoilt ||
+      read.matched === undefined ||
+      !coversFromZero(read.ranges, read.matched)
+    ) {
       return;
     }
-    // Held as of the read's start: a feature changed meanwhile may be older.
+    // Held as of the read's start: a feature changed meanwhile may be older. The read keeps
+    // its way until idle, so a page asked for again comes from the same ordering.
+    read.held = true;
     this.options.cache.markCovered(layer, q.box, read.startedAt);
-    this.reads.delete(key);
+    this.options.cache.pruneUnseen(layer, q.box, read.startedAt);
     this.options.log?.(
       `WFS proxy: kept ${q.typeName} in ${q.boxText.split(',').slice(0, 4).join(',')} (${String(read.matched)} features)`
     );

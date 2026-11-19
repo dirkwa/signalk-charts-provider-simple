@@ -50,6 +50,8 @@ function area(i: number, x: number, y: number): Feature {
 
 /** A grid of areas over [22, 60]–[22.2, 60.1]. */
 const AREAS: Feature[] = [];
+/** Areas the fake upstream no longer has. */
+const REMOVED = new Set<string>();
 for (let i = 0; i < 20; i++) {
   for (let j = 0; j < 10; j++) {
     AREAS.push(area(AREAS.length, 22 + i * 0.01, 60 + j * 0.01));
@@ -83,8 +85,8 @@ function upstreamServer() {
       const [tw, ts, te, tn] = turned;
       return [w + (tw - w) / 2, s + (ts - s) / 2, e + (te - e) / 2, n + (tn - n) / 2];
     };
-    const matching = AREAS.filter((f) => intersects(f, past(q.box))).sort((a, b) =>
-      a.properties.IDENTIFIER.localeCompare(b.properties.IDENTIFIER)
+    const matching = AREAS.filter((f) => !REMOVED.has(f.id) && intersects(f, past(q.box))).sort(
+      (a, b) => a.properties.IDENTIFIER.localeCompare(b.properties.IDENTIFIER)
     );
     if (q.hits) {
       res
@@ -122,7 +124,12 @@ function query(typeName: string, [w, s, e, n]: Box, extra: Record<string, string
 }
 
 /** A layer read as underkeel reads it: the count, then pages of `size` sorted by IDENTIFIER. */
-async function readLayer(base: string, box: Box, size = 25): Promise<string[]> {
+async function readLayer(
+  base: string,
+  box: Box,
+  size = 25,
+  sortBy = 'IDENTIFIER'
+): Promise<string[]> {
   const hits = await (
     await fetch(`${base}?${query('DepthArea_A', box, { resultType: 'hits' })}`)
   ).text();
@@ -132,7 +139,7 @@ async function readLayer(base: string, box: Box, size = 25): Promise<string[]> {
     const r = await fetch(
       `${base}?${query('DepthArea_A', box, {
         outputFormat: 'application/json',
-        sortBy: 'IDENTIFIER',
+        sortBy,
         count: String(size),
         startIndex: String(start)
       })}`
@@ -179,6 +186,15 @@ describe('wfs-query', () => {
       `${query('A', [22, 60, 22.5, 60.2], json)}&cql_filter=DRVAL1>5`,
       // two feature types
       query('A,B', [22, 60, 22.5, 60.2], json),
+      // no srsName: the reply is in the feature type's own system
+      new URLSearchParams({
+        service: 'WFS',
+        version: '2.0.0',
+        request: 'GetFeature',
+        typeNames: 'A',
+        bbox: '60,22,60.2,22.5,urn:ogc:def:crs:EPSG::4326',
+        ...json
+      }).toString(),
       new URLSearchParams({ service: 'WFS', request: 'GetCapabilities' }).toString()
     ];
     for (const c of cases) {
@@ -194,6 +210,11 @@ describe('wfs-query', () => {
     const [w, s, e, n] = featureBox(f) as Box;
     assert.ok(Math.abs(e - w - 0.01) < 1e-12 && Math.abs(n - s - 0.01) < 1e-12);
     assert.strictEqual(featureBox({ geometry: null }), undefined);
+    // Metres, not degrees: no box this store places.
+    assert.strictEqual(
+      featureBox({ geometry: { type: 'Point', coordinates: [240000, 6680000] } }),
+      undefined
+    );
   });
 
   it('answerBox: grown by the margin a turned grid adds, each way by the other side', () => {
@@ -397,6 +418,97 @@ describe('WfsProxy', () => {
     });
     assert.strictEqual(await again.listen(port), port);
     await again.close();
+    cache.close();
+  });
+
+  it("two orderings of one area are two reads: one's pages do not complete the other", async () => {
+    const { cache, proxy } = proxyWith('p6.sqlite');
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    const page = (sortBy: string, start: number) =>
+      fetch(
+        `${base}?${query('DepthArea_A', BOX, {
+          outputFormat: 'application/json',
+          sortBy,
+          count: '25',
+          startIndex: String(start)
+        })}`
+      ).then((r) => r.json());
+    const total = (await readLayer(upstreamBase, BOX)).length;
+    assert.ok(total > 25);
+    await page('IDENTIFIER', 0);
+    for (let start = 25; start < total; start += 25) {
+      await page('DRVAL1', start);
+    }
+    assert.strictEqual(cache.stats().areas, 0);
+    await proxy.close();
+    cache.close();
+  });
+
+  it("a store read keeps its pages' ordering while many other areas are read", async () => {
+    const { cache, proxy } = proxyWith('p7.sqlite');
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await readLayer(base, BOX);
+    const pageAt = (box: Box, start: number) =>
+      fetch(
+        `${base}?${query('DepthArea_A', box, {
+          outputFormat: 'application/json',
+          sortBy: 'IDENTIFIER',
+          count: '10',
+          startIndex: String(start)
+        })}`
+      ).then(async (r) => ((await r.json()) as { features: Feature[] }).features.map((f) => f.id));
+    const ids = await pageAt(BOX, 0);
+    // Forty other areas inside the one held, each its own read from the store.
+    for (let k = 0; k < 40; k++) {
+      const d = k * 0.001;
+      await pageAt([22.03 + d, 60.03, 22.06 + d, 60.05], 0);
+    }
+    for (let start = 10; ; start += 10) {
+      const next = await pageAt(BOX, start);
+      if (next.length === 0) {
+        break;
+      }
+      ids.push(...next);
+    }
+    assert.strictEqual(new Set(ids).size, ids.length);
+    await proxy.close();
+    cache.close();
+  });
+
+  it('an area read again whole drops the features inside it that are gone upstream', async () => {
+    let now = 5_000_000;
+    const { cache, proxy } = proxyWith('p8.sqlite', { now: () => now });
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    const first = await readLayer(base, BOX);
+    const gone = first[3] as string;
+    REMOVED.add(gone);
+    try {
+      now += READ_IDLE_MS + 5000;
+      await readLayer(base, BOX);
+      now += 1;
+      const fromStore = await readLayer(base, [22.03, 60.03, 22.11, 60.05]);
+      assert.ok(fromStore.length > 0);
+      assert.ok(!fromStore.includes(gone));
+    } finally {
+      REMOVED.delete(gone);
+    }
+    await proxy.close();
+    cache.close();
+  });
+
+  it('an area with no features is held from its count alone', async () => {
+    const { cache, proxy } = proxyWith('p9.sqlite');
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    const empty: Box = [25, 61, 25.1, 61.05];
+    assert.deepStrictEqual(await readLayer(base, empty), []);
+    upstream.seen.length = 0;
+    assert.deepStrictEqual(await readLayer(base, empty), []);
+    assert.strictEqual(upstream.seen.length, 0);
+    await proxy.close();
     cache.close();
   });
 
