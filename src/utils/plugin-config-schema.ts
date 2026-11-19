@@ -29,6 +29,9 @@ export const PluginConfigSchema = Type.Object({
   allowMeteredChartDownloads: Type.Optional(Type.Boolean()),
   keepEncCells: Type.Optional(Type.Boolean()),
   encAreaDownloads: Type.Optional(Type.Boolean()),
+  wfsProxy: Type.Optional(Type.Boolean()),
+  wfsCacheMaxAgeDays: Type.Optional(Type.Integer({ minimum: 1 })),
+  wfsProxyUpstreams: Type.Optional(Type.Array(Type.String())),
   multihelmLocalCopy: Type.Optional(Type.Boolean()),
   multihelmFromMaster: Type.Optional(Type.Boolean())
 });

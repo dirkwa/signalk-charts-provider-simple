@@ -1,0 +1,218 @@
+/**
+ * The WFS requests the local WFS proxy (`wfs-proxy.ts`) can answer from its
+ * cache: WFS 2.0 `GetFeature` of one feature type in a latitude/longitude box,
+ * as GeoJSON pages (`startIndex`, `count`) or as a count (`resultType=hits`).
+ * Anything else is passed to the upstream server as it is.
+ */
+
+/** [west, south, east, north], degrees. */
+export type Box = readonly [number, number, number, number];
+
+export interface FeatureQuery {
+  typeName: string;
+  box: Box;
+  /** The box as the request wrote it: the pages of one area share it. */
+  boxText: string;
+  /** A `resultType=hits` request: the count alone. */
+  hits: boolean;
+  startIndex: number;
+  /** The page size asked for; undefined for every feature at once. */
+  count: number | undefined;
+}
+
+export interface WfsFeature {
+  id?: string | number;
+  type?: string;
+  geometry?: { type?: string; coordinates?: unknown } | null;
+  properties?: Record<string, unknown> | null;
+}
+
+const EPSG_4326_URN = 'urn:ogc:def:crs:EPSG::4326';
+
+/** Parameters a cached answer gives the same reply for; any other makes a request pass through. */
+const KNOWN = new Set([
+  'service',
+  'version',
+  'request',
+  'typenames',
+  'bbox',
+  'srsname',
+  'outputformat',
+  'sortby',
+  'count',
+  'startindex',
+  'resulttype'
+]);
+
+const nonNegativeInteger = (text: string | undefined): number | undefined => {
+  if (text === undefined || !/^\d+$/.test(text)) {
+    return undefined;
+  }
+  const n = Number(text);
+  return Number.isSafeInteger(n) ? n : undefined;
+};
+
+/**
+ * WFS 2.0 with an EPSG URN reads a box as latitude, longitude: `s,w,n,e,urn`.
+ * A box in any other reference system is not one the cache can place.
+ */
+function parseBox(text: string): Box | undefined {
+  const parts = text.split(',');
+  if (parts.length !== 5 || parts[4] !== EPSG_4326_URN) {
+    return undefined;
+  }
+  const [s, w, n, e] = parts.slice(0, 4).map(Number) as [number, number, number, number];
+  const ok =
+    [s, w, n, e].every(Number.isFinite) &&
+    Math.abs(s) <= 90 &&
+    Math.abs(n) <= 90 &&
+    Math.abs(w) <= 180 &&
+    Math.abs(e) <= 180 &&
+    s < n &&
+    w < e;
+  return ok ? [w, s, e, n] : undefined;
+}
+
+/** The request as one the cache can answer, or null to pass it through. */
+export function featureQuery(params: URLSearchParams): FeatureQuery | null {
+  const p = new Map<string, string>();
+  for (const [key, value] of params) {
+    const k = key.toLowerCase();
+    if (!KNOWN.has(k) || p.has(k)) {
+      return null;
+    }
+    p.set(k, value);
+  }
+  const typeName = p.get('typenames');
+  const boxText = p.get('bbox');
+  if (
+    p.get('service')?.toUpperCase() !== 'WFS' ||
+    p.get('request')?.toLowerCase() !== 'getfeature' ||
+    p.get('version') !== '2.0.0' ||
+    typeName === undefined ||
+    typeName === '' ||
+    typeName.includes(',') ||
+    boxText === undefined
+  ) {
+    return null;
+  }
+  const box = parseBox(boxText);
+  const srs = p.get('srsname');
+  if (box === undefined || (srs !== undefined && srs !== 'EPSG:4326')) {
+    return null;
+  }
+  const hits = p.get('resulttype')?.toLowerCase() === 'hits';
+  if (!hits && (p.get('resulttype') ?? 'results').toLowerCase() !== 'results') {
+    return null;
+  }
+  if (!hits && p.get('outputformat') !== 'application/json') {
+    return null;
+  }
+  const startIndex = nonNegativeInteger(p.get('startindex') ?? '0');
+  const count = p.has('count') ? nonNegativeInteger(p.get('count')) : undefined;
+  if (startIndex === undefined || (p.has('count') && (count === undefined || count === 0))) {
+    return null;
+  }
+  return { typeName, box, boxText, hits, startIndex, count };
+}
+
+/** A feature's identity across requests: its `id`, else its `IDENTIFIER`; undefined without one. */
+export function featureId(f: WfsFeature): string | undefined {
+  if (typeof f.id === 'string' || typeof f.id === 'number') {
+    return String(f.id);
+  }
+  const ident = f.properties?.IDENTIFIER;
+  return typeof ident === 'string' || typeof ident === 'number' ? String(ident) : undefined;
+}
+
+/** The box of a feature's coordinates, `[x, y]` pairs at any depth of nesting; undefined without any. */
+export function featureBox(f: WfsFeature): Box | undefined {
+  let w = Infinity;
+  let s = Infinity;
+  let e = -Infinity;
+  let n = -Infinity;
+  const walk = (c: unknown): void => {
+    if (!Array.isArray(c)) {
+      return;
+    }
+    if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+      const [x, y] = c as [number, number];
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        w = Math.min(w, x);
+        e = Math.max(e, x);
+        s = Math.min(s, y);
+        n = Math.max(n, y);
+      }
+      return;
+    }
+    for (const inner of c) {
+      walk(inner);
+    }
+  };
+  walk(f.geometry?.coordinates);
+  return w <= e && s <= n ? [w, s, e, n] : undefined;
+}
+
+/** Margins this small are rounding where boxes meet edge to edge, degrees. */
+const EPS = 1e-9;
+
+/**
+ * The parts of `box` that none of `covers` holds: empty when they hold it all.
+ * Each cover cuts every remaining part into at most four.
+ */
+export function uncovered(box: Box, covers: readonly Box[]): Box[] {
+  let parts: Box[] = [box];
+  for (const [cw, cs, ce, cn] of covers) {
+    const next: Box[] = [];
+    for (const part of parts) {
+      const [w, s, e, n] = part;
+      if (ce <= w + EPS || cw >= e - EPS || cn <= s + EPS || cs >= n - EPS) {
+        next.push(part);
+        continue;
+      }
+      if (cs > s + EPS) {
+        next.push([w, s, e, cs]);
+      }
+      if (cn < n - EPS) {
+        next.push([w, cn, e, n]);
+      }
+      const lo = Math.max(s, cs);
+      const hi = Math.min(n, cn);
+      if (cw > w + EPS) {
+        next.push([w, lo, cw, hi]);
+      }
+      if (ce < e - EPS) {
+        next.push([ce, lo, e, hi]);
+      }
+    }
+    parts = next;
+    if (parts.length === 0) {
+      break;
+    }
+  }
+  return parts;
+}
+
+/** A `resultType=hits` reply, as WFS 2.0 servers write it. */
+export function hitsReply(matched: number): string {
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?>' +
+    `<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" numberMatched="${String(matched)}" numberReturned="0"/>`
+  );
+}
+
+/** A GeoJSON page of `features` out of `matched`. */
+export function pageReply(matched: number, features: readonly unknown[]): string {
+  return JSON.stringify({
+    type: 'FeatureCollection',
+    numberMatched: matched,
+    numberReturned: features.length,
+    features
+  });
+}
+
+/** `numberMatched` from a hits reply (XML) or a GeoJSON page; undefined without one. */
+export function matchedIn(text: string): number | undefined {
+  const m = /numberMatched="(\d+)"/.exec(text) ?? /"numberMatched"\s*:\s*(\d+)/.exec(text);
+  return m?.[1] === undefined ? undefined : Number(m[1]);
+}

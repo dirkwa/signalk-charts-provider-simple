@@ -560,3 +560,28 @@ export interface ChartTiles {
 export interface ChartsProviderEncGlobal {
   __signalk_chartsProviderEnc?: ChartsProviderEncApi;
 }
+
+/**
+ * The local WFS proxy, published on `globalThis.__signalk_chartsProviderWfs`
+ * for peer plugins in the same server (signalk-underkeel reads Traficom's
+ * depth WFS through it). Published once the plugin has started with the proxy
+ * on and withdrawn when it stops. See `docs/wfs-proxy.md`.
+ */
+export interface ChartsProviderWfsApi {
+  apiVersion: number;
+  /**
+   * The proxy's URL standing in for the WFS at `upstream`, a base URL with no
+   * query: requests go to it with the query they would send upstream. Undefined
+   * when `upstream` is not proxied. Ask for each read: the URL holds this
+   * process's port, which a restart of this plugin keeps when it is free.
+   */
+  proxyUrl: (upstream: string) => string | undefined;
+  /** The upstream WFS base URLs proxied. */
+  upstreams: () => string[];
+  /** What the store holds: features, areas held whole, bytes on disk. */
+  stats: () => { features: number; areas: number; bytes: number };
+}
+
+export interface ChartsProviderWfsGlobal {
+  __signalk_chartsProviderWfs?: ChartsProviderWfsApi;
+}

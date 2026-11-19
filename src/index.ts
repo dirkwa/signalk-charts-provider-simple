@@ -265,11 +265,18 @@ import { encDataset } from './utils/multihelm/enc-dataset.js';
 import { ChartRefreshQueue, DeletedCharts } from './utils/multihelm/chart-refresh.js';
 import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import { MasterCharts } from './utils/multihelm/master-charts.js';
+import {
+  DEFAULT_WFS_MAX_AGE_DAYS,
+  startWfsProxy,
+  stopWfsProxy,
+  type WfsProxyRunning
+} from './utils/wfs-proxy-service.js';
 import type {
   ChartProvider,
   ChartsProviderEncGlobal,
   ChartTiles,
   ChartsProviderRefreshGlobal,
+  ChartsProviderWfsGlobal,
   DownloadJob,
   EncCollectionStateInfo,
   ExtendedServerAPI,
@@ -469,6 +476,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let onlineTileProxy: OnlineTileProxy | null = null;
   let maskedTiles: MaskedTiles | null = null;
   let areaDownloader: AreaDownloader | null = null;
+  let wfsProxy: WfsProxyRunning | null = null;
+  // A stopped proxy's close, which the next start waits for to keep its port.
+  let wfsProxyClosing: Promise<void> = Promise.resolve();
   let defaultChartsPath = '';
   let serverMajorVersion = 1;
 
@@ -628,6 +638,36 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             'The set only grows along the voyage; edit or delete it in the ENC Charts tab. ' +
             'On a metered, offline or captive internet connection the download waits.',
           default: false
+        },
+        _wfsHeader: {
+          type: 'null',
+          title: 'Local WFS proxy'
+        },
+        wfsProxy: {
+          type: 'boolean',
+          title: 'Keep the WFS data other plugins read',
+          description:
+            'Other plugins on this server, such as signalk-underkeel, read the Traficom depth WFS through this plugin: ' +
+            'each area is downloaded once, kept under the data directory, and read from there again. ' +
+            'The proxy listens on this machine alone (127.0.0.1).',
+          default: true
+        },
+        wfsCacheMaxAgeDays: {
+          type: 'integer',
+          title: 'Download a kept WFS area again after (days)',
+          description:
+            'A kept area older than this is downloaded again when it is next read. ' +
+            'On a metered, offline or captive internet connection the kept copy is read whatever its age.',
+          minimum: 1,
+          default: DEFAULT_WFS_MAX_AGE_DAYS
+        },
+        wfsProxyUpstreams: {
+          type: 'array',
+          title: 'Other WFS servers to keep',
+          description:
+            "Base URLs (no query) of WFS servers to proxy besides Traficom's, for plugins that read them.",
+          items: { type: 'string' },
+          default: []
         }
       }
     }),
@@ -675,9 +715,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         openDataCheckInterval = null;
       }
       openData = null;
-      // Withdraw the peer-plugin refresh hook and ENC store (see doStartup).
+      // Withdraw the peer-plugin refresh hook, ENC store and WFS proxy (see doStartup).
       delete (globalThis as unknown as ChartsProviderRefreshGlobal).__signalk_chartsProviderRefresh;
       delete (globalThis as unknown as ChartsProviderEncGlobal).__signalk_chartsProviderEnc;
+      delete (globalThis as unknown as ChartsProviderWfsGlobal).__signalk_chartsProviderWfs;
+      if (wfsProxy) {
+        wfsProxyClosing = stopWfsProxy(wfsProxy);
+        wfsProxy = null;
+      }
       // Release sqlite handles: on Windows an open handle keeps the
       // .mbtiles file locked, and Signal K restarts the plugin on every
       // config save, which would otherwise leak the whole map each time.
@@ -894,6 +939,33 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     } catch (err) {
       app.debug(`Orphan cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  };
+
+  // The local WFS proxy for peer plugins (docs/wfs-proxy.md), published on
+  // globalThis like the ENC store once it listens; a stop meanwhile closes it.
+  const startLocalWfsProxy = async (started: number): Promise<void> => {
+    let running: WfsProxyRunning;
+    try {
+      await wfsProxyClosing;
+      running = await startWfsProxy({
+        dataDir: app.getDataDirPath(),
+        maxAgeDays: () => props.wfsCacheMaxAgeDays ?? DEFAULT_WFS_MAX_AGE_DAYS,
+        extraUpstreams: () => props.wfsProxyUpstreams ?? [],
+        mayRefresh: () => internet?.mayRunBackground() ?? true,
+        log: (message) => {
+          app.debug(message);
+        }
+      });
+    } catch (err) {
+      app.error(`Local WFS proxy not started: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (started !== lifecycle || stopped) {
+      await stopWfsProxy(running);
+      return;
+    }
+    wfsProxy = running;
+    (globalThis as unknown as ChartsProviderWfsGlobal).__signalk_chartsProviderWfs = running.api;
   };
 
   const doStartup = async (config: PluginConfig): Promise<void> => {
@@ -1181,6 +1253,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       } catch (err) {
         app.error(`Could not offer chart tiles to other plugins: ${String(err)}`);
       }
+    }
+
+    if (props.wfsProxy !== false) {
+      void startLocalWfsProxy(started);
     }
 
     // Wipe any quarantine subdirs left behind by a previous server
