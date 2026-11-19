@@ -20,11 +20,14 @@ upstream as it is, like any other.
   upstream's own timing. The features of each page are kept, each once by its
   id, and once every page of the area has passed, the area is held. A feature
   wholly inside the area that the read did not return is dropped: it is gone
-  upstream.
+  upstream. A count of none holds the area at once and drops what it kept
+  inside. A read from the store that listed a dropped feature still gets it.
 - For an area the store holds whole (inside boxes it holds, fetched within the
   maximum age), requests are answered from the store: every kept feature whose
-  box reaches the area grown by an eighth of its size, in a fixed order, paged
-  as asked. Traficom reads a box in its own grid, turned by up to 6° against
+  box reaches the area grown by an eighth of its size, paged as asked, in the
+  order of the one property `sortBy` names (`NAME`, `NAME ASC` or
+  `NAME DESC`), else a fixed one. A `sortBy` of more than one property is
+  passed upstream. Traficom reads a box in its own grid, turned by up to 6° against
   latitude and longitude across Finland, and answers features that far
   outside it: the store answers them too, and a few more.
 - A read is one area in one ordering (`sortBy`). It keeps the way it began,

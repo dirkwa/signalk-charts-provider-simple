@@ -119,6 +119,57 @@ export function featureQuery(params: URLSearchParams): FeatureQuery | null {
   return { typeName, box, boxText, hits, startIndex, count, sortBy: p.get('sortby') };
 }
 
+export interface SortOrder {
+  property: string;
+  descending: boolean;
+}
+
+/**
+ * A `sortBy` of one property, `NAME`, `NAME ASC|DESC` or `NAME A|D`, as the store can
+ * order it; undefined for any other, which the store does not answer.
+ */
+export function sortOrder(sortBy: string): SortOrder | undefined {
+  const m = /^([A-Za-z_][\w.:-]*)(?:\s+(ASC|DESC|A|D))?$/i.exec(sortBy.trim());
+  if (m?.[1] === undefined) {
+    return undefined;
+  }
+  return { property: m[1], descending: /^d/i.test(m[2] ?? '') };
+}
+
+type SortValue = string | number | undefined;
+
+/** Ascending order of property values as a database sorts them: numbers by value, none last. */
+function compareValues(a: SortValue, b: SortValue): number {
+  if (a === undefined || b === undefined) {
+    return a === b ? 0 : a === undefined ? 1 : -1;
+  }
+  if (typeof a === 'number' && typeof b === 'number') {
+    return a - b;
+  }
+  const x = String(a);
+  const y = String(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/** `items` in `order` of their features' property, ties kept in their given order. */
+export function sortedBy<T>(
+  items: readonly T[],
+  featureOf: (item: T) => WfsFeature | undefined,
+  order: SortOrder
+): T[] {
+  const valueOf = (item: T): SortValue => {
+    const v = featureOf(item)?.properties?.[order.property];
+    return typeof v === 'number' || typeof v === 'string' ? v : undefined;
+  };
+  const keyed = items.map((item, i) => ({ item, i, v: valueOf(item) }));
+  keyed.sort((p, q) => {
+    const c = compareValues(p.v, q.v);
+    // None sorts last ascending and first descending, as PostgreSQL does.
+    return (order.descending ? -c : c) || p.i - q.i;
+  });
+  return keyed.map((k) => k.item);
+}
+
 /** A feature's identity across requests: its `id`, else its `IDENTIFIER`; undefined without one. */
 export function featureId(f: WfsFeature): string | undefined {
   if (typeof f.id === 'string' || typeof f.id === 'number') {

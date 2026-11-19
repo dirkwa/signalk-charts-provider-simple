@@ -13,6 +13,8 @@ import {
   featureId,
   featureQuery,
   matchedIn,
+  sortedBy,
+  sortOrder,
   uncovered,
   type Box
 } from '../dist/utils/wfs-query.js';
@@ -242,6 +244,19 @@ describe('wfs-query', () => {
     // A hole in the middle leaves four parts.
     assert.strictEqual(uncovered(box, [[0.5, 0.5, 1.5, 1.5]]).length, 4);
   });
+
+  it('sortOrder and sortedBy: one property, either way, none last ascending', () => {
+    assert.deepStrictEqual(sortOrder('IDENTIFIER'), { property: 'IDENTIFIER', descending: false });
+    assert.deepStrictEqual(sortOrder('DRVAL1 DESC'), { property: 'DRVAL1', descending: true });
+    assert.deepStrictEqual(sortOrder('DRVAL1 a'), { property: 'DRVAL1', descending: false });
+    assert.strictEqual(sortOrder('DRVAL1,IDENTIFIER'), undefined);
+    assert.strictEqual(sortOrder('DRVAL1 SIDEWAYS'), undefined);
+    const fs = [{ v: 10 }, { v: 9 }, {}, { v: 9 }].map((p, i) => ({ i, properties: p }));
+    const asc = sortedBy(fs, (f) => f, { property: 'v', descending: false }).map((f) => f.i);
+    assert.deepStrictEqual(asc, [1, 3, 0, 2]);
+    const desc = sortedBy(fs, (f) => f, { property: 'v', descending: true }).map((f) => f.i);
+    assert.deepStrictEqual(desc, [2, 0, 1, 3]);
+  });
 });
 
 describe('WfsCache', () => {
@@ -290,6 +305,21 @@ describe('WfsCache', () => {
     // A box inside a newer one is pruned.
     cache.markCovered(layer, [21.9, 59.9, 22.3, 60.2], 300);
     assert.strictEqual(cache.stats().areas, 1);
+    cache.close();
+  });
+
+  it('a feature gone upstream is found no more, but read until purged', () => {
+    const cache = new WfsCache(path.join(dir, 'd.sqlite'));
+    const layer = { upstream: 'https://wfs.example/wfs', typeName: 'A' };
+    assert.ok(cache.put(layer, AREAS.slice(0, 10), 1));
+    const ids = cache.idsIn(layer, [21, 59, 23, 61]);
+    assert.ok(cache.put(layer, AREAS.slice(1, 10), 2));
+    assert.strictEqual(cache.pruneUnseen(layer, [21, 59, 23, 61], 2), 1);
+    assert.strictEqual(cache.idsIn(layer, [21, 59, 23, 61]).length, 9);
+    assert.strictEqual(cache.stats().features, 9);
+    assert.strictEqual(cache.features(ids).length, 10);
+    cache.purgeGone();
+    assert.strictEqual(cache.features(ids).length, 9);
     cache.close();
   });
 });
@@ -508,6 +538,140 @@ describe('WfsProxy', () => {
     upstream.seen.length = 0;
     assert.deepStrictEqual(await readLayer(base, empty), []);
     assert.strictEqual(upstream.seen.length, 0);
+    await proxy.close();
+    cache.close();
+  });
+
+  /** A page of `box` read through `base`, as the ids of its features. */
+  const pageOf = (base: string, box: Box, sortBy: string, start: number, size = 25) =>
+    fetch(
+      `${base}?${query('DepthArea_A', box, {
+        outputFormat: 'application/json',
+        sortBy,
+        count: String(size),
+        startIndex: String(start)
+      })}`
+    ).then(async (r) => ((await r.json()) as { features: Feature[] }).features.map((f) => f.id));
+
+  it('the store answers in the order of the property sortBy names, and passes others on', async () => {
+    const { cache, proxy } = proxyWith('p10.sqlite');
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await readLayer(base, BOX);
+    upstream.seen.length = 0;
+    const ids = await readLayer(base, BOX, 10, 'DRVAL1 DESC');
+    assert.strictEqual(upstream.seen.length, 0);
+    const depth = (id: string) => (AREAS.find((f) => f.id === id) as Feature).properties.DRVAL1;
+    const depths = ids.map(depth);
+    assert.deepStrictEqual(
+      depths,
+      [...depths].sort((a, b) => b - a)
+    );
+    await pageOf(base, BOX, 'DRVAL1,IDENTIFIER', 0);
+    assert.strictEqual(upstream.seen.length, 1);
+    await proxy.close();
+    cache.close();
+  });
+
+  it('a count of none drops what the store kept inside the area', async () => {
+    let now = 7_000_000;
+    const { cache, proxy } = proxyWith('p11.sqlite', { now: () => now });
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await readLayer(base, BOX);
+    const inner: Box = [22.045, 60.025, 22.075, 60.055];
+    const near = answerBox(inner);
+    const emptied = AREAS.filter((f) => intersects(f, near)).map((f) => f.id);
+    for (const id of emptied) {
+      REMOVED.add(id);
+    }
+    try {
+      now += READ_IDLE_MS + 5000;
+      const before = cache.stats().features;
+      assert.deepStrictEqual(await readLayer(base, inner), []);
+      // The four areas wholly inside it.
+      assert.strictEqual(cache.stats().features, before - 4);
+    } finally {
+      for (const id of emptied) {
+        REMOVED.delete(id);
+      }
+    }
+    await proxy.close();
+    cache.close();
+  });
+
+  it('a read begun upstream keeps its pages there when another read holds the area', async () => {
+    const { cache, proxy } = proxyWith('p12.sqlite');
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await pageOf(base, BOX, 'IDENTIFIER', 0);
+    await readLayer(base, BOX, 25, 'DRVAL1');
+    assert.strictEqual(cache.stats().areas, 1);
+    // A count from the store, then the first read's next page.
+    await fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits' })}`);
+    upstream.seen.length = 0;
+    await pageOf(base, BOX, 'IDENTIFIER', 25);
+    assert.strictEqual(upstream.seen.length, 1);
+    await proxy.close();
+    cache.close();
+  });
+
+  it('an area is held only once its gone features are dropped', async () => {
+    const { cache, proxy } = proxyWith('p13.sqlite');
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    const prune = cache.pruneUnseen.bind(cache);
+    let fail = true;
+    cache.pruneUnseen = (...args) => {
+      if (fail) {
+        fail = false;
+        throw new Error('disk full');
+      }
+      return prune(...args);
+    };
+    const total = (await readLayer(upstreamBase, BOX)).length;
+    await readLayer(base, BOX);
+    assert.strictEqual(cache.stats().areas, 0);
+    await pageOf(base, BOX, 'IDENTIFIER', Math.floor((total - 1) / 25) * 25);
+    assert.strictEqual(cache.stats().areas, 1);
+    await proxy.close();
+    cache.close();
+  });
+
+  it("a store read's pages give what its count says while a refresh drops a feature", async () => {
+    let now = 9_000_000;
+    let mayRefresh = true;
+    const { cache, proxy } = proxyWith('p14.sqlite', {
+      now: () => now,
+      mayRefresh: () => mayRefresh
+    });
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await readLayer(base, BOX);
+    now += READ_IDLE_MS + 5000;
+    // The stale area from the store, as on a metered link.
+    mayRefresh = false;
+    const hits = await (
+      await fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits' })}`)
+    ).text();
+    const matched = matchedIn(hits) ?? 0;
+    const ids = await pageOf(base, BOX, 'IDENTIFIER', 0);
+    // Online again: an area inside it read whole drops a feature gone upstream.
+    mayRefresh = true;
+    const gone = 'DepthArea_A.0053';
+    REMOVED.add(gone);
+    try {
+      const inner: Box = [22.045, 60.025, 22.075, 60.055];
+      assert.ok(!(await readLayer(base, inner)).includes(gone));
+      for (let start = 25; start < matched; start += 25) {
+        ids.push(...(await pageOf(base, BOX, 'IDENTIFIER', start)));
+      }
+      assert.strictEqual(ids.length, matched);
+      assert.ok(ids.includes(gone));
+      assert.strictEqual(new Set(ids).size, ids.length);
+    } finally {
+      REMOVED.delete(gone);
+    }
     await proxy.close();
     cache.close();
   });

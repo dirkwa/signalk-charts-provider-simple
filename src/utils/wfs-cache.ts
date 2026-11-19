@@ -2,7 +2,9 @@
  * The local WFS proxy's store (`wfs-proxy.ts`): each feature once, by its id,
  * with its box in an R-tree, and the boxes whose features it holds whole
  * (`covered`), each with when it was fetched. A feature reaching several
- * boxes is kept once. Deleting the file loses nothing but downloads.
+ * boxes is kept once. A feature gone upstream leaves the R-tree at once, so no
+ * new read finds it, and the store once no read lists it (`purgeGone`).
+ * Deleting the file loses nothing but downloads.
  */
 
 import fs from 'fs';
@@ -37,7 +39,8 @@ export class WfsCache {
   private readonly matching: StatementSync;
   private readonly dataOf: StatementSync;
   private readonly unseenIn: StatementSync;
-  private readonly featureDelete: StatementSync;
+  private readonly markGone: StatementSync;
+  private gonePending = true;
 
   constructor(readonly file: string) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -51,6 +54,7 @@ export class WfsCache {
         type_name TEXT NOT NULL,
         fid TEXT NOT NULL,
         fetched_at INTEGER NOT NULL,
+        gone INTEGER NOT NULL DEFAULT 0,
         data BLOB NOT NULL,
         UNIQUE (upstream, type_name, fid)
       );
@@ -73,7 +77,8 @@ export class WfsCache {
     }
     this.upsert = this.db.prepare(`
       INSERT INTO features (upstream, type_name, fid, fetched_at, data) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT (upstream, type_name, fid) DO UPDATE SET fetched_at = excluded.fetched_at, data = excluded.data
+      ON CONFLICT (upstream, type_name, fid)
+        DO UPDATE SET fetched_at = excluded.fetched_at, gone = 0, data = excluded.data
     `);
     this.rowOf = this.db.prepare(
       'SELECT id FROM features WHERE upstream = ? AND type_name = ? AND fid = ?'
@@ -107,7 +112,8 @@ export class WfsCache {
       WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at < ?
         AND b.minx >= ? AND b.maxx <= ? AND b.miny >= ? AND b.maxy <= ?
     `);
-    this.featureDelete = this.db.prepare('DELETE FROM features WHERE id = ?');
+    this.markGone = this.db.prepare('UPDATE features SET gone = 1 WHERE id = ?');
+    this.purgeGone();
   }
 
   /**
@@ -153,7 +159,8 @@ export class WfsCache {
   /**
    * Drops the features of `layer` lying wholly inside `box` that were fetched before `since`:
    * a whole read of `box` begun then returned every feature inside it, so these are gone
-   * upstream. A feature reaching past `box` stays, as other boxes may need it.
+   * upstream. A feature reaching past `box` stays, as other boxes may need it. A read that
+   * listed one still gets it until `purgeGone`.
    */
   pruneUnseen(layer: Layer, box: Box, since: number): number {
     const [w, s, e, n] = box;
@@ -166,7 +173,7 @@ export class WfsCache {
     this.db.exec('BEGIN');
     try {
       for (const id of ids) {
-        this.featureDelete.run(id);
+        this.markGone.run(id);
         this.boxDelete.run(id);
       }
       this.db.exec('COMMIT');
@@ -174,7 +181,16 @@ export class WfsCache {
       this.db.exec('ROLLBACK');
       throw err;
     }
+    this.gonePending = true;
     return ids.length;
+  }
+
+  /** Removes the features gone upstream: call it only while no read lists any. */
+  purgeGone(): void {
+    if (this.gonePending) {
+      this.db.exec('DELETE FROM features WHERE gone = 1');
+      this.gonePending = false;
+    }
   }
 
   /** Whether boxes fetched at `since` or later hold every feature of `layer` reaching `box`. */
@@ -199,16 +215,22 @@ export class WfsCache {
     );
   }
 
-  /** The features kept under `ids`, in that order; one removed meanwhile is left out. */
-  features(ids: readonly number[]): WfsFeature[] {
-    const out: WfsFeature[] = [];
+  /** The features kept under `ids`, by id; one purged meanwhile is left out. */
+  featuresById(ids: readonly number[]): Map<number, WfsFeature> {
+    const out = new Map<number, WfsFeature>();
     for (const id of ids) {
       const row = this.dataOf.get(id) as { data: Uint8Array } | undefined;
       if (row) {
-        out.push(JSON.parse(zlib.gunzipSync(row.data).toString('utf8')) as WfsFeature);
+        out.set(id, JSON.parse(zlib.gunzipSync(row.data).toString('utf8')) as WfsFeature);
       }
     }
     return out;
+  }
+
+  /** The features kept under `ids`, in that order; one purged meanwhile is left out. */
+  features(ids: readonly number[]): WfsFeature[] {
+    const byId = this.featuresById(ids);
+    return ids.flatMap((id) => byId.get(id) ?? []);
   }
 
   stats(): WfsCacheStats {
@@ -222,7 +244,7 @@ export class WfsCache {
       }
     }
     return {
-      features: count('SELECT COUNT(*) AS n FROM features'),
+      features: count('SELECT COUNT(*) AS n FROM features WHERE gone = 0'),
       areas: count('SELECT COUNT(*) AS n FROM covered'),
       bytes
     };
