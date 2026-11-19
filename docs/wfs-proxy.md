@@ -19,7 +19,10 @@ as GeoJSON pages (`startIndex`, `count`, `sortBy`) or as a count
   id, and once every page of the area has passed, the area is held.
 - For an area the store holds whole (inside boxes it holds, fetched within the
   maximum age), requests are answered from the store: every kept feature whose
-  box reaches the area, in a fixed order, paged as asked.
+  box reaches the area grown by an eighth of its size, in a fixed order, paged
+  as asked. Traficom reads a box in its own grid, turned by up to 6° against
+  latitude and longitude across Finland, and answers features that far
+  outside it: the store answers them too, and a few more.
 - An area keeps the way its read began, from the store or upstream, until the
   read has been idle for ten minutes, so the pages of one read come from one
   ordering.

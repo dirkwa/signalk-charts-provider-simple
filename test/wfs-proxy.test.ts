@@ -7,6 +7,8 @@ import path from 'path';
 import type { AddressInfo } from 'net';
 
 import {
+  ANSWER_MARGIN,
+  answerBox,
   featureBox,
   featureId,
   featureQuery,
@@ -74,7 +76,14 @@ function upstreamServer() {
       res.writeHead(400).end('bad request');
       return;
     }
-    const matching = AREAS.filter((f) => intersects(f, q.box)).sort((a, b) =>
+    // As Traficom does: the box read in a turned grid, so a little past it too.
+    const turned = answerBox(q.box);
+    const past = (b: Box): Box => {
+      const [w, s, e, n] = b;
+      const [tw, ts, te, tn] = turned;
+      return [w + (tw - w) / 2, s + (ts - s) / 2, e + (te - e) / 2, n + (tn - n) / 2];
+    };
+    const matching = AREAS.filter((f) => intersects(f, past(q.box))).sort((a, b) =>
       a.properties.IDENTIFIER.localeCompare(b.properties.IDENTIFIER)
     );
     if (q.hits) {
@@ -185,6 +194,15 @@ describe('wfs-query', () => {
     const [w, s, e, n] = featureBox(f) as Box;
     assert.ok(Math.abs(e - w - 0.01) < 1e-12 && Math.abs(n - s - 0.01) < 1e-12);
     assert.strictEqual(featureBox({ geometry: null }), undefined);
+  });
+
+  it('answerBox: grown by the margin a turned grid adds, each way by the other side', () => {
+    const [w, s, e, n] = answerBox([22, 60, 22.2, 60.1]);
+    const cos = Math.cos((60.05 * Math.PI) / 180);
+    // East and west by the box's height, north and south by its width.
+    assert.ok(Math.abs(22 - w - (ANSWER_MARGIN * 0.1) / cos) < 1e-9);
+    assert.ok(Math.abs(60 - s - ANSWER_MARGIN * 0.2 * cos) < 1e-9);
+    assert.ok(e > 22.2 && n > 60.1);
   });
 
   it('uncovered: what boxes leave of a box', () => {

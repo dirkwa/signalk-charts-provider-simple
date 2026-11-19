@@ -153,6 +153,34 @@ export function featureBox(f: WfsFeature): Box | undefined {
   return w <= e && s <= n ? [w, s, e, n] : undefined;
 }
 
+/**
+ * How far past a box a WFS may answer, as a share of the box's size: one whose
+ * own grid is turned against latitude and longitude (Traficom's TM35FIN, by up
+ * to 6° across Finland) reads a box as the larger box holding it turned, and
+ * returns features that far outside.
+ */
+export const ANSWER_MARGIN = 0.12;
+
+const M_PER_DEG = 111_195;
+
+/**
+ * `box` grown to hold what a WFS whose grid is turned may answer for it
+ * (`ANSWER_MARGIN`): east and west by its height, north and south by its width.
+ */
+export function answerBox([w, s, e, n]: Box): Box {
+  const cos = Math.max(Math.cos((((s + n) / 2) * Math.PI) / 180), 1e-6);
+  const height = (n - s) * M_PER_DEG;
+  const width = (e - w) * M_PER_DEG * cos;
+  const dLon = (ANSWER_MARGIN * height) / (M_PER_DEG * cos);
+  const dLat = (ANSWER_MARGIN * width) / M_PER_DEG;
+  return [
+    Math.max(-180, w - dLon),
+    Math.max(-90, s - dLat),
+    Math.min(180, e + dLon),
+    Math.min(90, n + dLat)
+  ];
+}
+
 /** Margins this small are rounding where boxes meet edge to edge, degrees. */
 const EPS = 1e-9;
 

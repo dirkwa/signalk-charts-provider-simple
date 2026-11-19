@@ -21,6 +21,7 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import type { WfsCache, Layer } from './wfs-cache.js';
 import {
+  answerBox,
   featureQuery,
   hitsReply,
   matchedIn,
@@ -231,7 +232,8 @@ export class WfsProxy {
   private answer(key: string, layer: Layer, q: FeatureQuery, res: http.ServerResponse): void {
     let ids = this.answers.get(key);
     if (ids === undefined) {
-      ids = this.options.cache.idsIn(layer, q.box);
+      // As much as the upstream would answer, and the features past the box it adds.
+      ids = this.options.cache.idsIn(layer, answerBox(q.box));
       this.answers.set(key, ids);
       while (this.answers.size > KEPT_ANSWERS) {
         const oldest = this.answers.keys().next().value as string;
