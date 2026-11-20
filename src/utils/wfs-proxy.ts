@@ -250,16 +250,16 @@ export class WfsProxy {
 
   /**
    * The area's read from the store: going on, else begun now when the store holds the area,
-   * else undefined. A page of a read going on upstream, finished or not, stays there, and so
-   * does one in an ordering the store cannot give. One read serves every ordering of the
-   * area and keeps its features until idle, so its count and its pages agree.
+   * else undefined. A request in an ordering the store cannot give, count or page, goes
+   * upstream, and so does a page of a read going on upstream, finished or not. One read serves
+   * every ordering of the area and keeps its features until idle, so its count and its pages
+   * agree.
    */
   private storeRead(area: string, layer: Layer, q: FeatureQuery): AreaRead | undefined {
     const now = this.now();
     if (
-      !q.hits &&
-      (this.reads.has(`${area}\nupstream\n${q.sortBy ?? ''}`) ||
-        (q.sortBy !== undefined && sortOrder(q.sortBy) === undefined))
+      (q.sortBy !== undefined && sortOrder(q.sortBy) === undefined) ||
+      (!q.hits && this.reads.has(`${area}\nupstream\n${q.sortBy ?? ''}`))
     ) {
       return undefined;
     }

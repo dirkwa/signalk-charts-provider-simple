@@ -569,6 +569,26 @@ describe('WfsProxy', () => {
     );
     await pageOf(base, BOX, 'DRVAL1,IDENTIFIER', 0);
     assert.strictEqual(upstream.seen.length, 1);
+    // Its count goes upstream too, so the count and the pages agree.
+    const gone = ids.slice(0, 5);
+    for (const id of gone) {
+      REMOVED.add(id);
+    }
+    try {
+      const count = async (sortBy: string) =>
+        matchedIn(
+          await (
+            await fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits', sortBy })}`)
+          ).text()
+        );
+      assert.strictEqual(await count('DRVAL1,IDENTIFIER'), ids.length - gone.length);
+      assert.strictEqual(upstream.seen.length, 2);
+      assert.strictEqual(await count('DRVAL1'), ids.length);
+    } finally {
+      for (const id of gone) {
+        REMOVED.delete(id);
+      }
+    }
     await proxy.close();
     cache.close();
   });
