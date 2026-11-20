@@ -79,6 +79,10 @@ interface OdcSet {
   unitIds: string[];
   built: Record<string, string>;
   chartFile: string | null;
+  terrain: boolean;
+  shadingFile: string | null;
+  shadingExists: boolean;
+  shadingBytes: number;
   lastBuiltAt: string | null;
   status: 'empty' | 'not_built' | 'changed' | 'update_available' | 'up_to_date';
   updates: { id: string; from: string; to: string; changes?: string }[];
@@ -790,6 +794,10 @@ function odcRenderDetail(): void {
     <div class="cc-detail-status cc-status-${status.dot}">${odcEsc(status.text)}</div>
     ${updates}${missing}
     <div class="cc-detail-meta">${String(set.unitIds.length)} area(s) · ${odcFormatSize(odcSelectedBytes(set))}</div>
+    <label class="mask-option" title="Shading of hills and mountains on land, a separate chart drawn over the set's chart">
+      <input type="checkbox" data-odc-terrain data-needs="readwrite"${set.terrain ? ' checked' : ''}${set.busy ? ' disabled' : ''} />
+      Terrain shading${set.shadingBytes > 0 ? ` (${odcFormatSize(set.shadingBytes)})` : ''}
+    </label>
     <div class="cc-detail-date">To download: ${odcFormatSize(set.downloadBytes)} · Free in the chart folder: ${
       set.freeBytes !== null ? odcFormatSize(set.freeBytes) : 'unknown'
     }</div>
@@ -798,6 +806,11 @@ function odcRenderDetail(): void {
         ? `<div class="cc-detail-date">Chart: ${odcEsc(set.chartFile)}${
             set.lastBuiltAt ? `, built ${odcEsc(new Date(set.lastBuiltAt).toLocaleString())}` : ''
           }</div>`
+        : ''
+    }
+    ${
+      set.shadingFile && set.shadingExists
+        ? `<div class="cc-detail-date">Terrain shading: ${odcEsc(set.shadingFile)}</div>`
         : ''
     }
     ${
@@ -865,7 +878,10 @@ async function odcRequest(
 // The server takes unitIds as sent, so saves go one at a time in call order,
 // and the sets are read back only once none is pending: an earlier read could
 // bring back a selection older than the one on screen.
-function odcPut(id: string, change: { unitIds?: string[]; name?: string }): Promise<void> {
+function odcPut(
+  id: string,
+  change: { unitIds?: string[]; name?: string; terrain?: boolean }
+): Promise<void> {
   odcPendingSaves++;
   odcSavesStarted++;
   odcSaveQueue = odcSaveQueue.then(async () => {
@@ -1034,6 +1050,14 @@ function odcWireHandlers(output: HTMLElement): void {
         break;
       default:
         break;
+    }
+  });
+  output.addEventListener('change', (ev) => {
+    const target = ev.target as HTMLElement;
+    const set = odcActive();
+    if (set && target instanceof HTMLInputElement && target.matches('[data-odc-terrain]')) {
+      set.terrain = target.checked;
+      void odcPut(set.id, { terrain: target.checked });
     }
   });
   output.addEventListener('keydown', (ev) => {

@@ -127,6 +127,7 @@ The interface provides eight tabs:
    - The map shows each region and its areas (squares of about 0.7°), coloured by the best depth data they hold: multibeam survey, survey since 1990, survey before 1990, or model only
    - Build a named chart set the same way as in ENC Charts: click an area to add or remove it, drag a box to add every area it touches (or remove them when all are in the set already), and **Move map** to pan. The set shows its download size and the free space in the chart folder
    - **Download** builds one chart per set in the chart folder's "Open Data Charts" folder, named after the set. The set's details list each area with its version, size, quality and the disk its download takes
+   - **Terrain shading** (on by default) also builds a second chart, "<set name> terrain shading", that shades hills and mountains on land the way many plotters do. It lies over the set's chart and can be switched off in the plotter like any chart; untick it in the set and apply to remove it. It adds about 1 to 5 MB per area with land
    - When an area is republished the set shows **Update available** with the areas that changed; **Update** downloads only those and replaces just their part of the chart. Taking areas out of the set and applying removes them from the chart
    - The plugin checks the index for updates on its own only when a set exists and the connection allows it (see signalk-internet); downloads start only when you press the button. `OPEN_DATA_INDEX_URL` points a development server at another index
 

@@ -53,6 +53,15 @@ const RegionSchema = Type.Object({
   sources: Type.Optional(Type.Array(Type.String()))
 });
 
+// A unit's terrain shading: a raster MBTiles over the same z9 tile.
+const HillshadeSchema = Type.Object({
+  url: HttpUrl,
+  sha256: Sha256,
+  size: Type.Integer({ minimum: 1 }),
+  minzoom: Zoom,
+  maxzoom: Zoom
+});
+
 const UnitSchema = Type.Object({
   id: Type.String(),
   region: SafeToken,
@@ -74,12 +83,14 @@ const UnitSchema = Type.Object({
     })
   ),
   surveys: Type.Optional(Type.Number()),
-  changes: Type.Optional(Type.String())
+  changes: Type.Optional(Type.String()),
+  hillshade: Type.Optional(HillshadeSchema)
 });
 
 export type OpenDataOverview = Static<typeof OverviewSchema>;
 export type OpenDataRegion = Static<typeof RegionSchema>;
 export type OpenDataUnit = Static<typeof UnitSchema>;
+export type OpenDataHillshade = Static<typeof HillshadeSchema>;
 
 export interface OpenDataIndex {
   generated: string | null;
@@ -97,6 +108,19 @@ const DAMAGED = 'The Open Data Charts index is damaged. Try Refresh again later.
 
 function optionalString(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/** The unit without a shading this version cannot read: the unit's chart still is. */
+function withoutUnreadableHillshade(item: unknown): unknown {
+  if (item === null || typeof item !== 'object' || !('hillshade' in item)) {
+    return item;
+  }
+  const { hillshade, ...unit } = item as Record<string, unknown>;
+  return Value.Check(HillshadeSchema, hillshade) &&
+    hillshade.minzoom >= UNIT_ZOOM &&
+    hillshade.minzoom <= hillshade.maxzoom
+    ? item
+    : unit;
 }
 
 /** A unit whose id, tile and zoom range agree, so its rows can be told apart. */
@@ -148,7 +172,8 @@ export function interpretOpenDataIndex(raw: unknown): InterpretedOpenDataIndex {
   }
   const units: OpenDataUnit[] = [];
   const unitIds = new Set<string>();
-  for (const item of obj.units as unknown[]) {
+  for (const raw of obj.units as unknown[]) {
+    const item = withoutUnreadableHillshade(raw);
     if (Value.Check(UnitSchema, item) && isUsableUnit(item) && !unitIds.has(item.id)) {
       unitIds.add(item.id);
       units.push(item);

@@ -24,7 +24,7 @@ const IDLE_TIMEOUT_MS = 60_000;
 const CACHEDIR_TAG =
   'Signature: 8a477f597d28d172789f06886806bc55\n# Open Data Charts downloads; they are downloaded again when needed.\n';
 
-export type CacheKind = 'units' | 'overviews';
+export type CacheKind = 'units' | 'overviews' | 'hillshade';
 
 export interface DownloadTarget {
   url: string;
@@ -147,7 +147,7 @@ export class UnitCache {
    */
   prune(keep: ReadonlySet<string>): string[] {
     const removed: string[] = [];
-    for (const kind of ['units', 'overviews'] as const) {
+    for (const kind of ['units', 'overviews', 'hillshade'] as const) {
       const dir = path.join(this.root, kind);
       let names: string[];
       try {
