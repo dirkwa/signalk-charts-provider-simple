@@ -928,8 +928,8 @@ describe('building a set from a local index', () => {
     );
   });
 
-  it('builds the terrain shading beside the chart, renames it and takes it out', async () => {
-    const dir = tmpDir('shading');
+  const shadingFixture = async (prefix: string) => {
+    const dir = tmpDir(prefix);
     const dataDir = path.join(dir, 'data');
     const chartPath = path.join(dir, 'charts');
     fs.mkdirSync(chartPath, { recursive: true });
@@ -937,8 +937,8 @@ describe('building a set from a local index', () => {
       const file = path.join(dir, name);
       writeMbtiles(file, rows, ['DEPARE'], 'table');
       const body = fs.readFileSync(file);
-      server.files.set(`/shading/${name}`, body);
-      return { url: `${server.url}/shading/${name}`, size: body.length, sha256: sha256(body) };
+      server.files.set(`/${prefix}/${name}`, body);
+      return { url: `${server.url}/${prefix}/${name}`, size: body.length, sha256: sha256(body) };
     };
     const land = serveFile('z9-492-288.v1.mbtiles', unitTiles(492, 288, 'v1'));
     const shade = serveFile('z9-492-288.v1.hillshade.mbtiles', unitTiles(492, 288, 'shade', 12));
@@ -948,13 +948,13 @@ describe('building a set from a local index', () => {
       unit('z9-493-288', 'v1', sea)
     ];
     server.files.set(
-      '/shading/index.json',
+      `/${prefix}/index.json`,
       Buffer.from(JSON.stringify({ schemaVersion: 1, ...indexOf(units) }))
     );
     const changes: { written?: string; removed?: string }[] = [];
     const odc = new OpenDataCharts({
       dataDir,
-      indexUrl: `${server.url}/shading/index.json`,
+      indexUrl: `${server.url}/${prefix}/index.json`,
       chartPath: () => chartPath,
       debug: () => {},
       error: () => {},
@@ -964,22 +964,31 @@ describe('building a set from a local index', () => {
         return Promise.resolve();
       }
     });
-    const build = async (id: string): Promise<void> => {
+    const finish = async (id: string): Promise<{ phase: string; message: string }> => {
       odc.startBuild(odc.sets.get(id) as OpenDataSet);
       for (;;) {
         const progress = odc.decorate(odc.sets.get(id) as OpenDataSet).progress;
         if (progress && ['completed', 'failed', 'cancelled'].includes(progress.phase)) {
-          assert.strictEqual(progress.phase, 'completed', progress.message);
-          return;
+          return progress;
         }
         await new Promise((r) => setTimeout(r, 20));
       }
     };
 
+    const build = async (id: string): Promise<void> => {
+      const progress = await finish(id);
+      assert.strictEqual(progress.phase, 'completed', progress.message);
+    };
+    await odc.index.refresh();
+    fs.mkdirSync(dataDir, { recursive: true });
+    odc.sets.acknowledge();
+    return { odc, chartPath, changes, units, shade, build, finish };
+  };
+
+  it('builds the terrain shading beside the chart, renames it and takes it out', async () => {
+    const { odc, chartPath, changes, units, shade, build } = await shadingFixture('shading');
     const set = { ...odc.sets.create('Nouméa'), unitIds: units.map((u) => u.id) };
     odc.sets.save(set);
-    odc.sets.acknowledge();
-    await odc.index.refresh();
     assert.strictEqual(odc.decorate(set).shadingBytes, shade.size);
     await build(set.id);
 
@@ -1021,5 +1030,46 @@ describe('building a set from a local index', () => {
     assert.strictEqual(after.shadingFile, null);
     assert.deepStrictEqual(after.shaded, {});
     assert.strictEqual(odc.cache.has('hillshade', 'z9-492-288', 'v1'), false);
+  });
+  it('names the shading apart from a long-named chart', async () => {
+    const { odc, chartPath, units, build } = await shadingFixture('long-name');
+    const name = `${'a'.repeat(84)} terrain shading`;
+    const set = { ...odc.sets.create(name), unitIds: units.map((u) => u.id) };
+    odc.sets.save(set);
+    await build(set.id);
+    const built = odc.sets.get(set.id) as OpenDataSet;
+    assert.notStrictEqual(built.shadingFile, built.chartFile);
+    assert.strictEqual(readMetadata(path.join(chartPath, built.chartFile ?? '')).format, 'pbf');
+    assert.strictEqual(readMetadata(path.join(chartPath, built.shadingFile ?? '')).format, 'webp');
+  });
+
+  it("leaves another chart in the shading's place alone", async () => {
+    const { odc, chartPath, units, finish } = await shadingFixture('foreign');
+    const folder = path.join(chartPath, 'Open Data Charts');
+    fs.mkdirSync(folder, { recursive: true });
+    const other = path.join(folder, 'Lagoon_terrain_shading.mbtiles');
+    fs.writeFileSync(other, 'another set');
+    const set = { ...odc.sets.create('Lagoon'), unitIds: units.map((u) => u.id) };
+    odc.sets.save(set);
+    const progress = await finish(set.id);
+    assert.strictEqual(progress.phase, 'failed');
+    assert.match(progress.message, /Lagoon_terrain_shading\.mbtiles already exists/);
+    assert.strictEqual(fs.readFileSync(other, 'utf8'), 'another set');
+    assert.ok(!fs.existsSync(path.join(folder, 'Lagoon.mbtiles')));
+  });
+
+  it('keeps both charts when the shading cannot take the new name', async () => {
+    const { odc, chartPath, units, build } = await shadingFixture('rename-clash');
+    const set = { ...odc.sets.create('Lagoon'), unitIds: units.map((u) => u.id) };
+    odc.sets.save(set);
+    await build(set.id);
+    const built = odc.sets.get(set.id) as OpenDataSet;
+    const folder = path.join(chartPath, 'Open Data Charts');
+    fs.writeFileSync(path.join(folder, 'Reef_terrain_shading.mbtiles'), 'another set');
+    await assert.rejects(odc.rename(built, 'Reef'), /Reef_terrain_shading\.mbtiles already exists/);
+    assert.deepStrictEqual(odc.sets.get(set.id), built);
+    assert.ok(fs.existsSync(path.join(chartPath, built.chartFile ?? '')));
+    assert.ok(fs.existsSync(path.join(chartPath, built.shadingFile ?? '')));
+    assert.ok(!fs.existsSync(path.join(folder, 'Reef.mbtiles')));
   });
 });

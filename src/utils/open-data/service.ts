@@ -100,7 +100,9 @@ function working(): boolean {
 }
 
 const NOT_FOR_NAVIGATION = '(not for navigation)';
-const SHADING_SUFFIX = ' terrain shading';
+const SHADING_SUFFIX = '_terrain_shading';
+// sanitizeChartFilename's limit, so the suffix is never cut off.
+const MAX_STEM = 100;
 
 class UserError extends Error {
   constructor(
@@ -169,8 +171,13 @@ export class OpenDataCharts {
   }
 
   private shadingTarget(set: OpenDataSet, name = set.name): string {
-    const stem = sanitizeChartFilename(`${name}${SHADING_SUFFIX}`) || `${set.id}-terrain`;
-    return path.join(set.folder, `${stem}.mbtiles`);
+    const base = sanitizeChartFilename(name)
+      .slice(0, MAX_STEM - SHADING_SUFFIX.length)
+      .replace(/[-._]+$/g, '');
+    const stem = base !== '' ? `${base}${SHADING_SUFFIX}` : '';
+    // A long name ending in the suffix itself would otherwise name the set's own chart.
+    const distinct = stem !== '' && stem !== sanitizeChartFilename(name);
+    return path.join(set.folder, `${distinct ? stem : `${set.id}-terrain`}.mbtiles`);
   }
 
   private absolute(relative: string): string {
@@ -387,12 +394,26 @@ export class OpenDataCharts {
     let plan = planSet(set, index, fs.existsSync(target));
     const shadingRelative = set.shadingFile ?? this.shadingTarget(set);
     const shadingTarget = this.absolute(shadingRelative);
-    let shading = planShading(set, index, fs.existsSync(shadingTarget));
+    // Only the file this set recorded is its own to patch or remove.
+    let shading = planShading(set, index, set.shadingFile !== null && fs.existsSync(shadingTarget));
     const chartWork = plan.add.length > 0 || plan.remove.length > 0 || plan.overviews !== null;
     if (!chartWork && !shadingHasWork(shading)) {
       return 'Nothing changed; the chart is up to date';
     }
-    this.checkFreeSpace(set, plan, target, shading, shadingTarget);
+    if (set.shadingFile === null && shading.add.length > 0 && fs.existsSync(shadingTarget)) {
+      throw new UserError(
+        `A chart named ${path.basename(shadingTarget)} already exists in ${set.folder}. Rename the set, then try again.`,
+        409
+      );
+    }
+    const shadingAssembles = Object.keys(afterShading(set, shading)).length > 0;
+    this.checkFreeSpace(
+      set,
+      plan,
+      chartWork ? target : null,
+      shading,
+      shadingHasWork(shading) && shadingAssembles ? shadingTarget : null
+    );
     await this.download(plan, shading, run);
     if (chartWork) {
       try {
@@ -406,13 +427,15 @@ export class OpenDataCharts {
         await this.download(plan, shading, run);
         await runAssembly(this.assemblyInput(set, index, plan, target));
       }
+      // Recorded before the shading runs, so a failure there leaves the new chart known.
+      this.saveBuilt(set, { ...afterPlan(set, plan), chartFile: relative });
+      await this.deps.chartsChanged({ written: relative });
     }
-    let shadingFile = set.shadingFile;
-    let shaded = set.shaded;
     if (shadingHasWork(shading)) {
+      let shadingFile: string | null = shadingRelative;
+      let shaded = afterShading(set, shading);
       const releaseShading = this.claim(shadingTarget, set.id);
       try {
-        shaded = afterShading(set, shading);
         if (Object.keys(shaded).length === 0) {
           fs.rmSync(shadingTarget, { force: true });
           shadingFile = null;
@@ -428,33 +451,27 @@ export class OpenDataCharts {
             await this.download(plan, shading, run);
             await runAssembly(this.shadingInput(set, index, shading, shadingTarget, shaded));
           }
-          shadingFile = shadingRelative;
         }
       } finally {
         releaseShading();
       }
-    }
-    const latest = this.sets.get(set.id) ?? set;
-    const now = new Date().toISOString();
-    this.sets.save({
-      ...latest,
-      ...afterPlan(set, plan),
-      chartFile: relative,
-      shaded,
-      shadingFile,
-      lastBuiltAt: now,
-      updatedAt: now
-    });
-    if (chartWork) {
-      await this.deps.chartsChanged({ written: relative });
-    }
-    if (shadingHasWork(shading)) {
+      this.saveBuilt(set, { shaded, shadingFile });
       await this.deps.chartsChanged(
         shadingFile !== null ? { written: shadingFile } : { removed: shadingRelative }
       );
     }
     const missing = plan.missing.length > 0 ? `; not published: ${plan.missing.join(', ')}` : '';
     return `Chart ${path.basename(relative)} is ready${missing}`;
+  }
+
+  private saveBuilt(set: OpenDataSet, changes: Partial<OpenDataSet>): void {
+    const now = new Date().toISOString();
+    this.sets.save({
+      ...(this.sets.get(set.id) ?? set),
+      ...changes,
+      lastBuiltAt: now,
+      updatedAt: now
+    });
   }
 
   private async removeChart(set: OpenDataSet): Promise<string> {
@@ -478,15 +495,17 @@ export class OpenDataCharts {
   private checkFreeSpace(
     set: OpenDataSet,
     plan: SetPlan,
-    target: string,
+    target: string | null,
     shading: ShadingPlan,
-    shadingTarget: string
+    shadingTarget: string | null
   ): void {
     const adding =
       plan.add.reduce((sum, u) => sum + u.size, 0) +
       shading.add.reduce((sum, s) => sum + s.size, 0);
-    // An update is written beside the current chart before it replaces it.
-    const size = (file: string): number => (fs.existsSync(file) ? fs.statSync(file).size : 0);
+    // An update is written beside the current chart before it replaces it; a
+    // chart that is not assembled again, or only removed, needs no copy.
+    const size = (file: string | null): number =>
+      file !== null && fs.existsSync(file) ? fs.statSync(file).size : 0;
     const needed = Math.max(size(target), size(shadingTarget)) + adding;
     const free = freeDiskBytes(this.existingFolder(set));
     if (free !== null && free < needed) {
@@ -593,7 +612,7 @@ export class OpenDataCharts {
     const labels = this.chartLabels(name, index);
     return {
       ...labels,
-      name: `${name}${SHADING_SUFFIX} ${NOT_FOR_NAVIGATION}`,
+      name: `${name} terrain shading ${NOT_FOR_NAVIGATION}`,
       description: `Terrain shading of ${labels.description}`
     };
   }
@@ -635,80 +654,84 @@ export class OpenDataCharts {
     const relative = this.chartTarget(set, name);
     const from = this.absolute(set.chartFile);
     const to = this.absolute(relative);
-    if (to !== from && fs.existsSync(to)) {
-      throw new UserError(`A chart named ${path.basename(to)} already exists`, 409);
+    const shading =
+      set.shadingFile !== null && this.shadingExists(set)
+        ? {
+            previous: set.shadingFile,
+            relative: this.shadingTarget(set, name),
+            from: this.absolute(set.shadingFile),
+            to: this.absolute(this.shadingTarget(set, name))
+          }
+        : null;
+    for (const move of [{ from, to }, ...(shading ? [shading] : [])]) {
+      if (move.to !== move.from && fs.existsSync(move.to)) {
+        throw new UserError(`A chart named ${path.basename(move.to)} already exists`, 409);
+      }
     }
-    const oldFile = set.chartFile;
-    const release = this.claim(to, set.id);
+    const index = this.index.index();
+    const releaseChart = this.claim(to, set.id);
     try {
-      await runAssembly({
-        kind: 'chart',
-        target: to,
-        base: from,
-        remove: [],
-        add: [],
-        overviews: null,
-        units: Object.keys(set.built)
-          .map(parseUnitId)
-          .filter((t) => t !== null),
-        ...this.chartLabels(name, this.index.index()),
-        setId: set.id
-      });
-      if (to !== from) {
-        fs.rmSync(from, { force: true });
+      const releaseShading = shading ? this.claim(shading.to, set.id) : () => undefined;
+      try {
+        await runAssembly({
+          kind: 'chart',
+          target: to,
+          base: from,
+          remove: [],
+          add: [],
+          overviews: null,
+          units: Object.keys(set.built)
+            .map(parseUnitId)
+            .filter((t) => t !== null),
+          ...this.chartLabels(name, index),
+          setId: set.id
+        });
+        if (shading) {
+          try {
+            await runAssembly({
+              kind: 'shading',
+              target: shading.to,
+              base: shading.from,
+              remove: [],
+              add: [],
+              overviews: null,
+              units: Object.keys(set.shaded).map(unitTile),
+              ...this.shadingLabels(name, index),
+              setId: set.id
+            });
+          } catch (error) {
+            // The originals stay until both copies exist, so the set keeps its charts.
+            if (to !== from) {
+              fs.rmSync(to, { force: true });
+            }
+            throw error;
+          }
+        }
+      } finally {
+        releaseShading();
       }
     } finally {
-      release();
+      releaseChart();
     }
-    const shadingFile = await this.renameShading(set, name);
+    const shadingFile = shading ? shading.relative : null;
     const saved = { ...renamed, chartFile: relative, shadingFile };
     this.sets.save(saved);
+    for (const move of [{ from, to }, ...(shading ? [shading] : [])]) {
+      if (move.to !== move.from) {
+        fs.rmSync(move.from, { force: true });
+      }
+    }
     await this.deps.chartsChanged({
       written: relative,
-      ...(to !== from ? { removed: oldFile } : {})
+      ...(to !== from ? { removed: set.chartFile } : {})
     });
-    if (shadingFile !== null) {
+    if (shading) {
       await this.deps.chartsChanged({
-        written: shadingFile,
-        ...(shadingFile !== set.shadingFile && set.shadingFile !== null
-          ? { removed: set.shadingFile }
-          : {})
+        written: shading.relative,
+        ...(shading.to !== shading.from ? { removed: shading.previous } : {})
       });
     }
     return saved;
-  }
-
-  /** The shading chart under the set's new name; its path, or null when there is none. */
-  private async renameShading(set: OpenDataSet, name: string): Promise<string | null> {
-    if (set.shadingFile === null || !this.shadingExists(set)) {
-      return null;
-    }
-    const relative = this.shadingTarget(set, name);
-    const from = this.absolute(set.shadingFile);
-    const to = this.absolute(relative);
-    if (to !== from && fs.existsSync(to)) {
-      throw new UserError(`A chart named ${path.basename(to)} already exists`, 409);
-    }
-    const release = this.claim(to, set.id);
-    try {
-      await runAssembly({
-        kind: 'shading',
-        target: to,
-        base: from,
-        remove: [],
-        add: [],
-        overviews: null,
-        units: Object.keys(set.shaded).map(unitTile),
-        ...this.shadingLabels(name, this.index.index()),
-        setId: set.id
-      });
-      if (to !== from) {
-        fs.rmSync(from, { force: true });
-      }
-    } finally {
-      release();
-    }
-    return relative;
   }
 
   /** Removes cached files no set uses: neither in its chart nor at the index's version. */
