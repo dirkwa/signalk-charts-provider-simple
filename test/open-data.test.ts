@@ -1085,9 +1085,13 @@ describe('building a set from a local index', () => {
     fs.rmSync(path.join(chartPath, built.chartFile ?? ''));
     const renamed = await odc.rename(built, 'Lagoon');
     assert.strictEqual(renamed.chartFile, built.chartFile);
-    odc.sets.save({ ...renamed, terrain: true });
+    // Without shading the chart builds again under the name it kept.
+    await build(set.id);
+    assert.strictEqual(readMetadata(path.join(chartPath, built.chartFile ?? '')).format, 'pbf');
+    odc.sets.save({ ...(odc.sets.get(set.id) as OpenDataSet), terrain: true });
     const progress = await finish(set.id);
     assert.strictEqual(progress.phase, 'failed');
+    assert.strictEqual(readMetadata(path.join(chartPath, built.chartFile ?? '')).format, 'pbf');
     assert.match(progress.message, /would replace its chart Lagoon_terrain_shading\.mbtiles/);
   });
 });

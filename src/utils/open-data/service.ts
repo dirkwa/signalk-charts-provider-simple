@@ -378,7 +378,14 @@ export class OpenDataCharts {
     }
     const shadingRelative = set.shadingFile ?? this.shadingTarget(set);
     const shadingTarget = this.absolute(shadingRelative);
-    if (shadingTarget === target) {
+    // Only the file this set recorded is its own to patch or remove.
+    const shading = planShading(
+      set,
+      index,
+      set.shadingFile !== null && fs.existsSync(shadingTarget)
+    );
+    const shadingWork = shadingHasWork(shading);
+    if (shadingWork && shadingTarget === target) {
       throw new UserError(
         `The terrain shading of this set would replace its chart ${path.basename(target)}. Rename the set, then try again.`,
         409
@@ -386,16 +393,14 @@ export class OpenDataCharts {
     }
     const release = this.claim(target, set.id);
     try {
-      const releaseShading = this.claim(shadingTarget, set.id);
+      const releaseShading = shadingWork ? this.claim(shadingTarget, set.id) : () => undefined;
       try {
         return await this.buildInto(
           set,
           index,
           { relative, target },
-          {
-            relative: shadingRelative,
-            target: shadingTarget
-          },
+          { relative: shadingRelative, target: shadingTarget },
+          shading,
           run
         );
       } finally {
@@ -411,11 +416,11 @@ export class OpenDataCharts {
     index: OpenDataIndex,
     { relative, target }: { relative: string; target: string },
     { relative: shadingRelative, target: shadingTarget }: { relative: string; target: string },
+    plannedShading: ShadingPlan,
     run: Run
   ): Promise<string> {
     let plan = planSet(set, index, fs.existsSync(target));
-    // Only the file this set recorded is its own to patch or remove.
-    let shading = planShading(set, index, set.shadingFile !== null && fs.existsSync(shadingTarget));
+    let shading = plannedShading;
     const chartWork = plan.add.length > 0 || plan.remove.length > 0 || plan.overviews !== null;
     if (!chartWork && !shadingHasWork(shading)) {
       return 'Nothing changed; the chart is up to date';
