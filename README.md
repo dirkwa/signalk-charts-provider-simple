@@ -12,6 +12,7 @@ A lightweight Signal K server plugin for managing local nautical charts, written
 - **ENC Charts**: Pick chart areas on a map from every free ENC source (NOAA, the European inland waterways and more); the plugin downloads their ENC cells and converts them into a single vector MBTiles named after your chart set
 - **S-57 ENC Conversion**: Convert IENC/ENC charts to vector MBTiles with full S-52 symbology in Freeboard-SK
 - **Shared ENC cells**: The S-57 cells behind your ENC charts are kept as delivered and served to other plugins, such as [Under-Keel Awareness](https://www.npmjs.com/package/signalk-underkeel), so one download serves both the chart plotter and depth checks
+- **Collision alerts that know the land**: [Collision Alerts](https://www.npmjs.com/package/@signalk/collision-alerts) 0.10 or later reads the land on your S-57 charts and raises no alarm for a boat that could reach you only across it, such as one behind a headland or an island. Nothing to set up: it works as soon as both plugins run, whatever the server's security settings
 - **BSB Raster Conversion**: Convert BSB/KAP raster charts and Pilot Charts to raster MBTiles
 - **World Basemaps**: OSM coastline basemaps for offline use
 - **Custom Upload**: Upload your own ZIP files containing S-57 ENC or BSB charts for conversion
@@ -143,6 +144,12 @@ enc-store/<collection>/<CELL>/<CELL>.000, <CELL>.001, …
 [Under-Keel Awareness](https://www.npmjs.com/package/signalk-underkeel) reads them in place: pick the collection in its **ENC from Charts Provider** setting, or `*` for all of them, and it builds its depth index again when the cells change. Other plugins use the in-process API or the REST routes in [`docs/enc-store.md`](docs/enc-store.md), which also say whether a collection is ready, being written or a chart set not downloaded yet, and which stored cells reach an area.
 
 **ENC around the vessel.** With **Download the ENC cells around the vessel** on (off by default), a plugin can ask for the cells of the area the vessel is in: Under-Keel Awareness does when its **Ask Charts Provider for the ENC around the vessel** is on. The free ENC units reaching that area from the ENC index are added to one chart set, **Around the vessel**, which is downloaded and converted like any other, so its cells are shared and its chart is served. The set only grows along the voyage; edit or delete it in the ENC Charts tab. On a metered, offline or captive connection (see signalk-internet) the download waits until the connection allows.
+
+### Chart tiles for other plugins
+
+Other plugins read the tiles of the charts served here in-process, through the `chartTiles` PropertyValue, so a secured server needs no token for them. [Collision Alerts](https://www.npmjs.com/package/@signalk/collision-alerts) 0.10 or later uses it: it reads the land areas (`LNDARE`) of your S-57 charts, and a boat whose course to you crosses enough land raises no alarm until its course runs clear. There is nothing to set up: once both plugins run, it is on.
+
+For plugin developers: follow the `chartTiles` PropertyValue and take the latest value of each setter. It is a `ChartTiles`, whose contract is in the package's `dist/types.d.ts`: `getTile` gives a tile's body as the tile route serves it. Online charts, and a Multihelm master's charts listed without a copy, are not read this way.
 
 ### Supported Formats
 

@@ -537,6 +537,22 @@ export interface EncCollectionStateInfo {
   collection?: string;
 }
 
+/**
+ * The `chartTiles` PropertyValue: other plugins read the tiles of the charts
+ * served here in-process, whatever the server's security settings.
+ */
+export interface ChartTiles {
+  /**
+   * The tile body as the tile route serves it (a vector tile may be gzipped;
+   * shared with the route, so not to be modified). Null where the chart has
+   * no tile. Undefined for a chart this server has no copy of (an online
+   * chart's tiles are not read either, nor a Multihelm master's chart), and
+   * until a start has loaded the charts. Rejects where the route would
+   * answer 500.
+   */
+  getTile(chartId: string, z: number, x: number, y: number): Promise<Uint8Array | null | undefined>;
+}
+
 export interface ChartsProviderEncGlobal {
   __signalk_chartsProviderEnc?: ChartsProviderEncApi;
 }

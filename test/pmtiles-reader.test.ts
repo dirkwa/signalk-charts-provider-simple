@@ -18,7 +18,7 @@ import { findCharts } from '../dist/charts-loader.js';
 import { PMTilesReader, pmtilesBounds } from '../dist/utils/pmtiles-reader.js';
 import { chartIdFromFilename, collectChartIds } from '../dist/utils/online-charts.js';
 import { scanChartsRecursively } from '../dist/utils/file-scanner.js';
-import { pmtilesMetadataView, serveTileFromPmtiles } from '../dist/index.js';
+import { pmtilesMetadataView, readLocalTile, serveTileFromPmtiles } from '../dist/index.js';
 
 const COMPRESSION_NONE = 1;
 const COMPRESSION_GZIP = 2;
@@ -302,6 +302,23 @@ describe('PMTiles charts', () => {
         assert.deepStrictEqual(raw, t.data, `tile ${t.z}/${t.x}/${t.y}`);
       }
     });
+  });
+
+  it('hands other plugins the tiles it serves', async () => {
+    const dir = fixture('peer', { tiles: VECTOR_TILES, metadata: S57_METADATA });
+    const chart = (await findCharts(dir)).peer;
+    assert.ok(chart);
+    try {
+      for (const t of VECTOR_TILES) {
+        const res = await serve(chart, t.z, t.x, t.y);
+        assert.strictEqual(res.statusCode, 200);
+        assert.deepStrictEqual(await readLocalTile(chart, t.z, t.x, t.y), res.body);
+      }
+      assert.strictEqual((await serve(chart, 4, 0, 0)).statusCode, 404);
+      assert.strictEqual(await readLocalTile(chart, 4, 0, 0), null);
+    } finally {
+      await chart._pmtilesHandle?.close();
+    }
   });
 
   it('serves an uncompressed raster tile without a content encoding', async () => {
