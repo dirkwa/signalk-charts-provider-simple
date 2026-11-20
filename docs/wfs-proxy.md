@@ -19,23 +19,27 @@ upstream as it is, like any other.
 - For an area the store does not hold whole and fresh, each request goes
   upstream and its reply is streamed back as fast as the client takes it, so
   a client sees the upstream's own timing. The features of each page are
-  staged, and once every page the area's count (from `resultType=hits` or the
-  pages' `numberMatched`) names has passed, they are kept, each once by its
-  id, and the area is held, all in one transaction: a read that breaks off
-  changes nothing. A short page alone does not end an area, as it may be the
-  server's own page limit. A count of none holds the area at once. A reply
-  larger than 64 MB, or one the upstream breaks off, is passed on but not
+  staged, and once the read's pages hold as many distinct features as its
+  count names (the pages' `numberMatched`, or a `resultType=hits` in the
+  same ordering), they are kept and the area is held, all in one
+  transaction: a read that breaks off changes nothing. A count from another
+  read, or a short page alone, does not end an area: it may describe other
+  features, or be the server's own page limit. A count of none holds the
+  area at once. A read whose area a newer read overlapping it was kept for
+  meanwhile is not kept, so it cannot bring back what that one dropped. A
+  very large reply, or one the upstream breaks off, is passed on but not
   kept; a broken one is broken off to the client too.
-- For Traficom's WFS, an area the store holds whole (inside boxes it holds,
-  fetched within the maximum age) is answered from the store: every kept
-  feature whose box reaches the area grown by a margin. Traficom reads a box
+- For Traficom's WFS, each feature is kept once, by its id, and an area the
+  store holds whole (inside boxes it holds, fetched within the maximum age)
+  is answered from the store: every kept feature whose box reaches the area
+  grown by a margin. Traficom reads a box
   in its own grid, turned by up to 6° against latitude and longitude across
   Finland, and answers features that far outside it: the store answers them
   too, and a few more. A feature wholly inside a box read again whole that
   the read did not return is dropped: it is gone upstream.
 - For any other WFS, whose way of choosing features for a box the proxy does
   not know, an area is answered from the store only for the same box, with
-  the features that box gave.
+  the features that box gave, as it gave them.
 - Pages from the store come in the order of the one property `sortBy` names
   (`NAME`, `NAME ASC` or `NAME DESC`), else a fixed one. A request, count or
   page, with a `sortBy` of more than one property or a qualified name is
@@ -43,10 +47,13 @@ upstream as it is, like any other.
 - A read is one area in one ordering (`sortBy`). It keeps the way it began,
   from the store or upstream, until it has been idle for ten minutes, so its
   pages come from one ordering; a count in the ordering of a read going on
-  upstream goes upstream too. A read from the store reads a snapshot of the
-  store taken when it began, so its count and its pages agree whatever is
-  kept or dropped meanwhile. A count (`resultType=hits`) for an area whose
-  read has passed every page begins a new read.
+  upstream goes upstream too. A read from the store answers the features
+  the store held when it began, each as it was then, so its count and its
+  pages agree whatever is kept or dropped meanwhile. A count
+  (`resultType=hits`) ends the area's upstream reads that passed every page,
+  and one of its own ordering no page followed; it does not end a read from
+  the store, which answers the same count again until it has been idle. So
+  a client cannot ask for a count again to see an area kept meanwhile.
 - On a metered, offline or captive connection (signalk-internet), and while
   the connection's state is still being learnt, an area held whole is
   answered from the store whatever its age.
@@ -57,9 +64,11 @@ upstream as it is, like any other.
 The store is `<dataDir>/wfs-cache/wfs.sqlite`. Deleting it loses nothing but
 the downloads; a store an older version of the plugin left is begun again.
 
-A config save restarts the plugin: the stopped proxy serves on for half a
-minute, going online on its own for nothing, and the next start takes it over
-with its new settings, so a read in progress keeps its pages and its way.
+A config save restarts the plugin: the stopped proxy serves on for a short
+while, and the next start takes it over with its new settings, so a read in
+progress keeps its pages and its way. Meanwhile it answers from the store and
+carries on the reads going upstream, but begins no new read upstream (it
+answers 503) and refreshes no stale area.
 
 ## In-process API
 

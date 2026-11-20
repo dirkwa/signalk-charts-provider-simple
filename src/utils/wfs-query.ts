@@ -306,8 +306,9 @@ export function pageReply(matched: number, features: readonly unknown[]): string
 
 /** `numberMatched` on the `FeatureCollection` element of a hits reply; undefined without a count. */
 export function hitsMatched(xml: string): number | undefined {
-  const m = /<(?:[\w.-]+:)?FeatureCollection\b[^>]*?\snumberMatched="(\d+)"/.exec(xml);
-  return m?.[1] === undefined ? undefined : Number(m[1]);
+  // XML allows either quote, and space around the `=`.
+  const m = /<(?:[\w.-]+:)?FeatureCollection\b[^>]*?\snumberMatched\s*=\s*(["'])(\d+)\1/.exec(xml);
+  return m?.[2] === undefined ? undefined : Number(m[2]);
 }
 
 /** The top-level `numberMatched` of a parsed GeoJSON page; undefined unless a count. */

@@ -37,6 +37,8 @@ export interface WfsProxyRunning {
   proxy: WfsProxy;
   cache: WfsCache;
   api: ChartsProviderWfsApi;
+  /** Where a failure to close it, once its handover time is up, is reported. */
+  warn: (message: string) => void;
 }
 
 export interface WfsServiceSettings {
@@ -65,6 +67,7 @@ function proxySettings(settings: WfsServiceSettings): WfsProxySettings {
     answersByBox: (upstream) => TRAFICOM.has(upstream),
     maxAgeMs: () => settings.maxAgeDays() * DAY_MS,
     mayRefresh: settings.mayRefresh,
+    handingOver: false,
     log: settings.log
   };
 }
@@ -87,6 +90,7 @@ export async function startWfsProxy(settings: WfsServiceSettings): Promise<WfsPr
     const { running } = parked;
     parked = null;
     running.proxy.configure(proxySettings(settings));
+    running.warn = settings.warn;
     return running;
   }
   await closing;
@@ -104,29 +108,42 @@ export async function startWfsProxy(settings: WfsServiceSettings): Promise<WfsPr
     upstreams: () => [...proxy.upstreams()],
     stats: () => cache.stats()
   };
-  return { proxy, cache, api };
+  return { proxy, cache, api, warn: settings.warn };
 }
 
 export async function stopWfsProxy(running: WfsProxyRunning): Promise<void> {
-  await running.proxy.close();
-  running.cache.close();
+  try {
+    await running.proxy.close();
+  } finally {
+    // A stage left behind is cleared when the store is next opened.
+    running.cache.close();
+  }
+}
+
+/** Closes `running` after any close before it, reporting a failure rather than dropping it. */
+function closeLater(running: WfsProxyRunning): void {
+  closing = closing
+    .then(() => stopWfsProxy(running))
+    .catch((err: unknown) => {
+      running.warn(`Local WFS proxy did not close cleanly: ${String(err)}`);
+    });
 }
 
 /**
  * Stops `running` once `HANDOVER_MS` has passed without a start taking it over.
- * Meanwhile it serves the reads going on, and goes online on its own for none.
+ * Meanwhile it answers from the store and carries on the reads going upstream,
+ * but begins no new read upstream and refreshes no stale area.
  */
 export function releaseWfsProxy(running: WfsProxyRunning): void {
   if (parked && parked.running !== running) {
     clearTimeout(parked.timer);
-    const other = parked.running;
-    closing = closing.then(() => stopWfsProxy(other)).catch(() => undefined);
+    closeLater(parked.running);
   }
-  running.proxy.configure({ mayRefresh: () => false });
+  running.proxy.configure({ mayRefresh: () => false, handingOver: true });
   const timer = setTimeout(() => {
     if (parked?.running === running) {
       parked = null;
-      closing = closing.then(() => stopWfsProxy(running)).catch(() => undefined);
+      closeLater(running);
     }
   }, HANDOVER_MS);
   timer.unref();
