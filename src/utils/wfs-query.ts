@@ -16,7 +16,7 @@ export interface FeatureQuery {
   /** A `resultType=hits` request: the count alone. */
   hits: boolean;
   startIndex: number;
-  /** The page size asked for; undefined for every feature at once. */
+  /** The page size asked for; undefined for a count. */
   count: number | undefined;
   /** The ordering asked for, as written. */
   sortBy: string | undefined;
@@ -61,6 +61,10 @@ const nonNegativeInteger = (text: string | undefined): number | undefined => {
 function parseBox(text: string): Box | undefined {
   const parts = text.split(',');
   if (parts.length !== 5 || parts[4] !== EPSG_4326_URN) {
+    return undefined;
+  }
+  // Number('') is 0: an empty coordinate would read as a box the request did not name.
+  if (parts.slice(0, 4).some((t) => t.trim() === '')) {
     return undefined;
   }
   const [s, w, n, e] = parts.slice(0, 4).map(Number) as [number, number, number, number];
@@ -116,6 +120,10 @@ export function featureQuery(params: URLSearchParams): FeatureQuery | null {
   if (startIndex === undefined || (p.has('count') && (count === undefined || count === 0))) {
     return null;
   }
+  // Without a page size a WFS answers its own default number of features, unknown here.
+  if (!hits && count === undefined) {
+    return null;
+  }
   return { typeName, box, boxText, hits, startIndex, count, sortBy: p.get('sortby') };
 }
 
@@ -129,7 +137,8 @@ export interface SortOrder {
  * order it; undefined for any other, which the store does not answer.
  */
 export function sortOrder(sortBy: string): SortOrder | undefined {
-  const m = /^([A-Za-z_][\w.:-]*)(?:\s+(ASC|DESC|A|D))?$/i.exec(sortBy.trim());
+  // A qualified name (`ns:NAME`) is not the name GeoJSON properties carry: passed upstream.
+  const m = /^([A-Za-z_][\w.-]*)(?:\s+(ASC|DESC|A|D))?$/i.exec(sortBy.trim());
   if (m?.[1] === undefined) {
     return undefined;
   }
@@ -278,10 +287,10 @@ export function uncovered(box: Box, covers: readonly Box[]): Box[] {
 }
 
 /** A `resultType=hits` reply, as WFS 2.0 servers write it. */
-export function hitsReply(matched: number): string {
+export function hitsReply(matched: number, at: Date): string {
   return (
     '<?xml version="1.0" encoding="UTF-8"?>' +
-    `<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" numberMatched="${String(matched)}" numberReturned="0"/>`
+    `<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" timeStamp="${at.toISOString()}" numberMatched="${String(matched)}" numberReturned="0"/>`
   );
 }
 
@@ -295,8 +304,14 @@ export function pageReply(matched: number, features: readonly unknown[]): string
   });
 }
 
-/** `numberMatched` from a hits reply (XML) or a GeoJSON page; undefined without one. */
-export function matchedIn(text: string): number | undefined {
-  const m = /numberMatched="(\d+)"/.exec(text) ?? /"numberMatched"\s*:\s*(\d+)/.exec(text);
+/** `numberMatched` on the `FeatureCollection` element of a hits reply; undefined without a count. */
+export function hitsMatched(xml: string): number | undefined {
+  const m = /<(?:[\w.-]+:)?FeatureCollection\b[^>]*?\snumberMatched="(\d+)"/.exec(xml);
   return m?.[1] === undefined ? undefined : Number(m[1]);
+}
+
+/** The top-level `numberMatched` of a parsed GeoJSON page; undefined unless a count. */
+export function pageMatched(page: { numberMatched?: unknown }): number | undefined {
+  const n = page.numberMatched;
+  return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
 }

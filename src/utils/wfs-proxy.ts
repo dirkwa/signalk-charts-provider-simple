@@ -7,9 +7,10 @@
  * A request the cache can answer (`wfs-query.ts`) for an area it holds whole
  * and fresh is answered from the store. Any other is passed to the upstream
  * server and its reply streamed back as it arrives; the features of its pages
- * are kept, and once every page of an area has passed, the area is held. A
- * read keeps the way it began, from the store or upstream, until it has been
- * idle a while, so its pages come from one ordering; a count begins a read.
+ * are staged, and once every page of an area has passed, they are published
+ * and the area is held. A read keeps the way it began, from the store or
+ * upstream, until it has been idle a while, so its pages come from one
+ * ordering; a count begins a read.
  *
  * It listens on 127.0.0.1 only, under a path holding a random token only
  * this server's plugins learn (`proxyUrl`): it is no open proxy, and needs no
@@ -19,12 +20,13 @@
 import crypto from 'crypto';
 import http from 'http';
 import type { AddressInfo } from 'net';
-import type { WfsCache, Layer } from './wfs-cache.js';
+import type { CacheSnapshot, Layer, WfsCache } from './wfs-cache.js';
 import {
   answerBox,
   featureQuery,
+  hitsMatched,
   hitsReply,
-  matchedIn,
+  pageMatched,
   pageReply,
   sortedBy,
   sortOrder,
@@ -35,10 +37,25 @@ import {
 /** An area's read keeps its way this long after its last request, ms. */
 export const READ_IDLE_MS = 10 * 60_000;
 
+/** A reply larger than this is passed on but not kept, bytes. */
+export const MAX_KEPT_BYTES = 64 * 1024 * 1024;
+
+const MAX_REDIRECTS = 5;
+
+/** How long a closing proxy lets replies in progress finish, ms. */
+const CLOSE_GRACE_MS = 5000;
+
 export interface WfsProxyOptions {
   cache: WfsCache;
   /** The upstream servers proxied, as base URLs (no query). */
   upstreams: () => readonly string[];
+  /**
+   * Whether `upstream` answers a box as Traficom's does, with every feature
+   * reaching it and those its turned grid adds past it (`answerBox`), so the
+   * store answers boxes inside those it holds. Any other upstream's area is
+   * answered from the store only for the same box, with what it gave.
+   */
+  answersByBox: (upstream: string) => boolean;
   /** An area fetched longer ago than this is fetched again, ms. */
   maxAgeMs: () => number;
   /** False while going online on its own is held back: a stale area is read from the store. */
@@ -48,19 +65,34 @@ export interface WfsProxyOptions {
   log?: (message: string) => void;
 }
 
-interface AreaRead {
+/** The settings a running proxy takes again when the plugin restarts. */
+export type WfsProxySettings = Pick<
+  WfsProxyOptions,
+  'upstreams' | 'answersByBox' | 'maxAgeMs' | 'mayRefresh' | 'log'
+>;
+
+interface UpstreamRead {
   lastUsed: number;
-  /** Upstream: the pages passed, as [start, end) of the features' indexes. */
+  /** The pages passed, as [start, end) of the features' indexes. */
   ranges: [number, number][];
   matched?: number;
-  /** Upstream: a page could not be kept, so the area is not held. */
+  /** A page could not be kept, or the count changed: the area is not held. */
   spoilt: boolean;
-  /** Upstream: every page has passed and the area is held. */
+  /** Every page has passed and the area is held. */
   held: boolean;
   startedAt: number;
-  /** Store: the features answered, fixed for the read so its count and pages agree. */
+  /** Where its pages wait until the area is whole (`WfsCache.stage`). */
+  stage: number;
+}
+
+interface StoreRead {
+  lastUsed: number;
+  snapshot: CacheSnapshot;
+  /** For an upstream not answered by box: the read whole whose features it answers. */
+  coveredId: number | undefined;
+  /** The features answered, fixed for the read so its count and pages agree. */
   ids?: number[];
-  /** Store: `ids` in each ordering asked for, by `sortBy`. */
+  /** `ids` in each ordering asked for, by `sortBy`. */
   orders?: Map<string, number[]>;
 }
 
@@ -100,18 +132,42 @@ function coversFromZero(ranges: readonly [number, number][], end: number): boole
   return reach >= end;
 }
 
+/** Resolves once `res` can take more, or is gone. */
+const drained = (res: http.ServerResponse): Promise<void> =>
+  new Promise((resolve) => {
+    const done = (): void => {
+      res.off('drain', done);
+      res.off('close', done);
+      resolve();
+    };
+    res.on('drain', done);
+    res.on('close', done);
+  });
+
 export class WfsProxy {
   private server: http.Server | null = null;
   private port = 0;
-  private readonly reads = new Map<string, AreaRead>();
+  private options: WfsProxyOptions;
+  private readonly upstreamReads = new Map<string, UpstreamRead>();
+  private readonly storeReads = new Map<string, StoreRead>();
   /** The count each area's last upstream count gave, for the reads of its pages. */
   private readonly counts = new Map<string, { at: number; matched: number | undefined }>();
   private readonly fetchUpstream: typeof fetch;
   private readonly now: () => number;
 
-  constructor(private readonly options: WfsProxyOptions) {
+  constructor(options: WfsProxyOptions) {
+    this.options = options;
     this.fetchUpstream = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
+  }
+
+  /** Takes `settings` in place of those it has; reads going on keep their way. */
+  configure(settings: Partial<WfsProxySettings>): void {
+    this.options = { ...this.options, ...settings };
+  }
+
+  upstreams(): readonly string[] {
+    return this.options.upstreams();
   }
 
   /** Listens on 127.0.0.1, on `port` when it is free, else any free one; resolves with the port. */
@@ -156,17 +212,32 @@ export class WfsProxy {
     return `http://127.0.0.1:${String(this.port)}/${TOKEN}/${encodeUpstream(base)}`;
   }
 
+  /** Stops listening; replies in progress get a while to finish. */
   async close(): Promise<void> {
     const server = this.server;
     this.server = null;
     if (server) {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => {
+      const closed = new Promise<void>((resolve) => {
         server.close(() => {
           resolve();
         });
       });
+      server.closeIdleConnections();
+      const cut = setTimeout(() => {
+        server.closeAllConnections();
+      }, CLOSE_GRACE_MS);
+      cut.unref();
+      await closed;
+      clearTimeout(cut);
     }
+    for (const r of this.storeReads.values()) {
+      r.snapshot.close();
+    }
+    this.storeReads.clear();
+    for (const r of this.upstreamReads.values()) {
+      this.options.cache.dropStage(r.stage);
+    }
+    this.upstreamReads.clear();
   }
 
   private allowed(base: string): boolean {
@@ -197,17 +268,18 @@ export class WfsProxy {
     }
     const layer: Layer = { upstream, typeName: q.typeName };
     const area = `${upstream}\n${q.typeName}\n${q.boxText}`;
+    const readKey = `${area}\n${q.sortBy ?? ''}`;
     this.sweep();
     if (q.hits) {
       // A count begins a read: the area's finished upstream reads end, so its pages may come
       // from the store, or upstream and be kept again.
-      for (const [k, r] of this.reads) {
-        if (k.startsWith(`${area}\nupstream\n`) && r.held) {
-          this.reads.delete(k);
+      for (const [k, r] of this.upstreamReads) {
+        if (k.startsWith(`${area}\n`) && r.held) {
+          this.endUpstreamRead(k, r);
         }
       }
     }
-    const fromStore = this.storeRead(area, layer, q);
+    const fromStore = this.storeRead(area, readKey, layer, q);
     if (fromStore) {
       this.answer(fromStore, layer, q, res);
       return;
@@ -215,27 +287,35 @@ export class WfsProxy {
     if (q.hits) {
       const startedAt = this.now();
       await this.pass(target, req, res, (text) => {
-        const matched = matchedIn(text);
-        this.counts.set(area, { at: this.now(), matched });
-        // An area with none is whole at once: no page of it will come.
-        if (matched === 0) {
-          this.options.cache.pruneUnseen(layer, q.box, startedAt);
-          this.options.cache.markCovered(layer, q.box, startedAt);
-        }
+        this.counted(area, readKey, layer, q, startedAt, hitsMatched(text));
       });
       return;
     }
-    const read = this.upstreamRead(area, q);
+    const read = this.upstreamRead(area, readKey);
     await this.pass(target, req, res, (text) => {
-      this.keep(layer, q, read, text);
+      // A page that outlived its read, which another has replaced, keeps nothing.
+      if (this.upstreamReads.get(readKey) === read) {
+        this.keep(layer, q, read, text);
+      }
     });
+  }
+
+  private endUpstreamRead(key: string, read: UpstreamRead): void {
+    this.upstreamReads.delete(key);
+    this.options.cache.dropStage(read.stage);
   }
 
   private sweep(): void {
     const now = this.now();
-    for (const [k, r] of this.reads) {
+    for (const [k, r] of this.upstreamReads) {
       if (now - r.lastUsed > READ_IDLE_MS) {
-        this.reads.delete(k);
+        this.endUpstreamRead(k, r);
+      }
+    }
+    for (const [k, r] of this.storeReads) {
+      if (now - r.lastUsed > READ_IDLE_MS) {
+        this.storeReads.delete(k);
+        r.snapshot.close();
       }
     }
     for (const [k, c] of this.counts) {
@@ -243,46 +323,49 @@ export class WfsProxy {
         this.counts.delete(k);
       }
     }
-    if (![...this.reads.keys()].some((k) => k.endsWith('\nstore'))) {
-      this.options.cache.purgeGone();
-    }
   }
 
   /**
    * The area's read from the store: going on, else begun now when the store holds the area,
-   * else undefined. A request in an ordering the store cannot give, count or page, goes
-   * upstream, and so does a page of a read going on upstream, finished or not. One read serves
-   * every ordering of the area and keeps its features until idle, so its count and its pages
-   * agree.
+   * else undefined. A request in an ordering the store cannot give goes upstream, and so does
+   * one, count or page, in the ordering of a read going on upstream. One read serves every
+   * ordering of the area and reads one snapshot until idle, so its count and its pages agree.
    */
-  private storeRead(area: string, layer: Layer, q: FeatureQuery): AreaRead | undefined {
+  private storeRead(
+    area: string,
+    readKey: string,
+    layer: Layer,
+    q: FeatureQuery
+  ): StoreRead | undefined {
     const now = this.now();
     if (
       (q.sortBy !== undefined && sortOrder(q.sortBy) === undefined) ||
-      (!q.hits && this.reads.has(`${area}\nupstream\n${q.sortBy ?? ''}`))
+      this.upstreamReads.has(readKey)
     ) {
       return undefined;
     }
-    const key = `${area}\nstore`;
-    const going = this.reads.get(key);
+    const going = this.storeReads.get(area);
     if (going) {
       going.lastUsed = now;
       return going;
     }
-    const fresh = this.options.cache.covers(layer, q.box, now - this.options.maxAgeMs());
+    const cache = this.options.cache;
+    const byBox = this.options.answersByBox(layer.upstream);
+    const heldSince = (since: number): { coveredId: number | undefined } | undefined => {
+      if (byBox) {
+        return cache.covers(layer, q.box, since) ? { coveredId: undefined } : undefined;
+      }
+      const coveredId = cache.exactCover(layer, q.boxText, since);
+      return coveredId === undefined ? undefined : { coveredId };
+    };
     const held =
-      fresh || (!this.options.mayRefresh() && this.options.cache.covers(layer, q.box, 0));
+      heldSince(now - this.options.maxAgeMs()) ??
+      (this.options.mayRefresh() ? undefined : heldSince(0));
     if (!held) {
       return undefined;
     }
-    const read: AreaRead = {
-      lastUsed: now,
-      ranges: [],
-      spoilt: false,
-      held: true,
-      startedAt: now
-    };
-    this.reads.set(key, read);
+    const read: StoreRead = { lastUsed: now, snapshot: cache.snapshot(), ...held };
+    this.storeReads.set(area, read);
     return read;
   }
 
@@ -290,31 +373,36 @@ export class WfsProxy {
    * The area's read upstream in the request's ordering: each ordering is its own, as pages of
    * two orderings do not make up an area. A new one takes the area's count, when one passed.
    */
-  private upstreamRead(area: string, q: FeatureQuery): AreaRead {
+  private upstreamRead(area: string, readKey: string): UpstreamRead {
     const now = this.now();
-    const key = `${area}\nupstream\n${q.sortBy ?? ''}`;
-    const going = this.reads.get(key);
+    const going = this.upstreamReads.get(readKey);
     if (going) {
       going.lastUsed = now;
       return going;
     }
-    const read: AreaRead = {
+    const read: UpstreamRead = {
       lastUsed: now,
       ranges: [],
       matched: this.counts.get(area)?.matched,
       spoilt: false,
       held: false,
-      startedAt: now
+      startedAt: now,
+      stage: this.options.cache.beginStage()
     };
-    this.reads.set(key, read);
+    this.upstreamReads.set(readKey, read);
     return read;
   }
 
-  private answer(read: AreaRead, layer: Layer, q: FeatureQuery, res: http.ServerResponse): void {
-    // As much as the upstream would answer, and the features past the box it adds.
-    const ids = (read.ids ??= this.options.cache.idsIn(layer, answerBox(q.box)));
+  private answer(read: StoreRead, layer: Layer, q: FeatureQuery, res: http.ServerResponse): void {
+    // By box: as much as the upstream would answer, and the features past the box it adds.
+    const ids = (read.ids ??=
+      read.coveredId === undefined
+        ? read.snapshot.idsIn(layer, answerBox(q.box))
+        : read.snapshot.members(read.coveredId));
     if (q.hits) {
-      res.writeHead(200, { 'content-type': 'application/xml' }).end(hitsReply(ids.length));
+      res
+        .writeHead(200, { 'content-type': 'application/xml' })
+        .end(hitsReply(ids.length, new Date(this.now())));
       return;
     }
     const ordered = this.inOrder(read, ids, q.sortBy);
@@ -324,11 +412,11 @@ export class WfsProxy {
     );
     res
       .writeHead(200, { 'content-type': 'application/json' })
-      .end(pageReply(ids.length, this.options.cache.features(page)));
+      .end(pageReply(ids.length, read.snapshot.features(page)));
   }
 
   /** A store read's features in the ordering `sortBy` asks for (`storeRead` took only those). */
-  private inOrder(read: AreaRead, ids: number[], sortBy: string | undefined): number[] {
+  private inOrder(read: StoreRead, ids: number[], sortBy: string | undefined): number[] {
     const order = sortBy === undefined ? undefined : sortOrder(sortBy);
     if (sortBy === undefined || order === undefined) {
       return ids;
@@ -336,64 +424,135 @@ export class WfsProxy {
     read.orders ??= new Map();
     let ordered = read.orders.get(sortBy);
     if (!ordered) {
-      const byId = this.options.cache.featuresById(ids);
+      const byId = read.snapshot.featuresById(ids);
       ordered = sortedBy(ids, (id) => byId.get(id), order);
       read.orders.set(sortBy, ordered);
     }
     return ordered;
   }
 
-  /** The features of an upstream page kept; the area held once every page of it has passed. */
-  private keep(layer: Layer, q: FeatureQuery, read: AreaRead, text: string): void {
-    const matched = matchedIn(text);
-    if (matched !== undefined) {
-      read.matched = matched;
-    }
-    let features: WfsFeature[];
-    try {
-      const body = JSON.parse(text) as { features?: unknown };
-      if (!Array.isArray(body.features)) {
-        read.spoilt = true;
-        return;
+  private spoil(read: UpstreamRead): void {
+    read.spoilt = true;
+    this.options.cache.dropStage(read.stage);
+  }
+
+  /** An upstream count of the area: its reads take it, and a count of none holds the area. */
+  private counted(
+    area: string,
+    readKey: string,
+    layer: Layer,
+    q: FeatureQuery,
+    startedAt: number,
+    matched: number | undefined
+  ): void {
+    this.counts.set(area, { at: this.now(), matched });
+    const going = this.upstreamReads.get(readKey);
+    if (going && matched !== undefined) {
+      // Pages of two counts do not make up an area.
+      if (going.matched !== undefined && going.matched !== matched) {
+        this.spoil(going);
       }
-      features = body.features as WfsFeature[];
-    } catch {
-      read.spoilt = true;
+      going.matched = matched;
+    }
+    // An area with none is whole at once: no page of it will come.
+    if (matched === 0) {
+      this.options.cache.publish(
+        undefined,
+        layer,
+        q,
+        startedAt,
+        this.options.answersByBox(layer.upstream)
+      );
+    }
+  }
+
+  /** The features of an upstream page staged; the area held once every page of it has passed. */
+  private keep(layer: Layer, q: FeatureQuery, read: UpstreamRead, text: string): void {
+    if (read.held || read.spoilt) {
       return;
     }
-    if (!this.options.cache.put(layer, features, this.now())) {
-      read.spoilt = true;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      this.spoil(read);
+      return;
+    }
+    const body = parsed as { features?: unknown; numberMatched?: unknown } | null;
+    if (typeof body !== 'object' || body === null || !Array.isArray(body.features)) {
+      this.spoil(read);
+      return;
+    }
+    const features = body.features as WfsFeature[];
+    const matched = pageMatched(body);
+    if (matched !== undefined) {
+      if (read.matched !== undefined && read.matched !== matched) {
+        this.spoil(read);
+        return;
+      }
+      read.matched = matched;
+    }
+    if (!this.options.cache.stage(read.stage, features, this.now())) {
+      this.spoil(read);
       return;
     }
     read.ranges.push([q.startIndex, q.startIndex + features.length]);
-    // A short page, or one with no page size, is the last: it says how many there are.
-    if (q.count === undefined || features.length < q.count) {
-      read.matched ??= q.startIndex + features.length;
-    }
     this.settle(layer, q, read);
   }
 
-  private settle(layer: Layer, q: FeatureQuery, read: AreaRead): void {
-    if (
-      read.held ||
-      read.spoilt ||
-      read.matched === undefined ||
-      !coversFromZero(read.ranges, read.matched)
-    ) {
+  /**
+   * Publishes the read once its pages hold all the count says: a count is needed, as a short
+   * page may be a server's own page limit. A failure leaves the read to settle on its next page.
+   * The read keeps its way until idle, so a page asked for again comes from the same ordering.
+   */
+  private settle(layer: Layer, q: FeatureQuery, read: UpstreamRead): void {
+    if (read.matched === undefined || !coversFromZero(read.ranges, read.matched)) {
       return;
     }
-    // Held as of the read's start: a feature changed meanwhile may be older. Held only once
-    // the gone are dropped, so a failure leaves the read to settle on its next page. The read
-    // keeps its way until idle, so a page asked for again comes from the same ordering.
-    this.options.cache.pruneUnseen(layer, q.box, read.startedAt);
-    this.options.cache.markCovered(layer, q.box, read.startedAt);
+    this.options.cache.publish(
+      read.stage,
+      layer,
+      q,
+      read.startedAt,
+      this.options.answersByBox(layer.upstream)
+    );
     read.held = true;
     this.options.log?.(
       `WFS proxy: kept ${q.typeName} in ${q.boxText.split(',').slice(0, 4).join(',')} (${String(read.matched)} features)`
     );
   }
 
-  /** `target`'s reply streamed to `res`; `onBody` gets the whole body of a 200. */
+  /** `target` fetched, following a redirect only to a server proxied. */
+  private async fetchAllowed(
+    target: string,
+    req: http.IncomingMessage,
+    signal: AbortSignal
+  ): Promise<Response> {
+    let url = target;
+    for (let hop = 0; ; hop++) {
+      const reply = await this.fetchUpstream(url, {
+        signal,
+        redirect: 'manual',
+        headers: { accept: req.headers.accept ?? '*/*' }
+      });
+      const location = reply.headers.get('location');
+      if (reply.status < 300 || reply.status >= 400 || location === null) {
+        return reply;
+      }
+      await reply.body?.cancel();
+      const next = new URL(location, url);
+      const base = normalizeUpstream(next.toString());
+      if (hop >= MAX_REDIRECTS || base === undefined || !this.allowed(base)) {
+        throw new Error('redirected to a server not proxied');
+      }
+      url = next.toString();
+    }
+  }
+
+  /**
+   * `target`'s reply streamed to `res` as fast as `res` takes it; `onBody` gets the whole
+   * body of a 200 that arrived whole and is no larger than `MAX_KEPT_BYTES`.
+   */
   private async pass(
     target: string,
     req: http.IncomingMessage,
@@ -406,10 +565,7 @@ export class WfsProxy {
     });
     let upstream: Response;
     try {
-      upstream = await this.fetchUpstream(target, {
-        signal: gone.signal,
-        headers: { accept: req.headers.accept ?? '*/*' }
-      });
+      upstream = await this.fetchAllowed(target, req, gone.signal);
     } catch (err) {
       if (!res.headersSent && !gone.signal.aborted) {
         res.writeHead(502, { 'content-type': 'text/plain' }).end(`upstream WFS: ${String(err)}`);
@@ -418,27 +574,39 @@ export class WfsProxy {
     }
     const type = upstream.headers.get('content-type');
     res.writeHead(upstream.status, type ? { 'content-type': type } : {});
-    const chunks: Buffer[] = [];
-    const keep = onBody !== undefined && upstream.ok;
+    let kept: Buffer[] | null = onBody !== undefined && upstream.ok ? [] : null;
+    let keptBytes = 0;
     if (upstream.body) {
       try {
         for await (const chunk of upstream.body) {
           const buf = Buffer.from(chunk as Uint8Array);
-          if (keep) {
-            chunks.push(buf);
+          if (kept) {
+            keptBytes += buf.length;
+            if (keptBytes > MAX_KEPT_BYTES) {
+              kept = null;
+            } else {
+              kept.push(buf);
+            }
           }
-          res.write(buf);
+          if (!res.write(buf) && !res.destroyed) {
+            await drained(res);
+          }
+          if (gone.signal.aborted) {
+            return;
+          }
         }
       } catch {
-        // The client left or the upstream broke off: nothing whole to keep.
-        res.end();
+        // The client left or the upstream broke off: the peer must not take it as whole.
+        res.destroy();
         return;
       }
     }
-    const whole = !gone.signal.aborted;
+    if (gone.signal.aborted) {
+      return;
+    }
     res.end();
-    if (keep && whole) {
-      onBody(Buffer.concat(chunks).toString('utf8'));
+    if (kept && onBody) {
+      onBody(Buffer.concat(kept).toString('utf8'));
     }
   }
 }

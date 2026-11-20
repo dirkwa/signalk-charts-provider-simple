@@ -267,8 +267,8 @@ import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import { MasterCharts } from './utils/multihelm/master-charts.js';
 import {
   DEFAULT_WFS_MAX_AGE_DAYS,
+  releaseWfsProxy,
   startWfsProxy,
-  stopWfsProxy,
   type WfsProxyRunning
 } from './utils/wfs-proxy-service.js';
 import type {
@@ -477,8 +477,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let maskedTiles: MaskedTiles | null = null;
   let areaDownloader: AreaDownloader | null = null;
   let wfsProxy: WfsProxyRunning | null = null;
-  // A stopped proxy's close, which the next start waits for to keep its port.
-  let wfsProxyClosing: Promise<void> = Promise.resolve();
   let defaultChartsPath = '';
   let serverMajorVersion = 1;
 
@@ -720,7 +718,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       delete (globalThis as unknown as ChartsProviderEncGlobal).__signalk_chartsProviderEnc;
       delete (globalThis as unknown as ChartsProviderWfsGlobal).__signalk_chartsProviderWfs;
       if (wfsProxy) {
-        wfsProxyClosing = stopWfsProxy(wfsProxy);
+        // Serves on for the start a config save makes, which takes it over.
+        releaseWfsProxy(wfsProxy);
         wfsProxy = null;
       }
       // Release sqlite handles: on Windows an open handle keeps the
@@ -946,14 +945,18 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   const startLocalWfsProxy = async (started: number): Promise<void> => {
     let running: WfsProxyRunning;
     try {
-      await wfsProxyClosing;
       running = await startWfsProxy({
         dataDir: app.getDataDirPath(),
         maxAgeDays: () => props.wfsCacheMaxAgeDays ?? DEFAULT_WFS_MAX_AGE_DAYS,
         extraUpstreams: () => props.wfsProxyUpstreams ?? [],
-        mayRefresh: () => internet?.mayRunBackground() ?? true,
+        // Not while the link's state is still being learnt: it may be metered.
+        mayRefresh: () =>
+          internet === null || (internet.mayRunBackground() && !internet.deciding()),
         log: (message) => {
           app.debug(message);
+        },
+        warn: (message) => {
+          app.error(message);
         }
       });
     } catch (err) {
@@ -961,7 +964,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       return;
     }
     if (started !== lifecycle || stopped) {
-      await stopWfsProxy(running);
+      releaseWfsProxy(running);
       return;
     }
     wfsProxy = running;
