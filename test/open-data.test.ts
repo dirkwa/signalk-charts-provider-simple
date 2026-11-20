@@ -1072,4 +1072,22 @@ describe('building a set from a local index', () => {
     assert.ok(fs.existsSync(path.join(chartPath, built.shadingFile ?? '')));
     assert.ok(!fs.existsSync(path.join(folder, 'Reef.mbtiles')));
   });
+  it('never lets the shading take the place of the set’s own chart', async () => {
+    const { odc, chartPath, units, build, finish } = await shadingFixture('own-place');
+    const set = {
+      ...odc.sets.create('Lagoon terrain shading'),
+      unitIds: units.map((u) => u.id),
+      terrain: false
+    };
+    odc.sets.save(set);
+    await build(set.id);
+    const built = odc.sets.get(set.id) as OpenDataSet;
+    fs.rmSync(path.join(chartPath, built.chartFile ?? ''));
+    const renamed = await odc.rename(built, 'Lagoon');
+    assert.strictEqual(renamed.chartFile, built.chartFile);
+    odc.sets.save({ ...renamed, terrain: true });
+    const progress = await finish(set.id);
+    assert.strictEqual(progress.phase, 'failed');
+    assert.match(progress.message, /would replace its chart Lagoon_terrain_shading\.mbtiles/);
+  });
 });

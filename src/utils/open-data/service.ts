@@ -376,9 +376,31 @@ export class OpenDataCharts {
         409
       );
     }
+    const shadingRelative = set.shadingFile ?? this.shadingTarget(set);
+    const shadingTarget = this.absolute(shadingRelative);
+    if (shadingTarget === target) {
+      throw new UserError(
+        `The terrain shading of this set would replace its chart ${path.basename(target)}. Rename the set, then try again.`,
+        409
+      );
+    }
     const release = this.claim(target, set.id);
     try {
-      return await this.buildInto(set, index, relative, target, run);
+      const releaseShading = this.claim(shadingTarget, set.id);
+      try {
+        return await this.buildInto(
+          set,
+          index,
+          { relative, target },
+          {
+            relative: shadingRelative,
+            target: shadingTarget
+          },
+          run
+        );
+      } finally {
+        releaseShading();
+      }
     } finally {
       release();
     }
@@ -387,13 +409,11 @@ export class OpenDataCharts {
   private async buildInto(
     set: OpenDataSet,
     index: OpenDataIndex,
-    relative: string,
-    target: string,
+    { relative, target }: { relative: string; target: string },
+    { relative: shadingRelative, target: shadingTarget }: { relative: string; target: string },
     run: Run
   ): Promise<string> {
     let plan = planSet(set, index, fs.existsSync(target));
-    const shadingRelative = set.shadingFile ?? this.shadingTarget(set);
-    const shadingTarget = this.absolute(shadingRelative);
     // Only the file this set recorded is its own to patch or remove.
     let shading = planShading(set, index, set.shadingFile !== null && fs.existsSync(shadingTarget));
     const chartWork = plan.add.length > 0 || plan.remove.length > 0 || plan.overviews !== null;
@@ -434,26 +454,21 @@ export class OpenDataCharts {
     if (shadingHasWork(shading)) {
       let shadingFile: string | null = shadingRelative;
       let shaded = afterShading(set, shading);
-      const releaseShading = this.claim(shadingTarget, set.id);
-      try {
-        if (Object.keys(shaded).length === 0) {
-          fs.rmSync(shadingTarget, { force: true });
-          shadingFile = null;
-        } else {
-          try {
-            await runAssembly(this.shadingInput(set, index, shading, shadingTarget, shaded));
-          } catch (error) {
-            if (!(error instanceof NotPatchableError)) {
-              throw error;
-            }
-            shading = planShading(set, index, false);
-            shaded = afterShading(set, shading);
-            await this.download(plan, shading, run);
-            await runAssembly(this.shadingInput(set, index, shading, shadingTarget, shaded));
+      if (Object.keys(shaded).length === 0) {
+        fs.rmSync(shadingTarget, { force: true });
+        shadingFile = null;
+      } else {
+        try {
+          await runAssembly(this.shadingInput(set, index, shading, shadingTarget, shaded));
+        } catch (error) {
+          if (!(error instanceof NotPatchableError)) {
+            throw error;
           }
+          shading = planShading(set, index, false);
+          shaded = afterShading(set, shading);
+          await this.download(plan, shading, run);
+          await runAssembly(this.shadingInput(set, index, shading, shadingTarget, shaded));
         }
-      } finally {
-        releaseShading();
       }
       this.saveBuilt(set, { shaded, shadingFile });
       await this.deps.chartsChanged(
