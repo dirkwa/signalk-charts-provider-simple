@@ -268,6 +268,16 @@ export class WfsCache {
           AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
           AND f.w >= ? AND f.e <= ? AND f.s >= ? AND f.n <= ?
       `),
+      // Kept since the read began, by another read, and not in its pages: the read cannot say
+      // whether it is gone, as its pages may have passed before that one was kept.
+      keptMeanwhile: p(`
+        SELECT 1 FROM feature_box b JOIN features f ON f.id = b.id
+        WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at >= ?
+          AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
+          AND f.w >= ? AND f.e <= ? AND f.s >= ? AND f.n <= ?
+          AND f.fid NOT IN (SELECT fid FROM staged WHERE stage = ?)
+        LIMIT 1
+      `),
       featureDelete: p('DELETE FROM features WHERE id = ?')
     };
   }
@@ -345,13 +355,43 @@ export class WfsCache {
     this.q('stageDelete').run(stage);
   }
 
-  /** Whether a read of `area` published after `since` makes one begun then out of date. */
-  private superseded(layer: Layer, area: Area, since: number, byBox: boolean): boolean {
+  /**
+   * Whether a read of `area` begun at `since` is out of date: a newer read of it was
+   * published, or (by box) a feature wholly inside it was kept meanwhile that its pages
+   * did not give, which it can neither keep nor drop.
+   */
+  private superseded(
+    stage: number | undefined,
+    layer: Layer,
+    area: Area,
+    since: number,
+    byBox: boolean
+  ): boolean {
     const [w, s, e, n] = area.box;
-    const newer = byBox
-      ? this.q('newerOverlapping').get(layer.upstream, layer.typeName, since, w, e, s, n)
-      : this.q('newerSameBox').get(layer.upstream, layer.typeName, area.boxText, since);
-    return newer !== undefined;
+    if (!byBox) {
+      return (
+        this.q('newerSameBox').get(layer.upstream, layer.typeName, area.boxText, since) !==
+        undefined
+      );
+    }
+    return (
+      this.q('newerOverlapping').get(layer.upstream, layer.typeName, since, w, e, s, n) !==
+        undefined ||
+      this.q('keptMeanwhile').get(
+        layer.upstream,
+        layer.typeName,
+        since,
+        w,
+        e,
+        s,
+        n,
+        w,
+        e,
+        s,
+        n,
+        stage ?? -1
+      ) !== undefined
+    );
   }
 
   /**
@@ -360,10 +400,10 @@ export class WfsCache {
    * held as of `since`. For an upstream answered `byBox`, a feature wholly inside
    * the box fetched before `since` and not read again is gone upstream and
    * dropped, and a box inside the new one is no longer held on its own; for any
-   * other, the area keeps the features it gave as it gave them. A read of an
-   * area that a newer one overlapping it was published for is not published:
-   * it would bring back what the newer one dropped. Returns how many features
-   * were dropped, or undefined when the read was not published.
+   * other, the area keeps the features it gave as it gave them. A read that is
+   * out of date (`superseded`) is not published: it would bring back what a
+   * newer one dropped, or keep a feature it cannot tell is gone. Returns how
+   * many features were dropped, or undefined when the read was not published.
    */
   publish(
     stage: number | undefined,
@@ -373,7 +413,7 @@ export class WfsCache {
     byBox: boolean
   ): number | undefined {
     return this.inTransaction(() => {
-      if (this.superseded(layer, area, since, byBox)) {
+      if (this.superseded(stage, layer, area, since, byBox)) {
         if (stage !== undefined) {
           this.q('stageDelete').run(stage);
         }

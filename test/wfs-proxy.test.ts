@@ -419,6 +419,42 @@ describe('WfsCache', () => {
     cache.close();
   });
 
+  it('a read keeps no area where a feature it did not see was kept after it began', () => {
+    const cache = new WfsCache(path.join(dir, 'j.sqlite'));
+    const box: Box = [22, 60, 22.1, 60.1];
+    const [a, p, q] = [AREAS[0], AREAS[1], AREAS[2]] as [Feature, Feature, Feature];
+    // Q kept at 5, before any read below began.
+    keepWhole(cache, layer, [q], [22, 60.02, 22.01, 60.03], 5);
+    // Read C begins at 10 and keeps P when its page comes, at 30.
+    const c = cache.beginStage();
+    assert.ok(cache.stage(c, [p], 30));
+    // Read B begins at 20; its page, received at 35, gives A alone.
+    const b = cache.beginStage();
+    assert.ok(cache.stage(b, [a], 35));
+    assert.strictEqual(
+      cache.publish(c, layer, { box: [22, 60.01, 22.01, 60.02], boxText: 'c' }, 10, true),
+      0
+    );
+    // B cannot tell whether P, kept at 30, is gone: it is not kept, and P stays.
+    assert.strictEqual(cache.publish(b, layer, { box, boxText: 'b' }, 20, true), undefined);
+    assert.deepStrictEqual(
+      cache
+        .features(cache.idsIn(layer, box))
+        .map((f) => f.id)
+        .sort(),
+      [p.id, q.id].sort()
+    );
+    // A read begun at 40, after P and Q were kept, giving A alone: both are gone upstream.
+    const later = cache.beginStage();
+    assert.ok(cache.stage(later, [a], 45));
+    assert.strictEqual(cache.publish(later, layer, { box, boxText: 'later' }, 40, true), 2);
+    assert.deepStrictEqual(
+      cache.features(cache.idsIn(layer, box)).map((f) => f.id),
+      [a.id]
+    );
+    cache.close();
+  });
+
   it('an older read is not kept over a newer one of an area overlapping it', () => {
     const cache = new WfsCache(path.join(dir, 'i.sqlite'));
     const older = cache.beginStage();
@@ -1041,6 +1077,45 @@ describe('WfsProxy', () => {
     const caps = await fetch(`${base}?service=WFS&request=GetCapabilities`);
     assert.strictEqual(caps.status, 503);
     assert.strictEqual(upstream.seen.length, 0);
+    await proxy.close();
+    cache.close();
+  });
+
+  it('a count while a page is on its way keeps that read', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let pageAsked: () => void = () => undefined;
+    const asked = new Promise<void>((resolve) => {
+      pageAsked = resolve;
+    });
+    const cache = new WfsCache(path.join(dir, 'p22.sqlite'));
+    const proxy = new WfsProxy({
+      cache,
+      upstreams: () => [upstreamBase],
+      answersByBox: () => true,
+      maxAgeMs: () => 1000,
+      mayRefresh: () => true,
+      fetch: async (url, init) => {
+        if (String(url).includes('startIndex')) {
+          pageAsked();
+          await gate;
+        }
+        return fetch(url, init);
+      }
+    });
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    // One page holds the whole area, and carries its count.
+    const page = pageOf(base, BOX, 'IDENTIFIER', 0, 1000);
+    await asked;
+    await fetch(
+      `${base}?${query('DepthArea_A', BOX, { resultType: 'hits', sortBy: 'IDENTIFIER' })}`
+    );
+    release();
+    assert.ok((await page).length > 0);
+    assert.strictEqual(cache.stats().areas, 1);
     await proxy.close();
     cache.close();
   });

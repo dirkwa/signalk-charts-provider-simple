@@ -80,6 +80,8 @@ interface UpstreamRead {
   lastUsed: number;
   /** The pages passed, as [start, end) of the features' indexes. */
   ranges: [number, number][];
+  /** Pages asked for upstream whose reply has not passed yet. */
+  inFlight: number;
   matched?: number;
   /** A page could not be kept, the count changed, or a newer read was kept: the area is not held. */
   spoilt: boolean;
@@ -275,7 +277,8 @@ export class WfsProxy {
       // ordering that no page followed, so its pages may come from the store, or upstream and
       // be kept again.
       for (const [k, r] of this.upstreamReads) {
-        if (k.startsWith(`${area}\n`) && (r.held || (k === readKey && r.ranges.length === 0))) {
+        const countOnly = k === readKey && r.ranges.length === 0 && r.inFlight === 0;
+        if (k.startsWith(`${area}\n`) && (r.held || countOnly)) {
           this.endUpstreamRead(k, r);
         }
       }
@@ -299,12 +302,17 @@ export class WfsProxy {
       return;
     }
     const read = this.upstreamRead(readKey);
-    await this.pass(target, req, res, (text) => {
-      // A page that outlived its read, which another has replaced, keeps nothing.
-      if (this.upstreamReads.get(readKey) === read) {
-        this.keep(layer, q, read, text);
-      }
-    });
+    read.inFlight++;
+    try {
+      await this.pass(target, req, res, (text) => {
+        // A page that outlived its read, which another has replaced, keeps nothing.
+        if (this.upstreamReads.get(readKey) === read) {
+          this.keep(layer, q, read, text);
+        }
+      });
+    } finally {
+      read.inFlight--;
+    }
   }
 
   private refuseWhileHandingOver(res: http.ServerResponse): void {
@@ -404,6 +412,7 @@ export class WfsProxy {
     const read: UpstreamRead = {
       lastUsed: now,
       ranges: [],
+      inFlight: 0,
       spoilt: false,
       held: false,
       startedAt: now,
