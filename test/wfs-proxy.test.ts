@@ -455,6 +455,35 @@ describe('WfsCache', () => {
     cache.close();
   });
 
+  it('a read keeps no area where a feature crossing its edge was kept after it began', () => {
+    const cache = new WfsCache(path.join(dir, 'k.sqlite'));
+    const box: Box = [22, 60, 22.1, 60.1];
+    const [crossing, outside] = [area(900, 22.095, 60.02), area(901, 22.15, 60.02)];
+    // Read C of a wider box begins at 10 and keeps both when its page comes, at 30.
+    const c = cache.beginStage();
+    assert.ok(cache.stage(c, [crossing, outside], 30));
+    assert.strictEqual(
+      cache.publish(c, layer, { box: [22, 60, 22.2, 60.1], boxText: 'c' }, 10, true),
+      0
+    );
+    // Read B of the narrower box began at 20 and found it empty: the crossing one may be gone.
+    assert.strictEqual(cache.publish(undefined, layer, { box, boxText: 'b' }, 20, true), undefined);
+    // Had B given the crossing one, or had only the outside one been kept, B is kept.
+    const b = cache.beginStage();
+    assert.ok(cache.stage(b, [crossing], 35));
+    assert.strictEqual(cache.publish(b, layer, { box, boxText: 'b2' }, 20, true), 0);
+    const other = new WfsCache(path.join(dir, 'l.sqlite'));
+    const o = other.beginStage();
+    assert.ok(other.stage(o, [outside], 30));
+    assert.strictEqual(
+      other.publish(o, layer, { box: [22, 60, 22.2, 60.1], boxText: 'c' }, 10, true),
+      0
+    );
+    assert.strictEqual(other.publish(undefined, layer, { box, boxText: 'b' }, 20, true), 0);
+    other.close();
+    cache.close();
+  });
+
   it('an older read is not kept over a newer one of an area overlapping it', () => {
     const cache = new WfsCache(path.join(dir, 'i.sqlite'));
     const older = cache.beginStage();

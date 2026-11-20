@@ -268,13 +268,14 @@ export class WfsCache {
           AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
           AND f.w >= ? AND f.e <= ? AND f.s >= ? AND f.n <= ?
       `),
-      // Kept since the read began, by another read, and not in its pages: the read cannot say
-      // whether it is gone, as its pages may have passed before that one was kept.
+      // Kept since the read began, by another read, reaching the box and not in its pages:
+      // the read cannot say whether it is gone, as its pages may have passed before that
+      // one was kept, and keeping the area would answer with it.
       keptMeanwhile: p(`
         SELECT 1 FROM feature_box b JOIN features f ON f.id = b.id
         WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at >= ?
           AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
-          AND f.w >= ? AND f.e <= ? AND f.s >= ? AND f.n <= ?
+          AND f.e >= ? AND f.w <= ? AND f.n >= ? AND f.s <= ?
           AND f.fid NOT IN (SELECT fid FROM staged WHERE stage = ?)
         LIMIT 1
       `),
@@ -357,8 +358,8 @@ export class WfsCache {
 
   /**
    * Whether a read of `area` begun at `since` is out of date: a newer read of it was
-   * published, or (by box) a feature wholly inside it was kept meanwhile that its pages
-   * did not give, which it can neither keep nor drop.
+   * published, or (by box) a feature reaching it was kept meanwhile that its pages did
+   * not give, which it can neither keep nor drop.
    */
   private superseded(
     stage: number | undefined,
