@@ -723,6 +723,9 @@ function serve(): Promise<Served> {
     }
     res.end(slice);
   });
+  // A client reuses an idle connection; the server closing it at the same
+  // moment (5 s by default) fails that request. close() ends them all.
+  server.keepAliveTimeout = 10 * 60 * 1000;
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const port = (server.address() as AddressInfo).port;
@@ -952,11 +955,14 @@ describe('building a set from a local index', () => {
       Buffer.from(JSON.stringify({ schemaVersion: 1, ...indexOf(units) }))
     );
     const changes: { written?: string; removed?: string }[] = [];
+    const log: string[] = [];
     const odc = new OpenDataCharts({
       dataDir,
       indexUrl: `${server.url}/${prefix}/index.json`,
       chartPath: () => chartPath,
-      debug: () => {},
+      debug: (...args: unknown[]) => {
+        log.push(args.map(String).join(' '));
+      },
       error: () => {},
       mayRunBackground: () => true,
       chartsChanged: (change) => {
@@ -980,6 +986,10 @@ describe('building a set from a local index', () => {
       assert.strictEqual(progress.phase, 'completed', progress.message);
     };
     await odc.index.refresh();
+    assert.ok(
+      odc.index.index(),
+      `index not loaded: ${JSON.stringify(odc.index.getStatus())} ${log.join('; ')}`
+    );
     fs.mkdirSync(dataDir, { recursive: true });
     odc.sets.acknowledge();
     return { odc, chartPath, changes, units, shade, build, finish };
