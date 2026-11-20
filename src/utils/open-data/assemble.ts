@@ -4,6 +4,9 @@
  * and removed one unit at a time; the rows below z9 are the region
  * overviews, replaced as a whole.
  *
+ * A set's terrain shading is put together the same way into a raster
+ * chart of its own, drawn over the vector one.
+ *
  * The chart is written to a temporary file in the target folder, starting
  * from a copy of the current chart when there is one, and renamed into
  * place, so a plotter keeps reading a complete chart while it is updated
@@ -27,7 +30,16 @@ export interface VectorLayerInfo {
   fields?: Record<string, string>;
 }
 
+/**
+ * Freeboard draws charts of a smaller scale under those of a larger one;
+ * the shading is given a larger scale than the vector chart's default
+ * (250000), so it lies on top.
+ */
+export const SHADING_SCALE = 200000;
+
 export interface AssemblyInput {
+  /** The vector chart, or the raster terrain shading drawn over it. */
+  kind: 'chart' | 'shading';
   target: string;
   /** The chart to start from, or null to start from an empty MBTiles. */
   base: string | null;
@@ -213,15 +225,25 @@ function writeMetadata(db: DatabaseSync, input: AssemblyInput, layers: VectorLay
     .prepare('SELECT MIN(zoom_level) AS lo, MAX(zoom_level) AS hi FROM tiles')
     .get() as { lo: number | null; hi: number | null };
   const bounds = unionBounds(input.units);
+  const kindRows: [string, string][] =
+    input.kind === 'shading'
+      ? [
+          ['type', 'overlay'],
+          ['format', 'webp'],
+          ['scale', String(SHADING_SCALE)]
+        ]
+      : [
+          ['type', 'S-57'],
+          ['format', 'pbf'],
+          ['json', JSON.stringify({ vector_layers: layers })]
+        ];
   const rows: [string, string][] = [
     ['name', input.name],
     ['description', input.description],
-    ['type', 'S-57'],
-    ['format', 'pbf'],
+    ...kindRows,
     ['version', '1'],
     ['minzoom', String(zooms.lo ?? UNIT_ZOOM)],
     ['maxzoom', String(zooms.hi ?? UNIT_ZOOM)],
-    ['json', JSON.stringify({ vector_layers: layers })],
     ['x-odc-set', input.setId]
   ];
   if (bounds) {

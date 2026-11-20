@@ -24,8 +24,10 @@ import { interpretOpenDataIndex } from '../dist/utils/open-data/index-schema.js'
 import type { OpenDataIndex, OpenDataUnit } from '../dist/utils/open-data/index-schema.js';
 import {
   afterPlan,
+  afterShading,
   OpenDataSetStore,
   planSet,
+  planShading,
   setState,
   type OpenDataSet
 } from '../dist/utils/open-data/sets.js';
@@ -178,6 +180,9 @@ function emptySet(unitIds: string[], built: Record<string, string> = {}): OpenDa
     built,
     overviews: {},
     chartFile: null,
+    terrain: true,
+    shaded: {},
+    shadingFile: null,
     createdAt: '2026-11-01T00:00:00Z',
     updatedAt: '2026-11-01T00:00:00Z',
     lastBuiltAt: null
@@ -287,6 +292,34 @@ describe('interpretOpenDataIndex', () => {
     assert.strictEqual(result.index.attribution, 'Shom');
   });
 
+  it('drops a terrain shading it cannot read and keeps the unit', () => {
+    const hillshade = {
+      url: 'https://example.com/s.mbtiles',
+      sha256: 'c'.repeat(64),
+      size: 10,
+      minzoom: 9,
+      maxzoom: 12
+    };
+    const result = interpretOpenDataIndex({
+      ...good,
+      units: [
+        { ...unit('z9-492-288', 'v1'), hillshade },
+        { ...unit('z9-493-288', 'v1'), hillshade: { ...hillshade, sha256: 'nope' } },
+        { ...unit('z9-494-288', 'v1'), hillshade: { ...hillshade, minzoom: 8 } }
+      ]
+    });
+    assert.ok(result.ok);
+    assert.deepStrictEqual(
+      result.index.units.map((u) => [u.id, u.hillshade?.size ?? null]),
+      [
+        ['z9-492-288', 10],
+        ['z9-493-288', null],
+        ['z9-494-288', null]
+      ]
+    );
+    assert.strictEqual(result.skipped, 1, 'only the bad region');
+  });
+
   it('reports a newer schemaVersion as incompatible', () => {
     const result = interpretOpenDataIndex({ ...good, schemaVersion: 2 });
     assert.ok(!result.ok);
@@ -393,6 +426,60 @@ describe('planning a set', () => {
   });
 });
 
+describe('planning a set’s terrain shading', () => {
+  const shade = (version: string) => ({
+    url: `https://example.com/s.${version}.mbtiles`,
+    sha256: 'c'.repeat(64),
+    size: 7,
+    minzoom: 9,
+    maxzoom: 12
+  });
+  const a1 = unit('z9-492-288', 'v1', { hillshade: shade('v1') });
+  const b1 = unit('z9-493-288', 'v1', { hillshade: shade('v1') });
+  const b2 = unit('z9-493-288', 'v2', { hillshade: shade('v2') });
+  const sea = unit('z9-494-288', 'v1');
+
+  it('shades every selected unit that has a shading when there is none yet', () => {
+    const set = emptySet([a1.id, b1.id, sea.id]);
+    const plan = planShading(set, indexOf([a1, b1, sea]), false);
+    assert.strictEqual(plan.fresh, true);
+    assert.deepStrictEqual(
+      plan.add.map((s) => `${s.id}@${s.version}`),
+      [`${a1.id}@v1`, `${b1.id}@v1`]
+    );
+    assert.deepStrictEqual(afterShading(set, plan), { [a1.id]: 'v1', [b1.id]: 'v1' });
+  });
+
+  it('replaces only a changed unit’s shading and reports it as an update', () => {
+    const built = { [a1.id]: 'v1', [b1.id]: 'v1' };
+    const set = { ...emptySet([a1.id, b1.id], built), shaded: built };
+    assert.strictEqual(setState(set, indexOf([a1, b1]), true, true).status, 'up_to_date');
+    const plan = planShading(set, indexOf([a1, b2]), true);
+    assert.deepStrictEqual(
+      plan.add.map((s) => `${s.id}@${s.version}`),
+      [`${b1.id}@v2`]
+    );
+    assert.deepStrictEqual(plan.remove, [b1.id]);
+  });
+
+  it('takes the shading out when terrain is switched off, and keeps a dropped unit’s', () => {
+    const shaded = { [a1.id]: 'v1', 'z9-1-1': 'v0' };
+    const set = { ...emptySet([a1.id, 'z9-1-1'], shaded), shaded };
+    const index = indexOf([a1]);
+    assert.deepStrictEqual(planShading(set, index, true), { fresh: false, add: [], remove: [] });
+    const off = { ...set, terrain: false };
+    assert.strictEqual(setState(off, index, true, true).status, 'changed');
+    const plan = planShading(off, index, true);
+    assert.deepStrictEqual(plan.remove.sort(), ['z9-1-1', a1.id]);
+    assert.deepStrictEqual(afterShading(off, plan), {});
+  });
+
+  it('wants nothing from an index without shading', () => {
+    const set = emptySet([sea.id], { [sea.id]: 'v1' });
+    assert.strictEqual(setState(set, indexOf([sea]), true, false).status, 'up_to_date');
+  });
+});
+
 describe('assembling a chart', () => {
   it('copies only each unit’s own rows and unions the metadata', () => {
     const dir = tmpDir('assemble');
@@ -411,6 +498,7 @@ describe('assembling a chart', () => {
     );
     const target = path.join(dir, 'charts', 'Open Data Charts', 'Noumea.mbtiles');
     assembleChart({
+      kind: 'chart',
       target,
       base: null,
       remove: [],
@@ -481,6 +569,7 @@ describe('assembling a chart', () => {
       { x: 493, y: 288 }
     ];
     assembleChart({
+      kind: 'chart',
       target,
       base: null,
       remove: [],
@@ -495,6 +584,7 @@ describe('assembling a chart', () => {
     const before = readTiles(target);
 
     assembleChart({
+      kind: 'chart',
       target,
       base: target,
       remove: [both[1]],
@@ -518,6 +608,7 @@ describe('assembling a chart', () => {
     assert.deepStrictEqual(layers, ['BOYLAT', 'DEPARE']);
 
     assembleChart({
+      kind: 'chart',
       target,
       base: target,
       remove: [both[1]],
@@ -539,6 +630,7 @@ describe('assembling a chart', () => {
     assert.throws(
       () =>
         assembleChart({
+          kind: 'chart',
           target: foreign,
           base: foreign,
           remove: [],
@@ -834,5 +926,100 @@ describe('building a set from a local index', () => {
       readMetadata(path.join(chartPath, renamed.chartFile)).name,
       'Lagoon (not for navigation)'
     );
+  });
+
+  it('builds the terrain shading beside the chart, renames it and takes it out', async () => {
+    const dir = tmpDir('shading');
+    const dataDir = path.join(dir, 'data');
+    const chartPath = path.join(dir, 'charts');
+    fs.mkdirSync(chartPath, { recursive: true });
+    const serveFile = (name: string, rows: TileRow[]) => {
+      const file = path.join(dir, name);
+      writeMbtiles(file, rows, ['DEPARE'], 'table');
+      const body = fs.readFileSync(file);
+      server.files.set(`/shading/${name}`, body);
+      return { url: `${server.url}/shading/${name}`, size: body.length, sha256: sha256(body) };
+    };
+    const land = serveFile('z9-492-288.v1.mbtiles', unitTiles(492, 288, 'v1'));
+    const shade = serveFile('z9-492-288.v1.hillshade.mbtiles', unitTiles(492, 288, 'shade', 12));
+    const sea = serveFile('z9-493-288.v1.mbtiles', unitTiles(493, 288, 'v1'));
+    const units = [
+      unit('z9-492-288', 'v1', { ...land, hillshade: { ...shade, minzoom: 9, maxzoom: 12 } }),
+      unit('z9-493-288', 'v1', sea)
+    ];
+    server.files.set(
+      '/shading/index.json',
+      Buffer.from(JSON.stringify({ schemaVersion: 1, ...indexOf(units) }))
+    );
+    const changes: { written?: string; removed?: string }[] = [];
+    const odc = new OpenDataCharts({
+      dataDir,
+      indexUrl: `${server.url}/shading/index.json`,
+      chartPath: () => chartPath,
+      debug: () => {},
+      error: () => {},
+      mayRunBackground: () => true,
+      chartsChanged: (change) => {
+        changes.push(change);
+        return Promise.resolve();
+      }
+    });
+    const build = async (id: string): Promise<void> => {
+      odc.startBuild(odc.sets.get(id) as OpenDataSet);
+      for (;;) {
+        const progress = odc.decorate(odc.sets.get(id) as OpenDataSet).progress;
+        if (progress && ['completed', 'failed', 'cancelled'].includes(progress.phase)) {
+          assert.strictEqual(progress.phase, 'completed', progress.message);
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+
+    const set = { ...odc.sets.create('Nouméa'), unitIds: units.map((u) => u.id) };
+    odc.sets.save(set);
+    odc.sets.acknowledge();
+    await odc.index.refresh();
+    assert.strictEqual(odc.decorate(set).shadingBytes, shade.size);
+    await build(set.id);
+
+    const shadingFile = path.join('Open Data Charts', 'Nouméa_terrain_shading.mbtiles');
+    const shading = path.join(chartPath, shadingFile);
+    assert.deepStrictEqual(
+      changes.map((c) => c.written),
+      [path.join('Open Data Charts', 'Nouméa.mbtiles'), shadingFile]
+    );
+    const tiles = readTiles(shading);
+    assert.strictEqual(tiles.get('12/3936/1791'), '492-288@shade');
+    assert.ok([...tiles.values()].every((d) => d === '492-288@shade'));
+    const meta = readMetadata(shading);
+    assert.strictEqual(meta.format, 'webp');
+    assert.strictEqual(meta.type, 'overlay');
+    assert.strictEqual(meta.maxzoom, '12');
+    assert.strictEqual(meta.name, 'Nouméa terrain shading (not for navigation)');
+    assert.ok(Number(meta.scale) < 250000, 'drawn over the vector chart');
+    let decorated = odc.decorate(odc.sets.get(set.id) as OpenDataSet);
+    assert.strictEqual(decorated.status, 'up_to_date');
+    assert.strictEqual(decorated.shadingFile, shadingFile);
+
+    const renamed = await odc.rename(odc.sets.get(set.id) as OpenDataSet, 'Lagoon');
+    assert.strictEqual(
+      renamed.shadingFile,
+      path.join('Open Data Charts', 'Lagoon_terrain_shading.mbtiles')
+    );
+    assert.ok(!fs.existsSync(shading));
+    assert.strictEqual(odc.cache.has('hillshade', 'z9-492-288', 'v1'), true);
+
+    changes.length = 0;
+    odc.sets.save({ ...renamed, terrain: false });
+    decorated = odc.decorate(odc.sets.get(set.id) as OpenDataSet);
+    assert.strictEqual(decorated.status, 'changed');
+    await build(set.id);
+    assert.deepStrictEqual(changes, [{ removed: renamed.shadingFile }]);
+    assert.ok(!fs.existsSync(path.join(chartPath, renamed.shadingFile ?? '')));
+    const after = odc.sets.get(set.id) as OpenDataSet;
+    assert.strictEqual(after.shadingFile, null);
+    assert.deepStrictEqual(after.shaded, {});
+    assert.strictEqual(odc.cache.has('hillshade', 'z9-492-288', 'v1'), false);
   });
 });

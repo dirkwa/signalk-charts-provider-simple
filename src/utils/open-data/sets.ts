@@ -5,14 +5,21 @@
  * the fields this one does not know when it is saved again.
  *
  * `built` and `overviews` record what the chart holds, so an update brings
- * in only the units whose version changed.
+ * in only the units whose version changed. With `terrain` on, the units'
+ * terrain shading is built the same way into a second chart beside it,
+ * `shadingFile`, whose units `shaded` records.
  */
 
 import fs from 'fs';
 import path from 'path';
 import { isValidCatalogId, slugifyCatalogName } from '../custom-catalog-manager.js';
 import { isWithinBase } from '../path-safety.js';
-import type { OpenDataIndex, OpenDataOverview, OpenDataUnit } from './index-schema.js';
+import type {
+  OpenDataHillshade,
+  OpenDataIndex,
+  OpenDataOverview,
+  OpenDataUnit
+} from './index-schema.js';
 
 export const OPEN_DATA_SET_SCHEMA_VERSION = 1;
 export const DEFAULT_OPEN_DATA_FOLDER = 'Open Data Charts';
@@ -33,6 +40,12 @@ export interface OpenDataSet {
   overviews: Record<string, string>;
   /** Chart-folder-relative path of the built chart, or null before the first build. */
   chartFile: string | null;
+  /** Build the terrain shading of the units that have one. */
+  terrain: boolean;
+  /** Unit id → version of the shading rows the shading chart holds. */
+  shaded: Record<string, string>;
+  /** Chart-folder-relative path of the shading chart, or null while there is none. */
+  shadingFile: string | null;
   createdAt: string;
   updatedAt: string;
   lastBuiltAt: string | null;
@@ -57,6 +70,18 @@ export interface SetState {
 
 export interface OverviewToAdd extends OpenDataOverview {
   region: string;
+}
+
+export interface ShadingToAdd extends OpenDataHillshade {
+  id: string;
+  version: string;
+}
+
+export interface ShadingPlan {
+  /** No shading chart to update: build a new one. */
+  fresh: boolean;
+  add: ShadingToAdd[];
+  remove: string[];
 }
 
 export interface SetPlan {
@@ -111,10 +136,66 @@ function missingUnits(
   return set.unitIds.filter((id) => !units.has(id) && !(chartExists && id in set.built));
 }
 
+/** Selected units the index lists with a shading, while the set wants terrain. */
+function wantedShading(set: OpenDataSet, index: OpenDataIndex): ShadingToAdd[] {
+  if (!set.terrain) {
+    return [];
+  }
+  const units = unitsById(index);
+  const out: ShadingToAdd[] = [];
+  for (const id of set.unitIds) {
+    const unit = units.get(id);
+    if (unit?.hillshade) {
+      out.push({ ...unit.hillshade, id, version: unit.version });
+    }
+  }
+  return out;
+}
+
+export function planShading(
+  set: OpenDataSet,
+  index: OpenDataIndex,
+  shadingExists: boolean
+): ShadingPlan {
+  const wanted = wantedShading(set, index);
+  if (!shadingExists) {
+    return { fresh: true, add: wanted, remove: [] };
+  }
+  const units = unitsById(index);
+  const wantedIds = new Set(wanted.map((s) => s.id));
+  const add = wanted.filter((s) => set.shaded[s.id] !== s.version);
+  const remove = add.filter((s) => s.id in set.shaded).map((s) => s.id);
+  for (const id of Object.keys(set.shaded)) {
+    // Like the chart, a unit the index stopped listing keeps the rows it has.
+    const unlisted = set.terrain && set.unitIds.includes(id) && !units.has(id);
+    if (!wantedIds.has(id) && !unlisted) {
+      remove.push(id);
+    }
+  }
+  return { fresh: false, add, remove };
+}
+
+export function shadingHasWork(plan: ShadingPlan): boolean {
+  return plan.add.length > 0 || plan.remove.length > 0;
+}
+
+/** The units the shading chart holds once `plan` is applied. */
+export function afterShading(set: OpenDataSet, plan: ShadingPlan): Record<string, string> {
+  const shaded: Record<string, string> = plan.fresh ? {} : { ...set.shaded };
+  for (const id of plan.remove) {
+    delete shaded[id];
+  }
+  for (const s of plan.add) {
+    shaded[s.id] = s.version;
+  }
+  return shaded;
+}
+
 export function setState(
   set: OpenDataSet,
   index: OpenDataIndex | null,
-  chartExists: boolean
+  chartExists: boolean,
+  shadingExists = false
 ): SetState {
   const units = unitsById(index);
   const missing = index ? missingUnits(set, units, chartExists) : [];
@@ -141,6 +222,8 @@ export function setState(
     (index !== null && overviewsDiffer(set, wantedOverviews(set, index)))
   ) {
     status = 'update_available';
+  } else if (index !== null && shadingHasWork(planShading(set, index, shadingExists))) {
+    status = set.terrain === shadingExists ? 'update_available' : 'changed';
   } else {
     status = 'up_to_date';
   }
@@ -270,6 +353,9 @@ export class OpenDataSetStore {
       built: {},
       overviews: {},
       chartFile: null,
+      terrain: true,
+      shaded: {},
+      shadingFile: null,
       createdAt: now,
       updatedAt: now,
       lastBuiltAt: null
@@ -349,6 +435,9 @@ function normalizeSet(raw: Record<string, unknown>, id: string): OpenDataSet {
     built: stringRecord(raw.built),
     overviews: stringRecord(raw.overviews),
     chartFile: typeof raw.chartFile === 'string' ? raw.chartFile : null,
+    terrain: typeof raw.terrain === 'boolean' ? raw.terrain : true,
+    shaded: stringRecord(raw.shaded),
+    shadingFile: typeof raw.shadingFile === 'string' ? raw.shadingFile : null,
     createdAt: text(raw.createdAt, now),
     updatedAt: text(raw.updatedAt, now),
     lastBuiltAt: typeof raw.lastBuiltAt === 'string' ? raw.lastBuiltAt : null

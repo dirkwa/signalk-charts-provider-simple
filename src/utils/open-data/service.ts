@@ -19,15 +19,19 @@ import { QUALITY_CATEGORIES, type OpenDataIndex } from './index-schema.js';
 import { OpenDataIndexManager } from './index-manager.js';
 import {
   afterPlan,
+  afterShading,
   OpenDataSetStore,
   planSet,
+  planShading,
   setState,
+  shadingHasWork,
   type OpenDataSet,
   type SetPlan,
-  type SetState
+  type SetState,
+  type ShadingPlan
 } from './sets.js';
 import { parseUnitId, type UnitTile } from './tiles.js';
-import { UnitCache } from './unit-cache.js';
+import { UnitCache, type CacheKind } from './unit-cache.js';
 
 export type RunPhase = 'downloading' | 'building' | 'completed' | 'failed' | 'cancelled';
 
@@ -71,7 +75,10 @@ export interface DecoratedUnit {
 export type DecoratedSet = OpenDataSet &
   SetState & {
     chartExists: boolean;
+    shadingExists: boolean;
     selectedBytes: number;
+    /** What the selected units' terrain shading adds, whether or not the set wants it. */
+    shadingBytes: number;
     downloadBytes: number;
     freeBytes: number | null;
     units: DecoratedUnit[];
@@ -93,6 +100,7 @@ function working(): boolean {
 }
 
 const NOT_FOR_NAVIGATION = '(not for navigation)';
+const SHADING_SUFFIX = ' terrain shading';
 
 class UserError extends Error {
   constructor(
@@ -160,6 +168,11 @@ export class OpenDataCharts {
     return path.join(set.folder, `${stem}.mbtiles`);
   }
 
+  private shadingTarget(set: OpenDataSet, name = set.name): string {
+    const stem = sanitizeChartFilename(`${name}${SHADING_SUFFIX}`) || `${set.id}-terrain`;
+    return path.join(set.folder, `${stem}.mbtiles`);
+  }
+
   private absolute(relative: string): string {
     const root = this.deps.chartPath();
     const file = path.join(root, relative);
@@ -173,9 +186,14 @@ export class OpenDataCharts {
     return set.chartFile !== null && fs.existsSync(this.absolute(set.chartFile));
   }
 
+  private shadingExists(set: OpenDataSet): boolean {
+    return set.shadingFile !== null && fs.existsSync(this.absolute(set.shadingFile));
+  }
+
   decorate(set: OpenDataSet): DecoratedSet {
     const index = this.index.index();
     const chartExists = this.chartExists(set);
+    const shadingExists = this.shadingExists(set);
     const units = new Map((index?.units ?? []).map((u) => [u.id, u]));
     const ids = [...new Set([...set.unitIds, ...Object.keys(set.built)])];
     const decorated: DecoratedUnit[] = ids.map((id) => {
@@ -195,15 +213,22 @@ export class OpenDataCharts {
     });
     const selected = set.unitIds.map((id) => units.get(id)).filter((u) => u !== undefined);
     const plan = index && set.unitIds.length > 0 ? planSet(set, index, chartExists) : null;
+    const shading = index && set.unitIds.length > 0 ? planShading(set, index, shadingExists) : null;
     const run = runs.get(set.id);
     return {
       ...set,
-      ...setState(set, index, chartExists),
+      ...setState(set, index, chartExists, shadingExists),
       chartExists,
+      shadingExists,
       selectedBytes: selected.reduce((sum, u) => sum + u.size, 0),
-      downloadBytes: (plan?.add ?? [])
-        .filter((u) => !this.cache.has('units', u.id, u.version))
-        .reduce((sum, u) => sum + u.size, 0),
+      shadingBytes: selected.reduce((sum, u) => sum + (u.hillshade?.size ?? 0), 0),
+      downloadBytes:
+        (plan?.add ?? [])
+          .filter((u) => !this.cache.has('units', u.id, u.version))
+          .reduce((sum, u) => sum + u.size, 0) +
+        (shading?.add ?? [])
+          .filter((s) => !this.cache.has('hillshade', s.id, s.version))
+          .reduce((sum, s) => sum + s.size, 0),
       freeBytes: freeDiskBytes(this.existingFolder(set)),
       units: decorated,
       busy: this.isBusy(set.id),
@@ -360,21 +385,54 @@ export class OpenDataCharts {
     run: Run
   ): Promise<string> {
     let plan = planSet(set, index, fs.existsSync(target));
-    if (plan.add.length === 0 && plan.remove.length === 0 && plan.overviews === null) {
+    const shadingRelative = set.shadingFile ?? this.shadingTarget(set);
+    const shadingTarget = this.absolute(shadingRelative);
+    let shading = planShading(set, index, fs.existsSync(shadingTarget));
+    const chartWork = plan.add.length > 0 || plan.remove.length > 0 || plan.overviews !== null;
+    if (!chartWork && !shadingHasWork(shading)) {
       return 'Nothing changed; the chart is up to date';
     }
-    this.checkFreeSpace(set, plan, target);
-    await this.download(plan, run);
-    try {
-      await runAssembly(this.assemblyInput(set, index, plan, target));
-    } catch (error) {
-      if (!(error instanceof NotPatchableError)) {
-        throw error;
+    this.checkFreeSpace(set, plan, target, shading, shadingTarget);
+    await this.download(plan, shading, run);
+    if (chartWork) {
+      try {
+        await runAssembly(this.assemblyInput(set, index, plan, target));
+      } catch (error) {
+        if (!(error instanceof NotPatchableError)) {
+          throw error;
+        }
+        this.deps.debug(`Open Data Charts: ${error.message}; building it anew`);
+        plan = planSet(set, index, false);
+        await this.download(plan, shading, run);
+        await runAssembly(this.assemblyInput(set, index, plan, target));
       }
-      this.deps.debug(`Open Data Charts: ${error.message}; building it anew`);
-      plan = planSet(set, index, false);
-      await this.download(plan, run);
-      await runAssembly(this.assemblyInput(set, index, plan, target));
+    }
+    let shadingFile = set.shadingFile;
+    let shaded = set.shaded;
+    if (shadingHasWork(shading)) {
+      const releaseShading = this.claim(shadingTarget, set.id);
+      try {
+        shaded = afterShading(set, shading);
+        if (Object.keys(shaded).length === 0) {
+          fs.rmSync(shadingTarget, { force: true });
+          shadingFile = null;
+        } else {
+          try {
+            await runAssembly(this.shadingInput(set, index, shading, shadingTarget, shaded));
+          } catch (error) {
+            if (!(error instanceof NotPatchableError)) {
+              throw error;
+            }
+            shading = planShading(set, index, false);
+            shaded = afterShading(set, shading);
+            await this.download(plan, shading, run);
+            await runAssembly(this.shadingInput(set, index, shading, shadingTarget, shaded));
+          }
+          shadingFile = shadingRelative;
+        }
+      } finally {
+        releaseShading();
+      }
     }
     const latest = this.sets.get(set.id) ?? set;
     const now = new Date().toISOString();
@@ -382,28 +440,54 @@ export class OpenDataCharts {
       ...latest,
       ...afterPlan(set, plan),
       chartFile: relative,
+      shaded,
+      shadingFile,
       lastBuiltAt: now,
       updatedAt: now
     });
-    await this.deps.chartsChanged({ written: relative });
+    if (chartWork) {
+      await this.deps.chartsChanged({ written: relative });
+    }
+    if (shadingHasWork(shading)) {
+      await this.deps.chartsChanged(
+        shadingFile !== null ? { written: shadingFile } : { removed: shadingRelative }
+      );
+    }
     const missing = plan.missing.length > 0 ? `; not published: ${plan.missing.join(', ')}` : '';
     return `Chart ${path.basename(relative)} is ready${missing}`;
   }
 
   private async removeChart(set: OpenDataSet): Promise<string> {
-    if (set.chartFile !== null) {
-      fs.rmSync(this.absolute(set.chartFile), { force: true });
-      await this.deps.chartsChanged({ removed: set.chartFile });
+    for (const file of [set.chartFile, set.shadingFile]) {
+      if (file !== null) {
+        fs.rmSync(this.absolute(file), { force: true });
+        await this.deps.chartsChanged({ removed: file });
+      }
     }
-    this.sets.save({ ...set, built: {}, overviews: {}, chartFile: null });
+    this.sets.save({
+      ...set,
+      built: {},
+      overviews: {},
+      chartFile: null,
+      shaded: {},
+      shadingFile: null
+    });
     return 'The set is empty; its chart was removed';
   }
 
-  private checkFreeSpace(set: OpenDataSet, plan: SetPlan, target: string): void {
-    const adding = plan.add.reduce((sum, u) => sum + u.size, 0);
-    // The update is written beside the current chart before it replaces it.
-    const current = fs.existsSync(target) ? fs.statSync(target).size : 0;
-    const needed = current + adding;
+  private checkFreeSpace(
+    set: OpenDataSet,
+    plan: SetPlan,
+    target: string,
+    shading: ShadingPlan,
+    shadingTarget: string
+  ): void {
+    const adding =
+      plan.add.reduce((sum, u) => sum + u.size, 0) +
+      shading.add.reduce((sum, s) => sum + s.size, 0);
+    // An update is written beside the current chart before it replaces it.
+    const size = (file: string): number => (fs.existsSync(file) ? fs.statSync(file).size : 0);
+    const needed = Math.max(size(target), size(shadingTarget)) + adding;
     const free = freeDiskBytes(this.existingFolder(set));
     if (free !== null && free < needed) {
       throw new UserError(
@@ -413,7 +497,7 @@ export class OpenDataCharts {
     }
   }
 
-  private async download(plan: SetPlan, run: Run): Promise<void> {
+  private async download(plan: SetPlan, shading: ShadingPlan, run: Run): Promise<void> {
     const jobs = [
       ...(plan.overviews ?? []).map((o) => ({
         kind: 'overviews' as const,
@@ -421,7 +505,13 @@ export class OpenDataCharts {
         version: o.version,
         target: o
       })),
-      ...plan.add.map((u) => ({ kind: 'units' as const, id: u.id, version: u.version, target: u }))
+      ...plan.add.map((u) => ({ kind: 'units' as const, id: u.id, version: u.version, target: u })),
+      ...shading.add.map((s) => ({
+        kind: 'hillshade' as const,
+        id: s.id,
+        version: s.version,
+        target: s
+      }))
     ];
     const missing = jobs.filter((j) => !this.cache.has(j.kind, j.id, j.version));
     run.progress = {
@@ -455,27 +545,56 @@ export class OpenDataCharts {
     plan: SetPlan,
     target: string
   ): AssemblyInput {
-    const tile = (id: string): UnitTile => {
-      const t = parseUnitId(id);
-      if (!t) {
-        throw new Error(`Not a unit id: ${id}`);
-      }
-      return t;
-    };
     const after = afterPlan(set, plan);
     return {
+      kind: 'chart',
       target,
       base: plan.fresh ? null : target,
-      remove: plan.remove.map(tile),
+      remove: plan.remove.map(unitTile),
       add: plan.add.map((u) => ({
-        tile: tile(u.id),
+        tile: unitTile(u.id),
         file: this.cache.file('units', u.id, u.version)
       })),
       overviews:
         plan.overviews?.map((o) => this.cache.file('overviews', o.region, o.version)) ?? null,
-      units: Object.keys(after.built).map(tile),
+      units: Object.keys(after.built).map(unitTile),
       ...this.chartLabels(set.name, index),
       setId: set.id
+    };
+  }
+
+  private shadingInput(
+    set: OpenDataSet,
+    index: OpenDataIndex | null,
+    plan: ShadingPlan,
+    target: string,
+    shaded: Record<string, string>
+  ): AssemblyInput {
+    return {
+      kind: 'shading',
+      target,
+      base: plan.fresh ? null : target,
+      remove: plan.remove.map(unitTile),
+      add: plan.add.map((s) => ({
+        tile: unitTile(s.id),
+        file: this.cache.file('hillshade', s.id, s.version)
+      })),
+      overviews: null,
+      units: Object.keys(shaded).map(unitTile),
+      ...this.shadingLabels(set.name, index),
+      setId: set.id
+    };
+  }
+
+  private shadingLabels(
+    name: string,
+    index: OpenDataIndex | null
+  ): Pick<AssemblyInput, 'name' | 'description' | 'attribution'> {
+    const labels = this.chartLabels(name, index);
+    return {
+      ...labels,
+      name: `${name}${SHADING_SUFFIX} ${NOT_FOR_NAVIGATION}`,
+      description: `Terrain shading of ${labels.description}`
     };
   }
 
@@ -523,6 +642,7 @@ export class OpenDataCharts {
     const release = this.claim(to, set.id);
     try {
       await runAssembly({
+        kind: 'chart',
         target: to,
         base: from,
         remove: [],
@@ -540,13 +660,55 @@ export class OpenDataCharts {
     } finally {
       release();
     }
-    const saved = { ...renamed, chartFile: relative };
+    const shadingFile = await this.renameShading(set, name);
+    const saved = { ...renamed, chartFile: relative, shadingFile };
     this.sets.save(saved);
     await this.deps.chartsChanged({
       written: relative,
       ...(to !== from ? { removed: oldFile } : {})
     });
+    if (shadingFile !== null) {
+      await this.deps.chartsChanged({
+        written: shadingFile,
+        ...(shadingFile !== set.shadingFile && set.shadingFile !== null
+          ? { removed: set.shadingFile }
+          : {})
+      });
+    }
     return saved;
+  }
+
+  /** The shading chart under the set's new name; its path, or null when there is none. */
+  private async renameShading(set: OpenDataSet, name: string): Promise<string | null> {
+    if (set.shadingFile === null || !this.shadingExists(set)) {
+      return null;
+    }
+    const relative = this.shadingTarget(set, name);
+    const from = this.absolute(set.shadingFile);
+    const to = this.absolute(relative);
+    if (to !== from && fs.existsSync(to)) {
+      throw new UserError(`A chart named ${path.basename(to)} already exists`, 409);
+    }
+    const release = this.claim(to, set.id);
+    try {
+      await runAssembly({
+        kind: 'shading',
+        target: to,
+        base: from,
+        remove: [],
+        add: [],
+        overviews: null,
+        units: Object.keys(set.shaded).map(unitTile),
+        ...this.shadingLabels(name, this.index.index()),
+        setId: set.id
+      });
+      if (to !== from) {
+        fs.rmSync(from, { force: true });
+      }
+    } finally {
+      release();
+    }
+    return relative;
   }
 
   /** Removes cached files no set uses: neither in its chart nor at the index's version. */
@@ -558,7 +720,7 @@ export class OpenDataCharts {
     const units = new Map((index?.units ?? []).map((u) => [u.id, u]));
     const keep = new Set<string>();
     // A partial download of a version still in use is resumed by the next build.
-    const keepFile = (kind: 'units' | 'overviews', id: string, version: string): void => {
+    const keepFile = (kind: CacheKind, id: string, version: string): void => {
       keep.add(UnitCache.key(kind, id, version));
       keep.add(UnitCache.partKey(kind, id, version));
     };
@@ -569,10 +731,16 @@ export class OpenDataCharts {
       for (const [region, version] of Object.entries(set.overviews)) {
         keepFile('overviews', region, version);
       }
+      for (const [id, version] of Object.entries(set.shaded)) {
+        keepFile('hillshade', id, version);
+      }
       for (const id of set.unitIds) {
         const unit = units.get(id);
         if (unit) {
           keepFile('units', id, unit.version);
+          if (unit.hillshade && set.terrain) {
+            keepFile('hillshade', id, unit.version);
+          }
           const overview = index?.regions.find((r) => r.id === unit.region)?.overview;
           if (overview) {
             keepFile('overviews', unit.region, overview.version);
@@ -584,6 +752,14 @@ export class OpenDataCharts {
       this.deps.debug(`Open Data Charts: removed unused download ${name}`);
     }
   }
+}
+
+function unitTile(id: string): UnitTile {
+  const tile = parseUnitId(id);
+  if (!tile) {
+    throw new Error(`Not a unit id: ${id}`);
+  }
+  return tile;
 }
 
 export function formatBytes(bytes: number): string {
@@ -604,6 +780,7 @@ export interface RouteRegistrar {
 const NameBody = Type.Object({ name: Type.String({ minLength: 1, maxLength: 120 }) });
 const UpdateBody = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+  terrain: Type.Optional(Type.Boolean()),
   unitIds: Type.Optional(
     Type.Array(Type.String({ pattern: '^z9-[0-9]{1,3}-[0-9]{1,3}$' }), { maxItems: 20000 })
   )
@@ -721,6 +898,10 @@ export function registerOpenDataRoutes(
         return;
       }
       let next = set;
+      if (body.terrain !== undefined && body.terrain !== next.terrain) {
+        next = { ...next, terrain: body.terrain, updatedAt: new Date().toISOString() };
+        odc.sets.save(next);
+      }
       if (body.unitIds !== undefined) {
         next = {
           ...next,
