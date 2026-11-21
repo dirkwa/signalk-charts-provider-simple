@@ -5,10 +5,11 @@
  * in an R-tree; for any other, each area keeps the features it gave as it gave
  * them. The pages of a read upstream are staged and published in one
  * transaction once the area is whole, and not at all when a newer read of the
- * area was published meanwhile. A kept feature reaching past a box read again
- * whole that the read did not return is noted absent from that box
- * (`covered_absent`): it may be gone, or only reach the box by its own box, so
- * it is kept for other areas but not answered inside that one. A read from the store pins the features it
+ * area was published meanwhile. A kept feature an area's answer reached that
+ * its read did not return is noted absent from it (`covered_absent`): it may be
+ * gone, or only reach the area by its own box, so it is kept for other areas, and
+ * where the newest read holding a place did not return it, it is not answered
+ * there (`answerIn`). A read from the store pins the features it
  * answers (`Pin`): one changed or dropped meanwhile is kept as it was for it.
  * Deleting the file loses nothing but downloads.
  */
@@ -17,9 +18,16 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { featureBox, featureId, uncovered, type Box, type WfsFeature } from './wfs-query.js';
+import {
+  answerBox,
+  featureBox,
+  featureId,
+  uncovered,
+  type Box,
+  type WfsFeature
+} from './wfs-query.js';
 
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '5';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS features (
@@ -39,6 +47,7 @@ const SCHEMA = `
     type_name TEXT NOT NULL,
     box_text TEXT NOT NULL,
     w REAL NOT NULL, s REAL NOT NULL, e REAL NOT NULL, n REAL NOT NULL,
+    mw REAL NOT NULL, ms REAL NOT NULL, me REAL NOT NULL, mn REAL NOT NULL,
     fetched_at INTEGER NOT NULL,
     started INTEGER NOT NULL
   );
@@ -185,6 +194,84 @@ interface StagedRow {
   data: Uint8Array;
 }
 
+/** Margins this small are rounding where boxes meet edge to edge, degrees. */
+const EPS = 1e-9;
+
+const touches = (a: Box, b: Box): boolean =>
+  a[2] >= b[0] - EPS && a[0] <= b[2] + EPS && a[3] >= b[1] - EPS && a[1] <= b[3] + EPS;
+
+/**
+ * `cover` as it holds `part`: a part with no width or no height, a line or a point, is held by
+ * a cover whose edge it lies on, as the upstream answers what touches a box.
+ */
+function holding(part: Box, [w, s, e, n]: Box): Box {
+  const dx = part[2] - part[0] <= EPS ? 2 * EPS : 0;
+  const dy = part[3] - part[1] <= EPS ? 2 * EPS : 0;
+  return [w - dx, s - dy, e + dx, n + dy];
+}
+
+interface HeldArea {
+  id: number;
+  box: Box;
+  /** As far as its read's answer reached (`answerBox`). */
+  margin: Box;
+  since: number;
+}
+
+interface NotedAbsent {
+  box: Box;
+  fetchedAt: number;
+  /** The areas it is noted absent from. */
+  covers: ReadonlySet<number>;
+}
+
+/**
+ * Whether a feature noted absent from some areas belongs to an answer for `box`, from
+ * `covers`, the newest first. Each place it reaches in `box` goes by the newest area holding
+ * it: one that returned it (`seen`); one that did not, the feature not seen since its read
+ * began (`gone`); or one that did not though another area's read has seen it since, which
+ * tells nothing of this one (`unsure`). Kept where every place says seen, left out where
+ * every one says gone, else undefined. A feature past `box`, in the margin of its answer,
+ * goes by the newest area whose answer reached it, and is left out unless that one returned
+ * it.
+ */
+function belongs(box: Box, feature: NotedAbsent, covers: readonly HeldArea[]): boolean | undefined {
+  const say = (c: HeldArea): 'seen' | 'gone' | 'unsure' =>
+    !feature.covers.has(c.id) ? 'seen' : feature.fetchedAt < c.since ? 'gone' : 'unsure';
+  const [fw, fs, fe, fn] = feature.box;
+  const reach: Box = [
+    Math.max(box[0], fw),
+    Math.max(box[1], fs),
+    Math.min(box[2], fe),
+    Math.min(box[3], fn)
+  ];
+  if (reach[0] > reach[2] || reach[1] > reach[3]) {
+    const newest = covers.find((c) => touches(feature.box, c.margin));
+    return newest === undefined || say(newest) === 'seen';
+  }
+  const said = new Set<string>();
+  let rest: Box[] = [reach];
+  for (const c of covers) {
+    if (rest.length === 0) {
+      break;
+    }
+    const cover = holding(reach, c.box);
+    const next = rest.flatMap((part) => uncovered(part, [cover]));
+    if (next.length === rest.length && next.every((part, i) => part === rest[i])) {
+      continue;
+    }
+    said.add(say(c));
+    rest = next;
+  }
+  if (rest.length > 0) {
+    said.add('seen');
+  }
+  if (said.size !== 1) {
+    return undefined;
+  }
+  return said.has('seen') ? true : said.has('gone') ? false : undefined;
+}
+
 export class WfsCache {
   private readonly db: DatabaseSync;
   private readonly statements: Record<string, StatementSync>;
@@ -259,8 +346,9 @@ export class WfsCache {
         ORDER BY fetched_at DESC, started DESC, id DESC LIMIT 1
       `),
       coverInsert: p(`
-        INSERT INTO covered (upstream, type_name, box_text, w, s, e, n, fetched_at, started)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO covered
+          (upstream, type_name, box_text, w, s, e, n, mw, ms, me, mn, fetched_at, started)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       memberInsert: p('INSERT INTO covered_member (covered_id, fid, data) VALUES (?, ?, ?)'),
       // A box inside a newer one adds nothing to an upstream answered by box.
@@ -275,29 +363,28 @@ export class WfsCache {
       `),
       coverDelete: p('DELETE FROM covered WHERE id = ?'),
       membersDelete: p('DELETE FROM covered_member WHERE covered_id = ?'),
-      // Kept before the read began, reaching its box and not wholly inside it (those are
-      // dropped), and not in its pages (those are kept again, as of the read).
-      absentInsert: p(`
-        INSERT INTO covered_absent (covered_id, feature_id)
-        SELECT ?, f.id FROM feature_box b JOIN features f ON f.id = b.id
-        WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at < ?
+      matchingFids: p(`
+        SELECT f.id AS id, f.fid AS fid FROM feature_box b JOIN features f ON f.id = b.id
+        WHERE f.upstream = ? AND f.type_name = ?
           AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
           AND f.e >= ? AND f.w <= ? AND f.n >= ? AND f.s <= ?
       `),
-      // The boxes read whole since a feature was kept that did not return it.
+      absentInsert: p('INSERT INTO covered_absent (covered_id, feature_id) VALUES (?, ?)'),
+      // The areas whose answers reach a box, the newest first.
+      coversNear: p(`
+        SELECT id, w, s, e, n, mw, ms, me, mn, fetched_at FROM covered
+        WHERE upstream = ? AND type_name = ? AND me >= ? AND mw <= ? AND mn >= ? AND ms <= ?
+          AND id <> ?
+        ORDER BY fetched_at DESC, started DESC, id DESC
+      `),
       absencesOf: p(`
-        SELECT a.feature_id AS id, c.w AS w, c.s AS s, c.e AS e, c.n AS n,
-          f.w AS fw, f.s AS fs, f.e AS fe, f.n AS fn
-        FROM covered_absent a JOIN covered c ON c.id = a.covered_id
-          JOIN features f ON f.id = a.feature_id
-        WHERE a.feature_id IN (SELECT value FROM json_each(?)) AND c.fetched_at > f.fetched_at
+        SELECT a.feature_id AS id, a.covered_id AS cover,
+          f.w AS w, f.s AS s, f.e AS e, f.n AS n, f.fetched_at AS fetched_at
+        FROM covered_absent a JOIN features f ON f.id = a.feature_id
+        WHERE a.feature_id IN (SELECT value FROM json_each(?))
       `),
       absentDeleteCover: p('DELETE FROM covered_absent WHERE covered_id = ?'),
       absentDeleteFeature: p('DELETE FROM covered_absent WHERE feature_id = ?'),
-      absentDeleteSeen: p(`
-        DELETE FROM covered_absent WHERE feature_id = ?
-          AND covered_id IN (SELECT id FROM covered WHERE fetched_at <= ?)
-      `),
       unseenIn: p(`
         SELECT f.id AS id FROM feature_box b JOIN features f ON f.id = b.id
         WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at < ?
@@ -481,6 +568,7 @@ export class WfsCache {
         this.q('stageDelete').run(stage);
       }
       const [w, s, e, n] = area.box;
+      const [mw, ms, me, mn] = byBox ? answerBox(area.box) : area.box;
       const started = stage ?? 0;
       const coveredId = Number(
         this.q('coverInsert').run(
@@ -491,6 +579,10 @@ export class WfsCache {
           s,
           e,
           n,
+          mw,
+          ms,
+          me,
+          mn,
           since,
           started
         ).lastInsertRowid
@@ -513,7 +605,7 @@ export class WfsCache {
         return 0;
       }
       for (const r of staged) {
-        this.keepFeature(layer, r);
+        this.keepFeature(layer, r, coveredId);
       }
       const unseen = this.q('unseenIn').all(
         layer.upstream,
@@ -534,20 +626,24 @@ export class WfsCache {
         this.q('boxDelete').run(id);
         this.q('absentDeleteFeature').run(id);
       }
-      this.q('absentInsert').run(
-        coveredId,
+      // Its answer reached them, in its margin too, and its pages did not give them.
+      const returned = new Set(staged.map((r) => r.fid));
+      for (const r of this.q('matchingFids').all(
         layer.upstream,
         layer.typeName,
-        since,
-        w,
-        e,
-        s,
-        n,
-        w,
-        e,
-        s,
-        n
-      );
+        mw,
+        me,
+        ms,
+        mn,
+        mw,
+        me,
+        ms,
+        mn
+      ) as { id: number; fid: string }[]) {
+        if (!returned.has(r.fid)) {
+          this.q('absentInsert').run(coveredId, r.id);
+        }
+      }
       for (const { id } of this.q('containedCovers').all(
         layer.upstream,
         layer.typeName,
@@ -566,9 +662,15 @@ export class WfsCache {
     });
   }
 
-  private keepFeature(layer: Layer, r: StagedRow): void {
+  /**
+   * Keeps a feature a read returned. The areas held already whose answers reach it now, and
+   * did not before (it is new to the store, or moved), did not return it: it is noted absent
+   * from them. A feature returned again stays noted absent where it was: that another area
+   * returned it says nothing of those.
+   */
+  private keepFeature(layer: Layer, r: StagedRow, coveredId: number): void {
     const before = this.q('rowOf').get(layer.upstream, layer.typeName, r.fid) as
-      { id: number } | undefined;
+      { id: number; w: number; s: number; e: number; n: number } | undefined;
     if (before) {
       this.preserve('feature', before.id);
     }
@@ -592,7 +694,20 @@ export class WfsCache {
     };
     this.q('boxDelete').run(row.id);
     this.q('boxInsert').run(row.id, row.w, row.e, row.s, row.n);
-    this.q('absentDeleteSeen').run(row.id, r.fetched_at);
+    const was: Box | undefined = before && [before.w, before.s, before.e, before.n];
+    for (const c of this.q('coversNear').all(
+      layer.upstream,
+      layer.typeName,
+      row.w,
+      row.e,
+      row.s,
+      row.n,
+      coveredId
+    ) as { id: number; mw: number; ms: number; me: number; mn: number }[]) {
+      if (!was || !touches(was, [c.mw, c.ms, c.me, c.mn])) {
+        this.q('absentInsert').run(c.id, row.id);
+      }
+    }
   }
 
   private dropCover(id: number, withMembers: boolean): void {
@@ -658,52 +773,60 @@ export class WfsCache {
 
   /**
    * For an upstream answered by box, the kept features of `layer` whose boxes reach
-   * `answer`, pinned for one read of `box`, leaving out each one a newer read did not
-   * return where it reaches `box` (`covered_absent`). Undefined when one was not returned
-   * by reads holding only part of where it reaches `box`: the store cannot tell whether
-   * it belongs to the answer.
+   * `answer`, pinned for one read of `box`, leaving out each one the newest reads holding
+   * where it reaches `box` did not return (`belongs`). Undefined when the store cannot
+   * tell whether one belongs to the answer.
    */
   answerIn(layer: Layer, box: Box, answer: Box): Pin | undefined {
     const ids = this.idsIn(layer, answer);
-    const absences = new Map<number, { reach: Box; covers: Box[] }>();
-    const rows = this.q('absencesOf').all(JSON.stringify(ids)) as {
+    const absent = new Map<number, NotedAbsent & { covers: Set<number> }>();
+    for (const r of this.q('absencesOf').all(JSON.stringify(ids)) as {
       id: number;
+      cover: number;
       w: number;
       s: number;
       e: number;
       n: number;
-      fw: number;
-      fs: number;
-      fe: number;
-      fn: number;
-    }[];
-    for (const r of rows) {
-      let absence = absences.get(r.id);
-      if (!absence) {
-        absence = {
-          reach: [
-            Math.max(box[0], r.fw),
-            Math.max(box[1], r.fs),
-            Math.min(box[2], r.fe),
-            Math.min(box[3], r.fn)
-          ],
-          covers: []
-        };
-        absences.set(r.id, absence);
+      fetched_at: number;
+    }[]) {
+      let a = absent.get(r.id);
+      if (!a) {
+        a = { box: [r.w, r.s, r.e, r.n], fetchedAt: r.fetched_at, covers: new Set() };
+        absent.set(r.id, a);
       }
-      absence.covers.push([r.w, r.s, r.e, r.n]);
+      a.covers.add(r.cover);
     }
+    if (absent.size === 0) {
+      return this.pin('feature', ids);
+    }
+    const [aw, as, ae, an] = answer;
+    const covers = (
+      this.q('coversNear').all(layer.upstream, layer.typeName, aw, ae, as, an, -1) as {
+        id: number;
+        w: number;
+        s: number;
+        e: number;
+        n: number;
+        mw: number;
+        ms: number;
+        me: number;
+        mn: number;
+        fetched_at: number;
+      }[]
+    ).map((c): HeldArea => ({
+      id: c.id,
+      box: [c.w, c.s, c.e, c.n],
+      margin: [c.mw, c.ms, c.me, c.mn],
+      since: c.fetched_at
+    }));
     const left = new Set<number>();
-    for (const [id, { reach, covers }] of absences) {
-      const [w, s, e, n] = reach;
-      if (w > e || s > n) {
-        continue;
-      }
-      const rest = uncovered(reach, covers);
-      if (rest.length === 0) {
-        left.add(id);
-      } else if (rest.length !== 1 || rest[0].some((v, i) => v !== reach[i])) {
+    for (const [id, feature] of absent) {
+      const kept = belongs(box, feature, covers);
+      if (kept === undefined) {
         return undefined;
+      }
+      if (!kept) {
+        left.add(id);
       }
     }
     return this.pin(

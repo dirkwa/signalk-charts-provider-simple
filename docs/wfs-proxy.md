@@ -26,7 +26,8 @@ upstream as it is, like any other.
   read, or a short page alone, does not end an area: it may describe other
   features, or be the server's own page limit. A count of none holds the
   area at once. A read whose area a newer read overlapping it was kept for
-  meanwhile is not kept, so it cannot bring back what that one dropped. A
+  meanwhile is not kept, so it cannot bring back what that one dropped;
+  reads and pages are ordered as they come, in the same millisecond too. A
   very large reply, or one the upstream breaks off, is passed on but not
   kept; a broken one is broken off to the client too.
 - For Traficom's WFS, each feature is kept once, by its id, and an area the
@@ -37,9 +38,14 @@ upstream as it is, like any other.
   Finland, and answers features that far outside it: the store answers them
   too, and a few more. A feature wholly inside a box read again whole that
   the read did not return is dropped: it is gone upstream. One reaching past
-  that box is kept for other areas, as it may only reach the box by its own
-  box, but not answered where it reaches the box; an area where it reaches
-  boxes that returned it and boxes that did not is read upstream.
+  that box, or lying in the margin of its answer, is kept for other areas, as
+  it may only reach the box by its own box. Each place a kept feature reaches
+  goes by the newest read holding that place: it is not answered where that
+  read did not return it. An area is read upstream where those reads say
+  both, or where one did not return it though a read of another area has
+  returned it since, which says nothing of this one. A feature past the area,
+  in the margin, is answered only if the newest read whose answer reached it
+  returned it. A line or a point on a box's edge is in the box.
 - For any other WFS, whose way of choosing features for a box the proxy does
   not know, an area is answered from the store only for the same box, with
   the features that box gave, as it gave them.

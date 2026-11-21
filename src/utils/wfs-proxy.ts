@@ -156,6 +156,7 @@ export class WfsProxy {
   private readonly storeReads = new Map<string, StoreRead>();
   private readonly fetchUpstream: typeof fetch;
   private readonly now: () => number;
+  private lastMark = -Infinity;
 
   constructor(options: WfsProxyOptions) {
     this.options = options;
@@ -166,6 +167,15 @@ export class WfsProxy {
   /** Takes `settings` in place of those it has; reads going on keep their way. */
   configure(settings: Partial<WfsProxySettings>): void {
     this.options = { ...this.options, ...settings };
+  }
+
+  /**
+   * The time now, later than any it gave before: a read begun after a page came is seen to
+   * have begun after it, in the same millisecond too, so the store can order them.
+   */
+  private mark(): number {
+    this.lastMark = Math.max(this.now(), this.lastMark + 0.001);
+    return this.lastMark;
   }
 
   upstreams(): readonly string[] {
@@ -417,7 +427,7 @@ export class WfsProxy {
       inFlight: 0,
       spoilt: false,
       held: false,
-      startedAt: now,
+      startedAt: this.mark(),
       stage: this.options.cache.beginStage()
     };
     this.upstreamReads.set(readKey, read);
@@ -515,7 +525,7 @@ export class WfsProxy {
       }
       read.matched = matched;
     }
-    if (!this.options.cache.stage(read.stage, features, this.now())) {
+    if (!this.options.cache.stage(read.stage, features, this.mark())) {
       this.spoil(read);
       return;
     }

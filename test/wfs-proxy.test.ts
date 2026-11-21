@@ -227,6 +227,16 @@ describe('wfs-query', () => {
         srsName: 'EPSG:4326',
         ...page
       }).toString(),
+      // the answerable box, named in another reference system
+      new URLSearchParams({
+        service: 'WFS',
+        version: '2.0.0',
+        request: 'GetFeature',
+        typeNames: 'A',
+        bbox: '60,22,60.2,22.5,urn:ogc:def:crs:EPSG::3067',
+        srsName: 'EPSG:4326',
+        ...page
+      }).toString(),
       // a filter the cache does not apply
       `${query('A', [22, 60, 22.5, 60.2], page)}&cql_filter=DRVAL1>5`,
       // two feature types
@@ -578,6 +588,113 @@ describe('WfsCache', () => {
     cache.close();
   });
 
+  const answered = (pin: Pin | undefined): unknown[] | undefined => {
+    if (!pin) {
+      return undefined;
+    }
+    const out = pin
+      .features(pin.ids)
+      .map((f) => f.id)
+      .sort();
+    pin.release();
+    return out;
+  };
+
+  it('a line on the edge of a box read again whole that did not return it is not answered there', () => {
+    const cache = new WfsCache(path.join(dir, 'o.sqlite'));
+    const box: Box = [22, 60, 22.1, 60.1];
+    const line = {
+      type: 'Feature',
+      id: 'edge-line',
+      geometry: {
+        type: 'LineString',
+        coordinates: [
+          [22.1, 60.05],
+          [22.1, 60.15]
+        ]
+      },
+      properties: {}
+    };
+    keepWhole(cache, layer, [line], [22, 60, 22.2, 60.2], 1);
+    // Read again, the box gives nothing: the line reaches past it, so it is kept.
+    assert.strictEqual(keepWhole(cache, layer, [], box, 5), 0);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, box, box)), []);
+    // Where it lies on the box's edge and past it, the store cannot tell.
+    assert.strictEqual(cache.answerIn(layer, [22.05, 60.05, 22.15, 60.2], WIDE), undefined);
+    // Past the box, nothing says it is gone.
+    const north: Box = [22.05, 60.12, 22.15, 60.2];
+    assert.deepStrictEqual(answered(cache.answerIn(layer, north, north)), ['edge-line']);
+    cache.close();
+  });
+
+  it('leaves out a feature in the margin of a box that a read of the box did not return', () => {
+    const cache = new WfsCache(path.join(dir, 'p.sqlite'));
+    const box: Box = [22, 60, 22.1, 60.1];
+    const margin = answerBox(box);
+    const point = (id: string, x: number) => ({
+      type: 'Feature',
+      id,
+      geometry: { type: 'Point', coordinates: [x, 60.05] },
+      properties: {}
+    });
+    const omitted = point('omitted', box[2] + (margin[2] - box[2]) / 2);
+    const returned = point('returned', box[0] - (box[0] - margin[0]) / 2);
+    keepWhole(cache, layer, [omitted, returned], WIDE, 1);
+    // Read again, the box returns the one in its west margin alone.
+    assert.strictEqual(keepWhole(cache, layer, [returned], box, 5), 0);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, box, margin)), ['returned']);
+    // It is kept for an area where it lies inside.
+    const east: Box = [22.1, 60, 22.2, 60.1];
+    assert.deepStrictEqual(answered(cache.answerIn(layer, east, east)), ['omitted']);
+    cache.close();
+  });
+
+  it("another area returning a feature does not answer it where a box's read did not return it", () => {
+    const cache = new WfsCache(path.join(dir, 'q.sqlite'));
+    const box: Box = [22, 60, 22.1, 60.1];
+    const east: Box = [22.1, 60, 22.2, 60.1];
+    const crossing = area(920, 22.095, 60.02);
+    keepWhole(cache, layer, [crossing], [22, 60, 22.2, 60.1], 1);
+    assert.strictEqual(keepWhole(cache, layer, [], box, 5), 0);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, box, box)), []);
+    // The area east of the box returns it: whether it belongs to the box, only the box can say.
+    assert.strictEqual(keepWhole(cache, layer, [crossing], east, 9), 0);
+    assert.strictEqual(cache.answerIn(layer, box, box), undefined);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, east, east)), [crossing.id]);
+    // The box read again says.
+    assert.strictEqual(keepWhole(cache, layer, [], box, 12), 0);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, box, box)), []);
+    assert.strictEqual(keepWhole(cache, layer, [crossing], box, 15), 0);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, box, box)), [crossing.id]);
+    // A feature new to the store, from a page that came before the box's read began: the box
+    // did not return it, so it is not answered there.
+    const late = area(921, 22.095, 60.05);
+    const other = cache.beginStage();
+    assert.ok(cache.stage(other, [late], 14));
+    assert.strictEqual(
+      cache.publish(other, layer, { box: [22.1, 60.04, 22.2, 60.1], boxText: 'ne' }, 13, true),
+      0
+    );
+    assert.deepStrictEqual(answered(cache.answerIn(layer, box, box)), [crossing.id]);
+    cache.close();
+  });
+
+  it('a feature that moved into a box held already is not answered there until the box says', () => {
+    const cache = new WfsCache(path.join(dir, 'r.sqlite'));
+    const box: Box = [22, 60, 22.1, 60.1];
+    const east: Box = [22.15, 60, 22.25, 60.1];
+    const before = area(930, 22.2, 60.05);
+    keepWhole(cache, layer, [before], [22, 60, 22.3, 60.1], 1);
+    assert.strictEqual(keepWhole(cache, layer, [], box, 5), 0);
+    // A read east of the box gives it moved into the box, which never saw it there.
+    const moved = { ...area(930, 22.095, 60.05), id: before.id };
+    assert.strictEqual(keepWhole(cache, layer, [moved], east, 9), 0);
+    assert.strictEqual(cache.answerIn(layer, box, box), undefined);
+    assert.strictEqual(keepWhole(cache, layer, [moved], box, 12), 0);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, box, box)), [before.id]);
+    cache.close();
+  });
+
   it('pages staged but not published change nothing', () => {
     const cache = new WfsCache(path.join(dir, 'f.sqlite'));
     keepWhole(cache, layer, AREAS.slice(0, 10), WIDE, 1);
@@ -893,6 +1010,39 @@ describe('WfsProxy', () => {
       assert.ok(!fromStore.includes(gone));
     } finally {
       REMOVED.delete(gone);
+    }
+    await proxy.close();
+    cache.close();
+  });
+
+  it('a read begun in the millisecond the last page of another came is kept over it', async () => {
+    const cache = new WfsCache(path.join(dir, 'p41.sqlite'));
+    const proxy = new WfsProxy({
+      cache,
+      upstreams: () => [upstreamBase],
+      answersByBox: () => true,
+      // Every area is stale at once: each read goes upstream.
+      maxAgeMs: () => -1,
+      mayRefresh: () => true,
+      now: () => 7_000_000
+    });
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    const layerOf: Layer = { upstream: upstreamBase, typeName: 'DepthArea_A' };
+    const inside = AREAS.find((f) => {
+      const [w, s, e, n] = featureBox(f) as Box;
+      return w > BOX[0] && s > BOX[1] && e < BOX[2] && n < BOX[3];
+    }) as Feature;
+    assert.ok((await readLayer(base, BOX)).includes(inside.id));
+    REMOVED.add(inside.id);
+    try {
+      assert.ok(!(await readLayer(base, BOX)).includes(inside.id));
+      // The later read is kept: the feature it did not give is dropped.
+      const kept = cache.features(cache.idsIn(layerOf, BOX)).map((f) => f.id);
+      assert.ok(kept.length > 0);
+      assert.ok(!kept.includes(inside.id));
+    } finally {
+      REMOVED.delete(inside.id);
     }
     await proxy.close();
     cache.close();
@@ -1255,17 +1405,22 @@ describe('WfsProxy', () => {
     const base = proxy.proxyUrl(uncounted) as string;
     // One page holds the whole area.
     const page = pageOf(base, BOX, 'IDENTIFIER', 0, 1000);
-    await asked;
-    const counted = await fetch(
-      `${base}?${query('DepthArea_A', BOX, { resultType: 'hits', sortBy: 'IDENTIFIER' })}`
-    );
-    assert.strictEqual(counted.status, 200);
-    assert.ok((hitsMatched(await counted.text()) ?? 0) > 0);
-    release();
-    assert.ok((await page).length > 0);
-    assert.strictEqual(cache.stats().areas, 1);
-    await proxy.close();
-    cache.close();
+    try {
+      await asked;
+      const counted = await fetch(
+        `${base}?${query('DepthArea_A', BOX, { resultType: 'hits', sortBy: 'IDENTIFIER' })}`
+      );
+      assert.strictEqual(counted.status, 200);
+      assert.ok((hitsMatched(await counted.text()) ?? 0) > 0);
+      release();
+      assert.ok((await page).length > 0);
+      assert.strictEqual(cache.stats().areas, 1);
+    } finally {
+      release();
+      await page.catch(() => undefined);
+      await proxy.close();
+      cache.close();
+    }
   });
 
   it('a config save hands the running proxy to the next start', async () => {
