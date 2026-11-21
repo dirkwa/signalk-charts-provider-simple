@@ -14,7 +14,13 @@ import { sanitizeChartFilename } from '../catalog-title.js';
 import { freeDiskBytes } from '../chart-set-cache.js';
 import { isWithinBase } from '../path-safety.js';
 import { parseBody } from '../rest-validation.js';
-import { NotPatchableError, runAssembly, TEMP_SUFFIX, type AssemblyInput } from './assemble.js';
+import {
+  lacksCoverage,
+  NotPatchableError,
+  runAssembly,
+  TEMP_SUFFIX,
+  type AssemblyInput
+} from './assemble.js';
 import { QUALITY_CATEGORIES, type OpenDataIndex } from './index-schema.js';
 import { OpenDataIndexManager } from './index-manager.js';
 import {
@@ -421,7 +427,11 @@ export class OpenDataCharts {
   ): Promise<string> {
     let plan = planSet(set, index, fs.existsSync(target));
     let shading = plannedShading;
-    const chartWork = plan.add.length > 0 || plan.remove.length > 0 || plan.overviews !== null;
+    const chartWork =
+      plan.add.length > 0 ||
+      plan.remove.length > 0 ||
+      plan.overviews !== null ||
+      (!plan.fresh && Object.keys(set.built).length > 0 && lacksCoverage(target));
     if (!chartWork && !shadingHasWork(shading)) {
       return 'Nothing changed; the chart is up to date';
     }

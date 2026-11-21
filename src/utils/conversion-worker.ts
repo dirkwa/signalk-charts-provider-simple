@@ -3,7 +3,7 @@
  * (worker-pool.ts, conversion-process.ts). One worker runs one task at a
  * time: a GDAL call on its own WebAssembly GDAL instance (gdal-wasm.ts,
  * loaded on the worker's first GDAL task), one shard of vector tiles
- * (vector-tile-shard.ts), or one raster overview tile.
+ * (vector-tile-shard.ts), one raster overview tile, or a chart's coverage.
  */
 
 import fs from 'node:fs';
@@ -11,6 +11,8 @@ import path from 'node:path';
 import { parentPort } from 'node:worker_threads';
 import { loadGdalWasm, GdalError, type GdalSource, type GdalWasm } from './gdal-wasm.js';
 import { composeRasterTile } from './raster-compose.js';
+import { encCoverage } from './s57-coverage.js';
+import type { ChartCoverage } from './chart-coverage.js';
 import { retryWhenLocked } from './gdal-retry.js';
 import {
   bucketFeatures,
@@ -75,6 +77,15 @@ export interface RasterDownsampleTask {
   children: { raw: Uint8Array; dx: number; dy: number }[];
 }
 
+/** A chart's coverage from its cells' `M_COVR` exports under `exportRoot` (s57-coverage.ts). */
+export interface EncCoverageTask {
+  op: 'enc-coverage';
+  exportRoot: string;
+  userMinzoom: number;
+  userMaxzoom: number;
+  chartMaxzoom: number;
+}
+
 export type ConversionTask =
   | S57CellTask
   | GdalTranslateTask
@@ -83,7 +94,8 @@ export type ConversionTask =
   | BucketFeaturesTask
   | TileShardTask
   | MergeTilesTask
-  | RasterDownsampleTask;
+  | RasterDownsampleTask
+  | EncCoverageTask;
 
 export type TaskResult =
   | {
@@ -100,7 +112,8 @@ export type TaskResult =
   | { op: 'bucket-features'; bucket: BucketResult }
   | ({ op: 'tile-shard' } & ShardResult)
   | { op: 'merge-tiles'; tiles: EncodedTile[] }
-  | { op: 'raster-downsample'; tile: Uint8Array | null };
+  | { op: 'raster-downsample'; tile: Uint8Array | null }
+  | { op: 'enc-coverage'; coverage: ChartCoverage | null };
 
 export type TaskEvent = { kind: 'tiles'; tiles: EncodedTile[] };
 
@@ -214,6 +227,16 @@ async function runTask(id: number, task: ConversionTask): Promise<TaskResult> {
       });
       return { op: 'tile-shard', ...result };
     }
+    case 'enc-coverage':
+      return {
+        op: 'enc-coverage',
+        coverage: encCoverage(
+          task.exportRoot,
+          task.userMinzoom,
+          task.userMaxzoom,
+          task.chartMaxzoom
+        )
+      };
     case 'raster-downsample': {
       const tile = composeRasterTile({ format: 'png', ancestor: null, children: task.children });
       return { op: 'raster-downsample', tile: tile ? new Uint8Array(tile.data) : null };

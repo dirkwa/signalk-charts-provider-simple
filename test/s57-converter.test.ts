@@ -7,10 +7,10 @@ import zlib from 'node:zlib';
 
 import {
   _testInternals,
-  bandZoomRange,
   getConversionProgress,
   planTileSources
 } from '../dist/utils/s57-converter.js';
+import { bandZoomRange } from '../dist/utils/s57-band.js';
 
 const { surfaceExportErrorsIfEmpty, wantedMbtilesName, SKIP_LAYERS } = _testInternals;
 

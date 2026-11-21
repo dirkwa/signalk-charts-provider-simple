@@ -214,3 +214,27 @@ export function groupCellsByBand(encFiles: readonly string[]): BandGrouping {
   const bands = [...byBand.keys()].sort((a, b) => a - b);
   return { byBand, unbanded, bands };
 }
+
+/** A band's zoom range within the user's: the band's native scales, clamped. */
+export function bandZoomRange(
+  band: number | null,
+  userMinzoom: number,
+  userMaxzoom: number
+): { minzoom: number; maxzoom: number } {
+  if (band === null) {
+    return { minzoom: userMinzoom, maxzoom: userMaxzoom };
+  }
+  return {
+    minzoom: Math.max(userMinzoom, BAND_MIN_ZOOM[band] ?? userMinzoom),
+    maxzoom: Math.min(userMaxzoom, BAND_MAX_ZOOM[band] ?? userMaxzoom)
+  };
+}
+
+/** The zooms a cell's features are tiled at; null for the export of a lone cell. */
+export function cellZoomRange(
+  cell: string | null,
+  userMinzoom: number,
+  userMaxzoom: number
+): { minzoom: number; maxzoom: number } {
+  return bandZoomRange(cell !== null ? detectEncBand(cell) : null, userMinzoom, userMaxzoom);
+}

@@ -429,8 +429,8 @@ export function setCacheBytes(setId: string): number {
 /**
  * A `geojsonFor` hook for `processS57Directory` over `cellsDir(setId)`: it
  * hardlinks each cell's cached GeoJSON into the bucket's dir in place of
- * running GDAL. A cell's files are named after its `.000` file, as GDAL
- * named them.
+ * running GDAL, marked complete as only a complete export is cached. A
+ * cell's files are named after its `.000` file, as GDAL named them.
  */
 export function cachedGeojsonFor(
   setId: string
@@ -442,6 +442,8 @@ export function cachedGeojsonFor(
       const geojsonDir = path.join(path.dirname(path.dirname(encFile)), 'geojson');
       if (isWithinBase(geojsonDir, cellsDir(setId)) && fs.existsSync(geojsonDir)) {
         linkCellFiles(geojsonDir, outDir);
+        const stem = path.basename(encFile).replace(/\.000$/i, '');
+        fs.writeFileSync(path.join(outDir, `${COMPLETE_MARKER_PREFIX}${stem}`), '');
       }
     }
     return Promise.resolve();
