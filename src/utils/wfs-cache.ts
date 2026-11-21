@@ -27,7 +27,7 @@ import {
   type WfsFeature
 } from './wfs-query.js';
 
-const SCHEMA_VERSION = '5';
+const SCHEMA_VERSION = '6';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS features (
@@ -35,7 +35,7 @@ const SCHEMA = `
     upstream TEXT NOT NULL,
     type_name TEXT NOT NULL,
     fid TEXT NOT NULL,
-    fetched_at INTEGER NOT NULL,
+    ord REAL NOT NULL,
     w REAL NOT NULL, s REAL NOT NULL, e REAL NOT NULL, n REAL NOT NULL,
     data BLOB NOT NULL,
     UNIQUE (upstream, type_name, fid)
@@ -49,6 +49,7 @@ const SCHEMA = `
     w REAL NOT NULL, s REAL NOT NULL, e REAL NOT NULL, n REAL NOT NULL,
     mw REAL NOT NULL, ms REAL NOT NULL, me REAL NOT NULL, mn REAL NOT NULL,
     fetched_at INTEGER NOT NULL,
+    ord REAL NOT NULL,
     started INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS covered_layer ON covered (upstream, type_name);
@@ -68,7 +69,7 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS staged (
     stage INTEGER NOT NULL,
     fid TEXT NOT NULL,
-    fetched_at INTEGER NOT NULL,
+    ord REAL NOT NULL,
     w REAL NOT NULL, s REAL NOT NULL, e REAL NOT NULL, n REAL NOT NULL,
     data BLOB NOT NULL,
     UNIQUE (stage, fid)
@@ -86,6 +87,15 @@ export interface Layer {
   upstream: string;
   typeName: string;
 }
+
+/**
+ * When a read began: the time, which its area's age is counted from, and its place in the
+ * order of reads and pages (`orderAt`), which says what it saw. A number is both.
+ */
+export type ReadStart = number | { at: number; order: number };
+
+const startOf = (start: ReadStart): { at: number; order: number } =>
+  typeof start === 'number' ? { at: start, order: start } : start;
 
 /** An area read whole: its box, and the box as its requests wrote it. */
 export interface Area {
@@ -186,7 +196,7 @@ export class Pin {
 
 interface StagedRow {
   fid: string;
-  fetched_at: number;
+  ord: number;
   w: number;
   s: number;
   e: number;
@@ -215,12 +225,14 @@ interface HeldArea {
   box: Box;
   /** As far as its read's answer reached (`answerBox`). */
   margin: Box;
-  since: number;
+  /** Where its read began in the order of reads and pages. */
+  order: number;
 }
 
 interface NotedAbsent {
   box: Box;
-  fetchedAt: number;
+  /** Where its page came in the order of reads and pages. */
+  order: number;
   /** The areas it is noted absent from. */
   covers: ReadonlySet<number>;
 }
@@ -237,7 +249,7 @@ interface NotedAbsent {
  */
 function belongs(box: Box, feature: NotedAbsent, covers: readonly HeldArea[]): boolean | undefined {
   const say = (c: HeldArea): 'seen' | 'gone' | 'unsure' =>
-    !feature.covers.has(c.id) ? 'seen' : feature.fetchedAt < c.since ? 'gone' : 'unsure';
+    !feature.covers.has(c.id) ? 'seen' : feature.order < c.order ? 'gone' : 'unsure';
   const [fw, fs, fe, fn] = feature.box;
   const reach: Box = [
     Math.max(box[0], fw),
@@ -277,16 +289,36 @@ export class WfsCache {
   private readonly statements: Record<string, StatementSync>;
   private readonly pins = new Set<Pin>();
   private nextStage = 1;
+  private lastOrder: number;
 
   constructor(readonly file: string) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     this.db = openStore(file);
     try {
       this.statements = this.prepareAll();
+      this.lastOrder =
+        (
+          this.db
+            .prepare(
+              'SELECT MAX(m) AS m FROM (SELECT MAX(ord) AS m FROM features UNION ALL SELECT MAX(ord) FROM covered)'
+            )
+            .get() as { m: number | null }
+        ).m ?? -Infinity;
     } catch (err) {
       closeQuietly(this.db);
       throw err;
     }
+  }
+
+  /**
+   * A place in the order of reads and pages for something at `now`: `now`, or just after the
+   * last place given when that is later, in this process or one before it. A read begun after
+   * a page came is ordered after it, in the same millisecond too and if the clock is set back;
+   * an area's age is counted from its read's time, not from this.
+   */
+  orderAt(now: number): number {
+    this.lastOrder = Math.max(now, this.lastOrder + 0.001);
+    return this.lastOrder;
   }
 
   private prepareAll(): Record<string, StatementSync> {
@@ -305,12 +337,12 @@ export class WfsCache {
       memberData: p('SELECT data FROM covered_member WHERE id = ?'),
       // A page received later replaces a kept feature; one received earlier does not.
       upsert: p(`
-        INSERT INTO features (upstream, type_name, fid, fetched_at, w, s, e, n, data)
+        INSERT INTO features (upstream, type_name, fid, ord, w, s, e, n, data)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (upstream, type_name, fid) DO UPDATE SET
-          fetched_at = excluded.fetched_at, w = excluded.w, s = excluded.s, e = excluded.e,
+          ord = excluded.ord, w = excluded.w, s = excluded.s, e = excluded.e,
           n = excluded.n, data = excluded.data
-        WHERE excluded.fetched_at >= features.fetched_at
+        WHERE excluded.ord >= features.ord
       `),
       rowOf: p(
         'SELECT id, w, s, e, n FROM features WHERE upstream = ? AND type_name = ? AND fid = ?'
@@ -318,10 +350,10 @@ export class WfsCache {
       boxDelete: p('DELETE FROM feature_box WHERE id = ?'),
       boxInsert: p('INSERT INTO feature_box (id, minx, maxx, miny, maxy) VALUES (?, ?, ?, ?, ?)'),
       stageInsert: p(`
-        INSERT OR REPLACE INTO staged (stage, fid, fetched_at, w, s, e, n, data)
+        INSERT OR REPLACE INTO staged (stage, fid, ord, w, s, e, n, data)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `),
-      stagedOf: p('SELECT fid, fetched_at, w, s, e, n, data FROM staged WHERE stage = ?'),
+      stagedOf: p('SELECT fid, ord, w, s, e, n, data FROM staged WHERE stage = ?'),
       stagedCount: p('SELECT COUNT(*) AS n FROM staged WHERE stage = ?'),
       stageDelete: p('DELETE FROM staged WHERE stage = ?'),
       coversIn: p(`
@@ -329,37 +361,39 @@ export class WfsCache {
         WHERE upstream = ? AND type_name = ? AND fetched_at >= ?
           AND e > ? AND w < ? AND n > ? AND s < ?
       `),
-      // Reads begun in the same millisecond are ordered by their stages.
+      // Reads begun at the same place in the order are ordered by their stages.
       newerOverlapping: p(`
         SELECT 1 FROM covered
-        WHERE upstream = ? AND type_name = ? AND (fetched_at > ? OR (fetched_at = ? AND started > ?))
+        WHERE upstream = ? AND type_name = ? AND (ord > ? OR (ord = ? AND started > ?))
           AND e > ? AND w < ? AND n > ? AND s < ? LIMIT 1
       `),
       newerSameBox: p(`
         SELECT 1 FROM covered
         WHERE upstream = ? AND type_name = ? AND box_text = ?
-          AND (fetched_at > ? OR (fetched_at = ? AND started > ?)) LIMIT 1
+          AND (ord > ? OR (ord = ? AND started > ?)) LIMIT 1
       `),
       exactIn: p(`
         SELECT id FROM covered
         WHERE upstream = ? AND type_name = ? AND box_text = ? AND fetched_at >= ?
-        ORDER BY fetched_at DESC, started DESC, id DESC LIMIT 1
+        ORDER BY ord DESC, started DESC, id DESC LIMIT 1
       `),
       coverInsert: p(`
         INSERT INTO covered
-          (upstream, type_name, box_text, w, s, e, n, mw, ms, me, mn, fetched_at, started)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (upstream, type_name, box_text, w, s, e, n, mw, ms, me, mn, fetched_at, ord, started)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       memberInsert: p('INSERT INTO covered_member (covered_id, fid, data) VALUES (?, ?, ?)'),
-      // A box inside a newer one adds nothing to an upstream answered by box.
+      // A box inside a newer one, its answer's margin inside the newer one's too, adds nothing
+      // to an upstream answered by box: what its margin noted absent, the newer one noted too.
       containedCovers: p(`
         SELECT id FROM covered WHERE upstream = ? AND type_name = ?
-          AND (fetched_at < ? OR (fetched_at = ? AND started <= ?))
-          AND w >= ? AND s >= ? AND e <= ? AND n <= ? AND id <> ?
+          AND (ord < ? OR (ord = ? AND started <= ?))
+          AND w >= ? AND s >= ? AND e <= ? AND n <= ?
+          AND mw >= ? AND ms >= ? AND me <= ? AND mn <= ? AND id <> ?
       `),
       sameBoxCovers: p(`
         SELECT id FROM covered WHERE upstream = ? AND type_name = ? AND box_text = ?
-          AND (fetched_at < ? OR (fetched_at = ? AND started <= ?)) AND id <> ?
+          AND (ord < ? OR (ord = ? AND started <= ?)) AND id <> ?
       `),
       coverDelete: p('DELETE FROM covered WHERE id = ?'),
       membersDelete: p('DELETE FROM covered_member WHERE covered_id = ?'),
@@ -372,14 +406,14 @@ export class WfsCache {
       absentInsert: p('INSERT INTO covered_absent (covered_id, feature_id) VALUES (?, ?)'),
       // The areas whose answers reach a box, the newest first.
       coversNear: p(`
-        SELECT id, w, s, e, n, mw, ms, me, mn, fetched_at FROM covered
+        SELECT id, w, s, e, n, mw, ms, me, mn, ord FROM covered
         WHERE upstream = ? AND type_name = ? AND me >= ? AND mw <= ? AND mn >= ? AND ms <= ?
           AND id <> ?
-        ORDER BY fetched_at DESC, started DESC, id DESC
+        ORDER BY ord DESC, started DESC, id DESC
       `),
       absencesOf: p(`
         SELECT a.feature_id AS id, a.covered_id AS cover,
-          f.w AS w, f.s AS s, f.e AS e, f.n AS n, f.fetched_at AS fetched_at
+          f.w AS w, f.s AS s, f.e AS e, f.n AS n, f.ord AS ord
         FROM covered_absent a JOIN features f ON f.id = a.feature_id
         WHERE a.feature_id IN (SELECT value FROM json_each(?))
       `),
@@ -387,7 +421,7 @@ export class WfsCache {
       absentDeleteFeature: p('DELETE FROM covered_absent WHERE feature_id = ?'),
       unseenIn: p(`
         SELECT f.id AS id FROM feature_box b JOIN features f ON f.id = b.id
-        WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at < ?
+        WHERE f.upstream = ? AND f.type_name = ? AND f.ord < ?
           AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
           AND f.w >= ? AND f.e <= ? AND f.s >= ? AND f.n <= ?
       `),
@@ -396,7 +430,7 @@ export class WfsCache {
       // one was kept, and keeping the area would answer with it.
       keptMeanwhile: p(`
         SELECT 1 FROM feature_box b JOIN features f ON f.id = b.id
-        WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at >= ?
+        WHERE f.upstream = ? AND f.type_name = ? AND f.ord >= ?
           AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
           AND f.e >= ? AND f.w <= ? AND f.n >= ? AND f.s <= ?
           AND f.fid NOT IN (SELECT fid FROM staged WHERE stage = ?)
@@ -443,11 +477,11 @@ export class WfsCache {
   }
 
   /**
-   * Stages `features`, received at `at`; a feature staged before is replaced.
+   * Stages `features`, received at `order` (`orderAt`); a feature staged before is replaced.
    * Returns false, staging none, when one is not an object or has no id or no
    * coordinates: such a page cannot be answered again from the store.
    */
-  stage(stage: number, features: readonly WfsFeature[], at: number): boolean {
+  stage(stage: number, features: readonly WfsFeature[], order: number): boolean {
     if (features.some((f) => typeof f !== 'object' || f === null || Array.isArray(f))) {
       return false;
     }
@@ -461,7 +495,7 @@ export class WfsCache {
         this.q('stageInsert').run(
           stage,
           id as string,
-          at,
+          order,
           w,
           s,
           e,
@@ -483,7 +517,7 @@ export class WfsCache {
   }
 
   /**
-   * Whether a read of `area` begun at `since` is out of date: a newer read of it was
+   * Whether a read of `area` begun at `since` in the order is out of date: a newer read of it was
    * published, or (by box) a feature reaching it was kept meanwhile that its pages did
    * not give, which it can neither keep nor drop.
    */
@@ -538,10 +572,10 @@ export class WfsCache {
   }
 
   /**
-   * Publishes a whole read of `area` begun at `since`, in one transaction: the
+   * Publishes a whole read of `area` begun at `start`, in one transaction: the
    * features `stage` holds (none for a count of none) are kept, and the area is
-   * held as of `since`. For an upstream answered `byBox`, a feature wholly inside
-   * the box fetched before `since` and not read again is gone upstream and
+   * held as of `start`. For an upstream answered `byBox`, a feature wholly inside
+   * the box received before the read began and not read again is gone upstream and
    * dropped, and a box inside the new one is no longer held on its own; for any
    * other, the area keeps the features it gave as it gave them. A read that is
    * out of date (`superseded`) is not published: it would bring back what a
@@ -552,9 +586,10 @@ export class WfsCache {
     stage: number | undefined,
     layer: Layer,
     area: Area,
-    since: number,
+    start: ReadStart,
     byBox: boolean
   ): number | undefined {
+    const { at, order: since } = startOf(start);
     return this.inTransaction(() => {
       if (this.superseded(stage, layer, area, since, byBox)) {
         if (stage !== undefined) {
@@ -583,6 +618,7 @@ export class WfsCache {
           ms,
           me,
           mn,
+          at,
           since,
           started
         ).lastInsertRowid
@@ -654,6 +690,10 @@ export class WfsCache {
         s,
         e,
         n,
+        mw,
+        ms,
+        me,
+        mn,
         coveredId
       ) as { id: number }[]) {
         this.dropCover(id, false);
@@ -674,17 +714,7 @@ export class WfsCache {
     if (before) {
       this.preserve('feature', before.id);
     }
-    this.q('upsert').run(
-      layer.upstream,
-      layer.typeName,
-      r.fid,
-      r.fetched_at,
-      r.w,
-      r.s,
-      r.e,
-      r.n,
-      r.data
-    );
+    this.q('upsert').run(layer.upstream, layer.typeName, r.fid, r.ord, r.w, r.s, r.e, r.n, r.data);
     const row = this.q('rowOf').get(layer.upstream, layer.typeName, r.fid) as {
       id: number;
       w: number;
@@ -787,11 +817,11 @@ export class WfsCache {
       s: number;
       e: number;
       n: number;
-      fetched_at: number;
+      ord: number;
     }[]) {
       let a = absent.get(r.id);
       if (!a) {
-        a = { box: [r.w, r.s, r.e, r.n], fetchedAt: r.fetched_at, covers: new Set() };
+        a = { box: [r.w, r.s, r.e, r.n], order: r.ord, covers: new Set() };
         absent.set(r.id, a);
       }
       a.covers.add(r.cover);
@@ -811,13 +841,13 @@ export class WfsCache {
         ms: number;
         me: number;
         mn: number;
-        fetched_at: number;
+        ord: number;
       }[]
     ).map((c): HeldArea => ({
       id: c.id,
       box: [c.w, c.s, c.e, c.n],
       margin: [c.mw, c.ms, c.me, c.mn],
-      since: c.fetched_at
+      order: c.ord
     }));
     const left = new Set<number>();
     for (const [id, feature] of absent) {

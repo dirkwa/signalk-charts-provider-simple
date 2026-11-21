@@ -20,7 +20,7 @@
 import crypto from 'crypto';
 import http from 'http';
 import type { AddressInfo } from 'net';
-import type { Layer, Pin, WfsCache } from './wfs-cache.js';
+import type { Layer, Pin, ReadStart, WfsCache } from './wfs-cache.js';
 import {
   answerBox,
   featureQuery,
@@ -87,7 +87,8 @@ interface UpstreamRead {
   spoilt: boolean;
   /** Every page has passed and the area is held. */
   held: boolean;
-  startedAt: number;
+  /** Its time, for the area's age, and its place in the order of reads and pages. */
+  startedAt: Exclude<ReadStart, number>;
   /** Where its pages wait until the area is whole (`WfsCache.stage`). */
   stage: number;
 }
@@ -156,7 +157,6 @@ export class WfsProxy {
   private readonly storeReads = new Map<string, StoreRead>();
   private readonly fetchUpstream: typeof fetch;
   private readonly now: () => number;
-  private lastMark = -Infinity;
 
   constructor(options: WfsProxyOptions) {
     this.options = options;
@@ -167,15 +167,6 @@ export class WfsProxy {
   /** Takes `settings` in place of those it has; reads going on keep their way. */
   configure(settings: Partial<WfsProxySettings>): void {
     this.options = { ...this.options, ...settings };
-  }
-
-  /**
-   * The time now, later than any it gave before: a read begun after a page came is seen to
-   * have begun after it, in the same millisecond too, so the store can order them.
-   */
-  private mark(): number {
-    this.lastMark = Math.max(this.now(), this.lastMark + 0.001);
-    return this.lastMark;
   }
 
   upstreams(): readonly string[] {
@@ -427,7 +418,7 @@ export class WfsProxy {
       inFlight: 0,
       spoilt: false,
       held: false,
-      startedAt: this.mark(),
+      startedAt: { at: now, order: this.options.cache.orderAt(now) },
       stage: this.options.cache.beginStage()
     };
     this.upstreamReads.set(readKey, read);
@@ -525,7 +516,7 @@ export class WfsProxy {
       }
       read.matched = matched;
     }
-    if (!this.options.cache.stage(read.stage, features, this.mark())) {
+    if (!this.options.cache.stage(read.stage, features, this.options.cache.orderAt(this.now()))) {
       this.spoil(read);
       return;
     }

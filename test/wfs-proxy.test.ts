@@ -695,6 +695,27 @@ describe('WfsCache', () => {
     cache.close();
   });
 
+  it("a newer box holding an older one is not its replacement where the older one's answer reached further", () => {
+    const cache = new WfsCache(path.join(dir, 's.sqlite'));
+    const older: Box = [22, 60, 22.2, 60.1];
+    const newer: Box = [22, 60, 22.2, 61];
+    // South of the older box, inside its answer's margin and outside the newer one's.
+    const south = {
+      type: 'Feature',
+      id: 'south',
+      geometry: { type: 'Point', coordinates: [22.1, 59.9881] },
+      properties: {}
+    };
+    assert.ok(answerBox(older)[1] < 59.9881 && answerBox(newer)[1] > 59.9881);
+    keepWhole(cache, layer, [south], WIDE, 1);
+    assert.strictEqual(keepWhole(cache, layer, [], older, 5), 0);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, older, answerBox(older))), []);
+    // The newer box's answer does not reach the point, so it says nothing of it.
+    assert.strictEqual(keepWhole(cache, layer, [], newer, 9), 0);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, older, answerBox(older))), []);
+    cache.close();
+  });
+
   it('pages staged but not published change nothing', () => {
     const cache = new WfsCache(path.join(dir, 'f.sqlite'));
     keepWhole(cache, layer, AREAS.slice(0, 10), WIDE, 1);
@@ -884,6 +905,26 @@ describe('WfsProxy', () => {
     now += READ_IDLE_MS + 5000;
     mayRefresh = true;
     await readLayer(base, BOX);
+    assert.ok(upstream.seen.length > 0);
+    await proxy.close();
+    cache.close();
+  });
+
+  it("a clock set back keeps reads in order but does not make an area's age younger", async () => {
+    let now = 100 * (READ_IDLE_MS + 5000);
+    const { cache, proxy } = proxyWith('p3b.sqlite', { now: () => now });
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await readLayer(base, BOX);
+    now = 0;
+    const other: Box = [22.02, 60.06, 22.12, 60.1];
+    const held = await readLayer(base, other);
+    upstream.seen.length = 0;
+    assert.deepStrictEqual([...(await readLayer(base, other))].sort(), [...held].sort());
+    assert.strictEqual(upstream.seen.length, 0);
+    // Past the maximum age (1 s) of the time it was read, not of its place in the order.
+    now += READ_IDLE_MS + 5000;
+    await readLayer(base, other);
     assert.ok(upstream.seen.length > 0);
     await proxy.close();
     cache.close();
@@ -1375,7 +1416,7 @@ describe('WfsProxy', () => {
     cache.close();
   });
 
-  it('a count while a page is on its way keeps that read', async () => {
+  it('a count while a page is on its way keeps that read', { timeout: 10_000 }, async () => {
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -1406,7 +1447,14 @@ describe('WfsProxy', () => {
     // One page holds the whole area.
     const page = pageOf(base, BOX, 'IDENTIFIER', 0, 1000);
     try {
-      await asked;
+      const first = await Promise.race([
+        asked.then(() => 'asked'),
+        page.then(
+          () => 'page',
+          () => 'page'
+        )
+      ]);
+      assert.strictEqual(first, 'asked', 'the page was answered without asking upstream');
       const counted = await fetch(
         `${base}?${query('DepthArea_A', BOX, { resultType: 'hits', sortBy: 'IDENTIFIER' })}`
       );

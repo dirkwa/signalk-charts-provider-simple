@@ -27,7 +27,9 @@ upstream as it is, like any other.
   features, or be the server's own page limit. A count of none holds the
   area at once. A read whose area a newer read overlapping it was kept for
   meanwhile is not kept, so it cannot bring back what that one dropped;
-  reads and pages are ordered as they come, in the same millisecond too. A
+  reads and pages are ordered as they come, in the same millisecond too and
+  if the clock is set back, while an area's age is counted from the time its
+  read began. A
   very large reply, or one the upstream breaks off, is passed on but not
   kept; a broken one is broken off to the client too.
 - For Traficom's WFS, each feature is kept once, by its id, and an area the
