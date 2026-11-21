@@ -313,10 +313,10 @@ export function chooseOutputFilename(opts: {
  * cell per worker at a time. One unreadable layer or cell is logged, not
  * fatal: a 60-cell bundle still converts when one cell is damaged.
  *
- * With `perCell` (the chart-set cache, which keeps output per cell), every
- * output is named after its cell and each cell exported without an error
- * gets an empty `${COMPLETE_MARKER_PREFIX}<cell>` file, so a partial export
- * is never kept as complete.
+ * Each cell exported without an error gets an empty
+ * `${COMPLETE_MARKER_PREFIX}<cell>` file, so a partial export is never kept
+ * (the chart-set cache) or claimed as coverage (s57-coverage.ts) as
+ * complete. With `perCell`, every output is named after its cell.
  */
 async function exportAllLayersToGeoJSON(
   encFiles: readonly string[],
@@ -355,7 +355,7 @@ async function exportAllLayersToGeoJSON(
     if (result.errors.length > 0) {
       fs.appendFileSync(errorLog, result.errors.join('\n') + '\n');
     }
-    if (perCell && result.complete) {
+    if (result.complete) {
       fs.writeFileSync(path.join(geojsonDir, `${COMPLETE_MARKER_PREFIX}${name}`), '');
     }
   });

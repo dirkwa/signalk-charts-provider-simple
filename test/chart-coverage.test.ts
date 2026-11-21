@@ -53,6 +53,12 @@ function coverageExport(
   fs.writeFileSync(file, gzip ? gzipSync(text) : text);
 }
 
+function markComplete(dir: string, ...cells: string[]): void {
+  for (const cell of cells) {
+    fs.writeFileSync(path.join(dir, `.complete-${cell}`), '');
+  }
+}
+
 describe('mergeTiles', () => {
   it('puts a parent in place of its four children, over several zooms', () => {
     const z2 = [0, 1].flatMap((y) => [0, 1].map((x) => ({ x, y })));
@@ -114,6 +120,26 @@ describe('polygonTiles', () => {
     );
   });
 
+  it('keeps the edges a tiler draws where the union would drop a vertex', () => {
+    // [10, 40] lies on the straight line from [0, 0] to [20, 80] in
+    // longitude and latitude, not in Web Mercator, where the polygon bends
+    // in there and leaves 10/535/387 out.
+    const ring: [number, number][] = [
+      [0, 0],
+      [20, 0],
+      [20, 80],
+      [10, 40],
+      [0, 0]
+    ];
+    const covers = (tile: string, z: number, x: number, y: number): boolean => {
+      const [tz, tx, ty] = tile.split('/').map(Number);
+      return tz <= z && x >> (z - tz) === tx && y >> (z - tz) === ty;
+    };
+    const tiles = polygonTiles([[ring]], 10);
+    assert.ok(tiles.length > 0);
+    assert.ok(!tiles.some((t) => covers(t, 10, 535, 387)));
+  });
+
   it('lists nothing for a polygon smaller than a tile', () => {
     assert.deepStrictEqual(polygonTiles([polygon([0.1, 0.1, 0.2, 0.2])], 4), []);
     assert.deepStrictEqual(polygonTiles([], 4), []);
@@ -170,6 +196,8 @@ describe('encCoverage', () => {
       { box: tileBox(1, 0, 0) }
     ]);
 
+    markComplete(path.join(dir, 'geojson'), 'US3AA1AA', 'US4AA1AA', 'US4AA1AB', 'US5AA1AA');
+
     assert.deepStrictEqual(encCoverage(dir, 9, 16, 16), [
       { minzoom: 9, maxzoom: 12, tiles: ['12/1200/1500', '12/1201/1500'] },
       { minzoom: 10, maxzoom: 14, tiles: ['14/4800/6000'] },
@@ -180,6 +208,7 @@ describe('encCoverage', () => {
   it('places the export of a lone cell at the user’s zooms', () => {
     const dir = tmpDir('lone');
     coverageExport(path.join(dir, 'geojson', 'M_COVR.geojson'), [{ box: tileBox(9, 10, 10) }]);
+    markComplete(path.join(dir, 'geojson'), 'US5AA1AA');
     assert.deepStrictEqual(encCoverage(dir, 9, 16, 16), [{ minzoom: 9, tiles: ['9/10/10'] }]);
   });
 
@@ -189,7 +218,33 @@ describe('encCoverage', () => {
       { box: [-179.5, 0, 179.5, 1] },
       { catcov: 2, box: tileBox(9, 10, 10) }
     ]);
+    markComplete(path.join(dir, 'geojson'), 'US3AA1AA');
     assert.strictEqual(encCoverage(dir, 9, 16, 16), null);
+  });
+
+  it('leaves out cells exported in part', () => {
+    const dir = tmpDir('partial');
+    coverageExport(path.join(dir, 'geojson', 'M_COVR__US5AA1AA.geojson'), [
+      { box: tileBox(14, 4801, 6000) }
+    ]);
+    coverageExport(path.join(dir, 'geojson', 'M_COVR__US5AA1AB.geojson'), [
+      { box: tileBox(14, 4802, 6000) }
+    ]);
+    coverageExport(path.join(dir, 'lone', 'M_COVR.geojson'), [{ box: tileBox(14, 4803, 6000) }]);
+    markComplete(path.join(dir, 'geojson'), 'US5AA1AB');
+    assert.deepStrictEqual(encCoverage(dir, 9, 16, 16), [{ minzoom: 12, tiles: ['14/4802/6000'] }]);
+  });
+
+  it('leaves out bands the chart is not tiled at', () => {
+    const dir = tmpDir('beyond');
+    coverageExport(path.join(dir, 'geojson', 'M_COVR__US6AA1AA.geojson'), [
+      { box: tileBox(14, 4801, 6000) }
+    ]);
+    coverageExport(path.join(dir, 'geojson', 'M_COVR__US3AA1AA.geojson'), [
+      { box: tileBox(10, 300, 375) }
+    ]);
+    markComplete(path.join(dir, 'geojson'), 'US6AA1AA', 'US3AA1AA');
+    assert.deepStrictEqual(encCoverage(dir, 9, 12, 12), [{ minzoom: 9, tiles: ['10/300/375'] }]);
   });
 });
 

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { gunzipSync } from 'zlib';
 import { cellZoomRange, exportFileParts } from './s57-band.js';
+import { COMPLETE_MARKER_PREFIX } from './s57-export-files.js';
 import { polygonTiles, type ChartCoverage, type CoveragePolygon } from './chart-coverage.js';
 
 const COVERAGE_LAYER = 'M_COVR';
@@ -24,21 +25,37 @@ interface CoverageFeature {
   geometry?: { type?: string; coordinates?: unknown } | null;
 }
 
-function exportFiles(dir: string): string[] {
-  const files: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+/** The `M_COVR` exports under `dir` of the cells exported completely. */
+function coverageExports(dir: string): { file: string; cell: string | null }[] {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const complete = new Set(
+    entries
+      .filter((e) => e.isFile() && e.name.startsWith(COMPLETE_MARKER_PREFIX))
+      .map((e) => e.name.slice(COMPLETE_MARKER_PREFIX.length))
+  );
+  const found: { file: string; cell: string | null }[] = [];
+  for (const entry of entries) {
     // `.merged` holds copies of the exports, merged by layer.
     if (entry.name.startsWith('.')) {
       continue;
     }
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...exportFiles(full));
-    } else if (/\.geojson(\.gz)?$/.test(entry.name)) {
-      files.push(full);
+      found.push(...coverageExports(full));
+      continue;
+    }
+    if (!/\.geojson(\.gz)?$/.test(entry.name)) {
+      continue;
+    }
+    const { layer, cell } = exportFileParts(entry.name);
+    // A cell missing a layer GDAL failed on may leave gaps inside its
+    // coverage. A lone cell's export carries no cell name; its directory
+    // holds that cell alone.
+    if (layer === COVERAGE_LAYER && (cell === null ? complete.size > 0 : complete.has(cell))) {
+      found.push({ file: full, cell });
     }
   }
-  return files;
+  return found;
 }
 
 function readFeatures(file: string): CoverageFeature[] {
@@ -71,7 +88,7 @@ function coveragePolygons(feature: CoverageFeature): CoveragePolygon[] {
 
 /**
  * The chart's coverage from the `M_COVR` exports of its cells anywhere under
- * `exportRoot`: per zoom range the cells are tiled at (cellZoomRange), the
+ * `exportRoot`, of each cell the export marked complete: per zoom range the cells are tiled at (cellZoomRange), the
  * tiles their coverage areas fill together. Inside its `M_COVR`, an S-57
  * cell's skin of earth (depth areas, land, …) leaves no gap, so the chart is
  * opaque there at those zooms. Above a range's maxzoom the server overzooms
@@ -88,16 +105,16 @@ export function encCoverage(
     string,
     { minzoom: number; maxzoom: number; polygons: CoveragePolygon[] }
   >();
-  for (const file of exportFiles(exportRoot)) {
-    const { layer, cell } = exportFileParts(file);
-    if (layer !== COVERAGE_LAYER) {
-      continue;
-    }
+  for (const { file, cell } of coverageExports(exportRoot)) {
     const polygons = readFeatures(file).flatMap(coveragePolygons);
     if (polygons.length === 0) {
       continue;
     }
     const range = cellZoomRange(cell, userMinzoom, userMaxzoom);
+    // A band whose zooms all lie beyond the user's is not tiled.
+    if (range.minzoom > range.maxzoom) {
+      continue;
+    }
     const key = `${String(range.minzoom)}/${String(range.maxzoom)}`;
     const group = byRange.get(key) ?? { ...range, polygons: [] };
     group.polygons.push(...polygons);

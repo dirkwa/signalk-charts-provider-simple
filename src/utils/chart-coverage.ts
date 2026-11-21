@@ -134,16 +134,16 @@ function subtract(from: readonly Interval[], cuts: Interval[]): Interval[] {
 }
 
 /**
- * The tiles at zoom `z` that `area` fills entirely. Edges are straight in
- * Web Mercator, as tilers draw them. A row of tiles is filled where both
- * its borders lie inside and no edge enters it.
+ * The tiles at zoom `z` that `area`, in tile units scaled by `scale` to
+ * zoom `z`, fills entirely. A row of tiles is filled where both its
+ * borders lie inside and no edge enters it.
  */
-function filledTiles(area: Geom[], z: number): TileXY[] {
+function filledTiles(area: Geom[], z: number, scale: number): TileXY[] {
   const n = 2 ** z;
   const rows = new Map<number, number[][]>();
   for (const polygon of area as CoveragePolygon[]) {
     for (const ring of polygon) {
-      const points = ring.map((p) => project(p, n));
+      const points = ring.map(([x, y]) => [x * scale, y * scale]);
       for (let i = 0; i + 1 < points.length; i++) {
         const edge = [...points[i], ...points[i + 1]];
         const top = Math.min(edge[1], edge[3]);
@@ -196,10 +196,17 @@ export function polygonTiles(
   if (polygons.length === 0) {
     return [];
   }
-  const [first, ...rest] = polygons as Geom[];
+  // Tilers draw edges straight in Web Mercator, and the union drops vertices
+  // that lie on a straight line: projected first, it keeps the edges the
+  // tiles show.
+  const n = 2 ** z;
+  const projected = polygons.map((polygon) =>
+    polygon.map((ring) => ring.map((point) => project(point, n)))
+  ) as Geom[];
+  const [first, ...rest] = projected;
   const area = union(first, ...rest);
   for (let zoom = z; ; zoom--) {
-    const tiles = mergeTiles(filledTiles(area, zoom), zoom);
+    const tiles = mergeTiles(filledTiles(area, zoom, 2 ** (zoom - z)), zoom);
     if (tiles.length <= maxTiles || zoom === 0) {
       return tiles;
     }

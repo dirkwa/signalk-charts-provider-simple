@@ -33,12 +33,11 @@ from there, so a chart keeps it when it is moved or copied.
 - **ENC charts** (converted charts and chart sets): per IHO band, the tiles
   the union of its cells' `M_COVR` areas (CATCOV 1, or no CATCOV) fills, at
   the zooms the band is tiled at. S-57 requires a cell's skin of earth to
-  fill its coverage without gaps. Tiles are listed down to z14, or less deep
-  for overview bands and when a band would list more than 2000 tiles.
-  Above a band's maxzoom the server overzooms only the tiles no larger
+  fill its coverage without gaps. A cell GDAL read only in part claims
+  nothing. Tiles are listed to a limited depth, and less deep where a band
+  would list too many. Above a band's maxzoom the server overzooms only the tiles no larger
   scale has, so a band keeps its maxzoom unless it reaches the chart's top
   zoom.
 - **Open Data Charts sets**: one entry from z9 with the set's units, each a
   z9 tile it fills entirely. Below z9 the region overviews draw, which are
-  not claimed. A set built before charts carried a coverage gets one on its
-  next build.
+  not claimed.

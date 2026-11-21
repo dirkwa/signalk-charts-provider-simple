@@ -212,7 +212,7 @@ describe('the cache on disk', () => {
     fs.rmSync(staging, { recursive: true, force: true });
   });
 
-  it('hands the converter cached GeoJSON for its own set only', async () => {
+  it('hands the converter cached GeoJSON for its own set only, marked complete', async () => {
     const out = fs.mkdtempSync(path.join(dataDir, 'bucket-'));
     const fill = cachedGeojsonFor('Set_A');
     await fill(
@@ -222,7 +222,10 @@ describe('the cache on disk', () => {
       ],
       out
     );
-    assert.deepStrictEqual(fs.readdirSync(out), ['DEPARE__AA1CELL2.geojson.gz']);
+    assert.deepStrictEqual(fs.readdirSync(out).sort(), [
+      '.complete-AA1CELL2',
+      'DEPARE__AA1CELL2.geojson.gz'
+    ]);
   });
 
   it('prunes cells the set no longer has', () => {

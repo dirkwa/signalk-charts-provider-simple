@@ -239,9 +239,9 @@ function surfaceExportErrorsIfEmpty(geojsonDir: string, report: ConversionReport
 /**
  * Run GDAL in the charts-toolbox image on every cell under `encDir`, writing
  * `<LAYER>__<cell>.geojson` (`<LAYER>.geojson` without `multiFile`) into
- * `geojsonDir`. One unreadable layer or cell is logged, not fatal. With
- * `perCell` (the chart-set cache) every output is named after its cell and
- * each cell exported without an error is marked complete.
+ * `geojsonDir`. One unreadable layer or cell is logged, not fatal; each cell
+ * exported without an error is marked complete. With `perCell` (the
+ * chart-set cache) every output is named after its cell.
  */
 export async function exportCellsInContainer(
   encDir: string,
@@ -265,7 +265,7 @@ export async function exportCellsInContainer(
     skipLayers: SKIP_LAYERS,
     inputPrefix: mounts['/input'].prefix,
     outputPrefix: mounts['/output'].prefix,
-    markComplete: opts.perCell
+    markComplete: true
   });
 
   const result = await runContainerJob({
