@@ -885,8 +885,10 @@ async function geojsonForBucket(
     return;
   }
   stageCells(cells, bucketEncDir);
+  // Named after the cell even when alone in its band, so its coverage
+  // (s57-coverage.ts) is placed at its band's zooms.
   await exportCellsInContainer(bucketEncDir, bucketGeojsonDir, t.label, t.report, {
-    multiFile: cells.length > 1,
+    multiFile: true,
     signal: t.options.signal
   });
 }

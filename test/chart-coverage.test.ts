@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { gzipSync } from 'node:zlib';
 
 import { mergeTiles, parseCoverage, polygonTiles } from '../dist/utils/chart-coverage.js';
+import { encCoverage } from '../dist/utils/s57-coverage.js';
 import { findCharts } from '../dist/charts-loader.js';
 
 type Box = [number, number, number, number];
@@ -33,6 +34,23 @@ function polygon([west, south, east, north]: Box): [number, number][][] {
       [west, south]
     ]
   ];
+}
+
+function coverageExport(
+  file: string,
+  features: { catcov?: number | string; box: Box }[],
+  gzip = false
+): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const text = JSON.stringify({
+    type: 'FeatureCollection',
+    features: features.map(({ catcov, box }) => ({
+      type: 'Feature',
+      properties: catcov === undefined ? {} : { CATCOV: catcov },
+      geometry: { type: 'Polygon', coordinates: polygon(box) }
+    }))
+  });
+  fs.writeFileSync(file, gzip ? gzipSync(text) : text);
 }
 
 describe('mergeTiles', () => {
@@ -117,6 +135,61 @@ describe('parseCoverage', () => {
       parseCoverage(JSON.stringify([{ minzoom: 9, tiles: ['9/492'] }])),
       undefined
     );
+  });
+});
+
+describe('encCoverage', () => {
+  it('lists each band’s tiles at the band’s zooms, the top band without a maxzoom', () => {
+    const dir = tmpDir('bands');
+    // A band-3 cell over two z12 tiles, two band-4 cells sharing one z14 tile,
+    // a band-5 cell over one z14 tile and its no-coverage area.
+    const [w, s] = tileBox(12, 1200, 1500);
+    const [, , e, n] = tileBox(12, 1201, 1500);
+    coverageExport(path.join(dir, 'geojson', 'M_COVR__US3AA1AA.geojson'), [
+      { catcov: 1, box: [w, s, e, n] }
+    ]);
+    const b4 = tileBox(14, 4800, 6000);
+    const mid = (b4[0] + b4[2]) / 2;
+    coverageExport(path.join(dir, 'geojson', 'M_COVR__US4AA1AA.geojson'), [
+      { catcov: 1, box: [b4[0], b4[1], mid, b4[3]] }
+    ]);
+    coverageExport(
+      path.join(dir, 'geojson', 'M_COVR__US4AA1AB.geojson.gz'),
+      [{ catcov: '1', box: [mid, b4[1], b4[2], b4[3]] }],
+      true
+    );
+    coverageExport(path.join(dir, 'geojson', 'M_COVR__US5AA1AA.geojson'), [
+      { catcov: 1, box: tileBox(14, 4801, 6000) },
+      { catcov: 2, box: tileBox(14, 4802, 6000) }
+    ]);
+    // Not coverage, and a merged copy of the exports.
+    coverageExport(path.join(dir, 'geojson', 'DEPARE__US5AA1AA.geojson'), [
+      { box: tileBox(14, 4803, 6000) }
+    ]);
+    coverageExport(path.join(dir, 'geojson', '.merged', 'M_COVR.geojson'), [
+      { box: tileBox(1, 0, 0) }
+    ]);
+
+    assert.deepStrictEqual(encCoverage(dir, 9, 16, 16), [
+      { minzoom: 9, maxzoom: 12, tiles: ['12/1200/1500', '12/1201/1500'] },
+      { minzoom: 10, maxzoom: 14, tiles: ['14/4800/6000'] },
+      { minzoom: 12, tiles: ['14/4801/6000'] }
+    ]);
+  });
+
+  it('places the export of a lone cell at the user’s zooms', () => {
+    const dir = tmpDir('lone');
+    coverageExport(path.join(dir, 'geojson', 'M_COVR.geojson'), [{ box: tileBox(9, 10, 10) }]);
+    assert.deepStrictEqual(encCoverage(dir, 9, 16, 16), [{ minzoom: 9, tiles: ['9/10/10'] }]);
+  });
+
+  it('leaves out a ring across the antimeridian, and gives null without coverage', () => {
+    const dir = tmpDir('none');
+    coverageExport(path.join(dir, 'geojson', 'M_COVR__US3AA1AA.geojson'), [
+      { box: [-179.5, 0, 179.5, 1] },
+      { catcov: 2, box: tileBox(9, 10, 10) }
+    ]);
+    assert.strictEqual(encCoverage(dir, 9, 16, 16), null);
   });
 });
 

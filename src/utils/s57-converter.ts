@@ -31,7 +31,8 @@ import {
 } from './local-chart-source.js';
 import { patchS57Mbtiles, setMbtilesDisplayName } from './mbtiles-metadata.js';
 import { addRasterOverviews } from './raster-pyramid.js';
-import { BAND_MAX_ZOOM, BAND_MIN_ZOOM, detectEncBand, exportFileParts } from './s57-band.js';
+import { cellZoomRange, exportFileParts } from './s57-band.js';
+import { COVERAGE_METADATA_KEY } from './chart-coverage.js';
 import {
   exportCellsInContainer,
   rasterizeLandInContainer,
@@ -375,21 +376,6 @@ function surfaceExportErrorsIfEmpty(geojsonDir: string, chartNumber: string): vo
   }
 }
 
-/** A band's zoom range within the user's: the band's native scales, clamped. */
-export function bandZoomRange(
-  band: number | null,
-  userMinzoom: number,
-  userMaxzoom: number
-): { minzoom: number; maxzoom: number } {
-  if (band === null) {
-    return { minzoom: userMinzoom, maxzoom: userMaxzoom };
-  }
-  return {
-    minzoom: Math.max(userMinzoom, BAND_MIN_ZOOM[band] ?? userMinzoom),
-    maxzoom: Math.min(userMaxzoom, BAND_MAX_ZOOM[band] ?? userMaxzoom)
-  };
-}
-
 /**
  * Turn a directory of GDAL exports (`<LAYER>__<cell>.geojson[.gz]`, or
  * `<LAYER>.geojson` for a lone cell) into tiler sources: one per layer and
@@ -416,8 +402,7 @@ export function planTileSources(
       continue;
     }
     const { layer, cell } = exportFileParts(file);
-    const band = cell !== null ? detectEncBand(cell) : null;
-    const { minzoom, maxzoom } = bandZoomRange(band, userMinzoom, userMaxzoom);
+    const { minzoom, maxzoom } = cellZoomRange(cell, userMinzoom, userMaxzoom);
     if (minzoom > maxzoom) {
       continue;
     }
@@ -613,6 +598,8 @@ export async function processS57Directory(
       }
     }
 
+    await writeEncCoverage(outputPath, tmpDir, options, chartNumber);
+
     // Keep the cells the chart was built from while they are still on disk.
     if (options.keepCells) {
       try {
@@ -651,6 +638,57 @@ export async function processS57Directory(
     } catch {
       debug(`Warning: failed to clean up ${tmpDir}`);
     }
+  }
+}
+
+/**
+ * Record the chart's coverage (chart-coverage.ts) from the cells' `M_COVR`
+ * exports, which both toolchains leave under `exportRoot`. A chart without
+ * one still works; plotters then draw the charts beneath it everywhere.
+ */
+async function writeEncCoverage(
+  outputPath: string,
+  exportRoot: string,
+  options: S57ConversionOptions,
+  chartNumber: string
+): Promise<void> {
+  try {
+    const db = new DatabaseSync(outputPath);
+    try {
+      const { top } = db.prepare('SELECT MAX(zoom_level) AS top FROM tiles').get() as {
+        top: number | null;
+      };
+      const { coverage } =
+        top === null
+          ? { coverage: null }
+          : await withWorkerPool(1, options.signal, (pool) =>
+              pool.run({
+                op: 'enc-coverage',
+                exportRoot,
+                userMinzoom: options.minzoom ?? 9,
+                userMaxzoom: options.maxzoom ?? 16,
+                chartMaxzoom: top
+              })
+            );
+      db.prepare('DELETE FROM metadata WHERE name = ?').run(COVERAGE_METADATA_KEY);
+      if (coverage) {
+        db.prepare('INSERT INTO metadata (name, value) VALUES (?, ?)').run(
+          COVERAGE_METADATA_KEY,
+          JSON.stringify(coverage)
+        );
+      }
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    if (options.signal?.aborted) {
+      throw asCancellation(err);
+    }
+    const message = `WARNING: the chart's coverage was not recorded: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+    debug(message);
+    appendLog(chartNumber, message);
   }
 }
 
