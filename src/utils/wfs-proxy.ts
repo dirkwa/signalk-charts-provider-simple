@@ -382,7 +382,9 @@ export class WfsProxy {
     // By box: as much as the upstream would answer, and the features past the box it adds.
     const pinned = (since: number): Pin | undefined => {
       if (byBox) {
-        return cache.covers(layer, q.box, since) ? cache.pinIn(layer, answerBox(q.box)) : undefined;
+        return cache.covers(layer, q.box, since)
+          ? cache.answerIn(layer, q.box, answerBox(q.box))
+          : undefined;
       }
       const coveredId = cache.exactCover(layer, q.boxText, since);
       return coveredId === undefined ? undefined : cache.pinArea(coveredId);

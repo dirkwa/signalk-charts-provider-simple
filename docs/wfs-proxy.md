@@ -36,7 +36,10 @@ upstream as it is, like any other.
   in its own grid, turned by up to 6° against latitude and longitude across
   Finland, and answers features that far outside it: the store answers them
   too, and a few more. A feature wholly inside a box read again whole that
-  the read did not return is dropped: it is gone upstream.
+  the read did not return is dropped: it is gone upstream. One reaching past
+  that box is kept for other areas, as it may only reach the box by its own
+  box, but not answered where it reaches the box; an area where it reaches
+  boxes that returned it and boxes that did not is read upstream.
 - For any other WFS, whose way of choosing features for a box the proxy does
   not know, an area is answered from the store only for the same box, with
   the features that box gave, as it gave them.

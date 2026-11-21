@@ -5,7 +5,10 @@
  * in an R-tree; for any other, each area keeps the features it gave as it gave
  * them. The pages of a read upstream are staged and published in one
  * transaction once the area is whole, and not at all when a newer read of the
- * area was published meanwhile. A read from the store pins the features it
+ * area was published meanwhile. A kept feature reaching past a box read again
+ * whole that the read did not return is noted absent from that box
+ * (`covered_absent`): it may be gone, or only reach the box by its own box, so
+ * it is kept for other areas but not answered inside that one. A read from the store pins the features it
  * answers (`Pin`): one changed or dropped meanwhile is kept as it was for it.
  * Deleting the file loses nothing but downloads.
  */
@@ -16,7 +19,7 @@ import zlib from 'zlib';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { featureBox, featureId, uncovered, type Box, type WfsFeature } from './wfs-query.js';
 
-const SCHEMA_VERSION = '3';
+const SCHEMA_VERSION = '4';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS features (
@@ -36,7 +39,8 @@ const SCHEMA = `
     type_name TEXT NOT NULL,
     box_text TEXT NOT NULL,
     w REAL NOT NULL, s REAL NOT NULL, e REAL NOT NULL, n REAL NOT NULL,
-    fetched_at INTEGER NOT NULL
+    fetched_at INTEGER NOT NULL,
+    started INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS covered_layer ON covered (upstream, type_name);
   CREATE TABLE IF NOT EXISTS covered_member (
@@ -46,6 +50,12 @@ const SCHEMA = `
     data BLOB NOT NULL
   );
   CREATE INDEX IF NOT EXISTS covered_member_area ON covered_member (covered_id, fid);
+  CREATE TABLE IF NOT EXISTS covered_absent (
+    covered_id INTEGER NOT NULL,
+    feature_id INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS covered_absent_feature ON covered_absent (feature_id);
+  CREATE INDEX IF NOT EXISTS covered_absent_area ON covered_absent (covered_id);
   CREATE TABLE IF NOT EXISTS staged (
     stage INTEGER NOT NULL,
     fid TEXT NOT NULL,
@@ -232,36 +242,62 @@ export class WfsCache {
         WHERE upstream = ? AND type_name = ? AND fetched_at >= ?
           AND e > ? AND w < ? AND n > ? AND s < ?
       `),
+      // Reads begun in the same millisecond are ordered by their stages.
       newerOverlapping: p(`
         SELECT 1 FROM covered
-        WHERE upstream = ? AND type_name = ? AND fetched_at > ?
+        WHERE upstream = ? AND type_name = ? AND (fetched_at > ? OR (fetched_at = ? AND started > ?))
           AND e > ? AND w < ? AND n > ? AND s < ? LIMIT 1
       `),
       newerSameBox: p(`
         SELECT 1 FROM covered
-        WHERE upstream = ? AND type_name = ? AND box_text = ? AND fetched_at > ? LIMIT 1
+        WHERE upstream = ? AND type_name = ? AND box_text = ?
+          AND (fetched_at > ? OR (fetched_at = ? AND started > ?)) LIMIT 1
       `),
       exactIn: p(`
         SELECT id FROM covered
         WHERE upstream = ? AND type_name = ? AND box_text = ? AND fetched_at >= ?
-        ORDER BY fetched_at DESC, id DESC LIMIT 1
+        ORDER BY fetched_at DESC, started DESC, id DESC LIMIT 1
       `),
       coverInsert: p(`
-        INSERT INTO covered (upstream, type_name, box_text, w, s, e, n, fetched_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO covered (upstream, type_name, box_text, w, s, e, n, fetched_at, started)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `),
       memberInsert: p('INSERT INTO covered_member (covered_id, fid, data) VALUES (?, ?, ?)'),
       // A box inside a newer one adds nothing to an upstream answered by box.
       containedCovers: p(`
-        SELECT id FROM covered WHERE upstream = ? AND type_name = ? AND fetched_at <= ?
+        SELECT id FROM covered WHERE upstream = ? AND type_name = ?
+          AND (fetched_at < ? OR (fetched_at = ? AND started <= ?))
           AND w >= ? AND s >= ? AND e <= ? AND n <= ? AND id <> ?
       `),
       sameBoxCovers: p(`
         SELECT id FROM covered WHERE upstream = ? AND type_name = ? AND box_text = ?
-          AND fetched_at <= ? AND id <> ?
+          AND (fetched_at < ? OR (fetched_at = ? AND started <= ?)) AND id <> ?
       `),
       coverDelete: p('DELETE FROM covered WHERE id = ?'),
       membersDelete: p('DELETE FROM covered_member WHERE covered_id = ?'),
+      // Kept before the read began, reaching its box and not wholly inside it (those are
+      // dropped), and not in its pages (those are kept again, as of the read).
+      absentInsert: p(`
+        INSERT INTO covered_absent (covered_id, feature_id)
+        SELECT ?, f.id FROM feature_box b JOIN features f ON f.id = b.id
+        WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at < ?
+          AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
+          AND f.e >= ? AND f.w <= ? AND f.n >= ? AND f.s <= ?
+      `),
+      // The boxes read whole since a feature was kept that did not return it.
+      absencesOf: p(`
+        SELECT a.feature_id AS id, c.w AS w, c.s AS s, c.e AS e, c.n AS n,
+          f.w AS fw, f.s AS fs, f.e AS fe, f.n AS fn
+        FROM covered_absent a JOIN covered c ON c.id = a.covered_id
+          JOIN features f ON f.id = a.feature_id
+        WHERE a.feature_id IN (SELECT value FROM json_each(?)) AND c.fetched_at > f.fetched_at
+      `),
+      absentDeleteCover: p('DELETE FROM covered_absent WHERE covered_id = ?'),
+      absentDeleteFeature: p('DELETE FROM covered_absent WHERE feature_id = ?'),
+      absentDeleteSeen: p(`
+        DELETE FROM covered_absent WHERE feature_id = ?
+          AND covered_id IN (SELECT id FROM covered WHERE fetched_at <= ?)
+      `),
       unseenIn: p(`
         SELECT f.id AS id FROM feature_box b JOIN features f ON f.id = b.id
         WHERE f.upstream = ? AND f.type_name = ? AND f.fetched_at < ?
@@ -321,10 +357,13 @@ export class WfsCache {
 
   /**
    * Stages `features`, received at `at`; a feature staged before is replaced.
-   * Returns false, staging none, when one has no id or no coordinates: such a
-   * page cannot be answered again from the store.
+   * Returns false, staging none, when one is not an object or has no id or no
+   * coordinates: such a page cannot be answered again from the store.
    */
   stage(stage: number, features: readonly WfsFeature[], at: number): boolean {
+    if (features.some((f) => typeof f !== 'object' || f === null || Array.isArray(f))) {
+      return false;
+    }
     const rows = features.map((f) => ({ f, id: featureId(f), box: featureBox(f) }));
     if (rows.some((r) => r.id === undefined || r.box === undefined)) {
       return false;
@@ -369,15 +408,31 @@ export class WfsCache {
     byBox: boolean
   ): boolean {
     const [w, s, e, n] = area.box;
+    const started = stage ?? 0;
     if (!byBox) {
       return (
-        this.q('newerSameBox').get(layer.upstream, layer.typeName, area.boxText, since) !==
-        undefined
+        this.q('newerSameBox').get(
+          layer.upstream,
+          layer.typeName,
+          area.boxText,
+          since,
+          since,
+          started
+        ) !== undefined
       );
     }
     return (
-      this.q('newerOverlapping').get(layer.upstream, layer.typeName, since, w, e, s, n) !==
-        undefined ||
+      this.q('newerOverlapping').get(
+        layer.upstream,
+        layer.typeName,
+        since,
+        since,
+        started,
+        w,
+        e,
+        s,
+        n
+      ) !== undefined ||
       this.q('keptMeanwhile').get(
         layer.upstream,
         layer.typeName,
@@ -426,9 +481,19 @@ export class WfsCache {
         this.q('stageDelete').run(stage);
       }
       const [w, s, e, n] = area.box;
+      const started = stage ?? 0;
       const coveredId = Number(
-        this.q('coverInsert').run(layer.upstream, layer.typeName, area.boxText, w, s, e, n, since)
-          .lastInsertRowid
+        this.q('coverInsert').run(
+          layer.upstream,
+          layer.typeName,
+          area.boxText,
+          w,
+          s,
+          e,
+          n,
+          since,
+          started
+        ).lastInsertRowid
       );
       if (!byBox) {
         for (const r of staged) {
@@ -439,6 +504,8 @@ export class WfsCache {
           layer.typeName,
           area.boxText,
           since,
+          since,
+          started,
           coveredId
         ) as { id: number }[]) {
           this.dropCover(id, true);
@@ -465,11 +532,28 @@ export class WfsCache {
         this.preserve('feature', id);
         this.q('featureDelete').run(id);
         this.q('boxDelete').run(id);
+        this.q('absentDeleteFeature').run(id);
       }
+      this.q('absentInsert').run(
+        coveredId,
+        layer.upstream,
+        layer.typeName,
+        since,
+        w,
+        e,
+        s,
+        n,
+        w,
+        e,
+        s,
+        n
+      );
       for (const { id } of this.q('containedCovers').all(
         layer.upstream,
         layer.typeName,
         since,
+        since,
+        started,
         w,
         s,
         e,
@@ -508,6 +592,7 @@ export class WfsCache {
     };
     this.q('boxDelete').run(row.id);
     this.q('boxInsert').run(row.id, row.w, row.e, row.s, row.n);
+    this.q('absentDeleteSeen').run(row.id, r.fetched_at);
   }
 
   private dropCover(id: number, withMembers: boolean): void {
@@ -518,6 +603,7 @@ export class WfsCache {
     }
     this.q('coverDelete').run(id);
     this.q('membersDelete').run(id);
+    this.q('absentDeleteCover').run(id);
   }
 
   /** Whether boxes fetched at `since` or later hold every feature of `layer` reaching `box`. */
@@ -568,6 +654,62 @@ export class WfsCache {
   /** The kept features of `layer` whose boxes reach `box`, pinned for one read. */
   pinIn(layer: Layer, box: Box): Pin {
     return this.pin('feature', this.idsIn(layer, box));
+  }
+
+  /**
+   * For an upstream answered by box, the kept features of `layer` whose boxes reach
+   * `answer`, pinned for one read of `box`, leaving out each one a newer read did not
+   * return where it reaches `box` (`covered_absent`). Undefined when one was not returned
+   * by reads holding only part of where it reaches `box`: the store cannot tell whether
+   * it belongs to the answer.
+   */
+  answerIn(layer: Layer, box: Box, answer: Box): Pin | undefined {
+    const ids = this.idsIn(layer, answer);
+    const absences = new Map<number, { reach: Box; covers: Box[] }>();
+    const rows = this.q('absencesOf').all(JSON.stringify(ids)) as {
+      id: number;
+      w: number;
+      s: number;
+      e: number;
+      n: number;
+      fw: number;
+      fs: number;
+      fe: number;
+      fn: number;
+    }[];
+    for (const r of rows) {
+      let absence = absences.get(r.id);
+      if (!absence) {
+        absence = {
+          reach: [
+            Math.max(box[0], r.fw),
+            Math.max(box[1], r.fs),
+            Math.min(box[2], r.fe),
+            Math.min(box[3], r.fn)
+          ],
+          covers: []
+        };
+        absences.set(r.id, absence);
+      }
+      absence.covers.push([r.w, r.s, r.e, r.n]);
+    }
+    const left = new Set<number>();
+    for (const [id, { reach, covers }] of absences) {
+      const [w, s, e, n] = reach;
+      if (w > e || s > n) {
+        continue;
+      }
+      const rest = uncovered(reach, covers);
+      if (rest.length === 0) {
+        left.add(id);
+      } else if (rest.length !== 1 || rest[0].some((v, i) => v !== reach[i])) {
+        return undefined;
+      }
+    }
+    return this.pin(
+      'feature',
+      ids.filter((id) => !left.has(id))
+    );
   }
 
   /** The features the read whole `coveredId` (`exactCover`) gave, pinned for one read. */
