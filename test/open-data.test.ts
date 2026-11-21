@@ -537,6 +537,11 @@ describe('assembling a chart', () => {
     assert.strictEqual(meta.maxzoom, '11');
     assert.strictEqual(meta.attribution, 'Shom');
     assert.strictEqual(meta.bounds, '165.937500,-22.593726,167.343750,-21.943046');
+    assert.deepStrictEqual(
+      JSON.parse(meta.coverage),
+      [{ minzoom: 9, tiles: ['9/492/288', '9/493/288'] }],
+      'both units, opaque from z9'
+    );
     const layers = (JSON.parse(meta.json) as { vector_layers: { id: string }[] }).vector_layers;
     assert.deepStrictEqual(
       layers.map((l) => l.id),
@@ -889,6 +894,14 @@ describe('building a set from a local index', () => {
     assert.ok(decorated.units.every((u) => u.diskBytes > 0));
     assert.strictEqual(readMetadata(chart).name, 'Nouméa (not for navigation)');
 
+    // A chart built before charts carried a coverage gets one on the next build.
+    const db = new DatabaseSync(chart);
+    db.exec("DELETE FROM metadata WHERE name = 'coverage'");
+    db.close();
+    odc.startBuild(odc.sets.get(set.id) as OpenDataSet);
+    await waitForRun(set.id);
+    assert.ok(readMetadata(chart).coverage);
+
     // A new version of one unit.
     const b2 = publish('z9-493-288', 'v2', unitTiles(493, 288, 'v2'));
     units = [a1, { ...b2, changes: 'Seamarks updated' }];
@@ -1016,6 +1029,7 @@ describe('building a set from a local index', () => {
     assert.strictEqual(meta.type, 'overlay');
     assert.strictEqual(meta.maxzoom, '12');
     assert.strictEqual(meta.name, 'Nouméa terrain shading (not for navigation)');
+    assert.strictEqual(meta.coverage, undefined, 'the shading hides nothing beneath it');
     assert.ok(Number(meta.scale) < 250000, 'drawn over the vector chart');
     let decorated = odc.decorate(odc.sets.get(set.id) as OpenDataSet);
     assert.strictEqual(decorated.status, 'up_to_date');

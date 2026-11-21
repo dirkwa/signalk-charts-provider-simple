@@ -19,6 +19,7 @@ import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'worker_threads';
 import { UNIT_ROWS_SQL, UNIT_ZOOM, unionBounds, type UnitTile } from './tiles.js';
+import { COVERAGE_METADATA_KEY, mergeTiles, type ChartCoverage } from '../chart-coverage.js';
 
 export const TEMP_SUFFIX = '.odc-tmp';
 
@@ -48,7 +49,7 @@ export interface AssemblyInput {
   add: { tile: UnitTile; file: string }[];
   /** Overview files whose rows below z9 replace those of the base, or null to keep them. */
   overviews: string[] | null;
-  /** Every unit the finished chart holds, for its bounds. */
+  /** Every unit the finished chart holds, for its bounds and coverage. */
   units: UnitTile[];
   name: string;
   description: string;
@@ -220,6 +221,33 @@ function writeRows(db: DatabaseSync, input: AssemblyInput): void {
   writeMetadata(db, input, mergeVectorLayers(layers));
 }
 
+/**
+ * Every unit fills its whole z9 tile (depth areas, land, and unsurveyed
+ * areas where no depth is known), so the chart is opaque over its units
+ * from z9 up. Below z9 the region overviews draw, which are not claimed.
+ */
+export function unitCoverage(units: readonly UnitTile[]): ChartCoverage | null {
+  return units.length > 0 ? [{ minzoom: UNIT_ZOOM, tiles: mergeTiles(units, UNIT_ZOOM) }] : null;
+}
+
+/**
+ * Whether `file`, a chart this module wrote, lacks a coverage: written by
+ * an older version, or unreadable, which the assembly then deals with.
+ */
+export function lacksCoverage(file: string): boolean {
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    return (
+      db.prepare('SELECT 1 FROM metadata WHERE name = ?').get(COVERAGE_METADATA_KEY) === undefined
+    );
+  } catch {
+    return true;
+  } finally {
+    db?.close();
+  }
+}
+
 function writeMetadata(db: DatabaseSync, input: AssemblyInput, layers: VectorLayerInfo[]): void {
   const zooms = db
     .prepare('SELECT MIN(zoom_level) AS lo, MAX(zoom_level) AS hi FROM tiles')
@@ -248,6 +276,10 @@ function writeMetadata(db: DatabaseSync, input: AssemblyInput, layers: VectorLay
   ];
   if (bounds) {
     rows.push(['bounds', bounds.map((v) => v.toFixed(6)).join(',')]);
+  }
+  const coverage = input.kind === 'chart' ? unitCoverage(input.units) : null;
+  if (coverage) {
+    rows.push([COVERAGE_METADATA_KEY, JSON.stringify(coverage)]);
   }
   if (input.attribution) {
     rows.push(['attribution', input.attribution]);

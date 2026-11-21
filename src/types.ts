@@ -4,6 +4,7 @@ import type { MBTilesReader } from './utils/mbtiles-reader.js';
 import type { PMTilesReader } from './utils/pmtiles-reader.js';
 import type { Bbox, MergedCatalog } from './catalog/merged-catalog-schema.js';
 import type { ChartTimeBlock } from './utils/time-dimension.js';
+import type { ChartCoverage } from './utils/chart-coverage.js';
 import type { AreaDownloadLimits, OnlineTileSource } from './utils/online-tile-cache.js';
 import type { ChartMask, CustomOnlineChart } from './utils/online-charts.js';
 import type { PluginListEntry } from './utils/internet-state.js';
@@ -83,6 +84,8 @@ export interface ChartProvider {
   refreshInterval?: number;
   /** Time-varying online charts: the timeline on offer (charts.time convention). */
   time?: ChartTimeBlock;
+  /** Where the chart hides the charts beneath it (utils/chart-coverage.ts). */
+  coverage?: ChartCoverage;
   /** Online charts: the catalog entry served, so its timeline can be updated in place. */
   _catalogId?: string;
   /** Online charts served through the plugin: where it fetches their tiles. */
@@ -118,6 +121,7 @@ export interface SanitizedChart {
   defaultOpacity?: number;
   refreshInterval?: number;
   time?: ChartTimeBlock;
+  coverage?: ChartCoverage;
 }
 
 // ---- Repairable charts ----
