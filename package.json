@@ -117,7 +117,7 @@
     "express": "^5.2.1",
     "jiti": "^2.7.0",
     "leaflet": "^1.9.4",
-    "prettier": "3.9.10",
+    "prettier": "3.10.1",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.33.1",
     "vite": "^8.3.4",
