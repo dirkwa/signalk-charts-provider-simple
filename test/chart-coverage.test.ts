@@ -140,6 +140,12 @@ describe('polygonTiles', () => {
     assert.ok(!tiles.some((t) => covers(t, 10, 535, 387)));
   });
 
+  it('lists a large area by its parents without walking its deepest tiles', () => {
+    const started = Date.now();
+    assert.deepStrictEqual(polygonTiles([polygon(tileBox(2, 1, 1))], 14), ['2/1/1']);
+    assert.ok(Date.now() - started < 1000);
+  });
+
   it('lists nothing for a polygon smaller than a tile', () => {
     assert.deepStrictEqual(polygonTiles([polygon([0.1, 0.1, 0.2, 0.2])], 4), []);
     assert.deepStrictEqual(polygonTiles([], 4), []);

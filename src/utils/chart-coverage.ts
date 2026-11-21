@@ -135,10 +135,11 @@ function subtract(from: readonly Interval[], cuts: Interval[]): Interval[] {
 
 /**
  * The tiles at zoom `z` that `area`, in tile units scaled by `scale` to
- * zoom `z`, fills entirely. A row of tiles is filled where both its
- * borders lie inside and no edge enters it.
+ * zoom `z`, fills entirely, as runs of columns `[first, last]` per row. A
+ * row of tiles is filled where both its borders lie inside and no edge
+ * enters it.
  */
-function filledTiles(area: Geom[], z: number, scale: number): TileXY[] {
+function filledRuns(area: Geom[], z: number, scale: number): Map<number, Interval[]> {
   const n = 2 ** z;
   const rows = new Map<number, number[][]>();
   for (const polygon of area as CoveragePolygon[]) {
@@ -156,7 +157,7 @@ function filledTiles(area: Geom[], z: number, scale: number): TileXY[] {
       }
     }
   }
-  const tiles: TileXY[] = [];
+  const runs = new Map<number, Interval[]>();
   for (const [row, edges] of rows) {
     const top = row + BORDER_EPSILON;
     const bottom = row + 1 - BORDER_EPSILON;
@@ -172,21 +173,26 @@ function filledTiles(area: Geom[], z: number, scale: number): TileXY[] {
       entering.push([Math.min(...xs), Math.max(...xs)]);
     }
     const filled = subtract(intersect(insideAt(edges, top), insideAt(edges, bottom)), entering);
+    const columns: Interval[] = [];
     for (const [a, b] of filled) {
-      const firstColumn = Math.ceil(a - BORDER_EPSILON);
-      const lastColumn = Math.floor(b + BORDER_EPSILON) - 1;
-      for (let x = Math.max(0, firstColumn); x <= Math.min(n - 1, lastColumn); x++) {
-        tiles.push({ x, y: row });
+      const first = Math.max(0, Math.ceil(a - BORDER_EPSILON));
+      const last = Math.min(n - 1, Math.floor(b + BORDER_EPSILON) - 1);
+      if (first <= last) {
+        columns.push([first, last]);
       }
     }
+    if (columns.length > 0) {
+      runs.set(row, columns);
+    }
   }
-  return tiles;
+  return runs;
 }
 
 /**
- * The tiles the union of `polygons` fills entirely, found at zoom `z` and
- * merged as by `mergeTiles`. While that lists more than `maxTiles`, they
- * are found one zoom less deep. Throws when the polygons cannot be merged.
+ * The tiles the union of `polygons` fills entirely, down to zoom `z`, each
+ * listed at the first zoom it is filled at, as by `mergeTiles`. While that
+ * lists more than `maxTiles`, they are found one zoom less deep. Throws
+ * when the polygons cannot be merged.
  */
 export function polygonTiles(
   polygons: readonly CoveragePolygon[],
@@ -205,12 +211,56 @@ export function polygonTiles(
   ) as Geom[];
   const [first, ...rest] = projected;
   const area = union(first, ...rest);
-  for (let zoom = z; ; zoom--) {
-    const tiles = mergeTiles(filledTiles(area, zoom, 2 ** (zoom - z)), zoom);
-    if (tiles.length <= maxTiles || zoom === 0) {
-      return tiles;
+  // Going down from zoom 0, a tile whose parent is filled is left out, so
+  // the work grows with the tiles listed, never with the area.
+  const listed: Map<number, Interval[]>[] = [];
+  const out: string[] = [];
+  for (let zoom = 0; zoom <= z; zoom++) {
+    const fresh = new Map<number, Interval[]>();
+    let count = 0;
+    for (const [row, runs] of filledRuns(area, zoom, 2 ** (zoom - z))) {
+      const ancestors = listed.flatMap((byRow, depth) =>
+        (byRow.get(row >> (zoom - depth)) ?? []).map(([a, b]): Interval => [
+          a << (zoom - depth),
+          ((b + 1) << (zoom - depth)) - 1
+        ])
+      );
+      const left = subtractColumns(runs, ancestors);
+      if (left.length > 0) {
+        fresh.set(row, left);
+        count += left.reduce((sum, [a, b]) => sum + b - a + 1, 0);
+      }
     }
+    if (zoom > 0 && out.length + count > maxTiles) {
+      break;
+    }
+    for (const [row, runs] of fresh) {
+      for (const [a, b] of runs) {
+        for (let x = a; x <= b; x++) {
+          out.push(`${String(zoom)}/${String(x)}/${String(row)}`);
+        }
+      }
+    }
+    listed.push(fresh);
   }
+  return out.sort();
+}
+
+/** Column runs `[first, last]` less the columns of `cuts`. */
+function subtractColumns(runs: readonly Interval[], cuts: Interval[]): Interval[] {
+  cuts.sort((a, b) => a[0] - b[0]);
+  let out = [...runs];
+  for (const [lo, hi] of cuts) {
+    out = out.flatMap(([a, b]): Interval[] =>
+      hi < a || lo > b
+        ? [[a, b]]
+        : [
+            ...(a < lo ? [[a, lo - 1] as Interval] : []),
+            ...(hi < b ? [[hi + 1, b] as Interval] : [])
+          ]
+    );
+  }
+  return out;
 }
 
 /** The `coverage` metadata value, or undefined when absent or unreadable. */
