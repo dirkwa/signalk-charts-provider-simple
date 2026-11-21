@@ -146,6 +146,15 @@ describe('polygonTiles', () => {
     assert.ok(Date.now() - started < 1000);
   });
 
+  it('holds a coarse tile to the deepest zoom’s border tolerance', () => {
+    // About 5 m inside the west border of 2/1/1: within a z2 tile's
+    // tolerance, far outside a z14 tile's.
+    const [west, south, east, north] = tileBox(2, 1, 1);
+    const tiles = polygonTiles([polygon([west + 0.00005, south, east, north])], 14);
+    assert.ok(tiles.length > 0);
+    assert.ok(!tiles.includes('2/1/1'));
+  });
+
   it('lists nothing for a polygon smaller than a tile', () => {
     assert.deepStrictEqual(polygonTiles([polygon([0.1, 0.1, 0.2, 0.2])], 4), []);
     assert.deepStrictEqual(polygonTiles([], 4), []);

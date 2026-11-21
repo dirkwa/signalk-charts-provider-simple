@@ -40,8 +40,8 @@ export interface TileXY {
 }
 
 const MAX_MERCATOR_LAT = 85.0511287798066;
-// Edges within this share of a tile of its border count as on it: coverage
-// drawn along tile borders meets them only up to rounding.
+// Edges within this share of a deepest-zoom tile of its border count as on
+// it: coverage drawn along tile borders meets them only up to rounding.
 const BORDER_EPSILON = 1e-6;
 
 /**
@@ -141,6 +141,8 @@ function subtract(from: readonly Interval[], cuts: Interval[]): Interval[] {
  */
 function filledRuns(area: Geom[], z: number, scale: number): Map<number, Interval[]> {
   const n = 2 ** z;
+  // The same distance on the ground at every zoom the walk scans.
+  const epsilon = BORDER_EPSILON * scale;
   const rows = new Map<number, number[][]>();
   for (const polygon of area as CoveragePolygon[]) {
     for (const ring of polygon) {
@@ -159,8 +161,8 @@ function filledRuns(area: Geom[], z: number, scale: number): Map<number, Interva
   }
   const runs = new Map<number, Interval[]>();
   for (const [row, edges] of rows) {
-    const top = row + BORDER_EPSILON;
-    const bottom = row + 1 - BORDER_EPSILON;
+    const top = row + epsilon;
+    const bottom = row + 1 - epsilon;
     const entering: Interval[] = [];
     for (const [x1, y1, x2, y2] of edges) {
       const lo = Math.max(top, Math.min(y1, y2));
@@ -175,8 +177,8 @@ function filledRuns(area: Geom[], z: number, scale: number): Map<number, Interva
     const filled = subtract(intersect(insideAt(edges, top), insideAt(edges, bottom)), entering);
     const columns: Interval[] = [];
     for (const [a, b] of filled) {
-      const first = Math.max(0, Math.ceil(a - BORDER_EPSILON));
-      const last = Math.min(n - 1, Math.floor(b + BORDER_EPSILON) - 1);
+      const first = Math.max(0, Math.ceil(a - epsilon));
+      const last = Math.min(n - 1, Math.floor(b + epsilon) - 1);
       if (first <= last) {
         columns.push([first, last]);
       }
