@@ -84,17 +84,19 @@ function proxySettings(settings: WfsServiceSettings): WfsProxySettings {
 
 export async function startWfsProxy(settings: WfsServiceSettings): Promise<WfsProxyRunning> {
   if (parked) {
-    clearTimeout(parked.timer);
-    const { running } = parked;
-    parked = null;
+    const { running, timer } = parked;
+    // Taken over only once configured: until then its timer still closes it.
     running.proxy.configure(proxySettings(settings));
+    clearTimeout(timer);
+    parked = null;
     running.settings = settings;
     return running;
   }
   await closing;
   const cache = new WfsCache(wfsCacheFile(settings.dataDir));
-  const proxy = new WfsProxy({ cache, ...proxySettings(settings) });
+  let proxy: WfsProxy;
   try {
+    proxy = new WfsProxy({ cache, ...proxySettings(settings) });
     lastPort = await proxy.listen(lastPort);
   } catch (err) {
     cache.close();

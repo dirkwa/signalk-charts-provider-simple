@@ -36,7 +36,10 @@ export class WfsSourceError extends Error {
 function cleaned(source: WfsSourceConfig): WfsSourceConfig {
   const url = normalizeUpstream(source.url);
   if (url === undefined) {
-    throw new WfsSourceError('The URL is not an http or https URL', 400);
+    throw new WfsSourceError(
+      'The URL is not an http or https URL, or holds a user or password',
+      400
+    );
   }
   const name = source.name?.trim();
   const idProperty = source.idProperty?.trim();
@@ -53,13 +56,18 @@ function cleaned(source: WfsSourceConfig): WfsSourceConfig {
 const unknownFields = (entry: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(entry).filter(([k]) => !KNOWN_FIELDS.has(k)));
 
+/** The file's entries; none when there is no file. Throws when it cannot be read. */
 function readEntries(file: string): Record<string, unknown>[] {
-  let parsed: unknown;
+  let text: string;
   try {
-    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
-    return [];
+    text = fs.readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw err;
   }
+  const parsed: unknown = JSON.parse(text);
   const sources = (parsed as { sources?: unknown } | null)?.sources;
   if (!Array.isArray(sources)) {
     return [];
@@ -71,10 +79,30 @@ function readEntries(file: string): Record<string, unknown>[] {
 }
 
 export class WfsSourceList {
-  private entries: Record<string, unknown>[];
+  private entries: Record<string, unknown>[] = [];
+  /** Why the file could not be read: until it can, it is not written, so its sources are not lost. */
+  private unreadable: string | undefined;
 
   constructor(readonly file: string) {
-    this.entries = readEntries(file);
+    this.load();
+  }
+
+  private load(): void {
+    try {
+      this.entries = readEntries(this.file);
+      this.unreadable = undefined;
+    } catch (err) {
+      this.unreadable = `${this.file} could not be read: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  private writable(): void {
+    if (this.unreadable !== undefined) {
+      this.load();
+    }
+    if (this.unreadable !== undefined) {
+      throw new WfsSourceError(this.unreadable, 500);
+    }
   }
 
   list(): WfsSourceConfig[] {
@@ -83,6 +111,7 @@ export class WfsSourceList {
 
   /** Adds `source`; with `replace`, takes the place of the source of its URL instead. */
   save(source: WfsSourceConfig, replace: boolean): WfsSourceConfig {
+    this.writable();
     const next = cleaned(source);
     const at = this.indexOf(next.url);
     if (replace && at < 0) {
@@ -103,6 +132,7 @@ export class WfsSourceList {
 
   /** Removes the source of `url`; returns whether there was one. */
   remove(url: string): boolean {
+    this.writable();
     const at = this.indexOf(normalizeUpstream(url) ?? url);
     if (at < 0) {
       return false;

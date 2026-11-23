@@ -270,6 +270,8 @@ describe('wfs-query', () => {
       new URLSearchParams({ service: 'WFS', request: 'GetCapabilities' }).toString(),
       // a page with no page size: the server's own default, unknown here
       query('A', [22, 60, 22.5, 60.2], json),
+      // a count asked for in a format other than the default XML
+      query('A', [22, 60, 22.5, 60.2], { ...json, resultType: 'hits' }),
       // a box with a coordinate missing, which Number('') would read as 0
       `service=WFS&version=2.0.0&request=GetFeature&typeNames=A&srsName=EPSG:4326&resultType=hits&bbox=,22,60.2,22.5,${encodeURIComponent('urn:ogc:def:crs:EPSG::4326')}`
     ];
@@ -311,6 +313,19 @@ describe('wfs-query', () => {
     const [w, s, e, n] = featureBox(f) as Box;
     assert.ok(Math.abs(e - w - 0.01) < 1e-12 && Math.abs(n - s - 0.01) < 1e-12);
     assert.strictEqual(featureBox({ geometry: null }), undefined);
+    // A position it cannot read leaves the box unknown, not smaller.
+    assert.strictEqual(
+      featureBox({
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [22, 60],
+            [null, 61]
+          ]
+        }
+      }),
+      undefined
+    );
     // Metres, not degrees: no box this store places.
     assert.strictEqual(
       featureBox({ geometry: { type: 'Point', coordinates: [240000, 6680000] } }),
@@ -891,6 +906,24 @@ describe('WfsCache', () => {
     cache.close();
   });
 
+  it('keeps no read begun before what its upstream kept was deleted', () => {
+    const cache = new WfsCache(path.join(dir, 'forgotten.sqlite'));
+    const begun = cache.orderAt(10);
+    const before = cache.beginStage();
+    assert.ok(cache.stage(before, AREAS.slice(0, 3), begun));
+    cache.forgetUpstream(layer.upstream);
+    assert.strictEqual(
+      cache.publish(before, layer, { box: WIDE, boxText: 'w' }, begun, BY_BOX),
+      undefined
+    );
+    const later = cache.orderAt(11);
+    const after = cache.beginStage();
+    assert.ok(cache.stage(after, AREAS.slice(0, 3), later));
+    assert.strictEqual(cache.publish(after, layer, { box: WIDE, boxText: 'w' }, later, BY_BOX), 0);
+    assert.strictEqual(cache.stats().features, 3);
+    cache.close();
+  });
+
   it('within its space, drops the areas read longest ago and the features only they reached', () => {
     const cache = new WfsCache(path.join(dir, 'fit.sqlite'));
     const big = (i: number, x: number): WfsFeature => ({
@@ -1184,20 +1217,25 @@ describe('WfsProxy', () => {
           startIndex: String(start)
         })}`
       ).then(async (r) => ((await r.json()) as { features: Feature[] }).features.map((f) => f.id));
-    const ids = await pageAt(BOX, 0);
+    const baseline: Feature['id'][] = [];
+    for (let start = 0; ; start += 10) {
+      const next = await pageAt(BOX, start);
+      if (next.length === 0) {
+        break;
+      }
+      baseline.push(...next);
+    }
+    assert.ok(baseline.length > 10);
     // Forty other areas inside the one held, each its own read from the store.
     for (let k = 0; k < 40; k++) {
       const d = k * 0.001;
       await pageAt([22.03 + d, 60.03, 22.06 + d, 60.05], 0);
     }
-    for (let start = 10; ; start += 10) {
-      const next = await pageAt(BOX, start);
-      if (next.length === 0) {
-        break;
-      }
-      ids.push(...next);
+    const ids: Feature['id'][] = [];
+    for (let start = 0; start < baseline.length; start += 10) {
+      ids.push(...(await pageAt(BOX, start)));
     }
-    assert.strictEqual(new Set(ids).size, ids.length);
+    assert.deepStrictEqual(ids, baseline);
     await proxy.close();
     cache.close();
   });
@@ -1650,6 +1688,57 @@ describe('WfsProxy', () => {
     }
   });
 
+  it('a count of none waits for a page on its way', { timeout: 10_000 }, async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let pageAsked: () => void = () => undefined;
+    const asked = new Promise<void>((resolve) => {
+      pageAsked = resolve;
+    });
+    const cache = new WfsCache(path.join(dir, 'p23.sqlite'));
+    const uncounted = upstreamBase.replace(/\/wfs$/, '/uncounted');
+    const proxy = new WfsProxy({
+      cache,
+      sources: byBoxSources(uncounted),
+      maxAgeMs: () => 1000,
+      mayRefresh: () => true,
+      fetch: async (url, init) => {
+        // The count says none while the page on its way holds features: they disagree.
+        if (String(url).includes('resultType=hits')) {
+          return new Response(hitsReply(0, new Date(0)), {
+            headers: { 'content-type': 'application/xml' }
+          });
+        }
+        if (String(url).includes('startIndex')) {
+          pageAsked();
+          await gate;
+        }
+        return fetch(url, init);
+      }
+    });
+    await proxy.listen();
+    const base = proxy.proxyUrl(uncounted) as string;
+    const page = pageOf(base, BOX, 'IDENTIFIER', 0, 1000);
+    try {
+      await asked;
+      const counted = await fetch(
+        `${base}?${query('DepthArea_A', BOX, { resultType: 'hits', sortBy: 'IDENTIFIER' })}`
+      );
+      assert.strictEqual(hitsMatched(await counted.text()), 0);
+      assert.strictEqual(cache.stats().areas, 0);
+      release();
+      assert.ok((await page).length > 0);
+      assert.strictEqual(cache.stats().areas, 0);
+    } finally {
+      release();
+      await page.catch(() => undefined);
+      await proxy.close();
+      cache.close();
+    }
+  });
+
   it('a config save hands the running proxy to the next start', async () => {
     const dataDir = fs.mkdtempSync(path.join(dir, 'service-'));
     const kept = 'https://wfs.example/service/wfs';
@@ -1703,6 +1792,7 @@ describe('WfsProxy', () => {
     );
     assert.strictEqual(normalizeUpstream('ftp://x/wfs'), undefined);
     assert.strictEqual(normalizeUpstream('not a url'), undefined);
+    assert.strictEqual(normalizeUpstream('https://user:secret@wfs.example/wfs'), undefined);
   });
 });
 
@@ -1770,7 +1860,23 @@ describe('WfsSourceList', () => {
     assert.deepStrictEqual(saved.sources, [
       { later: 'x', url: 'https://wfs.example/wfs', name: 'Named', answersByBox: false }
     ]);
+  });
+
+  it('changes nothing in a file it cannot read until it can', () => {
+    const file = path.join(dir, 'c.json');
     fs.writeFileSync(file, '{ broken');
-    assert.deepStrictEqual(new WfsSourceList(file).list(), []);
+    const list = new WfsSourceList(file);
+    assert.deepStrictEqual(list.list(), []);
+    assert.throws(
+      () => list.save({ url: 'https://wfs.example/wfs' }, false),
+      (e: unknown) => e instanceof WfsSourceError && e.status === 500
+    );
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), '{ broken');
+    fs.writeFileSync(file, JSON.stringify({ sources: [{ url: 'https://kept.example/wfs' }] }));
+    list.save({ url: 'https://wfs.example/wfs' }, false);
+    assert.deepStrictEqual(
+      new WfsSourceList(file).list().map((s) => s.url),
+      ['https://kept.example/wfs', 'https://wfs.example/wfs']
+    );
   });
 });

@@ -49,6 +49,11 @@ const kept = {
   }
 };
 
+const keptToo = { ...kept, url: 'https://second.example.org/wfs', name: 'Second' };
+
+const sourceRow = (page: Page, name: string) =>
+  page.locator('#wfsOutput .wfs-source').filter({ hasText: name });
+
 test.describe('WFS Data tab', () => {
   test('shows what each server keeps', async ({ page }) => {
     await page.goto(PAGE_PATH);
@@ -78,7 +83,7 @@ test.describe('WFS Data tab', () => {
         maxAgeDays: 30,
         limitBytes: 0,
         store: { fileBytes: 0, usedBytes: 0 },
-        sources: [kept]
+        sources: [kept, keptToo]
       }
     });
     const changes = recordChanges(page);
@@ -94,6 +99,8 @@ test.describe('WFS Data tab', () => {
     page.once('dialog', (dialog) => void dialog.accept());
     await page.getByRole('button', { name: 'Delete data' }).first().click();
     await expect(page.locator('#wfsMessage')).toContainText('Deleted');
+    await expect(sourceRow(page, 'Depth areas')).toContainText('Nothing kept yet.');
+    await expect(sourceRow(page, 'Second')).toContainText('3 areas');
 
     expect(changes).toEqual([
       {
@@ -104,6 +111,37 @@ test.describe('WFS Data tab', () => {
       {
         method: 'DELETE',
         path: `/wfs/data?url=${encodeURIComponent(kept.url)}`
+      }
+    ]);
+  });
+
+  test('edits a server', async ({ page }) => {
+    await page.goto(PAGE_PATH);
+    await setMockState(page, {
+      wfs: {
+        enabled: true,
+        running: true,
+        maxAgeDays: 30,
+        limitBytes: 0,
+        store: { fileBytes: 0, usedBytes: 0 },
+        sources: [kept]
+      }
+    });
+    const changes = recordChanges(page);
+    await openWfsTab(page);
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.locator('#wfsName').fill('Depth contours');
+    await page.locator('#wfsMargin').fill('0.05');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.locator('#wfsMessage')).toContainText('Saved');
+    await expect(sourceRow(page, 'Depth contours')).toContainText('3 areas');
+    await expect(page.getByRole('button', { name: 'Add WFS server' })).toBeEnabled();
+
+    expect(changes).toEqual([
+      {
+        method: 'PUT',
+        path: '/wfs/sources',
+        body: { url: kept.url, name: 'Depth contours', answersByBox: true, answerMargin: 0.05 }
       }
     ]);
   });

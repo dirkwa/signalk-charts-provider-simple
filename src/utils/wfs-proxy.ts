@@ -125,7 +125,12 @@ const decodeUpstream = (part: string): string => Buffer.from(part, 'base64url').
 export function normalizeUpstream(url: string): string | undefined {
   try {
     const u = new URL(url);
-    if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+    // A URL's user and password would be listed to anyone who may read the server.
+    if (
+      (u.protocol !== 'https:' && u.protocol !== 'http:') ||
+      u.username !== '' ||
+      u.password !== ''
+    ) {
       return undefined;
     }
     u.search = '';
@@ -165,6 +170,7 @@ const drained = (res: http.ServerResponse): Promise<void> =>
 
 export class WfsProxy {
   private server: http.Server | null = null;
+  private sweeper: NodeJS.Timeout | undefined;
   private port = 0;
   private options: WfsProxyOptions;
   private readonly upstreamReads = new Map<string, UpstreamRead>();
@@ -233,24 +239,31 @@ export class WfsProxy {
       });
     });
     const bound = await new Promise<number>((resolve, reject) => {
+      let anyPort = port === 0;
+      const onListening = (): void => {
+        server.removeListener('error', onError);
+        resolve((server.address() as AddressInfo).port);
+      };
       const onError = (err: NodeJS.ErrnoException): void => {
-        if (port !== 0 && err.code === 'EADDRINUSE') {
-          server.removeListener('error', onError);
-          server.listen(0, '127.0.0.1', () => {
-            resolve((server.address() as AddressInfo).port);
-          });
+        if (!anyPort && err.code === 'EADDRINUSE') {
+          anyPort = true;
+          server.listen(0, '127.0.0.1');
           return;
         }
+        server.removeListener('listening', onListening);
         reject(err);
       };
       server.on('error', onError);
-      server.listen(port, '127.0.0.1', () => {
-        server.removeListener('error', onError);
-        resolve((server.address() as AddressInfo).port);
-      });
+      server.once('listening', onListening);
+      server.listen(port, '127.0.0.1');
     });
     this.server = server;
     this.port = bound;
+    // Reads left idle let go of their stage and pins without waiting for another request.
+    this.sweeper = setInterval(() => {
+      this.sweep();
+    }, READ_IDLE_MS);
+    this.sweeper.unref();
     return bound;
   }
 
@@ -267,6 +280,7 @@ export class WfsProxy {
   async close(): Promise<void> {
     const server = this.server;
     this.server = null;
+    clearInterval(this.sweeper);
     if (server) {
       const closed = new Promise<void>((resolve) => {
         server.close(() => {
@@ -356,15 +370,23 @@ export class WfsProxy {
     }
     const read = this.upstreamRead(readKey);
     read.inFlight++;
+    let inFlight = true;
+    const passed = (): void => {
+      if (inFlight) {
+        inFlight = false;
+        read.inFlight--;
+      }
+    };
     try {
       await this.pass(target, req, res, (text) => {
+        passed();
         // A page that outlived its read, which another has replaced, keeps nothing.
         if (this.upstreamReads.get(readKey) === read) {
           this.keep(layer, q, read, text);
         }
       });
     } finally {
-      read.inFlight--;
+      passed();
     }
   }
 
@@ -522,7 +544,7 @@ export class WfsProxy {
 
   /**
    * An upstream count in the read's ordering: the read takes it, and settles if its pages have
-   * all passed already. A count of none holds the area at once: no page of it will come.
+   * all passed already. A count of none holds the area once no page asked for is still to come.
    */
   private counted(
     layer: Layer,
@@ -585,6 +607,10 @@ export class WfsProxy {
    */
   private settle(layer: Layer, q: FeatureQuery, read: UpstreamRead): void {
     if (read.matched === undefined || !coversFromZero(read.ranges, read.matched)) {
+      return;
+    }
+    // A count of none waits for the pages asked for meanwhile: one of them may hold features.
+    if (read.matched === 0 && read.inFlight > 0) {
       return;
     }
     // Pages that shifted between requests can cover every index and still repeat a feature.

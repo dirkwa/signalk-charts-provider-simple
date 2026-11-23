@@ -316,6 +316,11 @@ export class WfsCache {
   private readonly pins = new Set<Pin>();
   private nextStage = 1;
   private lastOrder: number;
+  /**
+   * By upstream, the newest place in the order of an area dropped other than by a newer read:
+   * a read begun before it cannot tell what that area dropped, so it is not kept.
+   */
+  private readonly droppedAt = new Map<string, number>();
 
   constructor(readonly file: string) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -493,7 +498,7 @@ export class WfsCache {
           + (SELECT COALESCE(SUM(length(data)), 0) FROM covered_member) AS n
       `),
       coversOldestFirst: p(`
-        SELECT id, upstream, type_name, mw, ms, me, mn FROM covered
+        SELECT id, upstream, type_name, mw, ms, me, mn, ord FROM covered
         ORDER BY ord ASC, started ASC, id ASC
       `),
       memberBytes: p(
@@ -525,7 +530,10 @@ export class WfsCache {
       this.db.exec('COMMIT');
       return out;
     } catch (err) {
-      this.db.exec('ROLLBACK');
+      // SQLite rolls back on its own after some errors; the error that caused it is the one to tell.
+      if (this.db.isTransaction) {
+        this.db.exec('ROLLBACK');
+      }
       throw err;
     }
   }
@@ -570,9 +578,8 @@ export class WfsCache {
       this.forget(upstream);
       return kept;
     });
-    if (had) {
-      this.compact();
-    }
+    // Also with nothing left to drop: a compaction that failed after the drop is done again.
+    this.compact();
     return had;
   }
 
@@ -643,8 +650,9 @@ export class WfsCache {
     }
     return this.inTransaction(() => {
       let data = (this.q('dataBytes').get() as { n: number }).n;
-      // Pages hold more than the data: aim the data at the share of the limit it fills now.
-      const target = (data * maxBytes) / used;
+      // The pages also hold the areas and the indexes, which go with the data: freeing as much
+      // data as the pages are over the limit brings them within it, also when they hold no data.
+      const target = data - (used - maxBytes);
       const covers = this.q('coversOldestFirst').all() as {
         id: number;
         upstream: string;
@@ -653,6 +661,7 @@ export class WfsCache {
         ms: number;
         me: number;
         mn: number;
+        ord: number;
       }[];
       let dropped = 0;
       for (const c of covers.slice(0, -1)) {
@@ -675,9 +684,11 @@ export class WfsCache {
     ms: number;
     me: number;
     mn: number;
+    ord: number;
   }): number {
     let freed = (this.q('memberBytes').get(c.id) as { n: number }).n;
     this.dropCover(c.id, true);
+    this.noteDropped(c.upstream, c.ord);
     const { mw, ms, me, mn } = c;
     for (const f of this.q('featuresNear').all(
       c.upstream,
@@ -775,7 +786,12 @@ export class WfsCache {
     return [...sources.values()];
   }
 
+  private noteDropped(upstream: string, order: number): void {
+    this.droppedAt.set(upstream, Math.max(order, this.droppedAt.get(upstream) ?? -Infinity));
+  }
+
   private forget(upstream: string): void {
+    this.noteDropped(upstream, this.lastOrder);
     for (const { id } of this.q('featuresOfUpstream').all(upstream) as { id: number }[]) {
       this.preserve('feature', id);
       this.q('boxDelete').run(id);
@@ -839,8 +855,9 @@ export class WfsCache {
 
   /**
    * Whether a read of `area` begun at `since` in the order is out of date: a newer read of it was
-   * published, or (by box) a feature reaching it was kept meanwhile that its pages did
-   * not give, which it can neither keep nor drop.
+   * published, an area of its upstream was deleted or dropped for space since it began
+   * (`droppedAt`), or (by box) a feature reaching it was kept meanwhile that its pages did not
+   * give, which it can neither keep nor drop.
    */
   private superseded(
     stage: number | undefined,
@@ -849,6 +866,9 @@ export class WfsCache {
     since: number,
     byBox: boolean
   ): boolean {
+    if (since <= (this.droppedAt.get(layer.upstream) ?? -Infinity)) {
+      return true;
+    }
     const [w, s, e, n] = area.box;
     const started = stage ?? 0;
     if (!byBox) {

@@ -13,7 +13,8 @@ They are kept in `<dataDir>/wfs-sources.json`, and a change applies to the
 running proxy at once. Each source has:
 
 - `name`: optional, what the tab shows it as.
-- `url`: the WFS base URL, with no query, as the plugins reading it use it.
+- `url`: the WFS base URL, with no query, as the plugins reading it use it,
+  and no user or password.
 - `answersByBox`: on for a server that answers a box with every feature whose
   geometry reaches it, as GeoServer and MapServer do. Each feature is then
   kept once and a box inside the areas kept is answered from the store. Off
@@ -50,11 +51,13 @@ delete what one source keeps, or everything; the file is then compacted, so
 the space goes back to the disk. Signal K need not be stopped: a peer's read
 from the store in progress keeps the features it began with.
 
-The plugin config's **Space for kept WFS data** limits the store's size (0:
-no limit). Above it, the areas read longest ago are dropped, with the
-features no area left reaches, until the store fits again; the area read last
-always stays. Dropping the oldest first changes no answer the store gives for
-the areas it still holds.
+The plugin config's **Space for kept WFS data** limits the pages of the
+store's file in use (0: no limit). Above it, the areas read longest ago are
+dropped, with the features no area left reaches, until as much data as the
+pages are over it is freed; the area read last always stays. Dropping the
+oldest first changes no answer the store gives for the areas it still holds.
+The pages freed are reused for what is kept next, so the file does not
+shrink: only deleting in the WFS Data tab gives the space back to the disk.
 
 The routes behind the tab, under `/plugins/signalk-charts-provider-simple`:
 
@@ -85,13 +88,14 @@ in metres, so such a request is passed upstream as it is, like any other.
   transaction: a read that breaks off changes nothing. A count from another
   read, or a short page alone, does not end an area: it may describe other
   features, or be the server's own page limit. A count of none holds the
-  area at once. A read whose area a newer read overlapping it was kept for
-  meanwhile is not kept, so it cannot bring back what that one dropped;
-  reads and pages are ordered as they come, in the same millisecond too and
-  if the clock is set back, while an area's age is counted from the time its
-  read began. A
-  very large reply, or one the upstream breaks off, is passed on but not
-  kept; a broken one is broken off to the client too.
+  area once no page asked for in the read is still to come. A read whose
+  area a newer read overlapping it was kept for meanwhile is not kept, so it
+  cannot bring back what that one dropped, nor is one begun before an area
+  of its source was deleted or dropped for space; reads and pages are
+  ordered as they come, in the same millisecond too and if the clock is set
+  back, while an area's age is counted from the time its read began. A very
+  large reply, or one the upstream breaks off, is passed on but not kept; a
+  broken one is broken off to the client too.
 - For a source answering by box (`answersByBox`), each feature is kept once,
   by its id, and an area the store holds whole (inside boxes it holds,
   fetched within the maximum age) is answered from the store: every kept

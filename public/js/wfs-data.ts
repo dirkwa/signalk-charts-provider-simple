@@ -371,6 +371,11 @@ document.addEventListener('click', (event) => {
     })
     .finally(() => {
       wfsBusy = false;
+      // Drawn again while busy, the form's button came out disabled.
+      const save = document.querySelector<HTMLButtonElement>('#wfsOutput [data-wfs-action="save"]');
+      if (save) {
+        save.disabled = false;
+      }
     });
 });
 

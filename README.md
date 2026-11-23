@@ -65,7 +65,7 @@ Open the plugin's web interface from the Webapps list in the Signal K admin UI, 
 http://[your-server]:3000/signalk-charts-provider-simple/
 ```
 
-The interface provides eight tabs:
+The interface provides these tabs:
 
 1. **Manage Charts**:
    - View all charts with metadata (name, bounds, zoom levels, size)
@@ -130,6 +130,9 @@ The interface provides eight tabs:
    - **Terrain shading** (on by default) also builds a second chart, "<set name> terrain shading", that shades hills and mountains on land the way many plotters do. It lies over the set's chart and can be switched off in the plotter like any chart; untick it in the set and apply to remove it. It adds about 1 to 5 MB per area with land
    - When an area is republished the set shows **Update available** with the areas that changed; **Update** downloads only those and replaces just their part of the chart. Taking areas out of the set and applying removes them from the chart
    - The plugin checks the index for updates on its own only when a set exists and the connection allows it (see signalk-internet); downloads start only when you press the button. `OPEN_DATA_INDEX_URL` points a development server at another index
+
+9. **WFS Data**:
+   - The WFS servers other plugins read through this plugin, with what is kept from each, how much is due for download and its size; add, edit or delete a server, or delete what it keeps. See [Local WFS proxy](#local-wfs-proxy-for-other-plugins)
 
 ### Shared ENC cells for other plugins
 

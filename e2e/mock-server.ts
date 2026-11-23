@@ -273,7 +273,29 @@ export function startMockServer(
     state.wfs = { ...state.wfs, sources: [...state.wfs.sources, { ...body, stats: null }] };
     res.json({ success: true, source: body });
   });
-  router.delete(`${PLUGIN_BASE}/wfs/:what`, (_req, res) => {
+  router.put(`${PLUGIN_BASE}/wfs/sources`, (req, res) => {
+    const body = req.body as { url: string; name?: string };
+    const was = state.wfs.sources.find((s) => s.url === body.url);
+    if (!was) {
+      res.status(404).json({ success: false, error: 'No WFS server of that URL is kept' });
+      return;
+    }
+    state.wfs = {
+      ...state.wfs,
+      sources: state.wfs.sources.map((s) => (s === was ? { ...body, stats: was.stats } : s))
+    };
+    res.json({ success: true, source: body });
+  });
+  // DELETE /wfs/sources?url= removes a source; /wfs/data deletes what it kept, or all without url.
+  router.delete(`${PLUGIN_BASE}/wfs/:what`, (req, res) => {
+    const url = typeof req.query.url === 'string' ? req.query.url : undefined;
+    const sources =
+      req.params.what === 'sources'
+        ? state.wfs.sources.filter((s) => s.url !== url)
+        : state.wfs.sources.map((s) =>
+            url === undefined || s.url === url ? { ...s, stats: null } : s
+          );
+    state.wfs = { ...state.wfs, sources };
     res.json({ success: true });
   });
 

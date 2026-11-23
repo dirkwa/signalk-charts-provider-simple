@@ -112,7 +112,9 @@ export function featureQuery(params: URLSearchParams): FeatureQuery | null {
   if (!hits && (p.get('resulttype') ?? 'results').toLowerCase() !== 'results') {
     return null;
   }
-  if (!hits && p.get('outputformat') !== 'application/json') {
+  // A count is answered as the XML a WFS gives by default, a page as GeoJSON.
+  const format = p.get('outputformat');
+  if (hits ? format !== undefined : format !== 'application/json') {
     return null;
   }
   const startIndex = nonNegativeInteger(p.get('startindex') ?? '0');
@@ -191,24 +193,36 @@ export function featureId(f: WfsFeature, idProperty?: string): string | undefine
   return typeof ident === 'string' || typeof ident === 'number' ? String(ident) : undefined;
 }
 
-/** The box of a feature's coordinates, `[x, y]` pairs at any depth of nesting; undefined without any. */
+/**
+ * The box of a feature's coordinates, `[x, y]` pairs at any depth of nesting; undefined without
+ * any, or with a position that is not two finite numbers, as its box cannot be known.
+ */
 export function featureBox(f: WfsFeature): Box | undefined {
   let w = Infinity;
   let s = Infinity;
   let e = -Infinity;
   let n = -Infinity;
+  let valid = true;
   const walk = (c: unknown): void => {
     if (!Array.isArray(c)) {
+      valid = false;
       return;
     }
-    if (typeof c[0] === 'number' && typeof c[1] === 'number') {
-      const [x, y] = c as [number, number];
-      if (Number.isFinite(x) && Number.isFinite(y)) {
-        w = Math.min(w, x);
-        e = Math.max(e, x);
-        s = Math.min(s, y);
-        n = Math.max(n, y);
+    if (c.length > 0 && !Array.isArray(c[0])) {
+      const [x, y] = c as unknown[];
+      if (
+        typeof x !== 'number' ||
+        typeof y !== 'number' ||
+        !Number.isFinite(x) ||
+        !Number.isFinite(y)
+      ) {
+        valid = false;
+        return;
       }
+      w = Math.min(w, x);
+      e = Math.max(e, x);
+      s = Math.min(s, y);
+      n = Math.max(n, y);
       return;
     }
     for (const inner of c) {
@@ -216,6 +230,9 @@ export function featureBox(f: WfsFeature): Box | undefined {
     }
   };
   walk(f.geometry?.coordinates);
+  if (!valid) {
+    return undefined;
+  }
   // Coordinates past longitude and latitude are in another system: not a box this store places.
   const inRange = w >= -180 && e <= 180 && s >= -90 && n <= 90;
   return w <= e && s <= n && inRange ? [w, s, e, n] : undefined;
