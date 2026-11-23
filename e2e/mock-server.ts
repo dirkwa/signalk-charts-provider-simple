@@ -128,6 +128,8 @@ interface MockState {
   encStore: { root: string; keepEncCells: boolean; collections: { id: string }[] };
   encStoreCells: Record<string, unknown[]>;
   encStoreDeleted: string[];
+  // WFS Data tab: GET /wfs answers this, with the sources posted added.
+  wfs: { sources: { url: string; name?: string; stats: unknown }[] } & Record<string, unknown>;
   // What /skServer/loginStatus answers: who the page thinks is signed in.
   loginStatus: Record<string, unknown>;
 }
@@ -169,6 +171,14 @@ const initialState: MockState = {
   encStore: { root: '/data/enc-store', keepEncCells: false, collections: [] },
   encStoreCells: {},
   encStoreDeleted: [],
+  wfs: {
+    enabled: true,
+    running: true,
+    maxAgeDays: 30,
+    limitBytes: 1024 * 1024 * 1024,
+    store: { fileBytes: 0, usedBytes: 0 },
+    sources: []
+  },
   loginStatus: { status: 'notLoggedIn', authenticationRequired: false }
 };
 
@@ -252,6 +262,18 @@ export function startMockServer(
       ...state.encStore,
       collections: state.encStore.collections.filter((c) => c.id !== id)
     };
+    res.json({ success: true });
+  });
+
+  router.get(`${PLUGIN_BASE}/wfs`, (_req, res) => {
+    res.json(state.wfs);
+  });
+  router.post(`${PLUGIN_BASE}/wfs/sources`, (req, res) => {
+    const body = req.body as { url: string; name?: string };
+    state.wfs = { ...state.wfs, sources: [...state.wfs.sources, { ...body, stats: null }] };
+    res.json({ success: true, source: body });
+  });
+  router.delete(`${PLUGIN_BASE}/wfs/:what`, (_req, res) => {
     res.json({ success: true });
   });
 

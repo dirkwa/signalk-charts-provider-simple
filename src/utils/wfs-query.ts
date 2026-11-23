@@ -104,7 +104,7 @@ export function featureQuery(params: URLSearchParams): FeatureQuery | null {
   }
   const box = parseBox(boxText);
   const srs = p.get('srsname');
-  // Without srsName the reply is in the feature type's own system (Traficom's: metres).
+  // Without srsName the reply is in the feature type's own system, which may be metres.
   if (box === undefined || srs !== 'EPSG:4326') {
     return null;
   }
@@ -179,12 +179,15 @@ export function sortedBy<T>(
   return keyed.map((k) => k.item);
 }
 
-/** A feature's identity across requests: its `id`, else its `IDENTIFIER`; undefined without one. */
-export function featureId(f: WfsFeature): string | undefined {
+/**
+ * A feature's identity across requests: its `id`, else its property `idProperty` when the
+ * source names one; undefined without one.
+ */
+export function featureId(f: WfsFeature, idProperty?: string): string | undefined {
   if (typeof f.id === 'string' || typeof f.id === 'number') {
     return String(f.id);
   }
-  const ident = f.properties?.IDENTIFIER;
+  const ident = idProperty === undefined ? undefined : f.properties?.[idProperty];
   return typeof ident === 'string' || typeof ident === 'number' ? String(ident) : undefined;
 }
 
@@ -219,25 +222,27 @@ export function featureBox(f: WfsFeature): Box | undefined {
 }
 
 /**
- * How far past a box a WFS may answer, as a share of the box's size: one whose
- * own grid is turned against latitude and longitude (Traficom's TM35FIN, by up
- * to 6° across Finland) reads a box as the larger box holding it turned, and
- * returns features that far outside.
+ * An upstream that answers a box with every feature whose geometry reaches it, and those up
+ * to `margin` past it, a share of the box's size: a WFS whose own grid is turned against
+ * latitude and longitude reads a box as the larger box holding it turned, and returns
+ * features that far outside (about 0.1 for a grid turned by 6°).
  */
-export const ANSWER_MARGIN = 0.12;
+export interface ByBox {
+  margin: number;
+}
 
 const M_PER_DEG = 111_195;
 
 /**
- * `box` grown to hold what a WFS whose grid is turned may answer for it
- * (`ANSWER_MARGIN`): east and west by its height, north and south by its width.
+ * `box` grown to hold what an upstream answering by box may answer for it (`ByBox`): east and
+ * west by `margin` of its height, north and south by `margin` of its width.
  */
-export function answerBox([w, s, e, n]: Box): Box {
+export function answerBox([w, s, e, n]: Box, margin: number): Box {
   const cos = Math.max(Math.cos((((s + n) / 2) * Math.PI) / 180), 1e-6);
   const height = (n - s) * M_PER_DEG;
   const width = (e - w) * M_PER_DEG * cos;
-  const dLon = (ANSWER_MARGIN * height) / (M_PER_DEG * cos);
-  const dLat = (ANSWER_MARGIN * width) / M_PER_DEG;
+  const dLon = (margin * height) / (M_PER_DEG * cos);
+  const dLat = (margin * width) / M_PER_DEG;
   return [
     Math.max(-180, w - dLon),
     Math.max(-90, s - dLat),

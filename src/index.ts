@@ -267,10 +267,13 @@ import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import { MasterCharts } from './utils/multihelm/master-charts.js';
 import {
   DEFAULT_WFS_MAX_AGE_DAYS,
+  refreshWfsSources,
   releaseWfsProxy,
   startWfsProxy,
   type WfsProxyRunning
 } from './utils/wfs-proxy-service.js';
+import { registerWfsRoutes } from './utils/wfs-routes.js';
+import { WfsSourceList } from './utils/wfs-sources.js';
 import type {
   ChartProvider,
   ChartsProviderEncGlobal,
@@ -305,6 +308,7 @@ const PLUGIN_ID = PLUGIN_OWNER_ID;
 // Small enough for the SD card of a Raspberry Pi, large enough for a cruising area at harbour zoom.
 const DEFAULT_ONLINE_CACHE_LIMIT_MB = 2048;
 const DEFAULT_MASKED_CACHE_LIMIT_MB = 1024;
+const DEFAULT_WFS_CACHE_LIMIT_MB = 1024;
 // How long after the charts load the chart-directory sweep starts.
 const SWEEP_DELAY_MS = 30_000;
 // Tile URLs live under the Signal K v1 charts namespace so non-admin
@@ -477,6 +481,13 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let maskedTiles: MaskedTiles | null = null;
   let areaDownloader: AreaDownloader | null = null;
   let wfsProxy: WfsProxyRunning | null = null;
+  let wfsSourceList: WfsSourceList | null = null;
+  // The sources outlive a start: the WFS Data tab edits them in the data dir.
+  const wfsSources = (): WfsSourceList =>
+    (wfsSourceList ??= new WfsSourceList(path.join(app.getDataDirPath(), 'wfs-sources.json')));
+  const wfsMaxAgeDays = (): number => props.wfsCacheMaxAgeDays ?? DEFAULT_WFS_MAX_AGE_DAYS;
+  const wfsMaxBytes = (): number =>
+    (props.wfsCacheLimitMB ?? DEFAULT_WFS_CACHE_LIMIT_MB) * 1024 * 1024;
   let defaultChartsPath = '';
   let serverMajorVersion = 1;
 
@@ -645,9 +656,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           type: 'boolean',
           title: 'Keep the WFS data other plugins read',
           description:
-            'Other plugins on this server, such as signalk-underkeel, read the Traficom depth WFS through this plugin: ' +
-            'each area is downloaded once, kept under the data directory, and read from there again. ' +
-            'The proxy listens on this machine alone (127.0.0.1).',
+            'Other plugins on this server read WFS servers through this plugin: each area is downloaded once, ' +
+            'kept under the data directory, and read from there again. ' +
+            'Add the servers to keep, see what is kept and delete it in the WFS Data tab of the Charts Manager. ' +
+            'The proxy listens on this machine alone (127.0.0.1); a plugin reads any WFS not listed directly.',
           default: true
         },
         wfsCacheMaxAgeDays: {
@@ -659,13 +671,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
           minimum: 1,
           default: DEFAULT_WFS_MAX_AGE_DAYS
         },
-        wfsProxyUpstreams: {
-          type: 'array',
-          title: 'Other WFS servers to keep',
+        wfsCacheLimitMB: {
+          type: 'integer',
+          title: 'Space for kept WFS data (MB)',
           description:
-            "Base URLs (no query) of WFS servers to proxy besides Traficom's, for plugins that read them.",
-          items: { type: 'string' },
-          default: []
+            'Above this size the areas downloaded longest ago are removed first; they are downloaded again when next read. ' +
+            '0 keeps everything.',
+          minimum: 0,
+          default: DEFAULT_WFS_CACHE_LIMIT_MB
         }
       }
     }),
@@ -947,8 +960,9 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     try {
       running = await startWfsProxy({
         dataDir: app.getDataDirPath(),
-        maxAgeDays: () => props.wfsCacheMaxAgeDays ?? DEFAULT_WFS_MAX_AGE_DAYS,
-        extraUpstreams: () => props.wfsProxyUpstreams ?? [],
+        maxAgeDays: wfsMaxAgeDays,
+        maxBytes: wfsMaxBytes,
+        sources: () => wfsSources().list(),
         // Not while the link's state is still being learnt: it may be metered.
         mayRefresh: () =>
           internet === null || (internet.mayRunBackground() && !internet.deciding()),
@@ -4881,6 +4895,22 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     registerOpenDataRoutes(() => openData, readonly, readwrite, router);
+    registerWfsRoutes(
+      {
+        sources: wfsSources,
+        proxy: () => wfsProxy,
+        enabled: () => props.wfsProxy !== false,
+        maxAgeDays: wfsMaxAgeDays,
+        maxBytes: wfsMaxBytes,
+        sourcesChanged: () => {
+          if (wfsProxy) {
+            refreshWfsSources(wfsProxy);
+          }
+        }
+      },
+      readonly,
+      router
+    );
 
     // ---- Chart sets (the ENC Charts tab) ----
     // Build a named bundle of ENC units picked on a map of the ENC index

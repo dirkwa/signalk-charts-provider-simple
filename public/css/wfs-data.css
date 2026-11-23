@@ -1,0 +1,57 @@
+/* WFS Data tab; the layout and controls reuse the Download tab's classes. */
+
+.wfs-store {
+  margin: 8px 0;
+}
+
+.wfs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wfs-source {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant, #c3c7cf);
+}
+
+.wfs-source:last-child {
+  border-bottom: none;
+}
+
+.wfs-source-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wfs-source-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.wfs-source-url,
+.wfs-source-rule {
+  font-size: 0.85rem;
+  opacity: 0.75;
+  overflow-wrap: anywhere;
+}
+
+.wfs-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wfs-source-kept {
+  margin-top: 4px;
+  font-size: 0.9rem;
+}
+
+.wfs-layers {
+  margin: 4px 0 0;
+  padding-left: 20px;
+  font-size: 0.85rem;
+}

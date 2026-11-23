@@ -1,5 +1,6 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert';
+import crypto from 'crypto';
 import fs from 'fs';
 import http from 'http';
 import os from 'os';
@@ -7,7 +8,6 @@ import path from 'path';
 import type { AddressInfo } from 'net';
 
 import {
-  ANSWER_MARGIN,
   answerBox,
   featureBox,
   featureId,
@@ -19,16 +19,33 @@ import {
   sortOrder,
   uncovered,
   type Box,
+  type ByBox,
   type WfsFeature
 } from '../dist/utils/wfs-query.js';
 import { WfsCache, type Layer, type Pin } from '../dist/utils/wfs-cache.js';
-import { normalizeUpstream, READ_IDLE_MS, WfsProxy } from '../dist/utils/wfs-proxy.js';
 import {
-  DEFAULT_WFS_UPSTREAMS,
+  normalizeUpstream,
+  READ_IDLE_MS,
+  WfsProxy,
+  type WfsSource
+} from '../dist/utils/wfs-proxy.js';
+import {
+  refreshWfsSources,
   releaseWfsProxy,
   startWfsProxy,
-  stopWfsProxy
+  stopWfsProxy,
+  wfsSources
 } from '../dist/utils/wfs-proxy-service.js';
+import { WfsSourceError, WfsSourceList } from '../dist/utils/wfs-sources.js';
+
+/** The fake upstream's grid is turned by about 6°: it answers this far past a box. */
+const MARGIN = 0.12;
+const BY_BOX: ByBox = { margin: MARGIN };
+const grown = (box: Box): Box => answerBox(box, MARGIN);
+const byBoxSources =
+  (...urls: string[]) =>
+  (): WfsSource[] =>
+    urls.map((url) => ({ url, byBox: BY_BOX }));
 
 interface Feature {
   type: 'Feature';
@@ -74,7 +91,7 @@ const intersects = (f: Feature, [w, s, e, n]: Box): boolean => {
   return fe >= w && fw <= e && fn >= s && fs <= n;
 };
 
-/** An upstream WFS over AREAS, as Traficom's answers underkeel's requests. */
+/** An upstream WFS over AREAS, read in a grid turned against latitude and longitude. */
 function upstreamServer() {
   const seen: string[] = [];
   const elsewhere: string[] = [];
@@ -118,8 +135,8 @@ function upstreamServer() {
       res.writeHead(400).end('bad request');
       return;
     }
-    // As Traficom does: the box read in a turned grid, so a little past it too.
-    const turned = answerBox(q.box);
+    // The box read in a turned grid, so a little past it too.
+    const turned = grown(q.box);
     const past = (b: Box): Box => {
       const [w, s, e, n] = b;
       const [tw, ts, te, tn] = turned;
@@ -151,7 +168,7 @@ function upstreamServer() {
   return { server, seen, elsewhere };
 }
 
-/** The query underkeel sends for `box`, `[west, south, east, north]`. */
+/** The query a peer plugin sends for `box`, `[west, south, east, north]`. */
 function query(typeName: string, [w, s, e, n]: Box, extra: Record<string, string>): string {
   return new URLSearchParams({
     service: 'WFS',
@@ -164,7 +181,7 @@ function query(typeName: string, [w, s, e, n]: Box, extra: Record<string, string
   }).toString();
 }
 
-/** A layer read as underkeel reads it: the count, then pages of `size` sorted by IDENTIFIER. */
+/** A layer read as a peer plugin reads it: the count, then pages of `size` sorted by IDENTIFIER. */
 async function readLayer(
   base: string,
   box: Box,
@@ -192,7 +209,7 @@ async function readLayer(
 }
 
 describe('wfs-query', () => {
-  it("reads underkeel's GetFeature as a box in longitude, latitude", () => {
+  it('reads a GetFeature as a box in longitude, latitude', () => {
     const q = featureQuery(
       new URLSearchParams(
         query('DepthArea_A', [22, 60, 22.5, 60.2], {
@@ -287,8 +304,10 @@ describe('wfs-query', () => {
   it("a feature's id and box", () => {
     const f = AREAS[3] as Feature;
     assert.strictEqual(featureId(f), f.id);
-    assert.strictEqual(featureId({ properties: { IDENTIFIER: 7 } }), '7');
-    assert.strictEqual(featureId({ properties: {} }), undefined);
+    assert.strictEqual(featureId(f, 'IDENTIFIER'), f.id);
+    assert.strictEqual(featureId({ properties: { IDENTIFIER: 7 } }), undefined);
+    assert.strictEqual(featureId({ properties: { IDENTIFIER: 7 } }, 'IDENTIFIER'), '7');
+    assert.strictEqual(featureId({ properties: {} }, 'IDENTIFIER'), undefined);
     const [w, s, e, n] = featureBox(f) as Box;
     assert.ok(Math.abs(e - w - 0.01) < 1e-12 && Math.abs(n - s - 0.01) < 1e-12);
     assert.strictEqual(featureBox({ geometry: null }), undefined);
@@ -300,12 +319,13 @@ describe('wfs-query', () => {
   });
 
   it('answerBox: grown by the margin a turned grid adds, each way by the other side', () => {
-    const [w, s, e, n] = answerBox([22, 60, 22.2, 60.1]);
+    const [w, s, e, n] = answerBox([22, 60, 22.2, 60.1], MARGIN);
     const cos = Math.cos((60.05 * Math.PI) / 180);
     // East and west by the box's height, north and south by its width.
-    assert.ok(Math.abs(22 - w - (ANSWER_MARGIN * 0.1) / cos) < 1e-9);
-    assert.ok(Math.abs(60 - s - ANSWER_MARGIN * 0.2 * cos) < 1e-9);
+    assert.ok(Math.abs(22 - w - (MARGIN * 0.1) / cos) < 1e-9);
+    assert.ok(Math.abs(60 - s - MARGIN * 0.2 * cos) < 1e-9);
     assert.ok(e > 22.2 && n > 60.1);
+    assert.deepStrictEqual(answerBox([22, 60, 22.2, 60.1], 0), [22, 60, 22.2, 60.1]);
   });
 
   it('uncovered: what boxes leave of a box', () => {
@@ -348,11 +368,17 @@ function keepWhole(
   features: readonly WfsFeature[],
   box: Box,
   at: number,
-  byBox = true
+  exact = false
 ): number | undefined {
   const stage = cache.beginStage();
   assert.ok(cache.stage(stage, features, at));
-  return cache.publish(stage, layer, { box, boxText: box.join(',') }, at, byBox);
+  return cache.publish(
+    stage,
+    layer,
+    { box, boxText: box.join(',') },
+    at,
+    exact ? undefined : BY_BOX
+  );
 }
 
 describe('WfsCache', () => {
@@ -393,7 +419,7 @@ describe('WfsCache', () => {
       );
     }
     assert.strictEqual(cache.stagedCount(stage), 0);
-    cache.publish(stage, layer, { box: WIDE, boxText: 'w' }, 1, true);
+    cache.publish(stage, layer, { box: WIDE, boxText: 'w' }, 1, BY_BOX);
     assert.strictEqual(cache.stats().features, 0);
     cache.close();
   });
@@ -401,7 +427,7 @@ describe('WfsCache', () => {
   it('a box is held by the boxes fetched since a time', () => {
     const cache = new WfsCache(path.join(dir, 'c.sqlite'));
     const held = (box: Box, at: number) =>
-      cache.publish(undefined, layer, { box, boxText: box.join(',') }, at, true);
+      cache.publish(undefined, layer, { box, boxText: box.join(',') }, at, BY_BOX);
     held([22, 60, 22.1, 60.1], 100);
     held([22.1, 60, 22.2, 60.1], 200);
     assert.ok(cache.covers(layer, [22.05, 60.02, 22.15, 60.08], 0));
@@ -454,11 +480,11 @@ describe('WfsCache', () => {
     const b = cache.beginStage();
     assert.ok(cache.stage(b, [a], 35));
     assert.strictEqual(
-      cache.publish(c, layer, { box: [22, 60.01, 22.01, 60.02], boxText: 'c' }, 10, true),
+      cache.publish(c, layer, { box: [22, 60.01, 22.01, 60.02], boxText: 'c' }, 10, BY_BOX),
       0
     );
     // B cannot tell whether P, kept at 30, is gone: it is not kept, and P stays.
-    assert.strictEqual(cache.publish(b, layer, { box, boxText: 'b' }, 20, true), undefined);
+    assert.strictEqual(cache.publish(b, layer, { box, boxText: 'b' }, 20, BY_BOX), undefined);
     assert.deepStrictEqual(
       cache
         .features(cache.idsIn(layer, box))
@@ -469,7 +495,7 @@ describe('WfsCache', () => {
     // A read begun at 40, after P and Q were kept, giving A alone: both are gone upstream.
     const later = cache.beginStage();
     assert.ok(cache.stage(later, [a], 45));
-    assert.strictEqual(cache.publish(later, layer, { box, boxText: 'later' }, 40, true), 2);
+    assert.strictEqual(cache.publish(later, layer, { box, boxText: 'later' }, 40, BY_BOX), 2);
     assert.deepStrictEqual(
       cache.features(cache.idsIn(layer, box)).map((f) => f.id),
       [a.id]
@@ -485,23 +511,26 @@ describe('WfsCache', () => {
     const c = cache.beginStage();
     assert.ok(cache.stage(c, [crossing, outside], 30));
     assert.strictEqual(
-      cache.publish(c, layer, { box: [22, 60, 22.2, 60.1], boxText: 'c' }, 10, true),
+      cache.publish(c, layer, { box: [22, 60, 22.2, 60.1], boxText: 'c' }, 10, BY_BOX),
       0
     );
     // Read B of the narrower box began at 20 and found it empty: the crossing one may be gone.
-    assert.strictEqual(cache.publish(undefined, layer, { box, boxText: 'b' }, 20, true), undefined);
+    assert.strictEqual(
+      cache.publish(undefined, layer, { box, boxText: 'b' }, 20, BY_BOX),
+      undefined
+    );
     // Had B given the crossing one, or had only the outside one been kept, B is kept.
     const b = cache.beginStage();
     assert.ok(cache.stage(b, [crossing], 35));
-    assert.strictEqual(cache.publish(b, layer, { box, boxText: 'b2' }, 20, true), 0);
+    assert.strictEqual(cache.publish(b, layer, { box, boxText: 'b2' }, 20, BY_BOX), 0);
     const other = new WfsCache(path.join(dir, 'l.sqlite'));
     const o = other.beginStage();
     assert.ok(other.stage(o, [outside], 30));
     assert.strictEqual(
-      other.publish(o, layer, { box: [22, 60, 22.2, 60.1], boxText: 'c' }, 10, true),
+      other.publish(o, layer, { box: [22, 60, 22.2, 60.1], boxText: 'c' }, 10, BY_BOX),
       0
     );
-    assert.strictEqual(other.publish(undefined, layer, { box, boxText: 'b' }, 20, true), 0);
+    assert.strictEqual(other.publish(undefined, layer, { box, boxText: 'b' }, 20, BY_BOX), 0);
     other.close();
     cache.close();
   });
@@ -512,11 +541,11 @@ describe('WfsCache', () => {
     assert.ok(cache.stage(older, AREAS.slice(0, 3), 1));
     // A newer read of the box found it empty, and was kept first.
     assert.strictEqual(
-      cache.publish(undefined, layer, { box: WIDE, boxText: 'newer' }, 5, true),
+      cache.publish(undefined, layer, { box: WIDE, boxText: 'newer' }, 5, BY_BOX),
       0
     );
     assert.strictEqual(
-      cache.publish(older, layer, { box: [22, 60, 22.1, 60.1], boxText: 'older' }, 1, true),
+      cache.publish(older, layer, { box: [22, 60, 22.1, 60.1], boxText: 'older' }, 1, BY_BOX),
       undefined
     );
     assert.strictEqual(cache.stats().features, 0);
@@ -525,8 +554,8 @@ describe('WfsCache', () => {
   });
 
   it('of reads begun in the same millisecond, the one begun later is kept', () => {
-    for (const byBox of [false, true]) {
-      const cache = new WfsCache(path.join(dir, `m-${String(byBox)}.sqlite`));
+    for (const byBox of [undefined, BY_BOX]) {
+      const cache = new WfsCache(path.join(dir, `m-${byBox ? 'box' : 'exact'}.sqlite`));
       const whole = { box: WIDE, boxText: WIDE.join(',') };
       const first = cache.beginStage();
       const second = cache.beginStage();
@@ -630,7 +659,7 @@ describe('WfsCache', () => {
   it('leaves out a feature in the margin of a box that a read of the box did not return', () => {
     const cache = new WfsCache(path.join(dir, 'p.sqlite'));
     const box: Box = [22, 60, 22.1, 60.1];
-    const margin = answerBox(box);
+    const margin = grown(box);
     const point = (id: string, x: number) => ({
       type: 'Feature',
       id,
@@ -672,7 +701,7 @@ describe('WfsCache', () => {
     const other = cache.beginStage();
     assert.ok(cache.stage(other, [late], 14));
     assert.strictEqual(
-      cache.publish(other, layer, { box: [22.1, 60.04, 22.2, 60.1], boxText: 'ne' }, 13, true),
+      cache.publish(other, layer, { box: [22.1, 60.04, 22.2, 60.1], boxText: 'ne' }, 13, BY_BOX),
       0
     );
     assert.deepStrictEqual(answered(cache.answerIn(layer, box, box)), [crossing.id]);
@@ -706,13 +735,13 @@ describe('WfsCache', () => {
       geometry: { type: 'Point', coordinates: [22.1, 59.9881] },
       properties: {}
     };
-    assert.ok(answerBox(older)[1] < 59.9881 && answerBox(newer)[1] > 59.9881);
+    assert.ok(grown(older)[1] < 59.9881 && grown(newer)[1] > 59.9881);
     keepWhole(cache, layer, [south], WIDE, 1);
     assert.strictEqual(keepWhole(cache, layer, [], older, 5), 0);
-    assert.deepStrictEqual(answered(cache.answerIn(layer, older, answerBox(older))), []);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, older, grown(older))), []);
     // The newer box's answer does not reach the point, so it says nothing of it.
     assert.strictEqual(keepWhole(cache, layer, [], newer, 9), 0);
-    assert.deepStrictEqual(answered(cache.answerIn(layer, older, answerBox(older))), []);
+    assert.deepStrictEqual(answered(cache.answerIn(layer, older, grown(older))), []);
     cache.close();
   });
 
@@ -764,7 +793,7 @@ describe('WfsCache', () => {
     const box: Box = [22, 60, 22.05, 60.05];
     const other: Box = [22, 60, 22.06, 60.06];
     const f = AREAS[0] as Feature;
-    keepWhole(cache, layer, AREAS.slice(0, 3), box, 1, false);
+    keepWhole(cache, layer, AREAS.slice(0, 3), box, 1, true);
     // Another box gives the same feature changed: the first box keeps it as it gave it.
     keepWhole(
       cache,
@@ -772,7 +801,7 @@ describe('WfsCache', () => {
       [{ ...f, properties: { ...f.properties, DRVAL1: 99 } }],
       other,
       2,
-      false
+      true
     );
     const covered = cache.exactCover(layer, box.join(','), 0);
     assert.ok(covered !== undefined);
@@ -806,6 +835,94 @@ describe('WfsCache', () => {
     assert.throws(() => new WfsCache(bad));
     fs.rmSync(bad);
   });
+
+  it('tells what each source keeps, by feature type, and how much of it is stale', () => {
+    const cache = new WfsCache(path.join(dir, 'stats.sqlite'));
+    const other: Layer = { upstream: 'https://other.example/wfs', typeName: 'Soundings' };
+    keepWhole(cache, layer, AREAS.slice(0, 3), [22, 60, 22.05, 60.05], 100);
+    keepWhole(cache, layer, AREAS.slice(3, 5), [22.05, 60, 22.1, 60.05], 300);
+    keepWhole(cache, other, AREAS.slice(0, 2), [22, 60, 22.1, 60.1], 200, true);
+    const stats = cache.sourceStats(250);
+    const mine = stats.find((s) => s.upstream === layer.upstream);
+    assert.ok(mine);
+    assert.strictEqual(mine.areas, 2);
+    assert.strictEqual(mine.staleAreas, 1);
+    assert.strictEqual(mine.features, 5);
+    assert.ok(mine.bytes > 0);
+    assert.deepStrictEqual([mine.oldest, mine.newest], [100, 300]);
+    assert.deepStrictEqual(
+      mine.layers.map((l) => l.typeName),
+      [layer.typeName]
+    );
+    const theirs = stats.find((s) => s.upstream === other.upstream);
+    assert.strictEqual(theirs?.features, 2);
+    assert.strictEqual(theirs.staleAreas, 1);
+    cache.close();
+  });
+
+  it('forgets one upstream, everything, or the upstreams no longer listed', () => {
+    const cache = new WfsCache(path.join(dir, 'forget.sqlite'));
+    const other: Layer = { upstream: 'https://other.example/wfs', typeName: 'Soundings' };
+    const fill = (): void => {
+      keepWhole(cache, layer, AREAS.slice(0, 3), [22, 60, 22.05, 60.05], 1);
+      keepWhole(cache, other, AREAS.slice(0, 2), [22, 60, 22.1, 60.1], 2, true);
+    };
+    const upstreams = (): string[] =>
+      cache
+        .sourceStats(0)
+        .map((s) => s.upstream)
+        .sort();
+    fill();
+    // A read from the store keeps what it pinned.
+    const pin = cache.pinIn(layer, WIDE);
+    assert.strictEqual(cache.forgetUpstream(layer.upstream), true);
+    assert.strictEqual(cache.forgetUpstream(layer.upstream), false);
+    assert.deepStrictEqual(upstreams(), [other.upstream]);
+    assert.strictEqual(pin.features(pin.ids).length, 3);
+    pin.release();
+    cache.clear();
+    assert.deepStrictEqual(upstreams(), []);
+    fill();
+    cache.useRule(other.upstream, 'exact');
+    assert.deepStrictEqual(cache.keepOnly([layer.upstream]), [other.upstream]);
+    assert.deepStrictEqual(upstreams(), [layer.upstream]);
+    // Its rule went with it: listed again, it starts afresh.
+    assert.strictEqual(cache.useRule(other.upstream, 'box'), false);
+    cache.close();
+  });
+
+  it('within its space, drops the areas read longest ago and the features only they reached', () => {
+    const cache = new WfsCache(path.join(dir, 'fit.sqlite'));
+    const big = (i: number, x: number): WfsFeature => ({
+      ...area(1000 + i, x, 60.5),
+      properties: {
+        IDENTIFIER: `big${String(i)}`,
+        DRVAL1: 0,
+        filler: crypto.randomBytes(40_000).toString('hex')
+      }
+    });
+    for (let i = 0; i < 6; i++) {
+      const x = 22 + i * 0.1;
+      keepWhole(cache, layer, [big(i, x)], [x, 60.5, x + 0.01, 60.51], 10 + i);
+    }
+    assert.strictEqual(cache.fit(0), 0);
+    assert.strictEqual(cache.fit(cache.usedBytes() * 10), 0);
+    const limit = cache.usedBytes() / 2;
+    const dropped = cache.fit(limit);
+    assert.ok(dropped >= 2 && dropped < 6, `dropped ${String(dropped)}`);
+    assert.ok(cache.usedBytes() <= limit * 1.2);
+    const left = cache.sourceStats(0)[0];
+    assert.strictEqual(left?.areas, 6 - dropped);
+    assert.strictEqual(left.features, 6 - dropped);
+    // The newest areas stay.
+    assert.strictEqual(left.newest, 15);
+    assert.ok(cache.covers(layer, [22.5, 60.5, 22.51, 60.51], 0));
+    assert.ok(!cache.covers(layer, [22, 60.5, 22.01, 60.51], 0));
+    // However small the space, the area read last stays.
+    cache.fit(1);
+    assert.strictEqual(cache.sourceStats(0)[0]?.areas, 1);
+    cache.close();
+  });
 });
 
 describe('WfsProxy', () => {
@@ -833,10 +950,10 @@ describe('WfsProxy', () => {
     } = {}
   ) {
     const cache = new WfsCache(path.join(dir, file));
+    const urls = opts.upstreams ?? (() => [upstreamBase]);
     const proxy = new WfsProxy({
       cache,
-      upstreams: opts.upstreams ?? (() => [upstreamBase]),
-      answersByBox: () => opts.byBox ?? true,
+      sources: () => urls().map((url) => (opts.byBox === false ? { url } : { url, byBox: BY_BOX })),
       maxAgeMs: () => 1000,
       mayRefresh: opts.mayRefresh ?? (() => true),
       now: opts.now
@@ -949,14 +1066,78 @@ describe('WfsProxy', () => {
     cache.close();
   });
 
+  it("drops a source's kept areas when its rule changes, and keeps them when it does not", async () => {
+    const { cache, proxy } = proxyWith('p-rule.sqlite');
+    await proxy.listen();
+    await readLayer(proxy.proxyUrl(upstreamBase) as string, BOX);
+    const held = cache.stats();
+    assert.ok(held.areas > 0 && held.features > 0);
+    proxy.configure({ sources: byBoxSources(upstreamBase) });
+    assert.deepStrictEqual(cache.stats().areas, held.areas);
+    proxy.configure({ sources: () => [{ url: upstreamBase, byBox: { margin: 0.2 } }] });
+    assert.strictEqual(cache.stats().areas, 0);
+    assert.strictEqual(cache.stats().features, 0);
+    await proxy.close();
+    cache.close();
+  });
+
+  it("identifies features by the source's id property when they have no id", async () => {
+    const plain = AREAS.slice(0, 3).map(({ id: _id, ...f }) => f);
+    const server = http.createServer((req, res) => {
+      const q = featureQuery(new URL(req.url ?? '/', 'http://x').searchParams);
+      res.writeHead(200, { 'content-type': 'application/json' }).end(
+        q?.hits === true
+          ? `<wfs:FeatureCollection numberMatched="${String(plain.length)}"/>`
+          : JSON.stringify({
+              type: 'FeatureCollection',
+              numberMatched: plain.length,
+              features: plain
+            })
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/wfs`;
+    try {
+      for (const idProperty of [undefined, 'IDENTIFIER']) {
+        const cache = new WfsCache(path.join(dir, `p-id-${String(idProperty)}.sqlite`));
+        const proxy = new WfsProxy({
+          cache,
+          sources: () => [{ url, byBox: BY_BOX, ...(idProperty ? { idProperty } : {}) }],
+          maxAgeMs: () => 1000,
+          mayRefresh: () => true
+        });
+        await proxy.listen();
+        await readLayer(proxy.proxyUrl(url) as string, BOX);
+        assert.strictEqual(cache.stats().areas, idProperty ? 1 : 0);
+        await proxy.close();
+        cache.close();
+      }
+    } finally {
+      server.close();
+    }
+  });
+
+  it("drops what a source no longer proxied kept, and keeps the others'", async () => {
+    const { cache, proxy } = proxyWith('p-unlisted.sqlite');
+    await proxy.listen();
+    await readLayer(proxy.proxyUrl(upstreamBase) as string, BOX);
+    const other = 'https://other.example/wfs';
+    proxy.configure({ sources: byBoxSources(upstreamBase, other) });
+    assert.ok(cache.stats().areas > 0);
+    proxy.configure({ sources: byBoxSources(other) });
+    assert.strictEqual(cache.stats().areas, 0);
+    assert.strictEqual(proxy.proxyUrl(upstreamBase), undefined);
+    await proxy.close();
+    cache.close();
+  });
+
   it('keeps its port when it is free', async () => {
     const { cache, proxy } = proxyWith('p5.sqlite');
     const port = await proxy.listen();
     await proxy.close();
     const again = new WfsProxy({
       cache,
-      upstreams: () => [upstreamBase],
-      answersByBox: () => true,
+      sources: byBoxSources(upstreamBase),
       maxAgeMs: () => 1000,
       mayRefresh: () => true
     });
@@ -1060,8 +1241,7 @@ describe('WfsProxy', () => {
     const cache = new WfsCache(path.join(dir, 'p41.sqlite'));
     const proxy = new WfsProxy({
       cache,
-      upstreams: () => [upstreamBase],
-      answersByBox: () => true,
+      sources: byBoxSources(upstreamBase),
       // Every area is stale at once: each read goes upstream.
       maxAgeMs: () => -1,
       mayRefresh: () => true,
@@ -1160,7 +1340,7 @@ describe('WfsProxy', () => {
     const base = proxy.proxyUrl(upstreamBase) as string;
     await readLayer(base, BOX);
     const inner: Box = [22.045, 60.025, 22.075, 60.055];
-    const near = answerBox(inner);
+    const near = grown(inner);
     const emptied = AREAS.filter((f) => intersects(f, near)).map((f) => f.id);
     for (const id of emptied) {
       REMOVED.add(id);
@@ -1430,8 +1610,7 @@ describe('WfsProxy', () => {
     const uncounted = upstreamBase.replace(/\/wfs$/, '/uncounted');
     const proxy = new WfsProxy({
       cache,
-      upstreams: () => [uncounted],
-      answersByBox: () => true,
+      sources: byBoxSources(uncounted),
       maxAgeMs: () => 1000,
       mayRefresh: () => true,
       fetch: async (url, init) => {
@@ -1473,36 +1652,125 @@ describe('WfsProxy', () => {
 
   it('a config save hands the running proxy to the next start', async () => {
     const dataDir = fs.mkdtempSync(path.join(dir, 'service-'));
+    const kept = 'https://wfs.example/service/wfs';
+    let listed = [{ url: 'htps://typo.example/wfs' }, { url: kept, answersByBox: true }];
     const settings = {
       dataDir,
       maxAgeDays: () => 30,
-      extraUpstreams: () => ['htps://typo.example/wfs'],
+      maxBytes: () => 0,
+      sources: () => listed,
       mayRefresh: () => true,
       log: () => undefined,
-      warn: (m: string) => {
-        warnings.push(m);
-      }
+      warn: () => undefined
     };
-    const warnings: string[] = [];
     const running = await startWfsProxy(settings);
-    const url = running.api.proxyUrl(DEFAULT_WFS_UPSTREAMS[0]);
+    const url = running.api.proxyUrl(kept);
     assert.ok(url !== undefined);
-    assert.deepStrictEqual(warnings, [
-      'Other WFS servers to keep: entry 1 is not an http or https URL, so it is not proxied'
-    ]);
+    assert.deepStrictEqual(running.api.upstreams(), [kept]);
+    // A source added while it runs is proxied at once.
+    listed = [...listed, { url: 'https://added.example/wfs', answersByBox: false }];
+    refreshWfsSources(running);
+    assert.ok(running.api.proxyUrl('https://added.example/wfs') !== undefined);
     releaseWfsProxy(running);
-    const again = await startWfsProxy({ ...settings, extraUpstreams: () => [] });
+    const again = await startWfsProxy({ ...settings, sources: () => [{ url: kept }] });
     assert.strictEqual(again, running);
-    assert.strictEqual(again.api.proxyUrl(DEFAULT_WFS_UPSTREAMS[0]), url);
+    assert.strictEqual(again.api.proxyUrl(kept), url);
+    assert.strictEqual(again.api.proxyUrl('https://other.example/wfs'), undefined);
     await stopWfsProxy(again);
+  });
+
+  it('takes each configured source once, with its rule and id property', () => {
+    assert.deepStrictEqual(
+      wfsSources([
+        { url: 'https://a.example/wfs/', answersByBox: true, answerMargin: 0.12 },
+        { url: 'https://a.example/wfs', answersByBox: false },
+        { url: 'https://b.example/wfs', answerMargin: 0.3, idProperty: ' IDENTIFIER ' },
+        { url: 'https://c.example/wfs', answersByBox: true, idProperty: '' },
+        { url: 'nowhere' }
+      ]),
+      [
+        { url: 'https://a.example/wfs', byBox: { margin: 0.12 } },
+        { url: 'https://b.example/wfs', idProperty: 'IDENTIFIER' },
+        { url: 'https://c.example/wfs', byBox: { margin: 0 } }
+      ]
+    );
   });
 
   it('normalizes upstream URLs for comparison', () => {
     assert.strictEqual(
-      normalizeUpstream('https://julkinen.traficom.fi/inspirepalvelu/rajoitettu/wfs/?x=1'),
-      'https://julkinen.traficom.fi/inspirepalvelu/rajoitettu/wfs'
+      normalizeUpstream('https://wfs.example/service/wfs/?x=1'),
+      'https://wfs.example/service/wfs'
     );
     assert.strictEqual(normalizeUpstream('ftp://x/wfs'), undefined);
     assert.strictEqual(normalizeUpstream('not a url'), undefined);
+  });
+});
+
+describe('WfsSourceList', () => {
+  let dir: string;
+  before(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wfs-sources-'));
+  });
+  after(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('adds, edits and removes sources, kept in its file', () => {
+    const file = path.join(dir, 'a', 'wfs-sources.json');
+    const list = new WfsSourceList(file);
+    assert.deepStrictEqual(list.list(), []);
+    const added = list.save(
+      { url: 'https://wfs.example/wfs/', name: ' Depths ', answerMargin: 0.3, idProperty: ' ' },
+      false
+    );
+    assert.deepStrictEqual(added, {
+      url: 'https://wfs.example/wfs',
+      name: 'Depths',
+      answersByBox: false
+    });
+    assert.throws(
+      () => list.save({ url: 'https://wfs.example/wfs' }, false),
+      (e: unknown) => e instanceof WfsSourceError && e.status === 409
+    );
+    assert.throws(
+      () => list.save({ url: 'https://none.example/wfs' }, true),
+      (e: unknown) => e instanceof WfsSourceError && e.status === 404
+    );
+    assert.throws(
+      () => list.save({ url: 'ftp://wfs.example/wfs' }, false),
+      (e: unknown) => e instanceof WfsSourceError && e.status === 400
+    );
+    list.save({ url: 'https://wfs.example/wfs', answersByBox: true, answerMargin: 0.12 }, true);
+    assert.deepStrictEqual(new WfsSourceList(file).list(), [
+      { url: 'https://wfs.example/wfs', answersByBox: true, answerMargin: 0.12 }
+    ]);
+    assert.strictEqual(list.remove('https://wfs.example/wfs/'), true);
+    assert.strictEqual(list.remove('https://wfs.example/wfs'), false);
+    assert.deepStrictEqual(new WfsSourceList(file).list(), []);
+  });
+
+  it('skips the entries it cannot read and keeps the fields it does not know', () => {
+    const file = path.join(dir, 'b.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        sources: [
+          { url: 'not a url' },
+          { url: 7 },
+          { url: 'https://wfs.example/wfs', answersByBox: true, answerMargin: 0.1, later: 'x' }
+        ]
+      })
+    );
+    const list = new WfsSourceList(file);
+    assert.deepStrictEqual(list.list(), [
+      { url: 'https://wfs.example/wfs', answersByBox: true, answerMargin: 0.1 }
+    ]);
+    list.save({ url: 'https://wfs.example/wfs', name: 'Named' }, true);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { sources: unknown[] };
+    assert.deepStrictEqual(saved.sources, [
+      { later: 'x', url: 'https://wfs.example/wfs', name: 'Named', answersByBox: false }
+    ]);
+    fs.writeFileSync(file, '{ broken');
+    assert.deepStrictEqual(new WfsSourceList(file).list(), []);
   });
 });

@@ -31,7 +31,7 @@ export const PluginConfigSchema = Type.Object({
   encAreaDownloads: Type.Optional(Type.Boolean()),
   wfsProxy: Type.Optional(Type.Boolean()),
   wfsCacheMaxAgeDays: Type.Optional(Type.Integer({ minimum: 1 })),
-  wfsProxyUpstreams: Type.Optional(Type.Array(Type.String())),
+  wfsCacheLimitMB: Type.Optional(Type.Integer({ minimum: 0 })),
   multihelmLocalCopy: Type.Optional(Type.Boolean()),
   multihelmFromMaster: Type.Optional(Type.Boolean())
 });

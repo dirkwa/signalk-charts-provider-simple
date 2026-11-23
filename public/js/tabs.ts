@@ -49,5 +49,7 @@ window.openTab = function (evt: MouseEvent | null, tabName: string): void {
     window.handleCustomCatalogsTabActive?.();
   } else if (tabName === 'openData') {
     window.handleOpenDataTabActive?.();
+  } else if (tabName === 'wfsData') {
+    window.handleWfsTabActive?.();
   }
 };

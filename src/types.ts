@@ -563,9 +563,9 @@ export interface ChartsProviderEncGlobal {
 
 /**
  * The local WFS proxy, published on `globalThis.__signalk_chartsProviderWfs`
- * for peer plugins in the same server (signalk-underkeel reads Traficom's
- * depth WFS through it). Published once the plugin has started with the proxy
- * on and withdrawn when it stops. See `docs/wfs-proxy.md`.
+ * for peer plugins in the same server, which read the WFS servers configured
+ * as its sources through it. Published once the plugin has started with the
+ * proxy on, and withdrawn when it stops. See `docs/wfs-proxy.md`.
  */
 export interface ChartsProviderWfsApi {
   apiVersion: number;

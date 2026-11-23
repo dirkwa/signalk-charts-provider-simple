@@ -1,10 +1,70 @@
 # Local WFS proxy
 
 The plugin runs a WFS server on the loopback interface that other plugins in
-the same Signal K server read instead of an upstream WFS, such as Traficom's
-depth areas: signalk-underkeel reads its chart box, depth survey and planning
-boxes through it, from its build processes too. An area is downloaded once,
+the same Signal K server, and their worker processes, read instead of the
+upstream WFS servers configured as its sources. An area is downloaded once,
 kept, and answered from the store the next time.
+
+## Sources
+
+The servers proxied are added, edited and removed in the **WFS Data** tab of
+the Charts Manager, by an administrator; a plugin reads any other directly.
+They are kept in `<dataDir>/wfs-sources.json`, and a change applies to the
+running proxy at once. Each source has:
+
+- `name`: optional, what the tab shows it as.
+- `url`: the WFS base URL, with no query, as the plugins reading it use it.
+- `answersByBox`: on for a server that answers a box with every feature whose
+  geometry reaches it, as GeoServer and MapServer do. Each feature is then
+  kept once and a box inside the areas kept is answered from the store. Off
+  (the default), an area is answered from the store only for the same box.
+- `answerMargin`: with `answersByBox`, how far past a box the server answers,
+  as a share of the box's size, east and west by its height and north and
+  south by its width. A server that reads a box in its own grid, turned
+  against latitude and longitude, returns features up to the box holding it
+  turned: about 0.1 for a grid turned by 6°, so 0.12 leaves room. 0 for a
+  server that answers the box exactly.
+- `idProperty`: only for a server whose GeoJSON features have no `id`: the
+  property naming each feature. Without an id a page is passed on but not
+  kept.
+
+The store keeps a source's data under the rule those settings make; when
+they change, or the source is removed, what was kept from it is dropped.
+
+```json
+{
+  "sources": [
+    { "url": "https://wfs.example.org/geoserver/wfs", "name": "Depth areas", "answersByBox": true, "answerMargin": 0.12 },
+    { "url": "https://other.example.org/wfs", "answersByBox": false }
+  ]
+}
+```
+
+## Seeing and deleting what it keeps
+
+The WFS Data tab shows, for each source and feature type, the areas kept, how
+many are older than **Download a kept WFS area again after** (read upstream
+again when next asked for), the features and their size, and when they were
+downloaded; anyone who may read the server sees it. An administrator can
+delete what one source keeps, or everything; the file is then compacted, so
+the space goes back to the disk. Signal K need not be stopped: a peer's read
+from the store in progress keeps the features it began with.
+
+The plugin config's **Space for kept WFS data** limits the store's size (0:
+no limit). Above it, the areas read longest ago are dropped, with the
+features no area left reaches, until the store fits again; the area read last
+always stays. Dropping the oldest first changes no answer the store gives for
+the areas it still holds.
+
+The routes behind the tab, under `/plugins/signalk-charts-provider-simple`:
+
+| Route | Access | |
+| --- | --- | --- |
+| `GET /wfs` | read | the sources, what each keeps, the store's size and limit |
+| `POST /wfs/sources` | admin | adds a source (body as above, one entry) |
+| `PUT /wfs/sources` | admin | changes the source of the body's `url` |
+| `DELETE /wfs/sources?url=` | admin | removes a source and what it kept |
+| `DELETE /wfs/data?url=` | admin | deletes what a source kept; without `url`, everything |
 
 ## How it answers
 
@@ -12,9 +72,9 @@ A request it can answer from the store is a WFS 2.0 `GetFeature` of one
 feature type in a box in `urn:ogc:def:crs:EPSG::4326` (latitude, longitude),
 with `srsName=EPSG:4326`, as GeoJSON pages (`startIndex`, `count`, `sortBy`)
 or as a count (`resultType=hits`). A page without `count` gets the server's
-own default number of features, unknown here, so it is passed upstream. Without `srsName` a WFS answers in the
-feature type's own system, Traficom's in metres, so such a request is passed
-upstream as it is, like any other.
+own default number of features, unknown here, so it is passed upstream.
+Without `srsName` a WFS answers in the feature type's own system, which may be
+in metres, so such a request is passed upstream as it is, like any other.
 
 - For an area the store does not hold whole and fresh, each request goes
   upstream and its reply is streamed back as fast as the client takes it, so
@@ -32,13 +92,11 @@ upstream as it is, like any other.
   read began. A
   very large reply, or one the upstream breaks off, is passed on but not
   kept; a broken one is broken off to the client too.
-- For Traficom's WFS, each feature is kept once, by its id, and an area the
-  store holds whole (inside boxes it holds, fetched within the maximum age)
-  is answered from the store: every kept feature whose box reaches the area
-  grown by a margin. Traficom reads a box
-  in its own grid, turned by up to 6° against latitude and longitude across
-  Finland, and answers features that far outside it: the store answers them
-  too, and a few more. A feature wholly inside a box read again whole that
+- For a source answering by box (`answersByBox`), each feature is kept once,
+  by its id, and an area the store holds whole (inside boxes it holds,
+  fetched within the maximum age) is answered from the store: every kept
+  feature whose box reaches the area grown by the source's `answerMargin`,
+  as the server answers features that far outside it. A feature wholly inside a box read again whole that
   the read did not return is dropped: it is gone upstream. One reaching past
   that box, or lying in the margin of its answer, is kept for other areas, as
   it may only reach the box by its own box. Each place a kept feature reaches
@@ -48,9 +106,9 @@ upstream as it is, like any other.
   returned it since, which says nothing of this one. A feature past the area,
   in the margin, is answered only if the newest read whose answer reached it
   returned it. A line or a point on a box's edge is in the box.
-- For any other WFS, whose way of choosing features for a box the proxy does
-  not know, an area is answered from the store only for the same box, with
-  the features that box gave, as it gave them.
+- For any other source, whose way of choosing features for a box the proxy
+  does not know, an area is answered from the store only for the same box,
+  with the features that box gave, as it gave them.
 - Pages from the store come in the order of the one property `sortBy` names
   (`NAME`, `NAME ASC` or `NAME DESC`), else a fixed one. A request, count or
   page, with a `sortBy` of more than one property or a qualified name is

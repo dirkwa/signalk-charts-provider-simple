@@ -1,7 +1,7 @@
 /**
  * The local WFS proxy's store (`wfs-proxy.ts`): the areas it holds whole
  * (`covered`), each with when it was fetched. For an upstream answered by box
- * (Traficom's), each feature is kept once, by its id, with its box exactly and
+ * (`ByBox`), each feature is kept once, by its id, with its box exactly and
  * in an R-tree; for any other, each area keeps the features it gave as it gave
  * them. The pages of a read upstream are staged and published in one
  * transaction once the area is whole, and not at all when a newer read of the
@@ -11,7 +11,10 @@
  * where the newest read holding a place did not return it, it is not answered
  * there (`answerIn`). A read from the store pins the features it
  * answers (`Pin`): one changed or dropped meanwhile is kept as it was for it.
- * Deleting the file loses nothing but downloads.
+ * Each upstream's data is kept under the rule it was read by (`useRule`), and
+ * dropped when that rule changes or the upstream is no longer proxied. Above a
+ * size limit the areas read longest ago go first (`fit`). Deleting the file
+ * loses nothing but downloads.
  */
 
 import fs from 'fs';
@@ -24,10 +27,11 @@ import {
   featureId,
   uncovered,
   type Box,
+  type ByBox,
   type WfsFeature
 } from './wfs-query.js';
 
-const SCHEMA_VERSION = '6';
+const SCHEMA_VERSION = '7';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS features (
@@ -74,12 +78,34 @@ const SCHEMA = `
     data BLOB NOT NULL,
     UNIQUE (stage, fid)
   );
+  CREATE TABLE IF NOT EXISTS upstream_rule (
+    upstream TEXT PRIMARY KEY,
+    rule TEXT NOT NULL
+  );
 `;
 
 export interface WfsCacheStats {
   features: number;
   areas: number;
   bytes: number;
+}
+
+export interface WfsLayerStats {
+  typeName: string;
+  areas: number;
+  /** Areas fetched before the time asked about: read upstream again when next asked for. */
+  staleAreas: number;
+  features: number;
+  /** The kept features' data, compressed. */
+  bytes: number;
+  /** When its oldest and newest areas were fetched, ms; null with none. */
+  oldest: number | null;
+  newest: number | null;
+}
+
+export interface WfsSourceStats extends Omit<WfsLayerStats, 'typeName'> {
+  upstream: string;
+  layers: WfsLayerStats[];
 }
 
 /** The feature type a feature or box belongs to, on its upstream server. */
@@ -436,7 +462,55 @@ export class WfsCache {
           AND f.fid NOT IN (SELECT fid FROM staged WHERE stage = ?)
         LIMIT 1
       `),
-      featureDelete: p('DELETE FROM features WHERE id = ?')
+      featureDelete: p('DELETE FROM features WHERE id = ?'),
+      featuresOfUpstream: p('SELECT id FROM features WHERE upstream = ?'),
+      featuresDeleteUpstream: p('DELETE FROM features WHERE upstream = ?'),
+      coversOfUpstream: p('SELECT id FROM covered WHERE upstream = ?'),
+      ruleOf: p('SELECT rule FROM upstream_rule WHERE upstream = ?'),
+      ruleSet: p('INSERT OR REPLACE INTO upstream_rule (upstream, rule) VALUES (?, ?)'),
+      ruleDelete: p('DELETE FROM upstream_rule WHERE upstream = ?'),
+      upstreamsKept: p(`
+        SELECT upstream FROM features UNION SELECT upstream FROM covered
+        UNION SELECT upstream FROM upstream_rule
+      `),
+      coverStats: p(`
+        SELECT upstream, type_name, COUNT(*) AS areas, SUM(fetched_at < ?) AS stale,
+          MIN(fetched_at) AS oldest, MAX(fetched_at) AS newest
+        FROM covered GROUP BY upstream, type_name
+      `),
+      featureStats: p(`
+        SELECT upstream, type_name, COUNT(*) AS n, SUM(length(data)) AS bytes
+        FROM features GROUP BY upstream, type_name
+      `),
+      memberStats: p(`
+        SELECT c.upstream AS upstream, c.type_name AS type_name, COUNT(*) AS n,
+          SUM(length(m.data)) AS bytes
+        FROM covered_member m JOIN covered c ON c.id = m.covered_id
+        GROUP BY c.upstream, c.type_name
+      `),
+      dataBytes: p(`
+        SELECT (SELECT COALESCE(SUM(length(data)), 0) FROM features)
+          + (SELECT COALESCE(SUM(length(data)), 0) FROM covered_member) AS n
+      `),
+      coversOldestFirst: p(`
+        SELECT id, upstream, type_name, mw, ms, me, mn FROM covered
+        ORDER BY ord ASC, started ASC, id ASC
+      `),
+      memberBytes: p(
+        'SELECT COALESCE(SUM(length(data)), 0) AS n FROM covered_member WHERE covered_id = ?'
+      ),
+      featuresNear: p(`
+        SELECT f.id AS id, f.w AS w, f.s AS s, f.e AS e, f.n AS n, length(f.data) AS bytes
+        FROM feature_box b JOIN features f ON f.id = b.id
+        WHERE f.upstream = ? AND f.type_name = ?
+          AND b.maxx >= ? AND b.minx <= ? AND b.maxy >= ? AND b.miny <= ?
+          AND f.e >= ? AND f.w <= ? AND f.n >= ? AND f.s <= ?
+      `),
+      anyCoverNear: p(`
+        SELECT 1 FROM covered
+        WHERE upstream = ? AND type_name = ? AND me >= ? AND mw <= ? AND mn >= ? AND ms <= ?
+        LIMIT 1
+      `)
     };
   }
 
@@ -471,6 +545,248 @@ export class WfsCache {
     }
   }
 
+  /**
+   * Keeps `upstream`'s data under `rule`, how its features are chosen and identified: what it
+   * kept under another rule does not answer by this one and is dropped. Returns whether any was.
+   */
+  useRule(upstream: string, rule: string): boolean {
+    return this.inTransaction(() => {
+      const was = (this.q('ruleOf').get(upstream) as { rule: string } | undefined)?.rule;
+      if (was === rule) {
+        return false;
+      }
+      if (was !== undefined) {
+        this.forget(upstream);
+      }
+      this.q('ruleSet').run(upstream, rule);
+      return was !== undefined;
+    });
+  }
+
+  /** Drops what `upstream` kept, and gives the space back to the disk. Returns whether there was any. */
+  forgetUpstream(upstream: string): boolean {
+    const had = this.inTransaction(() => {
+      const kept = this.holds(upstream);
+      this.forget(upstream);
+      return kept;
+    });
+    if (had) {
+      this.compact();
+    }
+    return had;
+  }
+
+  /** Drops everything kept, and gives the space back to the disk. */
+  clear(): void {
+    this.inTransaction(() => {
+      for (const upstream of this.keptUpstreams()) {
+        this.forget(upstream);
+      }
+    });
+    this.compact();
+  }
+
+  /** Drops what the upstreams not in `upstreams` kept, and their rules; returns those dropped. */
+  keepOnly(upstreams: readonly string[]): string[] {
+    const listed = new Set(upstreams);
+    const gone = this.inTransaction(() => {
+      const unlisted = this.keptUpstreams().filter((u) => !listed.has(u));
+      for (const upstream of unlisted) {
+        this.forget(upstream);
+        this.q('ruleDelete').run(upstream);
+      }
+      return unlisted;
+    });
+    if (gone.length > 0) {
+      this.compact();
+    }
+    return gone;
+  }
+
+  private keptUpstreams(): string[] {
+    return (this.q('upstreamsKept').all() as { upstream: string }[]).map((r) => r.upstream);
+  }
+
+  private holds(upstream: string): boolean {
+    return (
+      this.q('featuresOfUpstream').get(upstream) !== undefined ||
+      this.q('coversOfUpstream').get(upstream) !== undefined
+    );
+  }
+
+  /** Rebuilds the file without the space deleted rows left, and empties the write-ahead log. */
+  private compact(): void {
+    this.db.exec('VACUUM');
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  }
+
+  /** The bytes the store's pages hold, without those freed for reuse. */
+  usedBytes(): number {
+    const pragma = (name: string): number =>
+      Object.values(this.db.prepare(`PRAGMA ${name}`).get() as Record<string, number>)[0] ?? 0;
+    return (pragma('page_count') - pragma('freelist_count')) * pragma('page_size');
+  }
+
+  /**
+   * Keeps the store within `maxBytes` (0: no limit) by dropping the areas read longest ago,
+   * and the kept features no area left reaches; the area read last always stays. Dropping the
+   * oldest first leaves every answer the store gives as it was: each place goes by the
+   * newest read holding it. Returns how many areas were dropped.
+   */
+  fit(maxBytes: number): number {
+    if (maxBytes <= 0) {
+      return 0;
+    }
+    const used = this.usedBytes();
+    if (used <= maxBytes) {
+      return 0;
+    }
+    return this.inTransaction(() => {
+      let data = (this.q('dataBytes').get() as { n: number }).n;
+      // Pages hold more than the data: aim the data at the share of the limit it fills now.
+      const target = (data * maxBytes) / used;
+      const covers = this.q('coversOldestFirst').all() as {
+        id: number;
+        upstream: string;
+        type_name: string;
+        mw: number;
+        ms: number;
+        me: number;
+        mn: number;
+      }[];
+      let dropped = 0;
+      for (const c of covers.slice(0, -1)) {
+        if (data <= target) {
+          break;
+        }
+        data -= this.dropForSpace(c);
+        dropped++;
+      }
+      return dropped;
+    });
+  }
+
+  /** Drops the area `c` and the features no other area reaches; returns the data bytes freed. */
+  private dropForSpace(c: {
+    id: number;
+    upstream: string;
+    type_name: string;
+    mw: number;
+    ms: number;
+    me: number;
+    mn: number;
+  }): number {
+    let freed = (this.q('memberBytes').get(c.id) as { n: number }).n;
+    this.dropCover(c.id, true);
+    const { mw, ms, me, mn } = c;
+    for (const f of this.q('featuresNear').all(
+      c.upstream,
+      c.type_name,
+      mw,
+      me,
+      ms,
+      mn,
+      mw,
+      me,
+      ms,
+      mn
+    ) as { id: number; w: number; s: number; e: number; n: number; bytes: number }[]) {
+      const reached =
+        this.q('anyCoverNear').get(c.upstream, c.type_name, f.w, f.e, f.s, f.n) !== undefined;
+      if (!reached) {
+        this.preserve('feature', f.id);
+        this.q('featureDelete').run(f.id);
+        this.q('boxDelete').run(f.id);
+        this.q('absentDeleteFeature').run(f.id);
+        freed += f.bytes;
+      }
+    }
+    return freed;
+  }
+
+  /** What each upstream keeps, by feature type; an area fetched before `staleBefore` is stale. */
+  sourceStats(staleBefore: number): WfsSourceStats[] {
+    const layers = new Map<string, WfsLayerStats & { upstream: string }>();
+    const layer = (upstream: string, typeName: string): WfsLayerStats & { upstream: string } => {
+      const key = `${upstream}\n${typeName}`;
+      let l = layers.get(key);
+      if (!l) {
+        l = {
+          upstream,
+          typeName,
+          areas: 0,
+          staleAreas: 0,
+          features: 0,
+          bytes: 0,
+          oldest: null,
+          newest: null
+        };
+        layers.set(key, l);
+      }
+      return l;
+    };
+    type Row = { upstream: string; type_name: string };
+    for (const r of this.q('coverStats').all(staleBefore) as (Row & {
+      areas: number;
+      stale: number;
+      oldest: number;
+      newest: number;
+    })[]) {
+      Object.assign(layer(r.upstream, r.type_name), {
+        areas: r.areas,
+        staleAreas: r.stale,
+        oldest: r.oldest,
+        newest: r.newest
+      });
+    }
+    for (const name of ['featureStats', 'memberStats']) {
+      for (const r of this.q(name).all() as (Row & { n: number; bytes: number })[]) {
+        const l = layer(r.upstream, r.type_name);
+        l.features += r.n;
+        l.bytes += r.bytes;
+      }
+    }
+    const sources = new Map<string, WfsSourceStats>();
+    for (const { upstream, ...l } of [...layers.values()].sort((a, b) =>
+      a.typeName.localeCompare(b.typeName)
+    )) {
+      let s = sources.get(upstream);
+      if (!s) {
+        s = {
+          upstream,
+          areas: 0,
+          staleAreas: 0,
+          features: 0,
+          bytes: 0,
+          oldest: null,
+          newest: null,
+          layers: []
+        };
+        sources.set(upstream, s);
+      }
+      s.layers.push(l);
+      s.areas += l.areas;
+      s.staleAreas += l.staleAreas;
+      s.features += l.features;
+      s.bytes += l.bytes;
+      s.oldest = l.oldest === null ? s.oldest : Math.min(s.oldest ?? Infinity, l.oldest);
+      s.newest = l.newest === null ? s.newest : Math.max(s.newest ?? -Infinity, l.newest);
+    }
+    return [...sources.values()];
+  }
+
+  private forget(upstream: string): void {
+    for (const { id } of this.q('featuresOfUpstream').all(upstream) as { id: number }[]) {
+      this.preserve('feature', id);
+      this.q('boxDelete').run(id);
+      this.q('absentDeleteFeature').run(id);
+    }
+    this.q('featuresDeleteUpstream').run(upstream);
+    for (const { id } of this.q('coversOfUpstream').all(upstream) as { id: number }[]) {
+      this.dropCover(id, true);
+    }
+  }
+
   /** A new stage for the pages of one read upstream. */
   beginStage(): number {
     return this.nextStage++;
@@ -478,14 +794,19 @@ export class WfsCache {
 
   /**
    * Stages `features`, received at `order` (`orderAt`); a feature staged before is replaced.
-   * Returns false, staging none, when one is not an object or has no id or no
-   * coordinates: such a page cannot be answered again from the store.
+   * Returns false, staging none, when one is not an object or has no id (`featureId`, by
+   * `idProperty`) or no coordinates: such a page cannot be answered again from the store.
    */
-  stage(stage: number, features: readonly WfsFeature[], order: number): boolean {
+  stage(
+    stage: number,
+    features: readonly WfsFeature[],
+    order: number,
+    idProperty?: string
+  ): boolean {
     if (features.some((f) => typeof f !== 'object' || f === null || Array.isArray(f))) {
       return false;
     }
-    const rows = features.map((f) => ({ f, id: featureId(f), box: featureBox(f) }));
+    const rows = features.map((f) => ({ f, id: featureId(f, idProperty), box: featureBox(f) }));
     if (rows.some((r) => r.id === undefined || r.box === undefined)) {
       return false;
     }
@@ -587,11 +908,11 @@ export class WfsCache {
     layer: Layer,
     area: Area,
     start: ReadStart,
-    byBox: boolean
+    byBox: ByBox | undefined
   ): number | undefined {
     const { at, order: since } = startOf(start);
     return this.inTransaction(() => {
-      if (this.superseded(stage, layer, area, since, byBox)) {
+      if (this.superseded(stage, layer, area, since, byBox !== undefined)) {
         if (stage !== undefined) {
           this.q('stageDelete').run(stage);
         }
@@ -603,7 +924,7 @@ export class WfsCache {
         this.q('stageDelete').run(stage);
       }
       const [w, s, e, n] = area.box;
-      const [mw, ms, me, mn] = byBox ? answerBox(area.box) : area.box;
+      const [mw, ms, me, mn] = byBox ? answerBox(area.box, byBox.margin) : area.box;
       const started = stage ?? 0;
       const coveredId = Number(
         this.q('coverInsert').run(

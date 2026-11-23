@@ -9,13 +9,8 @@
 import path from 'path';
 import type { ChartsProviderWfsApi } from '../types.js';
 import { WfsCache } from './wfs-cache.js';
-import { normalizeUpstream, WfsProxy, type WfsProxySettings } from './wfs-proxy.js';
-
-/** Traficom's WFS services: depth areas and soundings (restricted) and the open one. */
-export const DEFAULT_WFS_UPSTREAMS = [
-  'https://julkinen.traficom.fi/inspirepalvelu/rajoitettu/wfs',
-  'https://julkinen.traficom.fi/inspirepalvelu/avoin/wfs'
-] as const;
+import type { WfsSourceConfig } from './wfs-sources.js';
+import { normalizeUpstream, WfsProxy, type WfsProxySettings, type WfsSource } from './wfs-proxy.js';
 
 export const WFS_PROXY_API_VERSION = 1;
 export const DEFAULT_WFS_MAX_AGE_DAYS = 30;
@@ -37,18 +32,20 @@ export interface WfsProxyRunning {
   proxy: WfsProxy;
   cache: WfsCache;
   api: ChartsProviderWfsApi;
-  /** Where a failure to close it, once its handover time is up, is reported. */
-  warn: (message: string) => void;
+  /** The settings of the start running it. */
+  settings: WfsServiceSettings;
 }
 
 export interface WfsServiceSettings {
   dataDir: string;
   maxAgeDays: () => number;
-  /** Upstreams proxied besides Traficom's. */
-  extraUpstreams: () => readonly string[];
+  /** The store's size limit, bytes; 0 for none. */
+  maxBytes: () => number;
+  /** The WFS servers proxied, as the WFS Data tab lists them. */
+  sources: () => readonly WfsSourceConfig[];
   mayRefresh: () => boolean;
   log: (message: string) => void;
-  /** What the user should correct in the settings. */
+  /** What went wrong that the user should hear of. */
   warn: (message: string) => void;
 }
 
@@ -56,41 +53,42 @@ export function wfsCacheFile(dataDir: string): string {
   return path.join(dataDir, 'wfs-cache', 'wfs.sqlite');
 }
 
-const TRAFICOM = new Set<string>(DEFAULT_WFS_UPSTREAMS);
+/** The configured sources with an http or https URL, the first of each URL. */
+export function wfsSources(configs: readonly WfsSourceConfig[]): WfsSource[] {
+  const out = new Map<string, WfsSource>();
+  for (const c of configs) {
+    const url = normalizeUpstream(c.url);
+    if (url === undefined || out.has(url)) {
+      continue;
+    }
+    const idProperty = c.idProperty?.trim();
+    out.set(url, {
+      url,
+      ...(c.answersByBox === true ? { byBox: { margin: c.answerMargin ?? 0 } } : {}),
+      ...(idProperty ? { idProperty } : {})
+    });
+  }
+  return [...out.values()];
+}
 
 function proxySettings(settings: WfsServiceSettings): WfsProxySettings {
   return {
-    upstreams: () =>
-      [...DEFAULT_WFS_UPSTREAMS, ...settings.extraUpstreams()]
-        .map(normalizeUpstream)
-        .filter((u): u is string => u !== undefined),
-    answersByBox: (upstream) => TRAFICOM.has(upstream),
+    sources: () => wfsSources(settings.sources()),
     maxAgeMs: () => settings.maxAgeDays() * DAY_MS,
+    maxBytes: settings.maxBytes,
     mayRefresh: settings.mayRefresh,
     handingOver: false,
     log: settings.log
   };
 }
 
-/** Names the extra upstreams that are no http or https URL, by place only: a URL may hold a key. */
-function warnInvalidUpstreams(settings: WfsServiceSettings): void {
-  settings.extraUpstreams().forEach((u, i) => {
-    if (normalizeUpstream(u) === undefined) {
-      settings.warn(
-        `Other WFS servers to keep: entry ${String(i + 1)} is not an http or https URL, so it is not proxied`
-      );
-    }
-  });
-}
-
 export async function startWfsProxy(settings: WfsServiceSettings): Promise<WfsProxyRunning> {
-  warnInvalidUpstreams(settings);
   if (parked) {
     clearTimeout(parked.timer);
     const { running } = parked;
     parked = null;
     running.proxy.configure(proxySettings(settings));
-    running.warn = settings.warn;
+    running.settings = settings;
     return running;
   }
   await closing;
@@ -108,7 +106,12 @@ export async function startWfsProxy(settings: WfsServiceSettings): Promise<WfsPr
     upstreams: () => [...proxy.upstreams()],
     stats: () => cache.stats()
   };
-  return { proxy, cache, api, warn: settings.warn };
+  return { proxy, cache, api, settings };
+}
+
+/** Takes up a change of the sources listed: what a source no longer proxied kept is dropped. */
+export function refreshWfsSources(running: WfsProxyRunning): void {
+  running.proxy.configure({ sources: proxySettings(running.settings).sources });
 }
 
 export async function stopWfsProxy(running: WfsProxyRunning): Promise<void> {
@@ -125,7 +128,7 @@ function closeLater(running: WfsProxyRunning): void {
   closing = closing
     .then(() => stopWfsProxy(running))
     .catch((err: unknown) => {
-      running.warn(`Local WFS proxy did not close cleanly: ${String(err)}`);
+      running.settings.warn(`Local WFS proxy did not close cleanly: ${String(err)}`);
     });
 }
 

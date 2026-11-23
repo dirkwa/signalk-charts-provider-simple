@@ -1,8 +1,8 @@
 /**
  * The local WFS proxy: a WFS server on the loopback interface that peer
- * plugins (signalk-underkeel, and its build processes) read instead of the
- * upstream WFS, so an area is downloaded once and read again from the store
- * (`wfs-cache.ts`).
+ * plugins (and their worker processes) read instead of the upstream WFS
+ * servers configured as its sources, so an area is downloaded once and read
+ * again from the store (`wfs-cache.ts`).
  *
  * A request the cache can answer (`wfs-query.ts`) for an area it holds whole
  * and fresh is answered from the store. Any other is passed to the upstream
@@ -30,6 +30,7 @@ import {
   pageReply,
   sortedBy,
   sortOrder,
+  type ByBox,
   type FeatureQuery,
   type WfsFeature
 } from './wfs-query.js';
@@ -45,19 +46,32 @@ const MAX_REDIRECTS = 5;
 /** How long a closing proxy lets replies in progress finish, ms. */
 const CLOSE_GRACE_MS = 5000;
 
+/** An upstream WFS server proxied, and how it chooses and identifies the features it answers. */
+export interface WfsSource {
+  /** Its base URL, as `normalizeUpstream` gives it. */
+  url: string;
+  /**
+   * Set for a server that answers a box with every feature reaching it (`ByBox`): the store
+   * answers boxes inside those it holds. Without it, an area is answered from the store only
+   * for the same box, with what it gave.
+   */
+  byBox?: ByBox;
+  /** The property identifying a feature that has no GeoJSON `id` (`featureId`). */
+  idProperty?: string;
+}
+
+/** What the store keeps a source's data by (`WfsCache.useRule`). */
+const ruleOf = (source: WfsSource): string =>
+  JSON.stringify({ byBox: source.byBox?.margin ?? null, idProperty: source.idProperty ?? null });
+
 export interface WfsProxyOptions {
   cache: WfsCache;
-  /** The upstream servers proxied, as base URLs (no query). */
-  upstreams: () => readonly string[];
-  /**
-   * Whether `upstream` answers a box as Traficom's does, with every feature
-   * reaching it and those its turned grid adds past it (`answerBox`), so the
-   * store answers boxes inside those it holds. Any other upstream's area is
-   * answered from the store only for the same box, with what it gave.
-   */
-  answersByBox: (upstream: string) => boolean;
+  /** The upstream servers proxied. */
+  sources: () => readonly WfsSource[];
   /** An area fetched longer ago than this is fetched again, ms. */
   maxAgeMs: () => number;
+  /** The store's size limit (`WfsCache.fit`), bytes; 0 or none for no limit. */
+  maxBytes?: () => number;
   /** False while going online on its own is held back: a stale area is read from the store. */
   mayRefresh: () => boolean;
   /**
@@ -73,7 +87,7 @@ export interface WfsProxyOptions {
 /** The settings a running proxy takes again when the plugin restarts. */
 export type WfsProxySettings = Pick<
   WfsProxyOptions,
-  'upstreams' | 'answersByBox' | 'maxAgeMs' | 'mayRefresh' | 'handingOver' | 'log'
+  'sources' | 'maxAgeMs' | 'maxBytes' | 'mayRefresh' | 'handingOver' | 'log'
 >;
 
 interface UpstreamRead {
@@ -162,15 +176,49 @@ export class WfsProxy {
     this.options = options;
     this.fetchUpstream = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
+    this.useRules();
+    this.fit();
   }
 
   /** Takes `settings` in place of those it has; reads going on keep their way. */
   configure(settings: Partial<WfsProxySettings>): void {
     this.options = { ...this.options, ...settings };
+    if (settings.sources) {
+      this.useRules();
+    }
+    if (settings.maxBytes) {
+      this.fit();
+    }
+  }
+
+  /**
+   * A source whose rule changed answers nothing it kept by the old one, and what a source no
+   * longer proxied kept is dropped.
+   */
+  private useRules(): void {
+    const { cache, log } = this.options;
+    const sources = this.options.sources();
+    for (const source of sources) {
+      if (cache.useRule(source.url, ruleOf(source))) {
+        log?.(`WFS proxy: ${source.url} is read by new settings, its kept areas dropped`);
+      }
+    }
+    for (const gone of cache.keepOnly(sources.map((s) => s.url))) {
+      log?.(`WFS proxy: ${gone} is no longer proxied, its kept areas dropped`);
+    }
+  }
+
+  private fit(): void {
+    const dropped = this.options.cache.fit(this.options.maxBytes?.() ?? 0);
+    if (dropped > 0) {
+      this.options.log?.(
+        `WFS proxy: dropped the ${String(dropped)} area(s) read longest ago to stay within its space`
+      );
+    }
   }
 
   upstreams(): readonly string[] {
-    return this.options.upstreams();
+    return this.options.sources().map((s) => s.url);
   }
 
   /** Listens on 127.0.0.1, on `port` when it is free, else any free one; resolves with the port. */
@@ -243,8 +291,12 @@ export class WfsProxy {
     this.upstreamReads.clear();
   }
 
+  private source(base: string): WfsSource | undefined {
+    return this.options.sources().find((s) => normalizeUpstream(s.url) === base);
+  }
+
   private allowed(base: string): boolean {
-    return this.options.upstreams().some((u) => normalizeUpstream(u) === base);
+    return this.source(base) !== undefined;
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -379,12 +431,12 @@ export class WfsProxy {
       return going;
     }
     const cache = this.options.cache;
-    const byBox = this.options.answersByBox(layer.upstream);
+    const byBox = this.source(layer.upstream)?.byBox;
     // By box: as much as the upstream would answer, and the features past the box it adds.
     const pinned = (since: number): Pin | undefined => {
       if (byBox) {
         return cache.covers(layer, q.box, since)
-          ? cache.answerIn(layer, q.box, answerBox(q.box))
+          ? cache.answerIn(layer, q.box, answerBox(q.box, byBox.margin))
           : undefined;
       }
       const coveredId = cache.exactCover(layer, q.boxText, since);
@@ -516,7 +568,9 @@ export class WfsProxy {
       }
       read.matched = matched;
     }
-    if (!this.options.cache.stage(read.stage, features, this.options.cache.orderAt(this.now()))) {
+    const cache = this.options.cache;
+    const idProperty = this.source(layer.upstream)?.idProperty;
+    if (!cache.stage(read.stage, features, cache.orderAt(this.now()), idProperty)) {
       this.spoil(read);
       return;
     }
@@ -534,17 +588,13 @@ export class WfsProxy {
       return;
     }
     // Pages that shifted between requests can cover every index and still repeat a feature.
-    if (this.options.cache.stagedCount(read.stage) !== read.matched) {
+    // A source no longer configured keeps nothing: its rule is not known.
+    const source = this.source(layer.upstream);
+    if (!source || this.options.cache.stagedCount(read.stage) !== read.matched) {
       this.spoil(read);
       return;
     }
-    const dropped = this.options.cache.publish(
-      read.stage,
-      layer,
-      q,
-      read.startedAt,
-      this.options.answersByBox(layer.upstream)
-    );
+    const dropped = this.options.cache.publish(read.stage, layer, q, read.startedAt, source.byBox);
     if (dropped === undefined) {
       read.spoilt = true;
       return;
@@ -553,6 +603,7 @@ export class WfsProxy {
     this.options.log?.(
       `WFS proxy: kept ${q.typeName} in ${q.boxText.split(',').slice(0, 4).join(',')} (${String(read.matched)} features)`
     );
+    this.fit();
   }
 
   /** `target` fetched, following a redirect only to a server proxied. */
