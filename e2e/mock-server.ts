@@ -129,10 +129,24 @@ interface MockState {
   encStoreCells: Record<string, unknown[]>;
   encStoreDeleted: string[];
   // WFS Data tab: GET /wfs answers this, with the sources posted added.
-  wfs: { sources: { url: string; name?: string; stats: unknown }[] } & Record<string, unknown>;
+  wfs: { sources: (WfsSourceMock & { stats: unknown })[] } & Record<string, unknown>;
   // What /skServer/loginStatus answers: who the page thinks is signed in.
   loginStatus: Record<string, unknown>;
 }
+
+interface WfsSourceMock {
+  url: string;
+  name?: string;
+  answersByBox?: boolean;
+  answerMargin?: number;
+  idProperty?: string;
+}
+
+// As the plugin does, a source whose rule changes keeps nothing of what it kept before.
+const sameRule = (a: WfsSourceMock, b: WfsSourceMock): boolean =>
+  (a.answersByBox ?? false) === (b.answersByBox ?? false) &&
+  (a.answerMargin ?? 0) === (b.answerMargin ?? 0) &&
+  (a.idProperty ?? '') === (b.idProperty ?? '');
 
 const okStatus: CatalogStatusMock = {
   status: 'ok',
@@ -274,7 +288,7 @@ export function startMockServer(
     res.json({ success: true, source: body });
   });
   router.put(`${PLUGIN_BASE}/wfs/sources`, (req, res) => {
-    const body = req.body as { url: string; name?: string };
+    const body = req.body as WfsSourceMock;
     const was = state.wfs.sources.find((s) => s.url === body.url);
     if (!was) {
       res.status(404).json({ success: false, error: 'No WFS server of that URL is kept' });
@@ -282,7 +296,9 @@ export function startMockServer(
     }
     state.wfs = {
       ...state.wfs,
-      sources: state.wfs.sources.map((s) => (s === was ? { ...body, stats: was.stats } : s))
+      sources: state.wfs.sources.map((s) =>
+        s === was ? { ...body, stats: sameRule(was, body) ? was.stats : null } : s
+      )
     };
     res.json({ success: true, source: body });
   });

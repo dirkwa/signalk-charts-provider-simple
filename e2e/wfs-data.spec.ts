@@ -131,13 +131,23 @@ test.describe('WFS Data tab', () => {
     await openWfsTab(page);
     await page.getByRole('button', { name: 'Edit' }).click();
     await page.locator('#wfsName').fill('Depth contours');
-    await page.locator('#wfsMargin').fill('0.05');
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.locator('#wfsMessage')).toContainText('Saved');
     await expect(sourceRow(page, 'Depth contours')).toContainText('3 areas');
     await expect(page.getByRole('button', { name: 'Add WFS server' })).toBeEnabled();
 
+    await sourceRow(page, 'Depth contours').getByRole('button', { name: 'Edit' }).click();
+    await page.locator('#wfsMargin').fill('0.05');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(sourceRow(page, 'Depth contours')).toContainText('Nothing kept yet.');
+    await expect(page.getByRole('button', { name: 'Add WFS server' })).toBeEnabled();
+
     expect(changes).toEqual([
+      {
+        method: 'PUT',
+        path: '/wfs/sources',
+        body: { url: kept.url, name: 'Depth contours', answersByBox: true, answerMargin: 0.12 }
+      },
       {
         method: 'PUT',
         path: '/wfs/sources',

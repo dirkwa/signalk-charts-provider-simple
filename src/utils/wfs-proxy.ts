@@ -261,7 +261,11 @@ export class WfsProxy {
     this.port = bound;
     // Reads left idle let go of their stage and pins without waiting for another request.
     this.sweeper = setInterval(() => {
-      this.sweep();
+      try {
+        this.sweep();
+      } catch (err) {
+        this.options.log?.(`WFS proxy: ${String(err)}`);
+      }
     }, READ_IDLE_MS);
     this.sweeper.unref();
     return bound;
@@ -409,8 +413,9 @@ export class WfsProxy {
   }
 
   private endUpstreamRead(key: string, read: UpstreamRead): void {
-    this.upstreamReads.delete(key);
+    // A stage that failed to drop stays listed, so the next sweep drops it again.
     this.options.cache.dropStage(read.stage);
+    this.upstreamReads.delete(key);
   }
 
   private sweep(): void {
