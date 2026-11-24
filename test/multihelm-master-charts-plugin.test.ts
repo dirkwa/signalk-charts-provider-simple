@@ -122,7 +122,9 @@ async function startWithMaster(masterList: Record<string, unknown>): Promise<Sta
     await plugin.stop();
     fs.rmSync(tempDir, { recursive: true, force: true });
   };
-  plugin.start({ chartPath }, () => {});
+  // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+  // and on Windows the folder cannot then be removed.
+  plugin.start({ chartPath, wfsProxy: false }, () => {});
   try {
     await waitFor(() => registered.provider !== undefined && multihelm.listener !== null);
   } catch (error) {

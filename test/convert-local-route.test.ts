@@ -110,7 +110,9 @@ describe('POST /convert-local', () => {
       }
     } as unknown as PluginRouter;
     plugin.registerWithRouter?.(router);
-    plugin.start({ chartPath }, () => {});
+    // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+    // and on Windows the folder cannot then be removed.
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
     await waitFor(() => started, 'resource provider should register');
   });
 

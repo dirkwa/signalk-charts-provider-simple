@@ -153,7 +153,9 @@ describe('External chart refresh', () => {
     const refreshRoute = handlers.get('post /refresh');
     assert.ok(refreshRoute, 'POST /refresh route should be registered');
 
-    plugin.start({ chartPath }, () => {});
+    // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+    // and on Windows the folder cannot then be removed.
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
 
     const deadline = Date.now() + 5000;
     while (!provider && Date.now() < deadline) {
@@ -232,7 +234,7 @@ describe('External chart refresh', () => {
       plugin.registerWithRouter?.(router);
       const refreshRoute = handlers.get('post /refresh');
       assert.ok(refreshRoute, 'POST /refresh route should be registered');
-      plugin.start({ chartPath }, () => {});
+      plugin.start({ chartPath, wfsProxy: false }, () => {});
 
       const deadline = Date.now() + 5000;
       while (!provider && Date.now() < deadline) {
@@ -285,7 +287,7 @@ describe('External chart refresh', () => {
     const refreshRoute = handlers.get('post /refresh');
     assert.ok(refreshRoute, 'POST /refresh route should be registered');
 
-    plugin.start({ chartPath }, () => {});
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
 
     const deadline = Date.now() + 5000;
     while (!provider && Date.now() < deadline) {

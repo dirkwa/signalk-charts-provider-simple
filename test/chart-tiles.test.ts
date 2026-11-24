@@ -19,7 +19,6 @@ import pluginFactoryDefault, {
 } from '../dist/index.js';
 import { MBTilesReader } from '../dist/utils/mbtiles-reader.js';
 import { downloadManager } from '../dist/utils/download-manager.js';
-import { closeParkedWfsProxy } from '../dist/utils/wfs-proxy-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pluginFactory = pluginFactoryDefault as unknown as (app: ExtendedServerAPI) => Plugin;
@@ -211,7 +210,9 @@ describe('chartTiles PropertyValue', () => {
     const stored = () => tiles()?.getTile('enc', 2, 0, 1);
 
     try {
-      plugin.start({ chartPath }, () => {});
+      // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+      // and on Windows the folder cannot then be removed.
+      plugin.start({ chartPath, wfsProxy: false }, () => {});
       await until(async () => (await stored()) instanceof Uint8Array);
       assert.strictEqual(await tiles()?.getTile('enc', 3, 7, 7), null);
       assert.strictEqual(await tiles()?.getTile('other', 2, 0, 1), undefined);
@@ -221,13 +222,11 @@ describe('chartTiles PropertyValue', () => {
       assert.strictEqual(await stored(), undefined);
 
       // A config save restarts the plugin: the same offer reads the charts again.
-      plugin.start({ chartPath }, () => {});
+      plugin.start({ chartPath, wfsProxy: false }, () => {});
       await until(async () => (await stored()) instanceof Uint8Array);
       assert.strictEqual(ofName('chartTiles').length, 1);
     } finally {
       await plugin.stop?.();
-      // The plugin's WFS proxy, stopped, keeps its store open for the next start.
-      await closeParkedWfsProxy();
       fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
