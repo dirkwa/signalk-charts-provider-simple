@@ -135,6 +135,16 @@ export async function stopWfsProxy(running: WfsProxyRunning): Promise<void> {
   }
 }
 
+/** Closes a stopped proxy still serving for the next start, at once: no start will come. */
+export async function closeParkedWfsProxy(): Promise<void> {
+  if (parked) {
+    clearTimeout(parked.timer);
+    closeLater(parked.running);
+    parked = null;
+  }
+  await closing;
+}
+
 /** Closes `running` after any close before it, reporting a failure rather than dropping it. */
 function closeLater(running: WfsProxyRunning): void {
   closing = closing

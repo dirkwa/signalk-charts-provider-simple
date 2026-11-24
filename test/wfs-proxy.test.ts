@@ -31,6 +31,7 @@ import {
   type WfsSource
 } from '../dist/utils/wfs-proxy.js';
 import {
+  closeParkedWfsProxy,
   refreshWfsSources,
   releaseWfsProxy,
   startWfsProxy,
@@ -2141,6 +2142,28 @@ describe('WfsProxy', () => {
     assert.strictEqual(offer.proxyUrl('https://other.example/wfs'), undefined);
     assert.deepStrictEqual(offer.stats(), { ...again.cache.stats() });
     await stopWfsProxy(again);
+  });
+
+  it('closes a parked proxy at once when no start will take it over', async () => {
+    const settings = {
+      dataDir: fs.mkdtempSync(path.join(dir, 'parked-')),
+      maxAgeDays: () => 30,
+      maxBytes: () => 0,
+      sources: () => [{ url: 'https://wfs.example/parked/wfs' }],
+      mayRefresh: () => true,
+      log: () => undefined,
+      warn: () => undefined
+    };
+    const running = await startWfsProxy(settings);
+    releaseWfsProxy(running);
+    await closeParkedWfsProxy();
+    assert.strictEqual(running.proxy.proxyUrl('https://wfs.example/parked/wfs'), undefined);
+    assert.throws(() => running.cache.stats());
+    // Nothing is parked now: the next start opens a proxy of its own.
+    const next = await startWfsProxy(settings);
+    assert.notStrictEqual(next, running);
+    await stopWfsProxy(next);
+    await closeParkedWfsProxy();
   });
 
   it('takes each configured source once, with its rule and id property', () => {

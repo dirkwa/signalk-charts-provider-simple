@@ -13,6 +13,7 @@ import type { Plugin } from '@signalk/server-api';
 import type { ChartsProviderWfsApi, ExtendedServerAPI } from '../dist/types.js';
 import pluginFactoryDefault from '../dist/index.js';
 import { downloadManager } from '../dist/utils/download-manager.js';
+import { closeParkedWfsProxy } from '../dist/utils/wfs-proxy-service.js';
 
 const pluginFactory = pluginFactoryDefault as unknown as (app: ExtendedServerAPI) => Plugin;
 
@@ -94,6 +95,9 @@ describe('chartsProviderWfs PropertyValue', () => {
       assert.strictEqual(offers().length, 1);
     } finally {
       await plugin.stop?.();
+      // The stopped proxy keeps its store open for the next start: on Windows the folder
+      // cannot be removed until it is closed.
+      await closeParkedWfsProxy();
       fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });

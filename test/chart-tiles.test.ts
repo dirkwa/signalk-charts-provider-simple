@@ -19,6 +19,7 @@ import pluginFactoryDefault, {
 } from '../dist/index.js';
 import { MBTilesReader } from '../dist/utils/mbtiles-reader.js';
 import { downloadManager } from '../dist/utils/download-manager.js';
+import { closeParkedWfsProxy } from '../dist/utils/wfs-proxy-service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pluginFactory = pluginFactoryDefault as unknown as (app: ExtendedServerAPI) => Plugin;
@@ -225,6 +226,8 @@ describe('chartTiles PropertyValue', () => {
       assert.strictEqual(ofName('chartTiles').length, 1);
     } finally {
       await plugin.stop?.();
+      // The plugin's WFS proxy, stopped, keeps its store open for the next start.
+      await closeParkedWfsProxy();
       fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });

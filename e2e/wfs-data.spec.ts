@@ -170,11 +170,16 @@ test.describe('WFS Data tab', () => {
     const released = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let heldGet: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      heldGet = resolve;
+    });
     await page.route(
       (url) => url.pathname.endsWith('/wfs'),
       async (route) => {
         if (hold && route.request().method() === 'GET') {
           hold = false;
+          heldGet();
           await released;
           await route.fulfill({ status: 503, body: 'busy' });
           return;
@@ -188,6 +193,7 @@ test.describe('WFS Data tab', () => {
     hold = true;
     await page.getByRole('button', { name: 'Save' }).click();
     // While the save's refresh waits, leaving the tab and coming back draws the add form.
+    await held;
     await page.locator('#catalogTabBtn').click();
     await openWfsTab(page);
     await expect(page.getByRole('button', { name: 'Add WFS server' })).toBeVisible();
@@ -223,6 +229,10 @@ test.describe('WFS Data tab', () => {
     const released = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let heldGet: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      heldGet = resolve;
+    });
     await page.route(
       (url) => url.pathname.endsWith('/wfs'),
       async (route) => {
@@ -230,6 +240,7 @@ test.describe('WFS Data tab', () => {
           gets++;
           // The save's refresh waits and then works; the one asked meanwhile fails.
           if (gets === 1) {
+            heldGet();
             await released;
           } else if (gets === 2) {
             await route.fulfill({ status: 503, body: 'busy' });
@@ -244,6 +255,8 @@ test.describe('WFS Data tab', () => {
     await page.locator('#wfsName').fill('Depth contours');
     gets = 0;
     await page.getByRole('button', { name: 'Save' }).click();
+    // The save's refresh is the one held before the tab asks for another.
+    await held;
     await page.locator('#catalogTabBtn').click();
     await openWfsTab(page);
     await expect(page.locator('#wfsMessage')).toContainText(
