@@ -35,6 +35,7 @@ import {
   releaseWfsProxy,
   startWfsProxy,
   stopWfsProxy,
+  wfsOffer,
   wfsSources
 } from '../dist/utils/wfs-proxy-service.js';
 import { WfsSourceError, WfsSourceList } from '../dist/utils/wfs-sources.js';
@@ -2116,19 +2117,29 @@ describe('WfsProxy', () => {
       log: () => undefined,
       warn: () => undefined
     };
+    let current: Awaited<ReturnType<typeof startWfsProxy>> | null = null;
+    const offer = wfsOffer(() => current);
     const running = await startWfsProxy(settings);
-    const url = running.api.proxyUrl(kept);
+    current = running;
+    const url = offer.proxyUrl(kept);
     assert.ok(url !== undefined);
-    assert.deepStrictEqual(running.api.upstreams(), [kept]);
+    assert.deepStrictEqual(offer.upstreams(), [kept]);
     // A source added while it runs is proxied at once.
     listed = [...listed, { url: 'https://added.example/wfs', answersByBox: false }];
     refreshWfsSources(running);
-    assert.ok(running.api.proxyUrl('https://added.example/wfs') !== undefined);
+    assert.ok(offer.proxyUrl('https://added.example/wfs') !== undefined);
     releaseWfsProxy(running);
+    // Stopped, the offer gives no proxy.
+    current = null;
+    assert.strictEqual(offer.proxyUrl(kept), undefined);
+    assert.deepStrictEqual(offer.upstreams(), []);
+    assert.strictEqual(offer.stats(), undefined);
     const again = await startWfsProxy({ ...settings, sources: () => [{ url: kept }] });
     assert.strictEqual(again, running);
-    assert.strictEqual(again.api.proxyUrl(kept), url);
-    assert.strictEqual(again.api.proxyUrl('https://other.example/wfs'), undefined);
+    current = again;
+    assert.strictEqual(offer.proxyUrl(kept), url);
+    assert.strictEqual(offer.proxyUrl('https://other.example/wfs'), undefined);
+    assert.deepStrictEqual(offer.stats(), { ...again.cache.stats() });
     await stopWfsProxy(again);
   });
 

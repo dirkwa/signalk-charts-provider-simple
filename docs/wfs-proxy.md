@@ -154,13 +154,21 @@ answers 503) and refreshes no stale area.
 
 ## In-process API
 
-Plugins in the same server use `globalThis.__signalk_chartsProviderWfs`, typed
-by `ChartsProviderWfsApi` in [`src/types.ts`](../src/types.ts). It is published
-once the proxy listens and withdrawn when the plugin stops.
+Plugins in the same server read the `chartsProviderWfs` PropertyValue, typed
+by `ChartsProviderWfsApi` in [`src/types.ts`](../src/types.ts), as they read
+`chartTiles`. It is emitted once per server process, the first time the
+plugin starts: PropertyValues are kept for good and capped server-wide, while
+every config save restarts the plugin. Its members ask for the proxy running
+at the time of the call, so while the plugin is stopped, or the proxy is
+turned off, they give no URL, no upstreams and no store.
+
+A peer subscribes with `app.onPropertyValues('chartsProviderWfs', …)`, takes
+the last value, checks its shape and `apiVersion`, and unsubscribes when it
+stops. The server hands the value over whichever plugin starts first.
 
 `ChartsProviderWfsApi` gives each member's exact shape: the proxy's URL
-standing in for an upstream WFS (or none when that WFS is not proxied), the
-upstreams proxied, and what the store holds. Send the proxy's URL the same
+standing in for an upstream WFS (or none when that WFS is not proxied, or no
+proxy runs), the upstreams proxied, and what the store holds. Send the proxy's URL the same
 query as the upstream, and ask for it for each read: it holds this process's
 port, which a restart of this plugin keeps while it is free.
 

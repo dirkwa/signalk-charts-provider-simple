@@ -270,6 +270,8 @@ import {
   refreshWfsSources,
   releaseWfsProxy,
   startWfsProxy,
+  WFS_PROPERTY,
+  wfsOffer,
   type WfsProxyRunning
 } from './utils/wfs-proxy-service.js';
 import { registerWfsRoutes } from './utils/wfs-routes.js';
@@ -279,7 +281,6 @@ import type {
   ChartsProviderEncGlobal,
   ChartTiles,
   ChartsProviderRefreshGlobal,
-  ChartsProviderWfsGlobal,
   DownloadJob,
   EncCollectionStateInfo,
   ExtendedServerAPI,
@@ -340,8 +341,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // stop()); its charts are closed too. False before the first start, where
   // a refresh must still work.
   let stopped = false;
-  // See doStartup: offered once per server process.
-  let chartTilesOffered = false;
+  // The PropertyValues offered to peer plugins, each once per server process (see doStartup).
+  const offered = new Set<string>();
   const resolveOnlineChart: OnlineChartResolver = (catalogId) => getOnlineCatalogChart(catalogId);
   // catalogId → chart-folder paths of its .onlinechart.json files, for the
   // Chart Catalog's "Added" state. The catalog tab polls often, so this is
@@ -726,10 +727,10 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         openDataCheckInterval = null;
       }
       openData = null;
-      // Withdraw the peer-plugin refresh hook, ENC store and WFS proxy (see doStartup).
+      // Withdraw the peer-plugin refresh hook and ENC store (see doStartup). The WFS proxy's
+      // offer stays, and answers no proxy while none runs.
       delete (globalThis as unknown as ChartsProviderRefreshGlobal).__signalk_chartsProviderRefresh;
       delete (globalThis as unknown as ChartsProviderEncGlobal).__signalk_chartsProviderEnc;
-      delete (globalThis as unknown as ChartsProviderWfsGlobal).__signalk_chartsProviderWfs;
       if (wfsProxy) {
         // Serves on for the start a config save makes, which takes it over.
         releaseWfsProxy(wfsProxy);
@@ -983,7 +984,6 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       return;
     }
     wfsProxy = running;
-    (globalThis as unknown as ChartsProviderWfsGlobal).__signalk_chartsProviderWfs = running.api;
   };
 
   const doStartup = async (config: PluginConfig): Promise<void> => {
@@ -1252,26 +1252,37 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       requestArea: (bbox, requester) => requestArea(bbox, requester)
     };
 
-    // Chart tiles for peer plugins, such as signalk-collision-alerts, which
-    // reads the land on S-57 charts. A PropertyValue is kept for good and
-    // capped server-wide, while Signal K restarts the plugin on every config
-    // save, so it is offered once per server process, and not again after a
-    // failed emit; until a start has loaded its charts there are none to
-    // read. Test harnesses and very old servers have no PropertyValues.
-    if (
-      !chartTilesOffered &&
-      typeof (app as Partial<ExtendedServerAPI>).emitPropertyValue === 'function'
-    ) {
-      chartTilesOffered = true;
-      try {
-        app.emitPropertyValue(
-          CHART_TILES_PROPERTY,
-          chartTilesOf(() => chartProviders)
-        );
-      } catch (err) {
-        app.error(`Could not offer chart tiles to other plugins: ${String(err)}`);
+    // Offers to peer plugins: chart tiles, for signalk-collision-alerts, which
+    // reads the land on S-57 charts, and the local WFS proxy, for
+    // signalk-underkeel. A PropertyValue is kept for good and capped
+    // server-wide, while Signal K restarts the plugin on every config save, so
+    // each is offered once per server process, and not again after a failed
+    // emit; each reads what the plugin serves at the time of the call. Test
+    // harnesses and very old servers have no PropertyValues.
+    const offerOnce = (name: string, what: string, value: unknown): void => {
+      if (
+        offered.has(name) ||
+        typeof (app as Partial<ExtendedServerAPI>).emitPropertyValue !== 'function'
+      ) {
+        return;
       }
-    }
+      offered.add(name);
+      try {
+        app.emitPropertyValue(name, value);
+      } catch (err) {
+        app.error(`Could not offer ${what} to other plugins: ${String(err)}`);
+      }
+    };
+    offerOnce(
+      CHART_TILES_PROPERTY,
+      'chart tiles',
+      chartTilesOf(() => chartProviders)
+    );
+    offerOnce(
+      WFS_PROPERTY,
+      'the local WFS proxy',
+      wfsOffer(() => wfsProxy)
+    );
 
     if (props.wfsProxy !== false) {
       void startLocalWfsProxy(started);

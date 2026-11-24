@@ -13,6 +13,8 @@ import type { WfsSourceConfig } from './wfs-sources.js';
 import { normalizeUpstream, WfsProxy, type WfsProxySettings, type WfsSource } from './wfs-proxy.js';
 
 export const WFS_PROXY_API_VERSION = 1;
+/** The PropertyValue that offers the proxy to peer plugins (`wfsOffer`). */
+export const WFS_PROPERTY = 'chartsProviderWfs';
 export const DEFAULT_WFS_MAX_AGE_DAYS = 30;
 
 /** How long a stopped proxy serves on for the next start to take it over, ms. */
@@ -31,7 +33,6 @@ let closing: Promise<void> = Promise.resolve();
 export interface WfsProxyRunning {
   proxy: WfsProxy;
   cache: WfsCache;
-  api: ChartsProviderWfsApi;
   /** The settings of the start running it. */
   settings: WfsServiceSettings;
 }
@@ -105,14 +106,20 @@ export async function startWfsProxy(settings: WfsServiceSettings): Promise<WfsPr
     cache.close();
     throw err;
   }
-  const api: ChartsProviderWfsApi = {
-    apiVersion: WFS_PROXY_API_VERSION,
-    proxyUrl: (upstream) => proxy.proxyUrl(upstream),
-    upstreams: () => [...proxy.upstreams()],
-    stats: () => cache.stats()
-  };
-  return { proxy, cache, api, settings };
+  return { proxy, cache, settings };
 }
+
+/**
+ * The proxy for peer plugins, over the one `running` gives at each call: none while the
+ * plugin is stopped or the proxy is off. One object for the server process, as a
+ * PropertyValue is kept for good while every config save restarts the plugin.
+ */
+export const wfsOffer = (running: () => WfsProxyRunning | null): ChartsProviderWfsApi => ({
+  apiVersion: WFS_PROXY_API_VERSION,
+  proxyUrl: (upstream) => running()?.proxy.proxyUrl(upstream),
+  upstreams: () => [...(running()?.proxy.upstreams() ?? [])],
+  stats: () => running()?.cache.stats()
+});
 
 /** Takes up a change of the sources listed: what a source no longer proxied kept is dropped. */
 export function refreshWfsSources(running: WfsProxyRunning): void {
