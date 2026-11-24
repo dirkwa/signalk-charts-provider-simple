@@ -197,10 +197,14 @@ test.describe('WFS Data tab', () => {
     await page.locator('#catalogTabBtn').click();
     await openWfsTab(page);
     await expect(page.getByRole('button', { name: 'Add WFS server' })).toBeVisible();
-    release();
-    await expect(page.locator('#wfsMessage')).toContainText(
-      'Saved. Could not read the WFS data: HTTP 503'
+    const heldRead = page.waitForResponse(
+      (r) => r.url().endsWith('/wfs') && r.request().method() === 'GET' && r.status() === 503
     );
+    release();
+    await heldRead;
+    // The save's read, overtaken by the tab's, which worked, says nothing over it.
+    await page.waitForTimeout(200);
+    await expect(page.locator('#wfsMessage')).toHaveText('Saved.');
     await page.locator('#wfsUrl').fill('https://third.example.org/wfs');
     await page.getByRole('button', { name: 'Add WFS server' }).click();
     await expect(
@@ -262,12 +266,79 @@ test.describe('WFS Data tab', () => {
     await expect(page.locator('#wfsMessage')).toContainText(
       'Could not read the WFS data: HTTP 503'
     );
+    const heldRead = page.waitForResponse(
+      (r) => r.url().endsWith('/wfs') && r.request().method() === 'GET' && r.status() === 200
+    );
     release();
-    await expect(page.locator('#wfsMessage')).toHaveText('Saved.');
+    await heldRead;
+    // The save's read, overtaken by the tab's, which failed, says nothing over it.
+    await page.waitForTimeout(200);
+    await expect(page.locator('#wfsMessage')).toContainText(
+      'Saved. Could not read the WFS data: HTTP 503'
+    );
     // The superseded refresh drew nothing: the edit form is still shown, and saves an edit.
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(sourceRow(page, 'Depth contours')).toContainText('3 areas');
     expect(changes.map((c) => c.method)).toEqual(['PUT', 'PUT']);
+  });
+
+  test("an action's status says how the latest read of the list ended", async ({ page }) => {
+    await page.goto(PAGE_PATH);
+    await setMockState(page, {
+      wfs: {
+        enabled: true,
+        running: true,
+        maxAgeDays: 30,
+        limitBytes: 0,
+        store: { fileBytes: 0, usedBytes: 0 },
+        sources: [kept]
+      }
+    });
+    let gets: number | undefined;
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let heldGet: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      heldGet = resolve;
+    });
+    await page.route(
+      (url) => url.pathname.endsWith('/wfs'),
+      async (route) => {
+        if (gets !== undefined && route.request().method() === 'GET') {
+          gets++;
+          // The action's read waits and then works; the one asked meanwhile, the latest, fails.
+          if (gets === 1) {
+            heldGet();
+            await released;
+          } else if (gets === 2) {
+            await route.fulfill({ status: 503, body: 'busy' });
+            return;
+          }
+        }
+        await route.fallback();
+      }
+    );
+    await openWfsTab(page);
+    gets = 0;
+    page.once('dialog', (dialog) => void dialog.accept());
+    await page.getByRole('button', { name: 'Delete data' }).click();
+    await held;
+    await page.locator('#catalogTabBtn').click();
+    await openWfsTab(page);
+    const message = page.locator('#wfsMessage');
+    await expect(message).toContainText(
+      'Deleted. Its areas are downloaded again when next read. Could not read the WFS data: HTTP 503'
+    );
+    const firstRead = page.waitForResponse(
+      (r) => r.url().endsWith('/wfs') && r.request().method() === 'GET' && r.status() === 200
+    );
+    release();
+    await firstRead;
+    // The older read, overtaken, says nothing over the latest one.
+    await page.waitForTimeout(200);
+    await expect(message).toContainText('Could not read the WFS data: HTTP 503');
   });
 
   test('adds a server and deletes what one keeps', async ({ page }) => {

@@ -252,14 +252,30 @@ function wfsRender(): void {
     </div>`;
 }
 
+/** What an action did, said with the outcome of the overview read that is the latest when it ends. */
+let wfsDone: string | undefined;
+
+/** Says how the latest overview read ended, after what an action did, if one did. */
+function wfsSayRead(why: string | undefined): void {
+  const done = wfsDone;
+  wfsDone = undefined;
+  if (why === undefined) {
+    if (done !== undefined) {
+      wfsShowStatus(done, true);
+    }
+    return;
+  }
+  wfsShowStatus(done === undefined ? why : `${done} ${why}`, false);
+}
+
 /**
- * Reads the overview again and draws it. Returns why it could not, else undefined: a view
- * drawn before stays, with the reason under its Refresh button; with none, a Retry button.
+ * Reads the overview again and draws it. Only the latest read says how it ended: a view drawn
+ * before stays, with the reason under its Refresh button; with none, a Retry button.
  */
-async function wfsRefresh(): Promise<string | undefined> {
+async function wfsRefresh(): Promise<void> {
   const el = document.getElementById('wfsOutput');
   if (!el) {
-    return undefined;
+    return;
   }
   const load = ++wfsLoad;
   try {
@@ -271,27 +287,27 @@ async function wfsRefresh(): Promise<string | undefined> {
     if (load === wfsLoad) {
       wfsOverview = overview;
       wfsRender();
+      wfsSayRead(undefined);
     }
-    return undefined;
   } catch (err) {
-    const why = `Could not read the WFS data: ${err instanceof Error ? err.message : String(err)}`;
     if (load !== wfsLoad) {
-      return why;
+      return;
     }
+    const why = `Could not read the WFS data: ${err instanceof Error ? err.message : String(err)}`;
     if (wfsOverview && document.getElementById('wfsMessage')) {
-      wfsShowStatus(why, false);
+      wfsSayRead(why);
     } else {
+      wfsDone = undefined;
       el.innerHTML = `<div class="empty-state"><div class="empty-state-text">${wfsEsc(why)}</div>
         <button class="btn btn-sm btn-secondary" data-wfs-action="refresh">Retry</button></div>`;
     }
-    return why;
   }
 }
 
-/** Reads the overview again after `done`, saying so, and whether it could be read. */
+/** Reads the overview again after `done`, said with how the latest read ends. */
 async function wfsRefreshAfter(done: string): Promise<void> {
-  const why = await wfsRefresh();
-  wfsShowStatus(why === undefined ? done : `${done} ${why}`, why === undefined);
+  wfsDone = done;
+  await wfsRefresh();
 }
 
 function wfsFormValue(id: string): string {

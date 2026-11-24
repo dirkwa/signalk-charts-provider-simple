@@ -305,6 +305,13 @@ describe('wfs-query', () => {
     assert.strictEqual(hitsMatched(xml), 20);
     assert.strictEqual(hitsMatched('<x numberMatched="3"/>'), undefined);
     assert.strictEqual(hitsMatched("<wfs:FeatureCollection numberMatched = '0'/>"), 0);
+    // A start tag cut off before its end is no count, zero or not.
+    assert.strictEqual(hitsMatched('<wfs:FeatureCollection numberMatched="0"'), undefined);
+    assert.strictEqual(
+      hitsMatched('<wfs:FeatureCollection numberMatched="5" numberRet'),
+      undefined
+    );
+    assert.strictEqual(hitsMatched('<wfs:FeatureCollection numberMatched="5">'), 5);
     assert.strictEqual(
       hitsMatched('<wfs:FeatureCollection numberMatched="unknown" numberReturned="0"/>'),
       undefined
@@ -517,14 +524,24 @@ describe('wfs-query', () => {
       geometryReaches(polygon(square(-5, -5, 5, 10), square(-1, 2, 2, 5)), box),
       false
     );
-    // A triangle whose box holds the box but which lies past its corner.
+    // A triangle whose box holds the box, but which passes below it.
+    assert.ok(
+      featureBox(
+        polygon([
+          [0, 0],
+          [4, 0],
+          [4, 5],
+          [0, 0]
+        ])
+      ) !== undefined
+    );
     assert.strictEqual(
       geometryReaches(
         polygon([
-          [2, 0],
+          [0, 0],
           [4, 0],
           [4, 5],
-          [2, 0]
+          [0, 0]
         ]),
         box
       ),
@@ -541,6 +558,39 @@ describe('wfs-query', () => {
         box
       ),
       true
+    );
+    // An open ring lacks its closing edge: such a polygon is one it cannot tell about.
+    assert.strictEqual(
+      geometryReaches(
+        polygon([
+          [0, 0],
+          [4, 0],
+          [4, 4]
+        ]),
+        [0.9, 1, 1.1, 1.4]
+      ),
+      undefined
+    );
+    assert.strictEqual(
+      geometryReaches(
+        {
+          geometry: {
+            type: 'MultiPolygon',
+            coordinates: [
+              [square(5, 5, 6, 6)],
+              [
+                [
+                  [0, 0],
+                  [4, 0],
+                  [4, 4]
+                ]
+              ]
+            ]
+          }
+        },
+        box
+      ),
+      undefined
     );
     // Geometries it cannot tell about are not left out.
     assert.strictEqual(
@@ -1902,23 +1952,55 @@ describe('WfsProxy', () => {
     cache.close();
   });
 
-  it('a count begins a new store read once one began longer ago than the maximum age', async () => {
+  it("a store read serves a client's pages to the end, however old its areas grow meanwhile", async () => {
     let now = 7_000_000;
     const { cache, proxy } = proxyWith('p-old-read.sqlite', { now: () => now });
     await proxy.listen();
     const base = proxy.proxyUrl(upstreamBase) as string;
     await readLayer(base, BOX);
-    const count = () => fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits' })}`);
+    const count = async (): Promise<number | undefined> =>
+      hitsMatched(
+        await (await fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits' })}`)).text()
+      );
     upstream.seen.length = 0;
     now += 500;
-    await count();
-    // Asked often enough never to be idle, a store read would answer its pin for good.
-    now += 900;
-    await count();
+    const matched = await count();
+    // Past the maximum age, another client's count and this client's pages still come from
+    // the read the count began, so they agree.
+    now += 1500;
+    assert.strictEqual(await count(), matched);
+    const ids = await readLayer(base, BOX);
+    assert.strictEqual(ids.length, matched);
     assert.strictEqual(upstream.seen.length, 0);
-    now += 300;
+    // Once idle, the next read finds the area stale and reads it upstream.
+    now += READ_IDLE_MS + 1;
     await count();
-    assert.strictEqual(upstream.seen.length, 1, 'the area, stale now, is read upstream again');
+    assert.strictEqual(upstream.seen.length, 1);
+    await proxy.close();
+    cache.close();
+  });
+
+  it('ends the reads of a source removed even when compacting the store fails', async () => {
+    const { cache, proxy } = proxyWith('p-compact.sqlite');
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await readLayer(base, BOX);
+    const count = () => fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits' })}`);
+    // A read from the store, which pins what it answers.
+    await count();
+    const compact = (cache as unknown as { compact: () => void }).compact;
+    (cache as unknown as { compact: () => void }).compact = () => {
+      throw new Error('disk full');
+    };
+    assert.throws(() => {
+      proxy.configure({ sources: () => [] });
+    }, /disk full/);
+    (cache as unknown as { compact: () => void }).compact = compact;
+    // Listed again under another rule, it answers nothing the removed one pinned.
+    proxy.configure({ sources: () => [{ url: upstreamBase, byBox: { margin: 0.2 } }] });
+    upstream.seen.length = 0;
+    assert.strictEqual((await count()).status, 200);
+    assert.strictEqual(upstream.seen.length, 1);
     await proxy.close();
     cache.close();
   });

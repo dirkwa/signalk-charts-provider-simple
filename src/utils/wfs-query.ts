@@ -309,6 +309,16 @@ const polygonReaches = (rings: readonly (readonly Position[])[], box: Box): bool
   rings.some((ring) => pathReaches(ring, box)) ||
   insideRings((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, rings);
 
+/** Whether each ring ends where it begins, as GeoJSON requires: an open one lacks an edge. */
+const ringsClosed = (rings: readonly (readonly Position[])[]): boolean =>
+  rings.every((ring) => {
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+    return (
+      first !== undefined && last !== undefined && first[0] === last[0] && first[1] === last[1]
+    );
+  });
+
 /** How deep each geometry type nests its positions' numbers. */
 const GEOMETRY_DEPTH: Partial<Record<string, number>> = {
   Point: 1,
@@ -360,10 +370,16 @@ export function geometryReaches(f: WfsFeature, box: Box): boolean | undefined {
       return pathReaches(c as Position[], grown);
     case 'MultiLineString':
       return (c as Position[][]).some((line) => pathReaches(line, grown));
-    case 'Polygon':
-      return polygonReaches(c as Position[][], grown);
-    case 'MultiPolygon':
-      return (c as Position[][][]).some((rings) => polygonReaches(rings, grown));
+    case 'Polygon': {
+      const rings = c as Position[][];
+      return ringsClosed(rings) ? polygonReaches(rings, grown) : undefined;
+    }
+    case 'MultiPolygon': {
+      const polygons = c as Position[][][];
+      return polygons.every(ringsClosed)
+        ? polygons.some((rings) => polygonReaches(rings, grown))
+        : undefined;
+    }
     default:
       return undefined;
   }
@@ -473,15 +489,27 @@ export function hitsMatched(xml: string): number | undefined {
   if (!root.test(xml)) {
     return undefined;
   }
-  ATTRIBUTE.lastIndex = root.lastIndex;
-  for (let m = ATTRIBUTE.exec(xml); m !== null; m = ATTRIBUTE.exec(xml)) {
+  let pos = root.lastIndex;
+  let value: string | undefined;
+  for (;;) {
+    ATTRIBUTE.lastIndex = pos;
+    const m = ATTRIBUTE.exec(xml);
+    if (m === null) {
+      break;
+    }
+    pos = ATTRIBUTE.lastIndex;
     if (m[1] === 'numberMatched') {
-      const value = m[2] ?? m[3] ?? '';
-      const n = Number(value);
-      return /^\d+$/.test(value) && Number.isSafeInteger(n) ? n : undefined;
+      value ??= m[2] ?? m[3] ?? '';
     }
   }
-  return undefined;
+  // A start tag cut off before its end is no count: the reply broke off.
+  const end = /\s*\/?>/y;
+  end.lastIndex = pos;
+  if (value === undefined || !end.test(xml)) {
+    return undefined;
+  }
+  const n = Number(value);
+  return /^\d+$/.test(value) && Number.isSafeInteger(n) ? n : undefined;
 }
 
 /** The top-level `numberMatched` of a parsed GeoJSON page; undefined unless a count. */

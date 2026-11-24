@@ -111,8 +111,6 @@ interface UpstreamRead {
 
 interface StoreRead {
   lastUsed: number;
-  /** When it began: once older than an area's maximum age, a count begins a new one. */
-  begun: number;
   /** The features answered, each as it was when the read began, so its count and pages agree. */
   pin: Pin;
   /** The pinned features in each ordering asked for, by `sortBy`. */
@@ -219,8 +217,16 @@ export class WfsProxy {
         log?.(`WFS proxy: ${source.url} is read by new settings, its kept areas dropped`);
       }
     }
-    for (const gone of cache.keepOnly(sources.map((s) => s.url))) {
-      this.endReadsOf(gone);
+    // Before what they kept is dropped: the drop is committed before the file is compacted,
+    // which may fail.
+    const listed = new Set(sources.map((s) => s.url));
+    for (const key of [...this.upstreamReads.keys(), ...this.storeReads.keys()]) {
+      const upstream = key.slice(0, key.indexOf('\n'));
+      if (!listed.has(upstream)) {
+        this.endReadsOf(upstream);
+      }
+    }
+    for (const gone of cache.keepOnly([...listed])) {
       log?.(`WFS proxy: ${gone} is no longer proxied, its kept areas dropped`);
     }
   }
@@ -365,15 +371,6 @@ export class WfsProxy {
           this.endUpstreamRead(k, r);
         }
       }
-      // Nor does a store read live past the age its areas are read again at.
-      const stored = this.storeReads.get(area);
-      if (
-        stored &&
-        this.now() - stored.begun > this.options.maxAgeMs() &&
-        this.options.mayRefresh()
-      ) {
-        this.endStoreRead(area, stored);
-      }
     }
     const fromStore = this.storeRead(area, readKey, layer, q);
     if (fromStore) {
@@ -513,7 +510,7 @@ export class WfsProxy {
     if (!pin) {
       return undefined;
     }
-    const read: StoreRead = { lastUsed: now, begun: now, pin };
+    const read: StoreRead = { lastUsed: now, pin };
     this.storeReads.set(area, read);
     return read;
   }

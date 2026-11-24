@@ -131,10 +131,12 @@ in metres, so such a request is passed upstream as it is, like any other.
   (`resultType=hits`) ends the area's upstream reads that passed every page,
   or can no longer be kept once none of their pages is on its way, and one of
   its own ordering that no page followed. It does not end a read from
-  the store, which answers the same count again until it has been idle, or
-  until it began longer ago than the maximum age. So a client cannot ask for
-  a count again to see an area kept meanwhile. A change of a source's rule,
-  or its removal, ends its reads.
+  the store, which answers the same count again until it has been idle,
+  however old its areas grow meanwhile: a page carries no mark of the read it
+  belongs to, so ending the read under a client still paging would give it
+  pages that disagree with its count. So a client cannot ask for a count
+  again to see an area kept meanwhile. A change of a source's rule, or its
+  removal, ends its reads.
 - On a metered, offline or captive connection (signalk-internet), and while
   the connection's state is still being learnt, an area held whole is
   answered from the store whatever its age.
