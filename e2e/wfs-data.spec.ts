@@ -197,13 +197,10 @@ test.describe('WFS Data tab', () => {
     await page.locator('#catalogTabBtn').click();
     await openWfsTab(page);
     await expect(page.getByRole('button', { name: 'Add WFS server' })).toBeVisible();
-    const heldRead = page.waitForResponse(
-      (r) => r.url().endsWith('/wfs') && r.request().method() === 'GET' && r.status() === 503
-    );
+    const ended = Number(await page.locator('#wfsOutput').getAttribute('data-wfs-reads'));
     release();
-    await heldRead;
+    await expect(page.locator('#wfsOutput')).toHaveAttribute('data-wfs-reads', String(ended + 1));
     // The save's read, overtaken by the tab's, which worked, says nothing over it.
-    await page.waitForTimeout(200);
     await expect(page.locator('#wfsMessage')).toHaveText('Saved.');
     await page.locator('#wfsUrl').fill('https://third.example.org/wfs');
     await page.getByRole('button', { name: 'Add WFS server' }).click();
@@ -266,13 +263,10 @@ test.describe('WFS Data tab', () => {
     await expect(page.locator('#wfsMessage')).toContainText(
       'Could not read the WFS data: HTTP 503'
     );
-    const heldRead = page.waitForResponse(
-      (r) => r.url().endsWith('/wfs') && r.request().method() === 'GET' && r.status() === 200
-    );
+    const ended = Number(await page.locator('#wfsOutput').getAttribute('data-wfs-reads'));
     release();
-    await heldRead;
+    await expect(page.locator('#wfsOutput')).toHaveAttribute('data-wfs-reads', String(ended + 1));
     // The save's read, overtaken by the tab's, which failed, says nothing over it.
-    await page.waitForTimeout(200);
     await expect(page.locator('#wfsMessage')).toContainText(
       'Saved. Could not read the WFS data: HTTP 503'
     );
@@ -331,13 +325,10 @@ test.describe('WFS Data tab', () => {
     await expect(message).toContainText(
       'Deleted. Its areas are downloaded again when next read. Could not read the WFS data: HTTP 503'
     );
-    const firstRead = page.waitForResponse(
-      (r) => r.url().endsWith('/wfs') && r.request().method() === 'GET' && r.status() === 200
-    );
+    const ended = Number(await page.locator('#wfsOutput').getAttribute('data-wfs-reads'));
     release();
-    await firstRead;
+    await expect(page.locator('#wfsOutput')).toHaveAttribute('data-wfs-reads', String(ended + 1));
     // The older read, overtaken, says nothing over the latest one.
-    await page.waitForTimeout(200);
     await expect(message).toContainText('Could not read the WFS data: HTTP 503');
   });
 

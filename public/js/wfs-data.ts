@@ -252,6 +252,9 @@ function wfsRender(): void {
     </div>`;
 }
 
+/** Overview reads ended, the latest or not, as `#wfsOutput`'s `data-wfs-reads` shows them. */
+let wfsReadsEnded = 0;
+
 /** What an action did, said with the outcome of the overview read that is the latest when it ends. */
 let wfsDone: string | undefined;
 
@@ -301,6 +304,9 @@ async function wfsRefresh(): Promise<void> {
       el.innerHTML = `<div class="empty-state"><div class="empty-state-text">${wfsEsc(why)}</div>
         <button class="btn btn-sm btn-secondary" data-wfs-action="refresh">Retry</button></div>`;
     }
+  } finally {
+    // An overtaken read changes nothing else to wait for.
+    el.dataset['wfsReads'] = String(++wfsReadsEnded);
   }
 }
 
