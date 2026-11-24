@@ -963,6 +963,7 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         maxAgeDays: wfsMaxAgeDays,
         maxBytes: wfsMaxBytes,
         sources: () => wfsSources().list(),
+        sourcesKnown: () => wfsSources().readable(),
         // Not while the link's state is still being learnt: it may be metered.
         mayRefresh: () =>
           internet === null || (internet.mayRunBackground() && !internet.deciding()),

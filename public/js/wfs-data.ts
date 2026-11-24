@@ -250,10 +250,14 @@ function wfsRender(): void {
     </div>`;
 }
 
-async function wfsRefresh(): Promise<void> {
+/**
+ * Reads the overview again and draws it. Returns why it could not, else undefined: a view
+ * drawn before stays, with the reason under its Refresh button; with none, a Retry button.
+ */
+async function wfsRefresh(): Promise<string | undefined> {
   const el = document.getElementById('wfsOutput');
   if (!el) {
-    return;
+    return undefined;
   }
   const load = ++wfsLoad;
   try {
@@ -262,18 +266,30 @@ async function wfsRefresh(): Promise<void> {
       throw new Error(`HTTP ${String(resp.status)}`);
     }
     const overview = (await resp.json()) as WfsOverviewView;
-    if (load !== wfsLoad) {
-      return;
-    }
-    wfsOverview = overview;
-    wfsRender();
-  } catch (err) {
     if (load === wfsLoad) {
-      el.innerHTML = `<div class="empty-state"><div class="empty-state-text">Could not read the WFS data: ${wfsEsc(
-        err instanceof Error ? err.message : String(err)
-      )}</div></div>`;
+      wfsOverview = overview;
+      wfsRender();
     }
+    return undefined;
+  } catch (err) {
+    const why = `Could not read the WFS data: ${err instanceof Error ? err.message : String(err)}`;
+    if (load !== wfsLoad) {
+      return why;
+    }
+    if (wfsOverview && document.getElementById('wfsMessage')) {
+      wfsShowStatus(why, false);
+    } else {
+      el.innerHTML = `<div class="empty-state"><div class="empty-state-text">${wfsEsc(why)}</div>
+        <button class="btn btn-sm btn-secondary" data-wfs-action="refresh">Retry</button></div>`;
+    }
+    return why;
   }
+}
+
+/** Reads the overview again after `done`, saying so, and whether it could be read. */
+async function wfsRefreshAfter(done: string): Promise<void> {
+  const why = await wfsRefresh();
+  wfsShowStatus(why === undefined ? done : `${done} ${why}`, why === undefined);
 }
 
 function wfsFormValue(id: string): string {
@@ -304,8 +320,7 @@ async function wfsSave(): Promise<void> {
     body: JSON.stringify(body)
   });
   wfsEditing = null;
-  await wfsRefresh();
-  wfsShowStatus(editing ? 'Saved.' : 'Added. Plugins reading it now go through the proxy.', true);
+  await wfsRefreshAfter(editing ? 'Saved.' : 'Added. Plugins reading it now go through the proxy.');
 }
 
 async function wfsAct(action: string, url: string | undefined): Promise<void> {
@@ -332,8 +347,7 @@ async function wfsAct(action: string, url: string | undefined): Promise<void> {
         return;
       }
       await wfsRequest(`/data?url=${encodeURIComponent(url)}`, { method: 'DELETE' });
-      await wfsRefresh();
-      wfsShowStatus('Deleted. Its areas are downloaded again when next read.', true);
+      await wfsRefreshAfter('Deleted. Its areas are downloaded again when next read.');
       return;
     case 'remove':
       if (
@@ -343,16 +357,14 @@ async function wfsAct(action: string, url: string | undefined): Promise<void> {
         return;
       }
       await wfsRequest(`/sources?url=${encodeURIComponent(url)}`, { method: 'DELETE' });
-      await wfsRefresh();
-      wfsShowStatus('Removed.', true);
+      await wfsRefreshAfter('Removed.');
       return;
     case 'clear':
       if (!confirm('Delete everything kept from every WFS server?')) {
         return;
       }
       await wfsRequest('/data', { method: 'DELETE' });
-      await wfsRefresh();
-      wfsShowStatus('Deleted. Areas are downloaded again when next read.', true);
+      await wfsRefreshAfter('Deleted. Areas are downloaded again when next read.');
       return;
   }
 }

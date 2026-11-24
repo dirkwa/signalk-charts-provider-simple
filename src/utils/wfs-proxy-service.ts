@@ -43,6 +43,8 @@ export interface WfsServiceSettings {
   maxBytes: () => number;
   /** The WFS servers proxied, as the WFS Data tab lists them. */
   sources: () => readonly WfsSourceConfig[];
+  /** False while their list cannot be read: what is kept is left as it is. */
+  sourcesKnown?: () => boolean;
   mayRefresh: () => boolean;
   log: (message: string) => void;
   /** What went wrong that the user should hear of. */
@@ -74,6 +76,7 @@ export function wfsSources(configs: readonly WfsSourceConfig[]): WfsSource[] {
 function proxySettings(settings: WfsServiceSettings): WfsProxySettings {
   return {
     sources: () => wfsSources(settings.sources()),
+    sourcesKnown: settings.sourcesKnown ?? (() => true),
     maxAgeMs: () => settings.maxAgeDays() * DAY_MS,
     maxBytes: settings.maxBytes,
     mayRefresh: settings.mayRefresh,

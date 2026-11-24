@@ -29,8 +29,11 @@ running proxy at once. Each source has:
   property naming each feature. Without an id a page is passed on but not
   kept.
 
-The store keeps a source's data under the rule those settings make; when
-they change, or the source is removed, what was kept from it is dropped.
+The store keeps a source's data under the rule `answersByBox`,
+`answerMargin` and `idProperty` make; when one of them changes, or the source
+is removed, what was kept from it is dropped. Its `name` changes nothing kept.
+While the file cannot be read, or holds no list of sources, the tab neither
+adds nor removes a source, and nothing kept is dropped.
 
 ```json
 {
@@ -91,7 +94,8 @@ in metres, so such a request is passed upstream as it is, like any other.
   area once no page asked for in the read is still to come. A read whose
   area a newer read overlapping it was kept for meanwhile is not kept, so it
   cannot bring back what that one dropped, nor is one begun before an area
-  of its source was deleted or dropped for space; reads and pages are
+  of its source was deleted, or before the read of an area dropped for
+  space began (one begun later knows all that area did); reads and pages are
   ordered as they come, in the same millisecond too and if the clock is set
   back, while an area's age is counted from the time its read began. A very
   large reply, or one the upstream breaks off, is passed on but not kept; a
@@ -99,8 +103,9 @@ in metres, so such a request is passed upstream as it is, like any other.
 - For a source answering by box (`answersByBox`), each feature is kept once,
   by its id, and an area the store holds whole (inside boxes it holds,
   fetched within the maximum age) is answered from the store: every kept
-  feature whose box reaches the area grown by the source's `answerMargin`,
-  as the server answers features that far outside it. A feature wholly inside a box read again whole that
+  feature whose geometry reaches the area grown by the source's
+  `answerMargin`, as the server answers features that far outside it (a
+  line whose box reaches the area but which passes it by is not). A feature wholly inside a box read again whole that
   the read did not return is dropped: it is gone upstream. One reaching past
   that box, or lying in the margin of its answer, is kept for other areas, as
   it may only reach the box by its own box. Each place a kept feature reaches
@@ -124,13 +129,17 @@ in metres, so such a request is passed upstream as it is, like any other.
   the store held when it began, each as it was then, so its count and its
   pages agree whatever is kept or dropped meanwhile. A count
   (`resultType=hits`) ends the area's upstream reads that passed every page,
-  and one of its own ordering no page followed; it does not end a read from
-  the store, which answers the same count again until it has been idle. So
-  a client cannot ask for a count again to see an area kept meanwhile.
+  or can no longer be kept once none of their pages is on its way, and one of
+  its own ordering that no page followed. It does not end a read from
+  the store, which answers the same count again until it has been idle, or
+  until it began longer ago than the maximum age. So a client cannot ask for
+  a count again to see an area kept meanwhile. A change of a source's rule,
+  or its removal, ends its reads.
 - On a metered, offline or captive connection (signalk-internet), and while
   the connection's state is still being learnt, an area held whole is
   answered from the store whatever its age.
-- Redirects are followed only to a server it proxies.
+- Redirects are followed only to a server it proxies. A reply that came by
+  way of a redirect asking another query is passed on but not kept.
 - A page with a feature that has no id or no coordinates is passed on but not
   kept, and its area is never held.
 

@@ -74,6 +74,46 @@ test.describe('WFS Data tab', () => {
     await expect(output.getByText('DepthArea_A')).toBeVisible();
   });
 
+  test('keeps the view when it cannot be read again, and retries a first read', async ({
+    page
+  }) => {
+    await page.goto(PAGE_PATH);
+    await setMockState(page, {
+      wfs: {
+        enabled: true,
+        running: true,
+        maxAgeDays: 30,
+        limitBytes: 0,
+        store: { fileBytes: 0, usedBytes: 0 },
+        sources: [kept]
+      }
+    });
+    let failing = true;
+    await page.route(
+      (url) => url.pathname.endsWith('/wfs'),
+      (route) =>
+        failing && route.request().method() === 'GET'
+          ? route.fulfill({ status: 503, body: 'busy' })
+          : route.fallback()
+    );
+    await openWfsTab(page);
+    const output = page.locator('#wfsOutput');
+    await expect(output).toContainText('Could not read the WFS data: HTTP 503');
+    failing = false;
+    await output.getByRole('button', { name: 'Retry' }).click();
+    await expect(sourceRow(page, 'Depth areas')).toContainText('3 areas');
+
+    failing = true;
+    await output.getByRole('button', { name: 'Refresh' }).click();
+    await expect(page.locator('#wfsMessage')).toContainText(
+      'Could not read the WFS data: HTTP 503'
+    );
+    await expect(sourceRow(page, 'Depth areas')).toContainText('3 areas');
+    failing = false;
+    await output.getByRole('button', { name: 'Refresh' }).click();
+    await expect(page.locator('#wfsMessage')).toBeEmpty();
+  });
+
   test('adds a server and deletes what one keeps', async ({ page }) => {
     await page.goto(PAGE_PATH);
     await setMockState(page, {

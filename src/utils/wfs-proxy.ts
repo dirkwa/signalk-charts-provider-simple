@@ -68,6 +68,8 @@ export interface WfsProxyOptions {
   cache: WfsCache;
   /** The upstream servers proxied. */
   sources: () => readonly WfsSource[];
+  /** False while the list of sources cannot be read: what is kept is then not pruned by it. */
+  sourcesKnown?: () => boolean;
   /** An area fetched longer ago than this is fetched again, ms. */
   maxAgeMs: () => number;
   /** The store's size limit (`WfsCache.fit`), bytes; 0 or none for no limit. */
@@ -87,7 +89,7 @@ export interface WfsProxyOptions {
 /** The settings a running proxy takes again when the plugin restarts. */
 export type WfsProxySettings = Pick<
   WfsProxyOptions,
-  'sources' | 'maxAgeMs' | 'maxBytes' | 'mayRefresh' | 'handingOver' | 'log'
+  'sources' | 'sourcesKnown' | 'maxAgeMs' | 'maxBytes' | 'mayRefresh' | 'handingOver' | 'log'
 >;
 
 interface UpstreamRead {
@@ -109,6 +111,8 @@ interface UpstreamRead {
 
 interface StoreRead {
   lastUsed: number;
+  /** When it began: once older than an area's maximum age, a count begins a new one. */
+  begun: number;
   /** The features answered, each as it was when the read began, so its count and pages agree. */
   pin: Pin;
   /** The pinned features in each ordering asked for, by `sortBy`. */
@@ -203,13 +207,20 @@ export class WfsProxy {
    */
   private useRules(): void {
     const { cache, log } = this.options;
+    // Until the list of sources can be read, nothing kept is known to be unlisted.
+    if (this.options.sourcesKnown?.() === false) {
+      log?.('WFS proxy: the list of WFS servers could not be read; what is kept is left as it is');
+      return;
+    }
     const sources = this.options.sources();
     for (const source of sources) {
       if (cache.useRule(source.url, ruleOf(source))) {
+        this.endReadsOf(source.url);
         log?.(`WFS proxy: ${source.url} is read by new settings, its kept areas dropped`);
       }
     }
     for (const gone of cache.keepOnly(sources.map((s) => s.url))) {
+      this.endReadsOf(gone);
       log?.(`WFS proxy: ${gone} is no longer proxied, its kept areas dropped`);
     }
   }
@@ -344,14 +355,24 @@ export class WfsProxy {
     const readKey = `${area}\n${q.sortBy ?? ''}`;
     this.sweep();
     if (q.hits) {
-      // A count begins a read: the area's finished upstream reads end, and a count of its own
-      // ordering that no page followed, so its pages may come from the store, or upstream and
-      // be kept again.
+      // A count begins a read: the area's upstream reads that are held, or can no longer be
+      // held, end once none of their pages is on its way, and a count of its own ordering that
+      // no page followed, so its pages may come from the store, or upstream and be kept again.
       for (const [k, r] of this.upstreamReads) {
         const countOnly = k === readKey && r.ranges.length === 0 && r.inFlight === 0;
-        if (k.startsWith(`${area}\n`) && (r.held || countOnly)) {
+        const spoilt = r.spoilt && r.inFlight === 0;
+        if (k.startsWith(`${area}\n`) && (r.held || spoilt || countOnly)) {
           this.endUpstreamRead(k, r);
         }
+      }
+      // Nor does a store read live past the age its areas are read again at.
+      const stored = this.storeReads.get(area);
+      if (
+        stored &&
+        this.now() - stored.begun > this.options.maxAgeMs() &&
+        this.options.mayRefresh()
+      ) {
+        this.endStoreRead(area, stored);
       }
     }
     const fromStore = this.storeRead(area, readKey, layer, q);
@@ -427,8 +448,26 @@ export class WfsProxy {
     }
     for (const [k, r] of this.storeReads) {
       if (now - r.lastUsed > READ_IDLE_MS) {
-        this.storeReads.delete(k);
-        r.pin.release();
+        this.endStoreRead(k, r);
+      }
+    }
+  }
+
+  private endStoreRead(area: string, read: StoreRead): void {
+    this.storeReads.delete(area);
+    read.pin.release();
+  }
+
+  /** Ends `upstream`'s reads: what they read was chosen or identified by settings now gone. */
+  private endReadsOf(upstream: string): void {
+    for (const [k, r] of this.upstreamReads) {
+      if (k.startsWith(`${upstream}\n`)) {
+        this.endUpstreamRead(k, r);
+      }
+    }
+    for (const [k, r] of this.storeReads) {
+      if (k.startsWith(`${upstream}\n`)) {
+        this.endStoreRead(k, r);
       }
     }
   }
@@ -474,7 +513,7 @@ export class WfsProxy {
     if (!pin) {
       return undefined;
     }
-    const read: StoreRead = { lastUsed: now, pin };
+    const read: StoreRead = { lastUsed: now, begun: now, pin };
     this.storeReads.set(area, read);
     return read;
   }
@@ -637,12 +676,15 @@ export class WfsProxy {
     this.fit();
   }
 
-  /** `target` fetched, following a redirect only to a server proxied. */
+  /**
+   * `target` fetched, following a redirect only to a server proxied; with the URL that
+   * answered.
+   */
   private async fetchAllowed(
     target: string,
     req: http.IncomingMessage,
     signal: AbortSignal
-  ): Promise<Response> {
+  ): Promise<{ reply: Response; url: string }> {
     let url = target;
     for (let hop = 0; ; hop++) {
       const reply = await this.fetchUpstream(url, {
@@ -652,7 +694,7 @@ export class WfsProxy {
       });
       const location = reply.headers.get('location');
       if (reply.status < 300 || reply.status >= 400 || location === null) {
-        return reply;
+        return { reply, url };
       }
       await reply.body?.cancel();
       const next = new URL(location, url);
@@ -679,17 +721,26 @@ export class WfsProxy {
       gone.abort();
     });
     let upstream: Response;
+    let answered: string;
     try {
-      upstream = await this.fetchAllowed(target, req, gone.signal);
+      ({ reply: upstream, url: answered } = await this.fetchAllowed(target, req, gone.signal));
     } catch (err) {
       if (!res.headersSent && !gone.signal.aborted) {
         res.writeHead(502, { 'content-type': 'text/plain' }).end(`upstream WFS: ${String(err)}`);
       }
       return;
     }
-    const type = upstream.headers.get('content-type');
-    res.writeHead(upstream.status, type ? { 'content-type': type } : {});
-    let kept: Buffer[] | null = onBody !== undefined && upstream.ok ? [] : null;
+    const headers: Record<string, string> = {};
+    for (const name of ['content-type', 'retry-after']) {
+      const value = upstream.headers.get(name);
+      if (value !== null) {
+        headers[name] = value;
+      }
+    }
+    res.writeHead(upstream.status, headers);
+    // A redirect that asked another question answered that one, not the request's.
+    const sameQuestion = new URL(answered).search === new URL(target).search;
+    let kept: Buffer[] | null = onBody !== undefined && upstream.ok && sameQuestion ? [] : null;
     let keptBytes = 0;
     if (upstream.body) {
       try {

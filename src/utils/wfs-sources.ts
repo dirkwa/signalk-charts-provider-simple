@@ -11,8 +11,10 @@ import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import { normalizeUpstream } from './wfs-proxy.js';
 
+const MAX_URL_LENGTH = 2048;
+
 export const WfsSourceConfigSchema = Type.Object({
-  url: Type.String({ minLength: 1, maxLength: 2048 }),
+  url: Type.String({ minLength: 1, maxLength: MAX_URL_LENGTH }),
   name: Type.Optional(Type.String({ maxLength: 120 })),
   answersByBox: Type.Optional(Type.Boolean()),
   answerMargin: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
@@ -41,6 +43,13 @@ function cleaned(source: WfsSourceConfig): WfsSourceConfig {
       400
     );
   }
+  // Normalizing escapes characters, so a URL that fitted may no longer: it would not be read back.
+  if (url.length > MAX_URL_LENGTH) {
+    throw new WfsSourceError(
+      `The URL is longer than ${String(MAX_URL_LENGTH)} characters once written out`,
+      400
+    );
+  }
   const name = source.name?.trim();
   const idProperty = source.idProperty?.trim();
   const byBox = source.answersByBox === true;
@@ -56,7 +65,10 @@ function cleaned(source: WfsSourceConfig): WfsSourceConfig {
 const unknownFields = (entry: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(entry).filter(([k]) => !KNOWN_FIELDS.has(k)));
 
-/** The file's entries; none when there is no file. Throws when it cannot be read. */
+/**
+ * The file's entries; none when there is no file. Throws when it cannot be read, or holds no
+ * list of sources, so it is not written over.
+ */
 function readEntries(file: string): Record<string, unknown>[] {
   let text: string;
   try {
@@ -70,11 +82,12 @@ function readEntries(file: string): Record<string, unknown>[] {
   const parsed: unknown = JSON.parse(text);
   const sources = (parsed as { sources?: unknown } | null)?.sources;
   if (!Array.isArray(sources)) {
-    return [];
+    throw new Error('it holds no list of sources');
   }
   return sources.filter(
     (s): s is Record<string, unknown> =>
-      Value.Check(WfsSourceConfigSchema, s) && normalizeUpstream(s.url) !== undefined
+      Value.Check(WfsSourceConfigSchema, s) &&
+      (normalizeUpstream(s.url)?.length ?? Infinity) <= MAX_URL_LENGTH
   );
 }
 
@@ -103,6 +116,11 @@ export class WfsSourceList {
     if (this.unreadable !== undefined) {
       throw new WfsSourceError(this.unreadable, 500);
     }
+  }
+
+  /** Whether the file was read: until it is, what the store keeps is not pruned by this list. */
+  readable(): boolean {
+    return this.unreadable === undefined;
   }
 
   list(): WfsSourceConfig[] {

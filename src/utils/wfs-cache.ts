@@ -25,13 +25,14 @@ import {
   answerBox,
   featureBox,
   featureId,
+  geometryReaches,
   uncovered,
   type Box,
   type ByBox,
   type WfsFeature
 } from './wfs-query.js';
 
-const SCHEMA_VERSION = '7';
+const SCHEMA_VERSION = '8';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS features (
@@ -365,6 +366,7 @@ export class WfsCache {
       `),
       membersOf: p('SELECT id FROM covered_member WHERE covered_id = ? ORDER BY fid'),
       featureData: p('SELECT data FROM features WHERE id = ?'),
+      boxOf: p('SELECT w, s, e, n FROM features WHERE id = ?'),
       memberData: p('SELECT data FROM covered_member WHERE id = ?'),
       // A page received later replaces a kept feature; one received earlier does not.
       upsert: p(`
@@ -1123,6 +1125,24 @@ export class WfsCache {
     ).map((r) => r.id);
   }
 
+  /**
+   * Of the kept features `ids`, whose boxes reach `box`, those whose geometry reaches it too,
+   * as the upstream's box filter chooses: a line's box can reach a box the line passes by.
+   * A feature whose box lies inside `box` reaches it; any other is read to tell.
+   */
+  private reaching(ids: readonly number[], box: Box): number[] {
+    const [w, s, e, n] = box;
+    return ids.filter((id) => {
+      const r = this.q('boxOf').get(id) as
+        { w: number; s: number; e: number; n: number } | undefined;
+      if (!r || (r.w >= w && r.e <= e && r.s >= s && r.n <= n)) {
+        return true;
+      }
+      const data = this.currentData('feature', id);
+      return data === undefined || geometryReaches(gunzipFeature(data), box) !== false;
+    });
+  }
+
   /** The features kept under `ids`, in that order. */
   features(ids: readonly number[]): WfsFeature[] {
     return ids.flatMap((id) => {
@@ -1143,13 +1163,13 @@ export class WfsCache {
   }
 
   /**
-   * For an upstream answered by box, the kept features of `layer` whose boxes reach
-   * `answer`, pinned for one read of `box`, leaving out each one the newest reads holding
+   * For an upstream answered by box, the kept features of `layer` whose geometry reaches
+   * `answer` (`reaching`), pinned for one read of `box`, leaving out each one the newest reads holding
    * where it reaches `box` did not return (`belongs`). Undefined when the store cannot
    * tell whether one belongs to the answer.
    */
   answerIn(layer: Layer, box: Box, answer: Box): Pin | undefined {
-    const ids = this.idsIn(layer, answer);
+    const ids = this.reaching(this.idsIn(layer, answer), answer);
     const absent = new Map<number, NotedAbsent & { covers: Set<number> }>();
     for (const r of this.q('absencesOf').all(JSON.stringify(ids)) as {
       id: number;

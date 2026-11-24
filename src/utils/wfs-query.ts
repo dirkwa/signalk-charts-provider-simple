@@ -149,17 +149,18 @@ export function sortOrder(sortBy: string): SortOrder | undefined {
 
 type SortValue = string | number | undefined;
 
-/** Ascending order of property values as a database sorts them: numbers by value, none last. */
+/**
+ * Ascending order of property values as a database sorts them: numbers by value before text,
+ * as SQLite orders a column holding both, so every set of values has one order; none last.
+ */
 function compareValues(a: SortValue, b: SortValue): number {
   if (a === undefined || b === undefined) {
     return a === b ? 0 : a === undefined ? 1 : -1;
   }
-  if (typeof a === 'number' && typeof b === 'number') {
-    return a - b;
+  if (typeof a === 'number' || typeof b === 'number') {
+    return typeof a !== 'number' ? 1 : typeof b !== 'number' ? -1 : a - b;
   }
-  const x = String(a);
-  const y = String(b);
-  return x < y ? -1 : x > y ? 1 : 0;
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** `items` in `order` of their features' property, ties kept in their given order. */
@@ -183,14 +184,17 @@ export function sortedBy<T>(
 
 /**
  * A feature's identity across requests: its `id`, else its property `idProperty` when the
- * source names one; undefined without one.
+ * source names one; undefined without one. As JSON, so the number 1 and the string "1",
+ * different ids in GeoJSON, stay apart.
  */
 export function featureId(f: WfsFeature, idProperty?: string): string | undefined {
-  if (typeof f.id === 'string' || typeof f.id === 'number') {
-    return String(f.id);
-  }
-  const ident = idProperty === undefined ? undefined : f.properties?.[idProperty];
-  return typeof ident === 'string' || typeof ident === 'number' ? String(ident) : undefined;
+  const ident =
+    typeof f.id === 'string' || typeof f.id === 'number'
+      ? f.id
+      : idProperty === undefined
+        ? undefined
+        : f.properties?.[idProperty];
+  return typeof ident === 'string' || typeof ident === 'number' ? JSON.stringify(ident) : undefined;
 }
 
 /**
@@ -236,6 +240,119 @@ export function featureBox(f: WfsFeature): Box | undefined {
   // Coordinates past longitude and latitude are in another system: not a box this store places.
   const inRange = w >= -180 && e <= 180 && s >= -90 && n <= 90;
   return w <= e && s <= n && inRange ? [w, s, e, n] : undefined;
+}
+
+/** Whether the position `[x, y]` lies in `box`, its edges included. */
+const pointIn = (x: number, y: number, [w, s, e, n]: Box): boolean =>
+  x >= w && x <= e && y >= s && y <= n;
+
+/** Whether the segment from `[x0, y0]` to `[x1, y1]` reaches `box` (Liang–Barsky clipping). */
+function segmentReaches(x0: number, y0: number, x1: number, y1: number, box: Box): boolean {
+  const [w, s, e, n] = box;
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  let t0 = 0;
+  let t1 = 1;
+  for (const [p, q] of [
+    [-dx, x0 - w],
+    [dx, e - x0],
+    [-dy, y0 - s],
+    [dy, n - y0]
+  ] as const) {
+    if (p === 0) {
+      if (q < 0) {
+        return false;
+      }
+      continue;
+    }
+    const t = q / p;
+    if (p < 0) {
+      if (t > t1) {
+        return false;
+      }
+      t0 = Math.max(t0, t);
+    } else {
+      if (t < t0) {
+        return false;
+      }
+      t1 = Math.min(t1, t);
+    }
+  }
+  return true;
+}
+
+type Position = readonly [number, number];
+
+const pathReaches = (path: readonly Position[], box: Box): boolean =>
+  path.some(([x, y], i) => {
+    const next = path[i + 1];
+    return next === undefined ? pointIn(x, y, box) : segmentReaches(x, y, next[0], next[1], box);
+  });
+
+/** Whether `[x, y]` lies inside `rings`, a polygon's outer ring and holes, by the even-odd rule. */
+function insideRings(x: number, y: number, rings: readonly (readonly Position[])[]): boolean {
+  let inside = false;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+  }
+  return inside;
+}
+
+/** A polygon reaches a box its rings cross or hold, or one that holds the polygon. */
+const polygonReaches = (rings: readonly (readonly Position[])[], box: Box): boolean =>
+  rings.some((ring) => pathReaches(ring, box)) ||
+  insideRings((box[0] + box[2]) / 2, (box[1] + box[3]) / 2, rings);
+
+/** How deep each geometry type nests its positions' numbers. */
+const GEOMETRY_DEPTH: Partial<Record<string, number>> = {
+  Point: 1,
+  MultiPoint: 2,
+  LineString: 2,
+  MultiLineString: 3,
+  Polygon: 3,
+  MultiPolygon: 4
+};
+
+const depthOf = (c: unknown): number => (Array.isArray(c) ? 1 + depthOf(c[0]) : 0);
+
+/**
+ * Whether a feature's geometry reaches `box`, its edges included, as a WFS `BBOX` filter
+ * chooses features; undefined for a geometry this cannot tell, such as a collection. The
+ * positions are those `featureBox` read.
+ */
+export function geometryReaches(f: WfsFeature, box: Box): boolean | undefined {
+  const g = f.geometry;
+  const c = g?.coordinates;
+  const type = g?.type;
+  if (type === undefined || depthOf(c) !== GEOMETRY_DEPTH[type]) {
+    return undefined;
+  }
+  // Rounding where boxes meet edge to edge must not shut out a feature on the edge.
+  const grown: Box = [box[0] - EPS, box[1] - EPS, box[2] + EPS, box[3] + EPS];
+  switch (type) {
+    case 'Point': {
+      const [x, y] = c as Position;
+      return pointIn(x, y, grown);
+    }
+    case 'MultiPoint':
+      return (c as Position[]).some(([x, y]) => pointIn(x, y, grown));
+    case 'LineString':
+      return pathReaches(c as Position[], grown);
+    case 'MultiLineString':
+      return (c as Position[][]).some((line) => pathReaches(line, grown));
+    case 'Polygon':
+      return polygonReaches(c as Position[][], grown);
+    case 'MultiPolygon':
+      return (c as Position[][][]).some((rings) => polygonReaches(rings, grown));
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -326,11 +443,31 @@ export function pageReply(matched: number, features: readonly unknown[]): string
   });
 }
 
-/** `numberMatched` on the `FeatureCollection` element of a hits reply; undefined without a count. */
+/** What may come before a document's element: a BOM, space, the declaration, comments, a doctype. */
+const PROLOG =
+  /^\uFEFF?(?:\s+|<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[^>[]*(?:\[[\s\S]*?\])?\s*>)*/;
+const ATTRIBUTE = /\s+([\w.:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
+
+/**
+ * `numberMatched` on the `FeatureCollection` that is the document element of a hits reply;
+ * undefined when that element is not one, or gives no count.
+ */
 export function hitsMatched(xml: string): number | undefined {
-  // XML allows either quote, and space around the `=`.
-  const m = /<(?:[\w.-]+:)?FeatureCollection\b[^>]*?\snumberMatched\s*=\s*(["'])(\d+)\1/.exec(xml);
-  return m?.[2] === undefined ? undefined : Number(m[2]);
+  const at = PROLOG.exec(xml)?.[0].length ?? 0;
+  const root = /<(?:[\w.-]+:)?FeatureCollection(?=[\s/>])/y;
+  root.lastIndex = at;
+  if (!root.test(xml)) {
+    return undefined;
+  }
+  ATTRIBUTE.lastIndex = root.lastIndex;
+  for (let m = ATTRIBUTE.exec(xml); m !== null; m = ATTRIBUTE.exec(xml)) {
+    if (m[1] === 'numberMatched') {
+      const value = m[2] ?? m[3] ?? '';
+      const n = Number(value);
+      return /^\d+$/.test(value) && Number.isSafeInteger(n) ? n : undefined;
+    }
+  }
+  return undefined;
 }
 
 /** The top-level `numberMatched` of a parsed GeoJSON page; undefined unless a count. */

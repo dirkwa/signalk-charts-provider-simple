@@ -12,6 +12,7 @@ import {
   featureBox,
   featureId,
   featureQuery,
+  geometryReaches,
   hitsMatched,
   hitsReply,
   pageMatched,
@@ -117,6 +118,20 @@ function upstreamServer() {
     }
     if (url.pathname === '/redirect-in') {
       res.writeHead(302, { location: `/wfs${url.search}` }).end();
+      return;
+    }
+    if (url.pathname === '/redirect-other') {
+      // To the same server, asking for pages twice the size asked for.
+      const other = new URLSearchParams(url.searchParams);
+      const count = other.get('count');
+      if (count !== null) {
+        other.set('count', String(Number(count) * 2));
+      }
+      res.writeHead(302, { location: `/wfs?${other.toString()}` }).end();
+      return;
+    }
+    if (url.pathname === '/busy') {
+      res.writeHead(503, { 'content-type': 'text/plain', 'retry-after': '7' }).end('busy');
       return;
     }
     if (url.pathname === '/broken') {
@@ -298,6 +313,32 @@ describe('wfs-query', () => {
     ) as { numberMatched?: unknown };
     assert.strictEqual(pageMatched(page), 20);
     assert.strictEqual(pageMatched({ numberMatched: 'unknown' }), undefined);
+    // Only the document element counts: not a comment, nor an element after it.
+    assert.strictEqual(
+      hitsMatched(
+        '<?xml version="1.0"?>\n<!-- <wfs:FeatureCollection numberMatched="5"/> -->\n<wfs:FeatureCollection numberMatched="0"/>'
+      ),
+      0
+    );
+    assert.strictEqual(
+      hitsMatched('<!-- <wfs:FeatureCollection numberMatched="5"/> --><ows:ExceptionReport/>'),
+      undefined
+    );
+    assert.strictEqual(
+      hitsMatched(
+        '<ows:ExceptionReport><wfs:FeatureCollection numberMatched="5"/></ows:ExceptionReport>'
+      ),
+      undefined
+    );
+    // Nor an attribute whose value only holds the text.
+    assert.strictEqual(
+      hitsMatched('<wfs:FeatureCollection note=" numberMatched=\'5\'" numberMatched="2"/>'),
+      2
+    );
+    assert.strictEqual(
+      hitsMatched('<wfs:FeatureCollection note=" numberMatched=\'5\'"/>'),
+      undefined
+    );
     const reply = hitsReply(7, new Date(0));
     assert.strictEqual(hitsMatched(reply), 7);
     assert.ok(reply.includes('timeStamp="1970-01-01T00:00:00.000Z"'));
@@ -305,8 +346,14 @@ describe('wfs-query', () => {
 
   it("a feature's id and box", () => {
     const f = AREAS[3] as Feature;
-    assert.strictEqual(featureId(f), f.id);
-    assert.strictEqual(featureId(f, 'IDENTIFIER'), f.id);
+    assert.strictEqual(featureId(f), JSON.stringify(f.id));
+    assert.strictEqual(featureId(f, 'IDENTIFIER'), JSON.stringify(f.id));
+    // GeoJSON's number 1 and string "1" are two ids.
+    assert.notStrictEqual(featureId({ id: 1 }), featureId({ id: '1' }));
+    assert.notStrictEqual(
+      featureId({ properties: { IDENTIFIER: 1 } }, 'IDENTIFIER'),
+      featureId({ properties: { IDENTIFIER: '1' } }, 'IDENTIFIER')
+    );
     assert.strictEqual(featureId({ properties: { IDENTIFIER: 7 } }), undefined);
     assert.strictEqual(featureId({ properties: { IDENTIFIER: 7 } }, 'IDENTIFIER'), '7');
     assert.strictEqual(featureId({ properties: {} }, 'IDENTIFIER'), undefined);
@@ -373,6 +420,135 @@ describe('wfs-query', () => {
     assert.deepStrictEqual(asc, [1, 3, 0, 2]);
     const desc = sortedBy(fs, (f) => f, { property: 'v', descending: true }).map((f) => f.i);
     assert.deepStrictEqual(desc, [2, 0, 1, 3]);
+    // Numbers and text in one property: numbers first, as SQLite orders them, so the order is
+    // the same whatever order the features come in.
+    const mixed = [10, '5', 9, 'a', 100].map((v) => ({ properties: { v } }));
+    const values = (items: typeof mixed): unknown[] =>
+      sortedBy(items, (f) => f, { property: 'v', descending: false }).map((f) => f.properties.v);
+    assert.deepStrictEqual(values(mixed), [9, 10, 100, '5', 'a']);
+    assert.deepStrictEqual(values([...mixed].reverse()), [9, 10, 100, '5', 'a']);
+  });
+
+  it('geometryReaches: a geometry reaches a box it crosses, holds, lies in or touches', () => {
+    const box: Box = [0, 3, 1, 4];
+    const line = (coordinates: number[][]): WfsFeature => ({
+      geometry: { type: 'LineString', coordinates }
+    });
+    // The line's box reaches the box, but the line passes it by.
+    assert.strictEqual(
+      geometryReaches(
+        line([
+          [0, 0],
+          [4, 4]
+        ]),
+        box
+      ),
+      false
+    );
+    assert.strictEqual(
+      geometryReaches(
+        line([
+          [0, 0],
+          [4, 4]
+        ]),
+        [3, 3, 5, 5]
+      ),
+      true
+    );
+    assert.strictEqual(
+      geometryReaches(
+        line([
+          [-1, 3.5],
+          [2, 3.5]
+        ]),
+        box
+      ),
+      true
+    );
+    // On the edge is in the box.
+    assert.strictEqual(
+      geometryReaches(
+        line([
+          [1, 0],
+          [1, 10]
+        ]),
+        box
+      ),
+      true
+    );
+    assert.strictEqual(
+      geometryReaches({ geometry: { type: 'Point', coordinates: [1, 4] } }, box),
+      true
+    );
+    assert.strictEqual(
+      geometryReaches(
+        {
+          geometry: {
+            type: 'MultiPoint',
+            coordinates: [
+              [2, 2],
+              [0.5, 3.5]
+            ]
+          }
+        },
+        box
+      ),
+      true
+    );
+    assert.strictEqual(
+      geometryReaches({ geometry: { type: 'MultiPoint', coordinates: [[2, 2]] } }, box),
+      false
+    );
+    const square = (w: number, s: number, e: number, n: number): number[][] => [
+      [w, s],
+      [e, s],
+      [e, n],
+      [w, n],
+      [w, s]
+    ];
+    const polygon = (...rings: number[][][]): WfsFeature => ({
+      geometry: { type: 'Polygon', coordinates: rings }
+    });
+    // A polygon holding the box reaches it; a hole holding it does not.
+    assert.strictEqual(geometryReaches(polygon(square(-5, -5, 5, 10)), box), true);
+    assert.strictEqual(
+      geometryReaches(polygon(square(-5, -5, 5, 10), square(-1, 2, 2, 5)), box),
+      false
+    );
+    // A triangle whose box holds the box but which lies past its corner.
+    assert.strictEqual(
+      geometryReaches(
+        polygon([
+          [2, 0],
+          [4, 0],
+          [4, 5],
+          [2, 0]
+        ]),
+        box
+      ),
+      false
+    );
+    assert.strictEqual(
+      geometryReaches(
+        {
+          geometry: {
+            type: 'MultiPolygon',
+            coordinates: [[square(5, 5, 6, 6)], [square(0.2, 3.2, 0.4, 3.4)]]
+          }
+        },
+        box
+      ),
+      true
+    );
+    // Geometries it cannot tell about are not left out.
+    assert.strictEqual(
+      geometryReaches({ geometry: { type: 'GeometryCollection', coordinates: [] } }, box),
+      undefined
+    );
+    assert.strictEqual(
+      geometryReaches({ geometry: { type: 'Point', coordinates: [[1, 2]] } }, box),
+      undefined
+    );
   });
 });
 
@@ -419,6 +595,34 @@ describe('WfsCache', () => {
     assert.deepStrictEqual(order, [...order].sort());
     // Another layer of the same server is its own.
     assert.deepStrictEqual(cache.idsIn({ ...layer, typeName: 'Other' }, [22, 60, 22.2, 60.1]), []);
+    cache.close();
+  });
+
+  it('answers a box only with the features whose geometry reaches it', () => {
+    const cache = new WfsCache(path.join(dir, 'geometry.sqlite'));
+    const diagonal: WfsFeature = {
+      id: 'diagonal',
+      geometry: {
+        type: 'LineString',
+        coordinates: [
+          [22, 60],
+          [22.04, 60.04]
+        ]
+      },
+      properties: {}
+    };
+    keepWhole(cache, layer, [diagonal, ...AREAS.slice(0, 5)], [21.9, 59.9, 22.1, 60.1], 1);
+    const answered = (box: Box): unknown[] => {
+      const pin = cache.answerIn(layer, box, box) as Pin;
+      const ids = pin.features(pin.ids).map((f) => f.id);
+      pin.release();
+      return ids;
+    };
+    // Its box reaches this corner, the line does not.
+    const corner: Box = [22.0, 60.03, 22.01, 60.04];
+    assert.ok(cache.features(cache.idsIn(layer, corner)).some((f) => f.id === 'diagonal'));
+    assert.ok(!answered(corner).includes('diagonal'));
+    assert.ok(answered([22.02, 60.02, 22.03, 60.03]).includes('diagonal'));
     cache.close();
   });
 
@@ -1022,7 +1226,7 @@ describe('WfsProxy', () => {
     const { cache, proxy } = proxyWith('p2.sqlite');
     await proxy.listen();
     const base = proxy.proxyUrl(upstreamBase) as string;
-    await fetch(
+    const partial = await fetch(
       `${base}?${query('DepthArea_A', BOX, {
         outputFormat: 'application/json',
         sortBy: 'IDENTIFIER',
@@ -1030,6 +1234,9 @@ describe('WfsProxy', () => {
         startIndex: '0'
       })}`
     );
+    assert.strictEqual(partial.status, 200);
+    const body = (await partial.json()) as { features: Feature[] };
+    assert.strictEqual(body.features.length, 10);
     assert.strictEqual(cache.stats().areas, 0);
     assert.strictEqual(cache.stats().features, 0);
     await proxy.close();
@@ -1208,6 +1415,8 @@ describe('WfsProxy', () => {
     await proxy.listen();
     const base = proxy.proxyUrl(upstreamBase) as string;
     await readLayer(base, BOX);
+    // A count begins the next read, from the store now.
+    await fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits' })}`);
     const pageAt = (box: Box, start: number) =>
       fetch(
         `${base}?${query('DepthArea_A', box, {
@@ -1226,16 +1435,19 @@ describe('WfsProxy', () => {
       baseline.push(...next);
     }
     assert.ok(baseline.length > 10);
-    // Forty other areas inside the one held, each its own read from the store.
+    upstream.seen.length = 0;
+    // A scan's first page, then forty other areas inside the one held, each its own read from
+    // the store, then the rest of the scan.
+    const ids = await pageAt(BOX, 0);
     for (let k = 0; k < 40; k++) {
       const d = k * 0.001;
       await pageAt([22.03 + d, 60.03, 22.06 + d, 60.05], 0);
     }
-    const ids: Feature['id'][] = [];
-    for (let start = 0; start < baseline.length; start += 10) {
+    for (let start = 10; start < baseline.length; start += 10) {
       ids.push(...(await pageAt(BOX, start)));
     }
     assert.deepStrictEqual(ids, baseline);
+    assert.strictEqual(upstream.seen.length, 0, 'the scan went on from the store');
     await proxy.close();
     cache.close();
   });
@@ -1579,6 +1791,120 @@ describe('WfsProxy', () => {
     cache.close();
   });
 
+  it("passes on the upstream's Retry-After", async () => {
+    const origin = new URL(upstreamBase).origin;
+    const { cache, proxy } = proxyWith('p-busy.sqlite', { upstreams: () => [`${origin}/busy`] });
+    await proxy.listen();
+    const busy = await fetch(
+      `${proxy.proxyUrl(`${origin}/busy`) as string}?service=WFS&request=GetCapabilities`
+    );
+    assert.strictEqual(busy.status, 503);
+    assert.strictEqual(busy.headers.get('retry-after'), '7');
+    assert.strictEqual(await busy.text(), 'busy');
+    await proxy.close();
+    cache.close();
+  });
+
+  it('keeps nothing a redirect asking another query answered', async () => {
+    const origin = new URL(upstreamBase).origin;
+    const other = `${origin}/redirect-other`;
+    const same = `${origin}/redirect-in`;
+    const { cache, proxy } = proxyWith('p-redirect.sqlite', {
+      upstreams: () => [other, same, upstreamBase]
+    });
+    await proxy.listen();
+    // Each page comes back twice the size asked for: passed on, but not kept as asked.
+    assert.ok((await readLayer(proxy.proxyUrl(other) as string, BOX)).length > 0);
+    assert.strictEqual(cache.stats().areas, 0);
+    assert.strictEqual(cache.stats().features, 0);
+    // A redirect asking the same query is kept.
+    await readLayer(proxy.proxyUrl(same) as string, BOX);
+    assert.strictEqual(cache.stats().areas, 1);
+    await proxy.close();
+    cache.close();
+  });
+
+  it('a count ends a read of its ordering that could not be kept, once its pages have passed', async () => {
+    const cache = new WfsCache(path.join(dir, 'p-spoilt.sqlite'));
+    let pages = 0;
+    const proxy = new WfsProxy({
+      cache,
+      sources: byBoxSources(upstreamBase),
+      maxAgeMs: () => 1000,
+      mayRefresh: () => true,
+      fetch: async (url, init) => {
+        // The second page of the first read cannot be read.
+        if (String(url).includes('startIndex') && ++pages === 2) {
+          return new Response('{ broken', { headers: { 'content-type': 'application/json' } });
+        }
+        return fetch(url, init);
+      }
+    });
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await assert.rejects(readLayer(base, BOX));
+    assert.strictEqual(cache.stats().areas, 0);
+    // Read again from its count, the area is kept.
+    await readLayer(base, BOX);
+    assert.strictEqual(cache.stats().areas, 1);
+    await proxy.close();
+    cache.close();
+  });
+
+  it("a change of a source's rule ends its reads", async () => {
+    const { cache, proxy } = proxyWith('p-rule-read.sqlite');
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await readLayer(base, BOX);
+    const count = () => fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits' })}`);
+    upstream.seen.length = 0;
+    // A read from the store, which pins what it answers.
+    assert.strictEqual((await count()).status, 200);
+    assert.strictEqual(upstream.seen.length, 0);
+    proxy.configure({ sources: () => [{ url: upstreamBase, byBox: { margin: 0.2 } }] });
+    // What it pinned was chosen by the old rule: the count goes upstream.
+    assert.strictEqual((await count()).status, 200);
+    assert.strictEqual(upstream.seen.length, 1);
+    await proxy.close();
+    cache.close();
+  });
+
+  it('a count begins a new store read once one began longer ago than the maximum age', async () => {
+    let now = 7_000_000;
+    const { cache, proxy } = proxyWith('p-old-read.sqlite', { now: () => now });
+    await proxy.listen();
+    const base = proxy.proxyUrl(upstreamBase) as string;
+    await readLayer(base, BOX);
+    const count = () => fetch(`${base}?${query('DepthArea_A', BOX, { resultType: 'hits' })}`);
+    upstream.seen.length = 0;
+    now += 500;
+    await count();
+    // Asked often enough never to be idle, a store read would answer its pin for good.
+    now += 900;
+    await count();
+    assert.strictEqual(upstream.seen.length, 0);
+    now += 300;
+    await count();
+    assert.strictEqual(upstream.seen.length, 1, 'the area, stale now, is read upstream again');
+    await proxy.close();
+    cache.close();
+  });
+
+  it('leaves what is kept as it is while the list of sources cannot be read', async () => {
+    const { cache, proxy } = proxyWith('p-unknown.sqlite');
+    await proxy.listen();
+    await readLayer(proxy.proxyUrl(upstreamBase) as string, BOX);
+    await proxy.close();
+    const held = cache.stats().areas;
+    assert.ok(held > 0);
+    const options = { cache, maxAgeMs: () => 1000, mayRefresh: () => true };
+    const unread = new WfsProxy({ ...options, sources: () => [], sourcesKnown: () => false });
+    assert.strictEqual(cache.stats().areas, held);
+    unread.configure({ sources: () => [], sourcesKnown: () => true });
+    assert.strictEqual(cache.stats().areas, 0);
+    cache.close();
+  });
+
   it("holds no area from another read's count, nor from pages that repeat a feature", async () => {
     const origin = new URL(upstreamBase).origin;
     const uncounted = `${origin}/uncounted`;
@@ -1722,7 +2048,14 @@ describe('WfsProxy', () => {
     const base = proxy.proxyUrl(uncounted) as string;
     const page = pageOf(base, BOX, 'IDENTIFIER', 0, 1000);
     try {
-      await asked;
+      const first = await Promise.race([
+        asked.then(() => 'asked'),
+        page.then(
+          () => 'page',
+          () => 'page'
+        )
+      ]);
+      assert.strictEqual(first, 'asked', 'the page was answered without asking upstream');
       const counted = await fetch(
         `${base}?${query('DepthArea_A', BOX, { resultType: 'hits', sortBy: 'IDENTIFIER' })}`
       );
@@ -1860,6 +2193,33 @@ describe('WfsSourceList', () => {
     assert.deepStrictEqual(saved.sources, [
       { later: 'x', url: 'https://wfs.example/wfs', name: 'Named', answersByBox: false }
     ]);
+  });
+
+  it('writes nothing over a file that holds no list of sources', () => {
+    const file = path.join(dir, 'd.json');
+    const text = JSON.stringify({ sources: { url: 'https://kept.example/wfs' } });
+    fs.writeFileSync(file, text);
+    const list = new WfsSourceList(file);
+    assert.strictEqual(list.readable(), false);
+    assert.throws(
+      () => list.save({ url: 'https://wfs.example/wfs' }, false),
+      (e: unknown) => e instanceof WfsSourceError && e.status === 500
+    );
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), text);
+    // No file is an empty list, readable.
+    assert.strictEqual(new WfsSourceList(path.join(dir, 'none.json')).readable(), true);
+  });
+
+  it('refuses a URL too long to be read back once written out', () => {
+    const list = new WfsSourceList(path.join(dir, 'e.json'));
+    // Each space is written out as %20: 700 of them fit the form's limit but not the file's.
+    const url = `https://wfs.example/${' '.repeat(700)}wfs`;
+    assert.ok(url.length <= 2048);
+    assert.throws(
+      () => list.save({ url }, false),
+      (e: unknown) => e instanceof WfsSourceError && e.status === 400
+    );
+    assert.deepStrictEqual(list.list(), []);
   });
 
   it('changes nothing in a file it cannot read until it can', () => {
