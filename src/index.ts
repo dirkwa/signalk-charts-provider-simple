@@ -265,6 +265,17 @@ import { encDataset } from './utils/multihelm/enc-dataset.js';
 import { ChartRefreshQueue, DeletedCharts } from './utils/multihelm/chart-refresh.js';
 import { linkMultihelm, type MultihelmLink } from './utils/multihelm/link.js';
 import { MasterCharts } from './utils/multihelm/master-charts.js';
+import {
+  DEFAULT_WFS_MAX_AGE_DAYS,
+  refreshWfsSources,
+  releaseWfsProxy,
+  startWfsProxy,
+  WFS_PROPERTY,
+  wfsOffer,
+  type WfsProxyRunning
+} from './utils/wfs-proxy-service.js';
+import { registerWfsRoutes } from './utils/wfs-routes.js';
+import { WfsSourceList } from './utils/wfs-sources.js';
 import type {
   ChartProvider,
   ChartsProviderEncGlobal,
@@ -298,6 +309,7 @@ const PLUGIN_ID = PLUGIN_OWNER_ID;
 // Small enough for the SD card of a Raspberry Pi, large enough for a cruising area at harbour zoom.
 const DEFAULT_ONLINE_CACHE_LIMIT_MB = 2048;
 const DEFAULT_MASKED_CACHE_LIMIT_MB = 1024;
+const DEFAULT_WFS_CACHE_LIMIT_MB = 1024;
 // How long after the charts load the chart-directory sweep starts.
 const SWEEP_DELAY_MS = 30_000;
 // Tile URLs live under the Signal K v1 charts namespace so non-admin
@@ -329,8 +341,8 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   // stop()); its charts are closed too. False before the first start, where
   // a refresh must still work.
   let stopped = false;
-  // See doStartup: offered once per server process.
-  let chartTilesOffered = false;
+  // The PropertyValues offered to peer plugins, each once per server process (see doStartup).
+  const offered = new Set<string>();
   const resolveOnlineChart: OnlineChartResolver = (catalogId) => getOnlineCatalogChart(catalogId);
   // catalogId → chart-folder paths of its .onlinechart.json files, for the
   // Chart Catalog's "Added" state. The catalog tab polls often, so this is
@@ -469,6 +481,14 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
   let onlineTileProxy: OnlineTileProxy | null = null;
   let maskedTiles: MaskedTiles | null = null;
   let areaDownloader: AreaDownloader | null = null;
+  let wfsProxy: WfsProxyRunning | null = null;
+  let wfsSourceList: WfsSourceList | null = null;
+  // The sources outlive a start: the WFS Data tab edits them in the data dir.
+  const wfsSources = (): WfsSourceList =>
+    (wfsSourceList ??= new WfsSourceList(path.join(app.getDataDirPath(), 'wfs-sources.json')));
+  const wfsMaxAgeDays = (): number => props.wfsCacheMaxAgeDays ?? DEFAULT_WFS_MAX_AGE_DAYS;
+  const wfsMaxBytes = (): number =>
+    (props.wfsCacheLimitMB ?? DEFAULT_WFS_CACHE_LIMIT_MB) * 1024 * 1024;
   let defaultChartsPath = '';
   let serverMajorVersion = 1;
 
@@ -628,6 +648,38 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
             'The set only grows along the voyage; edit or delete it in the ENC Charts tab. ' +
             'On a metered, offline or captive internet connection the download waits.',
           default: false
+        },
+        _wfsHeader: {
+          type: 'null',
+          title: 'Local WFS proxy'
+        },
+        wfsProxy: {
+          type: 'boolean',
+          title: 'Keep the WFS data other plugins read',
+          description:
+            'Other plugins on this server read WFS servers through this plugin: each area is downloaded once, ' +
+            'kept under the data directory, and read from there again. ' +
+            'Add the servers to keep, see what is kept and delete it in the WFS Data tab of the Charts Manager. ' +
+            'The proxy listens on this machine alone (127.0.0.1); a plugin reads any WFS not listed directly.',
+          default: true
+        },
+        wfsCacheMaxAgeDays: {
+          type: 'integer',
+          title: 'Download a kept WFS area again after (days)',
+          description:
+            'A kept area older than this is downloaded again when it is next read. ' +
+            'On a metered, offline or captive internet connection the kept copy is read whatever its age.',
+          minimum: 1,
+          default: DEFAULT_WFS_MAX_AGE_DAYS
+        },
+        wfsCacheLimitMB: {
+          type: 'integer',
+          title: 'Space for kept WFS data (MB)',
+          description:
+            'Above this size the areas downloaded longest ago are removed first; they are downloaded again when next read. ' +
+            '0 keeps everything.',
+          minimum: 0,
+          default: DEFAULT_WFS_CACHE_LIMIT_MB
         }
       }
     }),
@@ -675,9 +727,15 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
         openDataCheckInterval = null;
       }
       openData = null;
-      // Withdraw the peer-plugin refresh hook and ENC store (see doStartup).
+      // Withdraw the peer-plugin refresh hook and ENC store (see doStartup). The WFS proxy's
+      // offer stays, and answers no proxy while none runs.
       delete (globalThis as unknown as ChartsProviderRefreshGlobal).__signalk_chartsProviderRefresh;
       delete (globalThis as unknown as ChartsProviderEncGlobal).__signalk_chartsProviderEnc;
+      if (wfsProxy) {
+        // Serves on for the start a config save makes, which takes it over.
+        releaseWfsProxy(wfsProxy);
+        wfsProxy = null;
+      }
       // Release sqlite handles: on Windows an open handle keeps the
       // .mbtiles file locked, and Signal K restarts the plugin on every
       // config save, which would otherwise leak the whole map each time.
@@ -894,6 +952,38 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     } catch (err) {
       app.debug(`Orphan cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  };
+
+  // The local WFS proxy for peer plugins (docs/wfs-proxy.md), published on
+  // globalThis like the ENC store once it listens; a stop meanwhile closes it.
+  const startLocalWfsProxy = async (started: number): Promise<void> => {
+    let running: WfsProxyRunning;
+    try {
+      running = await startWfsProxy({
+        dataDir: app.getDataDirPath(),
+        maxAgeDays: wfsMaxAgeDays,
+        maxBytes: wfsMaxBytes,
+        sources: () => wfsSources().list(),
+        sourcesKnown: () => wfsSources().readable(),
+        // Not while the link's state is still being learnt: it may be metered.
+        mayRefresh: () =>
+          internet === null || (internet.mayRunBackground() && !internet.deciding()),
+        log: (message) => {
+          app.debug(message);
+        },
+        warn: (message) => {
+          app.error(message);
+        }
+      });
+    } catch (err) {
+      app.error(`Local WFS proxy not started: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (started !== lifecycle || stopped) {
+      releaseWfsProxy(running);
+      return;
+    }
+    wfsProxy = running;
   };
 
   const doStartup = async (config: PluginConfig): Promise<void> => {
@@ -1162,25 +1252,40 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
       requestArea: (bbox, requester) => requestArea(bbox, requester)
     };
 
-    // Chart tiles for peer plugins, such as signalk-collision-alerts, which
-    // reads the land on S-57 charts. A PropertyValue is kept for good and
-    // capped server-wide, while Signal K restarts the plugin on every config
-    // save, so it is offered once per server process, and not again after a
-    // failed emit; until a start has loaded its charts there are none to
-    // read. Test harnesses and very old servers have no PropertyValues.
-    if (
-      !chartTilesOffered &&
-      typeof (app as Partial<ExtendedServerAPI>).emitPropertyValue === 'function'
-    ) {
-      chartTilesOffered = true;
-      try {
-        app.emitPropertyValue(
-          CHART_TILES_PROPERTY,
-          chartTilesOf(() => chartProviders)
-        );
-      } catch (err) {
-        app.error(`Could not offer chart tiles to other plugins: ${String(err)}`);
+    // Offers to peer plugins: chart tiles, for signalk-collision-alerts, which
+    // reads the land on S-57 charts, and the local WFS proxy, for
+    // signalk-underkeel. A PropertyValue is kept for good and capped
+    // server-wide, while Signal K restarts the plugin on every config save, so
+    // each is offered once per server process, and not again after a failed
+    // emit; each reads what the plugin serves at the time of the call. Test
+    // harnesses and very old servers have no PropertyValues.
+    const offerOnce = (name: string, what: string, value: unknown): void => {
+      if (
+        offered.has(name) ||
+        typeof (app as Partial<ExtendedServerAPI>).emitPropertyValue !== 'function'
+      ) {
+        return;
       }
+      offered.add(name);
+      try {
+        app.emitPropertyValue(name, value);
+      } catch (err) {
+        app.error(`Could not offer ${what} to other plugins: ${String(err)}`);
+      }
+    };
+    offerOnce(
+      CHART_TILES_PROPERTY,
+      'chart tiles',
+      chartTilesOf(() => chartProviders)
+    );
+    offerOnce(
+      WFS_PROPERTY,
+      'the local WFS proxy',
+      wfsOffer(() => wfsProxy)
+    );
+
+    if (props.wfsProxy !== false) {
+      void startLocalWfsProxy(started);
     }
 
     // Wipe any quarantine subdirs left behind by a previous server
@@ -4802,6 +4907,22 @@ const pluginConstructor = (app: ExtendedServerAPI): Plugin => {
     });
 
     registerOpenDataRoutes(() => openData, readonly, readwrite, router);
+    registerWfsRoutes(
+      {
+        sources: wfsSources,
+        proxy: () => wfsProxy,
+        enabled: () => props.wfsProxy !== false,
+        maxAgeDays: wfsMaxAgeDays,
+        maxBytes: wfsMaxBytes,
+        sourcesChanged: () => {
+          if (wfsProxy) {
+            refreshWfsSources(wfsProxy);
+          }
+        }
+      },
+      readonly,
+      router
+    );
 
     // ---- Chart sets (the ENC Charts tab) ----
     // Build a named bundle of ENC units picked on a map of the ENC index

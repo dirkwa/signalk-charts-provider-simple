@@ -560,3 +560,26 @@ export interface ChartTiles {
 export interface ChartsProviderEncGlobal {
   __signalk_chartsProviderEnc?: ChartsProviderEncApi;
 }
+
+/**
+ * The `chartsProviderWfs` PropertyValue: the local WFS proxy, for peer plugins
+ * in the same server, which read the WFS servers configured as its sources
+ * through it. Offered once per server process; each member asks for the proxy
+ * running at the time, and gives none while the plugin is stopped or the
+ * proxy is off. See `docs/wfs-proxy.md`.
+ */
+export interface ChartsProviderWfsApi {
+  apiVersion: number;
+  /**
+   * The proxy's URL standing in for the WFS at `upstream`, a base URL with no
+   * query: requests go to it with the query they would send upstream. Undefined
+   * when `upstream` is not proxied, or no proxy runs. Ask for each read: the
+   * URL holds this process's port, which a restart of this plugin keeps when
+   * it is free.
+   */
+  proxyUrl: (upstream: string) => string | undefined;
+  /** The upstream WFS base URLs proxied; none while no proxy runs. */
+  upstreams: () => string[];
+  /** What the store holds: features, areas held whole, bytes on disk; undefined while no proxy runs. */
+  stats: () => { features: number; areas: number; bytes: number } | undefined;
+}

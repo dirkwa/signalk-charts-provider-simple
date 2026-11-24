@@ -125,7 +125,9 @@ describe('ENC store routes and global', () => {
     started = true;
     const { router, handlers } = createRouterStub();
     plugin.registerWithRouter?.(router);
-    plugin.start({ chartPath }, () => {});
+    // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+    // and on Windows the folder cannot then be removed.
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
     const g = globalThis as unknown as ChartsProviderEncGlobal;
 
     try {
@@ -311,7 +313,7 @@ describe('ENC store routes and global', () => {
     const plugin = pluginFactory(app);
     const { router, handlers } = createRouterStub();
     plugin.registerWithRouter?.(router);
-    plugin.start({ chartPath, encAreaDownloads: true }, () => {});
+    plugin.start({ chartPath, wfsProxy: false, encAreaDownloads: true }, () => {});
     const g = globalThis as unknown as ChartsProviderEncGlobal;
     try {
       const deadline = Date.now() + 5000;

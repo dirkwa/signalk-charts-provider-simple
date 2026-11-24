@@ -177,7 +177,9 @@ describe('Conversion availability', () => {
     plugins.push(plugin);
     const { router, handlers } = createRouterStub();
     plugin.registerWithRouter?.(router);
-    plugin.start({ chartPath }, () => {});
+    // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+    // and on Windows the folder cannot then be removed.
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
     await waitFor(() => recording.statuses.includes('Started'), 'startup');
 
     assert.deepStrictEqual(recording.errors, [], 'no plugin error may be raised');
@@ -224,7 +226,7 @@ describe('Conversion availability', () => {
     plugins.push(plugin);
     const { router, handlers } = createRouterStub();
     plugin.registerWithRouter?.(router);
-    plugin.start({ chartPath }, () => {});
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
     await waitFor(() => recording.statuses.includes('Started'), 'startup');
 
     const status = handlers.get('get /catalog-s57-status');
@@ -255,7 +257,7 @@ describe('Conversion availability', () => {
     plugins.push(plugin);
     const { router, handlers } = createRouterStub();
     plugin.registerWithRouter?.(router);
-    plugin.start({ chartPath }, () => {});
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
     await waitFor(() => recording.statuses.includes('Started'), 'startup');
 
     setConversionFailed('US5LOGS1', 'GDAL failed');

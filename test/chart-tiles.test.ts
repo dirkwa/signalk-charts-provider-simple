@@ -205,13 +205,15 @@ describe('chartTiles PropertyValue', () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     };
-    const tiles = () => offered[0]?.value as ChartTiles | undefined;
+    const ofName = (name: string) => offered.filter((o) => o.name === name);
+    const tiles = () => ofName('chartTiles')[0]?.value as ChartTiles | undefined;
     const stored = () => tiles()?.getTile('enc', 2, 0, 1);
 
     try {
-      plugin.start({ chartPath }, () => {});
+      // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+      // and on Windows the folder cannot then be removed.
+      plugin.start({ chartPath, wfsProxy: false }, () => {});
       await until(async () => (await stored()) instanceof Uint8Array);
-      assert.strictEqual(offered[0].name, 'chartTiles');
       assert.strictEqual(await tiles()?.getTile('enc', 3, 7, 7), null);
       assert.strictEqual(await tiles()?.getTile('other', 2, 0, 1), undefined);
       assert.strictEqual(await tiles()?.getTile('__proto__', 2, 0, 1), undefined);
@@ -220,9 +222,9 @@ describe('chartTiles PropertyValue', () => {
       assert.strictEqual(await stored(), undefined);
 
       // A config save restarts the plugin: the same offer reads the charts again.
-      plugin.start({ chartPath }, () => {});
+      plugin.start({ chartPath, wfsProxy: false }, () => {});
       await until(async () => (await stored()) instanceof Uint8Array);
-      assert.strictEqual(offered.length, 1);
+      assert.strictEqual(ofName('chartTiles').length, 1);
     } finally {
       await plugin.stop?.();
       fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

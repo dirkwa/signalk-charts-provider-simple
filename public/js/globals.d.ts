@@ -52,6 +52,7 @@ declare global {
     handleSatelliteTabActive(): void;
     handleCustomCatalogsTabActive(): void;
     handleOpenDataTabActive(): void;
+    handleWfsTabActive(): void;
 
     // chart-catalog.ts
     toggleCatalog(catalogFile: string): Promise<void>;

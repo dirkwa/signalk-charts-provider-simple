@@ -197,7 +197,9 @@ describe('Folder groups filtering', () => {
     };
 
     const plugin = pluginFactory(app);
-    plugin.start({ chartPath }, () => {});
+    // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+    // and on Windows the folder cannot then be removed.
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
 
     const deadline = Date.now() + 5000;
     while (!provider && Date.now() < deadline) {

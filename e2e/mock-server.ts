@@ -128,9 +128,25 @@ interface MockState {
   encStore: { root: string; keepEncCells: boolean; collections: { id: string }[] };
   encStoreCells: Record<string, unknown[]>;
   encStoreDeleted: string[];
+  // WFS Data tab: GET /wfs answers this, with the sources posted added.
+  wfs: { sources: (WfsSourceMock & { stats: unknown })[] } & Record<string, unknown>;
   // What /skServer/loginStatus answers: who the page thinks is signed in.
   loginStatus: Record<string, unknown>;
 }
+
+interface WfsSourceMock {
+  url: string;
+  name?: string;
+  answersByBox?: boolean;
+  answerMargin?: number;
+  idProperty?: string;
+}
+
+// As the plugin does, a source whose rule changes keeps nothing of what it kept before.
+const sameRule = (a: WfsSourceMock, b: WfsSourceMock): boolean =>
+  (a.answersByBox ?? false) === (b.answersByBox ?? false) &&
+  (a.answerMargin ?? 0) === (b.answerMargin ?? 0) &&
+  (a.idProperty ?? '') === (b.idProperty ?? '');
 
 const okStatus: CatalogStatusMock = {
   status: 'ok',
@@ -169,6 +185,14 @@ const initialState: MockState = {
   encStore: { root: '/data/enc-store', keepEncCells: false, collections: [] },
   encStoreCells: {},
   encStoreDeleted: [],
+  wfs: {
+    enabled: true,
+    running: true,
+    maxAgeDays: 30,
+    limitBytes: 1024 * 1024 * 1024,
+    store: { fileBytes: 0, usedBytes: 0 },
+    sources: []
+  },
   loginStatus: { status: 'notLoggedIn', authenticationRequired: false }
 };
 
@@ -252,6 +276,42 @@ export function startMockServer(
       ...state.encStore,
       collections: state.encStore.collections.filter((c) => c.id !== id)
     };
+    res.json({ success: true });
+  });
+
+  router.get(`${PLUGIN_BASE}/wfs`, (_req, res) => {
+    res.json(state.wfs);
+  });
+  router.post(`${PLUGIN_BASE}/wfs/sources`, (req, res) => {
+    const body = req.body as { url: string; name?: string };
+    state.wfs = { ...state.wfs, sources: [...state.wfs.sources, { ...body, stats: null }] };
+    res.json({ success: true, source: body });
+  });
+  router.put(`${PLUGIN_BASE}/wfs/sources`, (req, res) => {
+    const body = req.body as WfsSourceMock;
+    const was = state.wfs.sources.find((s) => s.url === body.url);
+    if (!was) {
+      res.status(404).json({ success: false, error: 'No WFS server of that URL is kept' });
+      return;
+    }
+    state.wfs = {
+      ...state.wfs,
+      sources: state.wfs.sources.map((s) =>
+        s === was ? { ...body, stats: sameRule(was, body) ? was.stats : null } : s
+      )
+    };
+    res.json({ success: true, source: body });
+  });
+  // DELETE /wfs/sources?url= removes a source; /wfs/data deletes what it kept, or all without url.
+  router.delete(`${PLUGIN_BASE}/wfs/:what`, (req, res) => {
+    const url = typeof req.query.url === 'string' ? req.query.url : undefined;
+    const sources =
+      req.params.what === 'sources'
+        ? state.wfs.sources.filter((s) => s.url !== url)
+        : state.wfs.sources.map((s) =>
+            url === undefined || s.url === url ? { ...s, stats: null } : s
+          );
+    state.wfs = { ...state.wfs, sources };
     res.json({ success: true });
   });
 

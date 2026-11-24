@@ -261,7 +261,9 @@ describe('online chart routes', () => {
     for (const [k, v] of v1.handlers) {
       v1Handlers.set(k, v);
     }
-    plugin.start({ chartPath }, () => {});
+    // No WFS proxy: stopped, it keeps its store open in the data dir for the next start,
+    // and on Windows the folder cannot then be removed.
+    plugin.start({ chartPath, wfsProxy: false }, () => {});
     const deadline = Date.now() + 5000;
     while (!provider && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));

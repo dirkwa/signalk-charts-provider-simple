@@ -65,7 +65,7 @@ Open the plugin's web interface from the Webapps list in the Signal K admin UI, 
 http://[your-server]:3000/signalk-charts-provider-simple/
 ```
 
-The interface provides eight tabs:
+The interface provides these tabs:
 
 1. **Manage Charts**:
    - View all charts with metadata (name, bounds, zoom levels, size)
@@ -131,6 +131,9 @@ The interface provides eight tabs:
    - When an area is republished the set shows **Update available** with the areas that changed; **Update** downloads only those and replaces just their part of the chart. Taking areas out of the set and applying removes them from the chart
    - The plugin checks the index for updates on its own only when a set exists and the connection allows it (see signalk-internet); downloads start only when you press the button. `OPEN_DATA_INDEX_URL` points a development server at another index
 
+9. **WFS Data**:
+   - The WFS servers other plugins read through this plugin, with what is kept from each, how much is due for download and its size; add, edit or delete a server, or delete what it keeps. See [Local WFS proxy](#local-wfs-proxy-for-other-plugins)
+
 ### Shared ENC cells for other plugins
 
 The plugin keeps S-57 cells as delivered, `.000` with its `.001`, `.002`, … updates, in one place other Signal K plugins read from: the `enc-store` folder in the plugin's data directory. Integrations take its location from the API's `root`. Each chart's cells form a **collection**, one folder per cell:
@@ -151,6 +154,14 @@ enc-store/<collection>/<CELL>/<CELL>.000, <CELL>.001, …
 Other plugins read the tiles of the charts served here in-process, through the `chartTiles` PropertyValue, so a secured server needs no token for them. [Collision Alerts](https://www.npmjs.com/package/@signalk/collision-alerts) 0.10 or later uses it: it reads the land areas (`LNDARE`) of your S-57 charts, and a boat whose course to you crosses enough land raises no alarm until its course runs clear. There is nothing to set up: once both plugins run, it is on.
 
 For plugin developers: follow the `chartTiles` PropertyValue and take the latest value of each setter. It is a `ChartTiles`, whose contract is in the package's `dist/types.d.ts`: `getTile` gives a tile's body as the tile route serves it. Online charts, and a Multihelm master's charts listed without a copy, are not read this way.
+
+### Local WFS proxy for other plugins
+
+Other plugins on the server can read a WFS server through this plugin instead of straight from it. Add the servers in the **WFS Data** tab; a plugin reads any other directly. Each area is downloaded once, kept in the `wfs-cache` folder of the plugin's data directory, and read from there the next time, so reading the same area again skips the download. An area is downloaded once more when it is older than **Download a kept WFS area again after**; on a metered, offline or captive connection the kept copy is read whatever its age.
+
+The proxy listens on this machine alone (127.0.0.1), on a path only this server's plugins learn, so it needs no Signal K login and serves no one else. It is on by default (**Keep the WFS data other plugins read**); turned off, plugins read the WFS directly. For each server, say whether it **answers a box with every feature reaching it**, as GeoServer and MapServer do: then any box inside the areas kept is read from the store, while otherwise only the same box asked for again is. A server reading boxes in its own turned grid also returns features a little past the box; set **how far past a box it answers** for it.
+
+The WFS Data tab shows what is kept from each server, how much of it is due for download, and its size; an administrator can delete what one server keeps, or everything, without stopping Signal K. **Space for kept WFS data** in the plugin config limits the store; above it the areas read longest ago go first. The settings, how it answers, the routes and the in-process API are in [`docs/wfs-proxy.md`](docs/wfs-proxy.md).
 
 ### Supported Formats
 
