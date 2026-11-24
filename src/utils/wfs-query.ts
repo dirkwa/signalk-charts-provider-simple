@@ -319,7 +319,21 @@ const GEOMETRY_DEPTH: Partial<Record<string, number>> = {
   MultiPolygon: 4
 };
 
-const depthOf = (c: unknown): number => (Array.isArray(c) ? 1 + depthOf(c[0]) : 0);
+/** How deep `c` nests its numbers, every branch alike; undefined when branches differ. */
+function depthOf(c: unknown): number | undefined {
+  if (!Array.isArray(c)) {
+    return 0;
+  }
+  let depth: number | undefined;
+  for (const child of c) {
+    const d = depthOf(child);
+    if (d === undefined || (depth !== undefined && d !== depth)) {
+      return undefined;
+    }
+    depth = d;
+  }
+  return (depth ?? 0) + 1;
+}
 
 /**
  * Whether a feature's geometry reaches `box`, its edges included, as a WFS `BBOX` filter

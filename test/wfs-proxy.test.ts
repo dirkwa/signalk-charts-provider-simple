@@ -549,6 +549,20 @@ describe('wfs-query', () => {
       geometryReaches({ geometry: { type: 'Point', coordinates: [[1, 2]] } }, box),
       undefined
     );
+    // Nor is one nested unevenly: a position where a line should be.
+    const uneven: WfsFeature = {
+      geometry: {
+        type: 'MultiLineString',
+        coordinates: [
+          [
+            [22, 60],
+            [24, 60]
+          ],
+          [23, 62]
+        ]
+      }
+    };
+    assert.strictEqual(geometryReaches(uneven, [22.9, 61, 23.1, 61.2]), undefined);
   });
 });
 
@@ -623,6 +637,23 @@ describe('WfsCache', () => {
     assert.ok(cache.features(cache.idsIn(layer, corner)).some((f) => f.id === 'diagonal'));
     assert.ok(!answered(corner).includes('diagonal'));
     assert.ok(answered([22.02, 60.02, 22.03, 60.03]).includes('diagonal'));
+    // A geometry it cannot tell about is answered, not an error.
+    const uneven: WfsFeature = {
+      id: 'uneven',
+      geometry: {
+        type: 'MultiLineString',
+        coordinates: [
+          [
+            [22, 60],
+            [22.04, 60]
+          ],
+          [22.02, 60.08]
+        ]
+      },
+      properties: {}
+    };
+    keepWhole(cache, layer, [uneven], [21.9, 59.9, 22.1, 60.1], 2);
+    assert.ok(answered([22.019, 60.05, 22.021, 60.06]).includes('uneven'));
     cache.close();
   });
 

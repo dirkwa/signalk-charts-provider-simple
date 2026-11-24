@@ -286,10 +286,11 @@ async function wfsRefresh(): Promise<string | undefined> {
   }
 }
 
-/** Reads the overview again after `done`, saying so, and whether it could be read. */
-async function wfsRefreshAfter(done: string): Promise<void> {
+/** Reads the overview again after `done`, saying so; returns why it could not, else undefined. */
+async function wfsRefreshAfter(done: string): Promise<string | undefined> {
   const why = await wfsRefresh();
   wfsShowStatus(why === undefined ? done : `${done} ${why}`, why === undefined);
+  return why;
 }
 
 function wfsFormValue(id: string): string {
@@ -319,8 +320,15 @@ async function wfsSave(): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
+  const edited = wfsEditing;
   wfsEditing = null;
-  await wfsRefreshAfter(editing ? 'Saved.' : 'Added. Plugins reading it now go through the proxy.');
+  const why = await wfsRefreshAfter(
+    editing ? 'Saved.' : 'Added. Plugins reading it now go through the proxy.'
+  );
+  // Not drawn again, the form is still the edit form of that server: a save again is an edit.
+  if (why !== undefined) {
+    wfsEditing = edited;
+  }
 }
 
 async function wfsAct(action: string, url: string | undefined): Promise<void> {

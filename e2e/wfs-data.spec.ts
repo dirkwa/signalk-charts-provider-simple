@@ -114,6 +114,42 @@ test.describe('WFS Data tab', () => {
     await expect(page.locator('#wfsMessage')).toBeEmpty();
   });
 
+  test('an edit saved while the list cannot be read again is still an edit', async ({ page }) => {
+    await page.goto(PAGE_PATH);
+    await setMockState(page, {
+      wfs: {
+        enabled: true,
+        running: true,
+        maxAgeDays: 30,
+        limitBytes: 0,
+        store: { fileBytes: 0, usedBytes: 0 },
+        sources: [kept]
+      }
+    });
+    const changes = recordChanges(page);
+    let failing = false;
+    await page.route(
+      (url) => url.pathname.endsWith('/wfs'),
+      (route) =>
+        failing && route.request().method() === 'GET'
+          ? route.fulfill({ status: 503, body: 'busy' })
+          : route.fallback()
+    );
+    await openWfsTab(page);
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.locator('#wfsName').fill('Depth contours');
+    failing = true;
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.locator('#wfsMessage')).toContainText(
+      'Saved. Could not read the WFS data: HTTP 503'
+    );
+    failing = false;
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.locator('#wfsMessage')).toHaveText('Saved.');
+    await expect(sourceRow(page, 'Depth contours')).toContainText('3 areas');
+    expect(changes.map((c) => c.method)).toEqual(['PUT', 'PUT']);
+  });
+
   test('adds a server and deletes what one keeps', async ({ page }) => {
     await page.goto(PAGE_PATH);
     await setMockState(page, {
