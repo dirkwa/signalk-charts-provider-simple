@@ -36,8 +36,6 @@ let wfsOverview: WfsOverviewView | null = null;
 /** The URL of the source the form edits; null while it adds one. */
 let wfsEditing: string | null = null;
 let wfsLoad = 0;
-/** How many times the view was drawn: a form drawn since a save began is not that save's. */
-let wfsDrawn = 0;
 let wfsBusy = false;
 
 function wfsEsc(s: string): string {
@@ -163,7 +161,6 @@ function wfsRender(): void {
   if (!el || !o) {
     return;
   }
-  wfsDrawn++;
   const editing = wfsEditing === null ? undefined : o.sources.find((s) => s.url === wfsEditing);
   if (wfsEditing !== null && !editing) {
     wfsEditing = null;
@@ -245,7 +242,9 @@ function wfsRender(): void {
           <p class="form-hint">Only for a server whose GeoJSON features have no id.</p>
         </div>
         <p class="form-hint">Changing how a server answers, or its feature property, deletes what was kept from it.</p>
-        <button class="btn btn-primary" data-needs="admin" data-wfs-action="save" ${wfsBusy ? 'disabled' : ''}>${
+        <button class="btn btn-primary" data-needs="admin" data-wfs-action="save" ${
+          editing ? `data-wfs-edits="${wfsEsc(editing.url)}"` : ''
+        } ${wfsBusy ? 'disabled' : ''}>${
           editing ? 'Save' : 'Add WFS server'
         }</button>
         ${editing ? '<button class="btn btn-secondary" data-wfs-action="cancel-edit">Cancel</button>' : ''}
@@ -289,11 +288,10 @@ async function wfsRefresh(): Promise<string | undefined> {
   }
 }
 
-/** Reads the overview again after `done`, saying so; returns why it could not, else undefined. */
-async function wfsRefreshAfter(done: string): Promise<string | undefined> {
+/** Reads the overview again after `done`, saying so, and whether it could be read. */
+async function wfsRefreshAfter(done: string): Promise<void> {
   const why = await wfsRefresh();
   wfsShowStatus(why === undefined ? done : `${done} ${why}`, why === undefined);
-  return why;
 }
 
 function wfsFormValue(id: string): string {
@@ -317,23 +315,18 @@ async function wfsSave(): Promise<void> {
     ...(answersByBox ? { answerMargin: margin } : {}),
     ...(idProperty ? { idProperty } : {})
   };
-  const editing = wfsEditing !== null;
+  // As the form shown says: a refresh may have drawn it since `wfsEditing` last changed.
+  const editing =
+    document.querySelector<HTMLElement>('#wfsOutput [data-wfs-action="save"]')?.dataset[
+      'wfsEdits'
+    ] !== undefined;
   await wfsRequest('/sources', {
     method: editing ? 'PUT' : 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  const edited = wfsEditing;
-  const drawn = wfsDrawn;
   wfsEditing = null;
-  const why = await wfsRefreshAfter(
-    editing ? 'Saved.' : 'Added. Plugins reading it now go through the proxy.'
-  );
-  // Not drawn again meanwhile, the form is still the edit form of that server: a save again
-  // is an edit. One drawn since, by another refresh, is the form its state says.
-  if (why !== undefined && wfsDrawn === drawn) {
-    wfsEditing = edited;
-  }
+  await wfsRefreshAfter(editing ? 'Saved.' : 'Added. Plugins reading it now go through the proxy.');
 }
 
 async function wfsAct(action: string, url: string | undefined): Promise<void> {

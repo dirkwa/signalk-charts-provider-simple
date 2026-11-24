@@ -203,6 +203,60 @@ test.describe('WFS Data tab', () => {
     expect(changes.map((c) => c.method)).toEqual(['PUT', 'POST']);
   });
 
+  test('an edit form left by a failed refresh while a save waits is still an edit', async ({
+    page
+  }) => {
+    await page.goto(PAGE_PATH);
+    await setMockState(page, {
+      wfs: {
+        enabled: true,
+        running: true,
+        maxAgeDays: 30,
+        limitBytes: 0,
+        store: { fileBytes: 0, usedBytes: 0 },
+        sources: [kept]
+      }
+    });
+    const changes = recordChanges(page);
+    let gets: number | undefined;
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route(
+      (url) => url.pathname.endsWith('/wfs'),
+      async (route) => {
+        if (gets !== undefined && route.request().method() === 'GET') {
+          gets++;
+          // The save's refresh waits and then works; the one asked meanwhile fails.
+          if (gets === 1) {
+            await released;
+          } else if (gets === 2) {
+            await route.fulfill({ status: 503, body: 'busy' });
+            return;
+          }
+        }
+        await route.fallback();
+      }
+    );
+    await openWfsTab(page);
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.locator('#wfsName').fill('Depth contours');
+    gets = 0;
+    await page.getByRole('button', { name: 'Save' }).click();
+    await page.locator('#catalogTabBtn').click();
+    await openWfsTab(page);
+    await expect(page.locator('#wfsMessage')).toContainText(
+      'Could not read the WFS data: HTTP 503'
+    );
+    release();
+    await expect(page.locator('#wfsMessage')).toHaveText('Saved.');
+    // The superseded refresh drew nothing: the edit form is still shown, and saves an edit.
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(sourceRow(page, 'Depth contours')).toContainText('3 areas');
+    expect(changes.map((c) => c.method)).toEqual(['PUT', 'PUT']);
+  });
+
   test('adds a server and deletes what one keeps', async ({ page }) => {
     await page.goto(PAGE_PATH);
     await setMockState(page, {
