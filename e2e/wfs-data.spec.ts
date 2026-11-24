@@ -150,6 +150,59 @@ test.describe('WFS Data tab', () => {
     expect(changes.map((c) => c.method)).toEqual(['PUT', 'PUT']);
   });
 
+  test('a form drawn by another refresh while a save waits keeps its own state', async ({
+    page
+  }) => {
+    await page.goto(PAGE_PATH);
+    await setMockState(page, {
+      wfs: {
+        enabled: true,
+        running: true,
+        maxAgeDays: 30,
+        limitBytes: 0,
+        store: { fileBytes: 0, usedBytes: 0 },
+        sources: [kept]
+      }
+    });
+    const changes = recordChanges(page);
+    let hold = false;
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route(
+      (url) => url.pathname.endsWith('/wfs'),
+      async (route) => {
+        if (hold && route.request().method() === 'GET') {
+          hold = false;
+          await released;
+          await route.fulfill({ status: 503, body: 'busy' });
+          return;
+        }
+        await route.fallback();
+      }
+    );
+    await openWfsTab(page);
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.locator('#wfsName').fill('Depth contours');
+    hold = true;
+    await page.getByRole('button', { name: 'Save' }).click();
+    // While the save's refresh waits, leaving the tab and coming back draws the add form.
+    await page.locator('#catalogTabBtn').click();
+    await openWfsTab(page);
+    await expect(page.getByRole('button', { name: 'Add WFS server' })).toBeVisible();
+    release();
+    await expect(page.locator('#wfsMessage')).toContainText(
+      'Saved. Could not read the WFS data: HTTP 503'
+    );
+    await page.locator('#wfsUrl').fill('https://third.example.org/wfs');
+    await page.getByRole('button', { name: 'Add WFS server' }).click();
+    await expect(
+      page.locator('#wfsOutput').getByText('https://third.example.org/wfs')
+    ).toBeVisible();
+    expect(changes.map((c) => c.method)).toEqual(['PUT', 'POST']);
+  });
+
   test('adds a server and deletes what one keeps', async ({ page }) => {
     await page.goto(PAGE_PATH);
     await setMockState(page, {

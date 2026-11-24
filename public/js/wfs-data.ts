@@ -36,6 +36,8 @@ let wfsOverview: WfsOverviewView | null = null;
 /** The URL of the source the form edits; null while it adds one. */
 let wfsEditing: string | null = null;
 let wfsLoad = 0;
+/** How many times the view was drawn: a form drawn since a save began is not that save's. */
+let wfsDrawn = 0;
 let wfsBusy = false;
 
 function wfsEsc(s: string): string {
@@ -161,6 +163,7 @@ function wfsRender(): void {
   if (!el || !o) {
     return;
   }
+  wfsDrawn++;
   const editing = wfsEditing === null ? undefined : o.sources.find((s) => s.url === wfsEditing);
   if (wfsEditing !== null && !editing) {
     wfsEditing = null;
@@ -321,12 +324,14 @@ async function wfsSave(): Promise<void> {
     body: JSON.stringify(body)
   });
   const edited = wfsEditing;
+  const drawn = wfsDrawn;
   wfsEditing = null;
   const why = await wfsRefreshAfter(
     editing ? 'Saved.' : 'Added. Plugins reading it now go through the proxy.'
   );
-  // Not drawn again, the form is still the edit form of that server: a save again is an edit.
-  if (why !== undefined) {
+  // Not drawn again meanwhile, the form is still the edit form of that server: a save again
+  // is an edit. One drawn since, by another refresh, is the form its state says.
+  if (why !== undefined && wfsDrawn === drawn) {
     wfsEditing = edited;
   }
 }
