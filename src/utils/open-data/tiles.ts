@@ -6,6 +6,9 @@
  */
 
 export const UNIT_ZOOM = 9;
+
+/** The metadata row naming the set a chart was put together from. */
+export const OPEN_DATA_SET_METADATA_KEY = 'x-odc-set';
 const UNIT_COUNT = 2 ** UNIT_ZOOM;
 
 export interface UnitTile {

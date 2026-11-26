@@ -280,6 +280,7 @@ import type {
   ChartProvider,
   ChartsProviderEncGlobal,
   ChartTiles,
+  ChartTilesChart,
   ChartsProviderRefreshGlobal,
   DownloadJob,
   EncCollectionStateInfo,
@@ -7080,6 +7081,19 @@ export const readLocalTile = async (
   }
 };
 
+/** The chart as `ChartTiles.charts` lists it. */
+const chartTilesChart = (id: string, provider: ChartProvider): ChartTilesChart => ({
+  id,
+  name: provider.name,
+  type: provider.type,
+  format: provider.format,
+  ...(provider.bounds !== undefined ? { bounds: [...provider.bounds] } : {}),
+  ...(provider.minzoom !== undefined ? { minzoom: provider.minzoom } : {}),
+  ...(provider.maxzoom !== undefined ? { maxzoom: provider.maxzoom } : {}),
+  ...(provider.coverage !== undefined ? { coverage: structuredClone(provider.coverage) } : {}),
+  ...(provider._openDataSet !== undefined ? { openDataSet: provider._openDataSet } : {})
+});
+
 /** The `chartTiles` offer over the charts served at the time of each read. */
 export const chartTilesOf = (charts: () => Record<string, ChartProvider>): ChartTiles => ({
   getTile: (chartId, z, x, y) => {
@@ -7087,7 +7101,11 @@ export const chartTilesOf = (charts: () => Record<string, ChartProvider>): Chart
     return provider && provider._fileFormat !== 'online'
       ? readLocalTile(provider, z, x, y)
       : Promise.resolve(undefined);
-  }
+  },
+  charts: () =>
+    Object.entries(charts())
+      .filter(([, provider]) => provider._fileFormat !== 'online')
+      .map(([id, provider]) => chartTilesChart(id, provider))
 });
 
 export default pluginConstructor;
