@@ -237,6 +237,8 @@ describe('chartTiles PropertyValue', () => {
     fs.mkdirSync(dataDir, { recursive: true });
 
     const offered: { name: string; value: unknown }[] = [];
+    let resources:
+      { methods: { listResources: (q: object) => Promise<Record<string, object>> } } | undefined;
     const app = {
       config: { configPath: tempDir, ssl: false, version: '2.0.0', getExternalPort: () => 3000 },
       debug: () => {},
@@ -244,7 +246,9 @@ describe('chartTiles PropertyValue', () => {
       setPluginStatus: () => {},
       setPluginError: () => {},
       getDataDirPath: () => dataDir,
-      registerResourceProvider: () => {},
+      registerResourceProvider: (p: typeof resources) => {
+        resources = p;
+      },
       handleMessage: () => {},
       emitPropertyValue: (name: string, value: unknown) => {
         offered.push({ name, value });
@@ -277,6 +281,10 @@ describe('chartTiles PropertyValue', () => {
         ['enc', undefined],
         ['odc', 'brittany']
       ]);
+      // The mark is for chartTiles readers; chart resources keep their published shape.
+      const odcResource = (await resources?.methods.listResources({}))?.odc;
+      assert.ok(odcResource);
+      assert.ok(!('_openDataSet' in odcResource));
 
       await plugin.stop?.();
       assert.strictEqual(await stored(), undefined);

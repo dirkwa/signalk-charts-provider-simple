@@ -6748,6 +6748,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _mask,
     _areaDownload,
     _areaDownloadLimits,
+    _openDataSet,
     v1: _v1,
     v2: _v2,
     ...rest
