@@ -693,15 +693,19 @@ interface Served {
   url: string;
   requests: string[];
   files: Map<string, Buffer>;
-  /** Paths that fail once mid-body, to test resume. */
-  breakOnce: Set<string>;
+  /**
+   * Paths that fail once mid-body, to test resume, each with the test that
+   * tells when the client has kept the bytes sent: breaking off earlier can
+   * leave it nothing to resume from.
+   */
+  breakOnce: Map<string, () => boolean>;
   close: () => Promise<void>;
 }
 
 function serve(): Promise<Served> {
   const files = new Map<string, Buffer>();
   const requests: string[] = [];
-  const breakOnce = new Set<string>();
+  const breakOnce = new Map<string, () => boolean>();
   const server = http.createServer((req, res) => {
     const url = req.url ?? '';
     requests.push(`${url} ${req.headers.range ?? ''}`);
@@ -721,9 +725,18 @@ function serve(): Promise<Served> {
           }
         : {})
     });
-    if (breakOnce.delete(url)) {
+    const kept = breakOnce.get(url);
+    if (kept) {
+      breakOnce.delete(url);
       res.write(slice.subarray(0, Math.floor(slice.length / 2)));
-      setTimeout(() => res.destroy(), 20);
+      const poll = setInterval(() => {
+        if (kept()) {
+          res.destroy();
+        }
+      }, 5);
+      res.on('close', () => {
+        clearInterval(poll);
+      });
       return;
     }
     res.end(slice);
@@ -767,8 +780,9 @@ describe('unit cache', () => {
   it('resumes a broken download and checks its SHA-256', async () => {
     const body = crypto.randomBytes(256 * 1024);
     server.files.set('/u.mbtiles', body);
-    server.breakOnce.add('/u.mbtiles');
     const cache = new UnitCache(tmpDir('cache'));
+    const part = `${cache.file('units', 'z9-1-1', 'v1')}.part`;
+    server.breakOnce.set('/u.mbtiles', () => fs.existsSync(part) && fs.statSync(part).size > 0);
     const target = { url: `${server.url}/u.mbtiles`, size: body.length, sha256: sha256(body) };
     const file = await cache.ensure('units', 'z9-1-1', 'v1', target);
     assert.deepStrictEqual(fs.readFileSync(file), body);
