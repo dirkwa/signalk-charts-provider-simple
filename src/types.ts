@@ -98,6 +98,8 @@ export interface ChartProvider {
   _areaDownload?: boolean;
   /** An Open Data Charts set's chart: the set's id (`x-odc-set` in its metadata). */
   _openDataSet?: string;
+  /** A chart file's inode, size and modification time when it was opened (`ChartTilesChart.revision`). */
+  _revision?: string;
   /** What its provider allows an area download to fetch, and how fast. */
   _areaDownloadLimits?: AreaDownloadLimits;
 
@@ -584,6 +586,14 @@ export interface ChartTilesChart {
    * navigation, its depths from open data, not from an official ENC.
    */
   openDataSet?: string;
+  /**
+   * The chart file's inode, size and modification time. It changes when
+   * the file is replaced, as when a set is downloaded again: a plugin that
+   * keeps what it read from the chart reads it again when this differs. A
+   * file overwritten in place with its size and time kept keeps it too.
+   * Charts Provider 2.27 and later, for MBTiles and PMTiles charts.
+   */
+  revision?: string;
 }
 
 export interface ChartsProviderEncGlobal {
