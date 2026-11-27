@@ -18,7 +18,13 @@ import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'worker_threads';
-import { UNIT_ROWS_SQL, UNIT_ZOOM, unionBounds, type UnitTile } from './tiles.js';
+import {
+  OPEN_DATA_SET_METADATA_KEY,
+  UNIT_ROWS_SQL,
+  UNIT_ZOOM,
+  unionBounds,
+  type UnitTile
+} from './tiles.js';
 import { COVERAGE_METADATA_KEY, mergeTiles, type ChartCoverage } from '../chart-coverage.js';
 
 export const TEMP_SUFFIX = '.odc-tmp';
@@ -272,7 +278,7 @@ function writeMetadata(db: DatabaseSync, input: AssemblyInput, layers: VectorLay
     ['version', '1'],
     ['minzoom', String(zooms.lo ?? UNIT_ZOOM)],
     ['maxzoom', String(zooms.hi ?? UNIT_ZOOM)],
-    ['x-odc-set', input.setId]
+    [OPEN_DATA_SET_METADATA_KEY, input.setId]
   ];
   if (bounds) {
     rows.push(['bounds', bounds.map((v) => v.toFixed(6)).join(',')]);

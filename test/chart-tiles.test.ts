@@ -8,6 +8,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import type { Plugin } from '@signalk/server-api';
@@ -170,6 +171,56 @@ describe('chartTilesOf()', () => {
       vector.close();
     }
   });
+
+  it('lists the charts it reads, an Open Data Charts set marked, no online chart', () => {
+    const coverage = [{ minzoom: 9, tiles: ['9/248/178'] }];
+    const odc = {
+      identifier: 'brittany',
+      name: 'Brittany',
+      type: 'S-57',
+      format: 'pbf',
+      bounds: [-5.625, 47.5, -4.9, 48.0],
+      minzoom: 9,
+      maxzoom: 17,
+      coverage,
+      _fileFormat: 'mbtiles',
+      _openDataSet: 'brittany'
+    } as unknown as ChartProvider;
+    const enc = {
+      identifier: 'enc',
+      name: 'ENC',
+      type: 'S-57',
+      format: 'pbf',
+      bounds: undefined,
+      minzoom: 0,
+      maxzoom: 5,
+      _fileFormat: 'pmtiles'
+    } as unknown as ChartProvider;
+    const osm = {
+      identifier: 'osm',
+      format: 'png',
+      _fileFormat: 'online'
+    } as unknown as ChartProvider;
+    const tiles = chartTilesOf(() => ({ brittany: odc, enc, osm }));
+    const listed = tiles.charts();
+    assert.deepStrictEqual(listed, [
+      {
+        id: 'brittany',
+        name: 'Brittany',
+        type: 'S-57',
+        format: 'pbf',
+        bounds: [-5.625, 47.5, -4.9, 48.0],
+        minzoom: 9,
+        maxzoom: 17,
+        coverage,
+        openDataSet: 'brittany'
+      },
+      { id: 'enc', name: 'ENC', type: 'S-57', format: 'pbf', minzoom: 0, maxzoom: 5 }
+    ]);
+    // A copy: what a peer plugin does with the list leaves the chart as it is.
+    listed[0]?.coverage?.[0]?.tiles.push('9/0/0');
+    assert.deepStrictEqual(odc.coverage, [{ minzoom: 9, tiles: ['9/248/178'] }]);
+  });
 });
 
 describe('chartTiles PropertyValue', () => {
@@ -178,10 +229,16 @@ describe('chartTiles PropertyValue', () => {
     const chartPath = path.join(tempDir, 'charts');
     fs.mkdirSync(chartPath, { recursive: true });
     fs.copyFileSync(VECTOR_MBTILES, path.join(chartPath, 'enc.mbtiles'));
+    fs.copyFileSync(VECTOR_MBTILES, path.join(chartPath, 'odc.mbtiles'));
+    const odc = new DatabaseSync(path.join(chartPath, 'odc.mbtiles'));
+    odc.prepare("INSERT INTO metadata (name, value) VALUES ('x-odc-set', 'brittany')").run();
+    odc.close();
     const dataDir = path.join(tempDir, 'plugin-config-data', 'signalk-charts-provider-simple');
     fs.mkdirSync(dataDir, { recursive: true });
 
     const offered: { name: string; value: unknown }[] = [];
+    let resources:
+      { methods: { listResources: (q: object) => Promise<Record<string, object>> } } | undefined;
     const app = {
       config: { configPath: tempDir, ssl: false, version: '2.0.0', getExternalPort: () => 3000 },
       debug: () => {},
@@ -189,7 +246,9 @@ describe('chartTiles PropertyValue', () => {
       setPluginStatus: () => {},
       setPluginError: () => {},
       getDataDirPath: () => dataDir,
-      registerResourceProvider: () => {},
+      registerResourceProvider: (p: typeof resources) => {
+        resources = p;
+      },
       handleMessage: () => {},
       emitPropertyValue: (name: string, value: unknown) => {
         offered.push({ name, value });
@@ -217,6 +276,15 @@ describe('chartTiles PropertyValue', () => {
       assert.strictEqual(await tiles()?.getTile('enc', 3, 7, 7), null);
       assert.strictEqual(await tiles()?.getTile('other', 2, 0, 1), undefined);
       assert.strictEqual(await tiles()?.getTile('__proto__', 2, 0, 1), undefined);
+      const listed = tiles()?.charts() ?? [];
+      assert.deepStrictEqual(listed.map((c) => [c.id, c.openDataSet]).sort(), [
+        ['enc', undefined],
+        ['odc', 'brittany']
+      ]);
+      // The mark is for chartTiles readers; chart resources keep their published shape.
+      const odcResource = (await resources?.methods.listResources({}))?.odc;
+      assert.ok(odcResource);
+      assert.ok(!('_openDataSet' in odcResource));
 
       await plugin.stop?.();
       assert.strictEqual(await stored(), undefined);

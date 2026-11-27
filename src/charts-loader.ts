@@ -4,6 +4,7 @@ import { parseStringPromise } from 'xml2js';
 import { open as openMbtiles } from './utils/mbtiles-reader.js';
 import { PMTilesReader, pmtilesBounds } from './utils/pmtiles-reader.js';
 import { COVERAGE_METADATA_KEY, parseCoverage } from './utils/chart-coverage.js';
+import { OPEN_DATA_SET_METADATA_KEY } from './utils/open-data/tiles.js';
 import {
   isOnlineChartFile,
   onlineChartProvider,
@@ -190,12 +191,16 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
     // common case's descriptor unchanged.
     const tileSize = readTileSize(metadata.format, reader);
     const coverage = parseCoverage(metadata[COVERAGE_METADATA_KEY]);
+    const openDataSet = metadata[OPEN_DATA_SET_METADATA_KEY];
 
     const data: ChartProvider = {
       _fileFormat: 'mbtiles',
       _filePath: file,
       _mbtilesHandle: reader,
       _flipY: false,
+      ...(typeof openDataSet === 'string' && openDataSet !== ''
+        ? { _openDataSet: openDataSet }
+        : {}),
 
       identifier,
       name: metadata.name ?? metadata.id ?? identifier,

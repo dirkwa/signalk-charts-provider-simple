@@ -96,6 +96,8 @@ export interface ChartProvider {
   _mask?: ChartMask;
   /** Whether areas of a chart kept offline may be downloaded in advance. */
   _areaDownload?: boolean;
+  /** An Open Data Charts set's chart: the set's id (`x-odc-set` in its metadata). */
+  _openDataSet?: string;
   /** What its provider allows an area download to fetch, and how fast. */
   _areaDownloadLimits?: AreaDownloadLimits;
 
@@ -555,6 +557,33 @@ export interface ChartTiles {
    * answer 500.
    */
   getTile(chartId: string, z: number, x: number, y: number): Promise<Uint8Array | null | undefined>;
+  /**
+   * The charts `getTile` reads now, so a plugin can choose among them
+   * without listing the chart resources. Charts Provider 2.26 and later.
+   */
+  charts(): ChartTilesChart[];
+}
+
+/** A chart `ChartTiles.getTile` reads, as `ChartTiles.charts` lists it. */
+export interface ChartTilesChart {
+  /** The id `getTile` takes. */
+  id: string;
+  name: string;
+  /** `S-57` for vector charts of S-57 layers, as the chart resource says. */
+  type: ChartType;
+  /** The tile format: `pbf` for vector tiles. */
+  format: string;
+  /** West, south, east, north, when the chart states them. */
+  bounds?: number[];
+  minzoom?: number;
+  maxzoom?: number;
+  /** Where the chart fills its tiles entirely, as the chart resource's `coverage`. */
+  coverage?: ChartCoverage;
+  /**
+   * The Open Data Charts set the chart was built from: data not for
+   * navigation, its depths from open data, not from an official ENC.
+   */
+  openDataSet?: string;
 }
 
 export interface ChartsProviderEncGlobal {
