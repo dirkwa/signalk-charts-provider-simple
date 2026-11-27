@@ -587,10 +587,11 @@ export interface ChartTilesChart {
    */
   openDataSet?: string;
   /**
-   * Changes whenever the chart's file does, as when a set is downloaded
-   * again: a plugin that keeps what it read from the chart reads it again
-   * when this differs. Charts Provider 2.27 and later, for MBTiles and
-   * PMTiles charts.
+   * The chart file's inode, size and modification time. It changes when
+   * the file is replaced, as when a set is downloaded again: a plugin that
+   * keeps what it read from the chart reads it again when this differs. A
+   * file overwritten in place with its size and time kept keeps it too.
+   * Charts Provider 2.27 and later, for MBTiles and PMTiles charts.
    */
   revision?: string;
 }
