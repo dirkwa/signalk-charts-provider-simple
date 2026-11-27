@@ -185,7 +185,7 @@ describe('chartTilesOf()', () => {
       coverage,
       _fileFormat: 'mbtiles',
       _openDataSet: 'brittany',
-      _revision: '5-1024-1800000000000'
+      _revision: '5-1024-1800000000000000000'
     } as unknown as ChartProvider;
     const enc = {
       identifier: 'enc',
@@ -215,7 +215,7 @@ describe('chartTilesOf()', () => {
         maxzoom: 17,
         coverage,
         openDataSet: 'brittany',
-        revision: '5-1024-1800000000000'
+        revision: '5-1024-1800000000000000000'
       },
       { id: 'enc', name: 'ENC', type: 'S-57', format: 'pbf', minzoom: 0, maxzoom: 5 }
     ]);
@@ -284,9 +284,9 @@ describe('chartTiles PropertyValue', () => {
         ['odc', 'brittany']
       ]);
       // The file's size and time as opened, so a reader knows a set downloaded again.
-      const odcFile = fs.statSync(path.join(chartPath, 'odc.mbtiles'));
+      const odcFile = fs.statSync(path.join(chartPath, 'odc.mbtiles'), { bigint: true });
       const revision = listed.find((c) => c.id === 'odc')?.revision;
-      assert.strictEqual(revision, `${odcFile.ino}-${odcFile.size}-${Math.trunc(odcFile.mtimeMs)}`);
+      assert.strictEqual(revision, `${odcFile.ino}-${odcFile.size}-${odcFile.mtimeNs}`);
       // The mark is for chartTiles readers; chart resources keep their published shape.
       const odcResource = (await resources?.methods.listResources({}))?.odc;
       assert.ok(odcResource);

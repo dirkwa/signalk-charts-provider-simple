@@ -168,8 +168,9 @@ async function findChartsRecursive(
  * downloaded again is renamed into place, so it has a new inode even if it kept the old time.
  */
 async function fileRevision(file: string): Promise<string> {
-  const stat = await fs.stat(file);
-  return `${stat.ino}-${stat.size}-${Math.trunc(stat.mtimeMs)}`;
+  // Nanoseconds, as the file system keeps them: a millisecond would hide an overwrite within it.
+  const stat = await fs.stat(file, { bigint: true });
+  return `${stat.ino}-${stat.size}-${stat.mtimeNs}`;
 }
 
 async function openMbtilesFile(file: string, filename: string): Promise<ChartProvider | null> {
