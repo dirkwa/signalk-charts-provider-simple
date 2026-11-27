@@ -163,10 +163,13 @@ async function findChartsRecursive(
   return results.flat();
 }
 
-/** The file's size and modification time: what `ChartTilesChart.revision` gives. */
+/**
+ * The file's inode, size and modification time: what `ChartTilesChart.revision` gives. A set
+ * downloaded again is renamed into place, so it has a new inode even if it kept the old time.
+ */
 async function fileRevision(file: string): Promise<string> {
   const stat = await fs.stat(file);
-  return `${stat.size}-${Math.trunc(stat.mtimeMs)}`;
+  return `${stat.ino}-${stat.size}-${Math.trunc(stat.mtimeMs)}`;
 }
 
 async function openMbtilesFile(file: string, filename: string): Promise<ChartProvider | null> {
@@ -179,6 +182,8 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
   // because an unclosed handle locks the .mbtiles on Windows.
   let reader: MBTilesReader | undefined;
   try {
+    // Read before opening: a file replaced in between then gets a new revision on its next load.
+    const revision = await fileRevision(file);
     reader = await openMbtiles(file);
     const metadata = reader.getInfo();
 
@@ -202,7 +207,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
     const data: ChartProvider = {
       _fileFormat: 'mbtiles',
       _filePath: file,
-      _revision: await fileRevision(file),
+      _revision: revision,
       _mbtilesHandle: reader,
       _flipY: false,
       ...(typeof openDataSet === 'string' && openDataSet !== ''
@@ -247,6 +252,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
 async function openPmtilesFile(file: string, filename: string): Promise<ChartProvider | null> {
   let reader: PMTilesReader | undefined;
   try {
+    const revision = await fileRevision(file);
     reader = await PMTilesReader.open(file);
     const { header, metadata, format } = reader;
     const identifier = filename.replace(/\.pmtiles$/i, '');
@@ -257,7 +263,7 @@ async function openPmtilesFile(file: string, filename: string): Promise<ChartPro
     return {
       _fileFormat: 'pmtiles',
       _filePath: file,
-      _revision: await fileRevision(file),
+      _revision: revision,
       _pmtilesHandle: reader,
       _flipY: false,
 

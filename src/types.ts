@@ -98,7 +98,7 @@ export interface ChartProvider {
   _areaDownload?: boolean;
   /** An Open Data Charts set's chart: the set's id (`x-odc-set` in its metadata). */
   _openDataSet?: string;
-  /** A chart file's size and modification time when it was opened (`ChartTilesChart.revision`). */
+  /** A chart file's inode, size and modification time when it was opened (`ChartTilesChart.revision`). */
   _revision?: string;
   /** What its provider allows an area download to fetch, and how fast. */
   _areaDownloadLimits?: AreaDownloadLimits;
