@@ -722,8 +722,12 @@ function serve(): Promise<Served> {
         : {})
     });
     if (breakOnce.delete(url)) {
-      res.write(slice.subarray(0, Math.floor(slice.length / 2)));
-      setTimeout(() => res.destroy(), 20);
+      // Close with a FIN after the bytes, not a reset: on Windows a reset
+      // discards what the client has not read yet, and the retry has
+      // nothing to resume from.
+      res.write(slice.subarray(0, Math.floor(slice.length / 2)), () => {
+        req.socket.end();
+      });
       return;
     }
     res.end(slice);
