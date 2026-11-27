@@ -163,6 +163,12 @@ async function findChartsRecursive(
   return results.flat();
 }
 
+/** The file's size and modification time: what `ChartTilesChart.revision` gives. */
+async function fileRevision(file: string): Promise<string> {
+  const stat = await fs.stat(file);
+  return `${stat.size}-${Math.trunc(stat.mtimeMs)}`;
+}
+
 async function openMbtilesFile(file: string, filename: string): Promise<ChartProvider | null> {
   // Held outside the try so the catch can close it if anything after
   // openMbtiles resolves throws — tile-size probing, or building the provider
@@ -196,6 +202,7 @@ async function openMbtilesFile(file: string, filename: string): Promise<ChartPro
     const data: ChartProvider = {
       _fileFormat: 'mbtiles',
       _filePath: file,
+      _revision: await fileRevision(file),
       _mbtilesHandle: reader,
       _flipY: false,
       ...(typeof openDataSet === 'string' && openDataSet !== ''
@@ -250,6 +257,7 @@ async function openPmtilesFile(file: string, filename: string): Promise<ChartPro
     return {
       _fileFormat: 'pmtiles',
       _filePath: file,
+      _revision: await fileRevision(file),
       _pmtilesHandle: reader,
       _flipY: false,
 

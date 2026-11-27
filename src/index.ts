@@ -6749,6 +6749,7 @@ const sanitizeProvider = (provider: ChartProvider, version: 1 | 2 = 1): Sanitize
     _areaDownload,
     _areaDownloadLimits,
     _openDataSet,
+    _revision,
     v1: _v1,
     v2: _v2,
     ...rest
@@ -7092,7 +7093,8 @@ const chartTilesChart = (id: string, provider: ChartProvider): ChartTilesChart =
   ...(provider.minzoom !== undefined ? { minzoom: provider.minzoom } : {}),
   ...(provider.maxzoom !== undefined ? { maxzoom: provider.maxzoom } : {}),
   ...(provider.coverage !== undefined ? { coverage: structuredClone(provider.coverage) } : {}),
-  ...(provider._openDataSet !== undefined ? { openDataSet: provider._openDataSet } : {})
+  ...(provider._openDataSet !== undefined ? { openDataSet: provider._openDataSet } : {}),
+  ...(provider._revision !== undefined ? { revision: provider._revision } : {})
 });
 
 /** The `chartTiles` offer over the charts served at the time of each read. */
