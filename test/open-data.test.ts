@@ -13,6 +13,11 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import zlib from 'node:zlib';
+
+import { VectorTile } from '@mapbox/vector-tile';
+import { PbfReader } from 'pbf';
+import { fromGeojsonVt } from 'vt-pbf';
 
 import {
   parseUnitId,
@@ -53,7 +58,7 @@ interface TileRow {
   z: number;
   x: number;
   row: number;
-  data: string;
+  data: string | Uint8Array;
 }
 
 /** Every stored tile of unit (x, y) from z9 to `maxzoom`, plus one of a neighbour. */
@@ -552,6 +557,84 @@ describe('assembling a chart', () => {
     const reader = new MBTilesReader(target);
     assert.strictEqual(reader.getRawTile(9, 492, 288)?.toString(), '492-288@v1');
     reader.close();
+  });
+
+  it('merges the layers of a tile two seas’ overviews both hold', () => {
+    const dir = tmpDir('two-seas');
+    // One point feature per layer, as geojson-vt gives a tile; x and y in tile extent.
+    const tile = (layers: Record<string, number>): Uint8Array =>
+      zlib.gzipSync(
+        fromGeojsonVt(
+          Object.fromEntries(
+            Object.entries(layers).map(([name, x]) => [
+              name,
+              { features: [{ type: 1, geometry: [[x, 100]], tags: { sea: name } }] }
+            ])
+          )
+        )
+      );
+    const north = path.join(dir, 'north.mbtiles');
+    const baltic = path.join(dir, 'baltic.mbtiles');
+    writeMbtiles(
+      north,
+      [
+        { z: 4, x: 8, row: 11, data: tile({ OFSPLF: 10, LNDARE: 20 }) },
+        { z: 5, x: 16, row: 22, data: tile({ OFSPLF: 30 }) }
+      ],
+      ['OFSPLF', 'LNDARE'],
+      'table'
+    );
+    writeMbtiles(
+      baltic,
+      [
+        { z: 4, x: 8, row: 11, data: tile({ OFSPLF: 40, WRECKS: 50 }) },
+        { z: 5, x: 17, row: 22, data: tile({ WRECKS: 60 }) }
+      ],
+      ['OFSPLF', 'WRECKS'],
+      'table'
+    );
+    const a = path.join(dir, 'a.mbtiles');
+    writeMbtiles(a, unitTiles(492, 288, 'v1'), ['DEPARE']);
+    const target = path.join(dir, 'charts', 'Two seas.mbtiles');
+    assembleChart({
+      kind: 'chart',
+      target,
+      base: null,
+      remove: [],
+      add: [{ tile: { x: 492, y: 288 }, file: a }],
+      overviews: [north, baltic],
+      units: [{ x: 492, y: 288 }],
+      name: 'Two seas',
+      description: 'NOT FOR NAVIGATION.',
+      attribution: 'x',
+      setId: 'two-seas'
+    });
+    const db = new DatabaseSync(target, { readOnly: true });
+    const read = (z: number, x: number, row: number): Record<string, number[]> => {
+      const found = db
+        .prepare(
+          'SELECT tile_data AS d FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
+        )
+        .get(z, x, row) as { d: Uint8Array } | undefined;
+      assert.ok(found, `${String(z)}/${String(x)}/${String(row)} is in the chart`);
+      const vt = new VectorTile(new PbfReader(zlib.gunzipSync(found.d)));
+      return Object.fromEntries(
+        Object.entries(vt.layers).map(([name, layer]) => [
+          name,
+          Array.from(
+            { length: layer.length },
+            (_, i) => layer.feature(i).loadGeometry()[0][0].x
+          ).sort((p, q) => p - q)
+        ])
+      );
+    };
+    try {
+      assert.deepStrictEqual(read(4, 8, 11), { OFSPLF: [10, 40], LNDARE: [20], WRECKS: [50] });
+      assert.deepStrictEqual(read(5, 16, 22), { OFSPLF: [30] });
+      assert.deepStrictEqual(read(5, 17, 22), { WRECKS: [60] });
+    } finally {
+      db.close();
+    }
   });
 
   it('replaces only the changed unit’s rows on an update, and removes a unit', () => {
