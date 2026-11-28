@@ -2,7 +2,8 @@
  * Puts a set's units together into one MBTiles. A unit's rows are the tiles
  * at z >= 9 whose z9 ancestor is the unit, so they can be added, replaced
  * and removed one unit at a time; the rows below z9 are the region
- * overviews, replaced as a whole.
+ * overviews, replaced as a whole, a tile two overviews hold being their
+ * layers merged.
  *
  * A set's terrain shading is put together the same way into a raster
  * chart of its own, drawn over the vector one.
@@ -18,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'worker_threads';
+import zlib from 'zlib';
 import {
   OPEN_DATA_SET_METADATA_KEY,
   UNIT_ROWS_SQL,
@@ -26,8 +28,10 @@ import {
   type UnitTile
 } from './tiles.js';
 import { COVERAGE_METADATA_KEY, mergeTiles, type ChartCoverage } from '../chart-coverage.js';
+import { mergeTiles as mergeVectorTiles } from '../vector-tile-shard.js';
 
 export const TEMP_SUFFIX = '.odc-tmp';
+const GZIP_MAGIC = [0x1f, 0x8b];
 
 export interface VectorLayerInfo {
   id: string;
@@ -204,11 +208,16 @@ function writeRows(db: DatabaseSync, input: AssemblyInput): void {
   }
   // ATTACH cannot run inside a transaction, so each copy commits on its own;
   // the file is not in place before every copy is done.
-  const copyFrom = (file: string, where: string, params: Record<string, number>): void => {
+  const copyFrom = (
+    file: string,
+    where: string,
+    params: Record<string, number>,
+    conflict: 'REPLACE' | 'IGNORE' = 'REPLACE'
+  ): void => {
     db.prepare('ATTACH DATABASE ? AS src').run(file);
     try {
       db.prepare(
-        `INSERT OR REPLACE INTO main.tiles (zoom_level, tile_column, tile_row, tile_data)
+        `INSERT OR ${conflict} INTO main.tiles (zoom_level, tile_column, tile_row, tile_data)
          SELECT zoom_level, tile_column, tile_row, tile_data FROM src.tiles WHERE ${where}`
       ).run(params);
       layers.push(readVectorLayers(db, 'src'));
@@ -217,7 +226,8 @@ function writeRows(db: DatabaseSync, input: AssemblyInput): void {
     }
   };
   for (const file of input.overviews ?? []) {
-    copyFrom(file, 'zoom_level < :uz', { uz: UNIT_ZOOM });
+    mergeOverlap(db, file);
+    copyFrom(file, 'zoom_level < :uz', { uz: UNIT_ZOOM }, 'IGNORE');
   }
   // A unit's file may hold tiles of its neighbours (a tiler's buffer); only
   // its own go in, so units never overwrite each other.
@@ -225,6 +235,53 @@ function writeRows(db: DatabaseSync, input: AssemblyInput): void {
     copyFrom(file, UNIT_ROWS_SQL, { ux: tile.x, uy: tile.y });
   }
   writeMetadata(db, input, mergeVectorLayers(layers));
+}
+
+/**
+ * The overviews of two seas hold the same tiles near their edge (a z4 tile
+ * is 22.5 degrees wide), and a set spanning both takes both. Where `file`
+ * has a tile the chart already holds, the chart's tile becomes the two
+ * tiles' layers merged, and the copy that follows leaves it be, so neither
+ * sea is lost there.
+ */
+function mergeOverlap(db: DatabaseSync, file: string): void {
+  db.prepare('ATTACH DATABASE ? AS src').run(file);
+  try {
+    const rows = db
+      .prepare(
+        `SELECT s.zoom_level AS z, s.tile_column AS x, s.tile_row AS y,
+                m.tile_data AS have, s.tile_data AS incoming
+         FROM src.tiles s JOIN main.tiles m
+           ON m.zoom_level = s.zoom_level AND m.tile_column = s.tile_column AND m.tile_row = s.tile_row
+         WHERE s.zoom_level < ?`
+      )
+      .all(UNIT_ZOOM) as {
+      z: number;
+      x: number;
+      y: number;
+      have: Uint8Array;
+      incoming: Uint8Array;
+    }[];
+    const update = db.prepare(
+      'UPDATE main.tiles SET tile_data = ? WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?'
+    );
+    for (const merged of mergeVectorTiles({
+      tiles: rows.map(({ z, x, y, have, incoming }) => ({
+        z,
+        x,
+        y,
+        parts: [inflated(have), inflated(incoming)]
+      }))
+    })) {
+      update.run(merged.data, merged.z, merged.x, merged.y);
+    }
+  } finally {
+    db.exec('DETACH DATABASE src');
+  }
+}
+
+function inflated(tile: Uint8Array): Uint8Array {
+  return tile[0] === GZIP_MAGIC[0] && tile[1] === GZIP_MAGIC[1] ? zlib.gunzipSync(tile) : tile;
 }
 
 /**
